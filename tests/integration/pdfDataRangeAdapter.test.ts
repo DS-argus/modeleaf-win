@@ -10,7 +10,9 @@ import type { BinaryRangeInvoker, PdfRangeRequest } from "../../src/pdf/BinaryRa
 const settle = async (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 
 function fixture(length: number): Uint8Array {
-  return Uint8Array.from({ length }, (_, index) => index % 251);
+  const bytes = new Uint8Array(length);
+  for (let index = 0; index < length; index += 1) bytes[index] = index % 251;
+  return bytes;
 }
 
 function lifecycle(events: string[]): NativePdfSessionLifecycle {

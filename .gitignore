@@ -7,4 +7,5 @@ src-tauri/target/
 .gjc/
 .internal/evidence/
 fixtures/phase0-generated/*.pdf
+fixtures/adversarial-generated/*.pdf
 evidence/phase0/

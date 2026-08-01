@@ -55,6 +55,7 @@ pub struct CancelBarrier {
 #[serde(tag = "tag", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PdfSessionError {
     PathRejected,
+    RemotePath,
     FileUnreadable,
     PdfInvalid,
     DocumentTooLarge,
@@ -66,6 +67,7 @@ pub enum PdfSessionError {
     GenerationMismatch,
     SessionClosing,
     BarrierMismatch,
+    DialogFailed,
 }
 impl std::fmt::Display for PdfSessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -77,6 +79,7 @@ impl PdfSessionError {
     pub fn tag(&self) -> &'static str {
         match self {
             Self::PathRejected => "PATH_REJECTED",
+            Self::RemotePath => "REMOTE_PATH",
             Self::FileUnreadable => "FILE_UNREADABLE",
             Self::PdfInvalid => "PDF_INVALID",
             Self::DocumentTooLarge => "DOCUMENT_TOO_LARGE",
@@ -88,6 +91,7 @@ impl PdfSessionError {
             Self::GenerationMismatch => "GENERATION_MISMATCH",
             Self::SessionClosing => "SESSION_CLOSING",
             Self::BarrierMismatch => "BARRIER_MISMATCH",
+            Self::DialogFailed => "DIALOG_FAILED",
         }
     }
 }
@@ -166,10 +170,18 @@ impl PdfSessionManager {
     {
         match policy.classify(path) {
             Ok(crate::local_path::DriveKind::Fixed | crate::local_path::DriveKind::Removable) => {}
-            Ok(crate::local_path::DriveKind::Remote) | Err(_) => {
+            Ok(crate::local_path::DriveKind::Remote)
+            | Err(crate::local_path::PathPolicyError::RemotePath) => {
+                return Err(PdfSessionError::RemotePath)
+            }
+            Err(crate::local_path::PathPolicyError::PathRejected) => {
                 return Err(PdfSessionError::PathRejected)
             }
         }
+        policy.validate_preopen(path).map_err(|error| match error {
+            crate::local_path::PathPolicyError::RemotePath => PdfSessionError::RemotePath,
+            crate::local_path::PathPolicyError::PathRejected => PdfSessionError::PathRejected,
+        })?;
         if !path
             .extension()
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
@@ -189,7 +201,11 @@ impl PdfSessionManager {
         let mut file = opener(path).map_err(|_| PdfSessionError::FileUnreadable)?;
         match final_policy.classify_final(&file) {
             Ok(crate::local_path::DriveKind::Fixed | crate::local_path::DriveKind::Removable) => {}
-            Ok(crate::local_path::DriveKind::Remote) | Err(_) => {
+            Ok(crate::local_path::DriveKind::Remote)
+            | Err(crate::local_path::PathPolicyError::RemotePath) => {
+                return Err(PdfSessionError::RemotePath)
+            }
+            Err(crate::local_path::PathPolicyError::PathRejected) => {
                 return Err(PdfSessionError::PathRejected)
             }
         }
@@ -417,6 +433,30 @@ impl PdfSessionManager {
         }
         sessions.entries.remove(id);
         Ok(())
+    }
+    pub fn drain_owner(&self, window_label: &str) {
+        self.drain_matching(|owner| owner.window_label == window_label);
+    }
+
+    pub fn drain_all(&self) {
+        self.drain_matching(|_| true);
+    }
+
+    fn drain_matching(&self, matches: impl Fn(&PdfOwner) -> bool) {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        for session in sessions.entries.values_mut() {
+            if matches(&session.owner) {
+                session.closing = true;
+            }
+        }
+        while sessions.entries.values().any(|session| {
+            matches(&session.owner) && (session.in_flight != 0 || session.queued != 0)
+        }) {
+            sessions = self.drained.wait(sessions).expect("session state poisoned");
+        }
+        sessions
+            .entries
+            .retain(|_, session| !matches(&session.owner));
     }
     pub fn assert_empty(&self) -> bool {
         let sessions = self.sessions.lock().expect("session state poisoned");

@@ -1,6 +1,7 @@
 import { RESOURCE_LIMITS, type ResourceTag, validateRange } from "./ResourceBudget";
 
-export type RangeTransportTag = ResourceTag | "RANGE_STALE" | "RANGE_CANCELLED" | "RANGE_LENGTH_MISMATCH" | "RANGE_FAILED";
+export type RangeTransportTag = ResourceTag | "RANGE_STALE" | "RANGE_CANCELLED" | "RANGE_LENGTH_MISMATCH" | "RANGE_FAILED" | "PDF_TIMEOUT";
+export const RANGE_DEADLINE_MS = 5_000;
 
 export interface PdfRangeSession {
   readonly sessionId: string;
@@ -78,15 +79,29 @@ export class BinaryRangeTransport {
     const registration = this.registerCancellation(request.requestId);
     const controller = this.active.get(registration.requestId);
     if (controller === undefined) return { ok: false, tag: "RANGE_CANCELLED" };
+    let timedOut = false;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const interrupted = new Promise<never>((_, reject) => {
+      const rejectCancelled = () => reject(new Error("Range request cancelled"));
+      controller.signal.addEventListener("abort", rejectCancelled, { once: true });
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, RANGE_DEADLINE_MS);
+    });
     try {
-      const bytes = await this.invoker.invoke(request, controller.signal);
-      if (controller.signal.aborted) return { ok: false, tag: "RANGE_CANCELLED" };
+      const bytes = await Promise.race([
+        this.invoker.invoke(request, controller.signal),
+        interrupted,
+      ]);
+      if (controller.signal.aborted) return { ok: false, tag: timedOut ? "PDF_TIMEOUT" : "RANGE_CANCELLED" };
       if (!this.isGenerationCurrent(request.documentGeneration)) return { ok: false, tag: "RANGE_STALE" };
       const responseValidation = validatePdfRangeResponse(this.session, request, bytes.byteLength);
       return responseValidation === undefined ? { ok: true, bytes } : { ok: false, tag: responseValidation };
     } catch {
-      return { ok: false, tag: controller.signal.aborted ? "RANGE_CANCELLED" : "RANGE_FAILED" };
+      return { ok: false, tag: timedOut ? "PDF_TIMEOUT" : controller.signal.aborted ? "RANGE_CANCELLED" : "RANGE_FAILED" };
     } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       if (this.active.get(request.requestId) === controller) this.active.delete(request.requestId);
     }
   }

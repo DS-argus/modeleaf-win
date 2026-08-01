@@ -17,7 +17,7 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 
 [profile.release]
 codegen-units = 1

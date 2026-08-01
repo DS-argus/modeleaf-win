@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   PDFJS_POLICY,
   PDFJS_VERSION,
@@ -78,6 +79,13 @@ describe("PDF.js policy", () => {
         },
       }
     `);
+  });
+
+  it("allows only packaged self-origin PDF.js fetches through the Tauri CSP", () => {
+    const config = JSON.parse(readFileSync(new URL("../../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
+    const csp = config.app.security.csp as string;
+    expect(csp).toContain("connect-src 'self' ipc: http://ipc.localhost");
+    expect(csp).not.toMatch(/connect-src[^;]*https?:\/\/(?!ipc\.localhost)/);
   });
 
   it("accepts multiple runtime files for each directory kind", () => {

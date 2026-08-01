@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "modeleaf.adversarial-pdfs.v1",
+  "generatorVersion": "1.0.0",
+  "generatorSha256": "04d20eda17d6d582a26fd055f047405fad67d523807a48b1a9aa1c8dbf58e660",
+  "outputs": [
+    {
+      "name": "password-user-modeleaf.pdf",
+      "sha256": "dc7dc442e7352109f128ca22facda001fac3b186c5f39dc0be4795d3f679f399",
+      "byteLength": 884,
+      "expectedClass": "password-user"
+    },
+    {
+      "name": "malformed-truncated-xref.pdf",
+      "sha256": "1c9d3637a3eab093bd37b2f9a31da896fc3b3ff4e609853b75272d8e3f49e3a3",
+      "byteLength": 138,
+      "expectedClass": "malformed-truncated-xref"
+    },
+    {
+      "name": "empty-zero-pages.pdf",
+      "sha256": "648259b47a33be90b8f630ba6859c64372b805bfb3479982ff2b112e33196f18",
+      "byteLength": 315,
+      "expectedClass": "empty-zero-pages"
+    },
+    {
+      "name": "huge-page-canvas-limit.pdf",
+      "sha256": "54b37c6bb944073e0c5f094a011bf8914fa797cd913f10dbdf9b711f26371e06",
+      "byteLength": 504,
+      "expectedClass": "huge-page-canvas-limit"
+    },
+    {
+      "name": "no-text-image-only.pdf",
+      "sha256": "c37ff724178a35a38e9ccdb849a07e6fc52bae2e895f5f1f0d3282874c133c94",
+      "byteLength": 735,
+      "expectedClass": "no-text-image-only"
+    },
+    {
+      "name": "links-allowed-and-forbidden.pdf",
+      "sha256": "7492b3f968f2d44accab9dbb450e47bfc79adfc165e0b4695e5a0ee6748147c7",
+      "byteLength": 839,
+      "expectedClass": "links-allowed-and-forbidden"
+    },
+    {
+      "name": "slow-cancel-range.pdf",
+      "sha256": "e202622f16f08d19115a8eedef2a2e8cb36cb2d3cdbdaed5638843339bf86318",
+      "byteLength": 1049087,
+      "expectedClass": "slow-cancel-range"
+    }
+  ]
+}

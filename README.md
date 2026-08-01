@@ -1,14 +1,14 @@
 # Modeleaf for Windows
 
-Keyboard-first, read-only PDF viewer for Windows 11 x64. This repository is in the shortcut-first foundation phase.
+Keyboard-first, read-only PDF viewer for Windows 11 x64. The current checkpoint is a usable local-PDF reader with a Rust-owned file/session boundary.
 
 ## Current scope
 
-- Fixed Phase 1 Windows shortcut registry
-- Deterministic Vim-style sequence and page-target engine
-- Reader state and registry-generated help
-- Minimal Tauri 2 application shell
-- No PDF renderer until the documented transport/resource gate is measured
+- Rust-owned single-file chooser for local fixed/removable volumes, with reparse and final-handle locality validation
+- Exact-pinned, fully bundled PDF.js 5.7.284 renderer using opaque bounded range requests
+- Candidate-first opening that preserves a healthy document on malformed, password, locality, timeout, render, or cleanup failures
+- Registry-backed `Ctrl+O`, `n`, `p`, `g` + digits + `Enter`, `gg`, `G`, `?`, `Escape`, and prompt `Backspace`
+- Process-wide render/canvas reservations and cancellation-before-release teardown
 
 TOML configuration and pane splitting are intentionally deferred. See [`.internal/docs/windows-port.md`](.internal/docs/windows-port.md) for the evidence, decisions, phase order, and acceptance gates.
 

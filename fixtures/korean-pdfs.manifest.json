@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "경기도교육청_PDF.pdf",
+      "byteLength": 6541019,
+      "pageCount": 277,
+      "sha256": "aa708c429440e73aabd324e3bdc8f72cd779d4519a3d04325f1f078cdac77bfa"
+    },
+    {
+      "name": "디지털교과서_PDF.pdf",
+      "byteLength": 3238168,
+      "pageCount": 233,
+      "sha256": "bb5e1a266d6840f270a032532047830a8a53b83e8e76a9f784fdbdea5e3ddda2"
+    },
+    {
+      "name": "사전규격공개 의견에 대한 답변(조달청).pdf",
+      "byteLength": 82470,
+      "pageCount": 1,
+      "sha256": "7e3215be2aff7dc44af5fb0982e9c219a034b16eda81a04bbbc55ea7e6e75c21"
+    }
+  ]
+}

@@ -125,7 +125,7 @@ fn final_handle_remote_is_rejected_without_session() {
             &Final(Ok(DriveKind::Remote)),
             |_| File::open(&file)
         ),
-        Err(PdfSessionError::PathRejected)
+        Err(PdfSessionError::RemotePath)
     );
     assert!(manager.assert_empty());
     fs::remove_file(file).unwrap();
@@ -152,7 +152,7 @@ fn preopen_rejection_does_not_call_opener_and_capacity_recovers() {
                 File::open("missing")
             }
         ),
-        Err(PdfSessionError::PathRejected)
+        Err(PdfSessionError::RemotePath)
     );
     assert!(!called.load(Ordering::SeqCst));
     let file = fixture();
@@ -213,7 +213,7 @@ fn volume_roots_and_size_are_fail_closed() {
             &Root("FIXED"),
             &classifier(Ok(DriveKind::Fixed))
         ),
-        Err(PathPolicyError::PathRejected)
+        Err(PathPolicyError::RemotePath)
     );
     let path = fixture();
     File::options()
