@@ -4,15 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "assets:sync": "node tools/pdfjs/sync-assets.mjs",
+    "predev": "npm run assets:sync",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run assets:sync && tsc --noEmit && vite build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "pretauri": "npm run assets:sync",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
-    "pdfjs-dist": "^5.4.149"
+    "pdfjs-dist": "5.7.284"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",
