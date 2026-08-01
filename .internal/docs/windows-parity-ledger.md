@@ -35,3 +35,11 @@ Any new intentional deviation requires an owner decision and a corresponding acc
 - Password input is modal, disables login/autofill semantics, clears after each attempt, and stops after five incorrect attempts. Cancellation preserves the healthy document. Error/status strings expose neither local paths nor native details.
 - CP1 verification covers the opaque native boundary, cancellation-barrier teardown, exact range delivery, resource and deadline limits, candidate commit behavior, password handling, Korean fixtures, generated adversarial fixtures, production web build, Rust tests/checks, and a no-bundle Windows x64 release executable.
 - Native desktop interaction may also be replayed with `tools/windows/smoke-cp1.ps1`; the automated browser contract uses the same production controller and bundled PDF.js assets while Rust tests independently prove the native boundary.
+
+## CP2 implementation record
+
+- The typed action registry owns the complete reading loop: 48 CSS-pixel directional scrolling, 0.8-viewport large scrolling, fit-width, fit-page, ×/÷1.10 custom zoom, and quarter-turn view rotation.
+- Fresh documents settle to fit-page. Fit and rotation transforms preserve the visible page anchor; page changes reset to the page origin. Browser scrolling supplies hard edge clamping, so repeated pan commands cannot expose space beyond the rendered page.
+- PDF canvases use CSS geometry independently from device-pixel backing dimensions. DPR changes at 100%, 125%, 150%, and 200% rerender the current page while keeping CSS geometry stable and reserving the full backing allocation.
+- Only the committed canvas and an active successor may coexist. Render slots remain owned until their task settles, stale generations cannot replace the current canvas, and resource denial retains the prior healthy view.
+- CP2 verification covers all committed Korean PDFs, rapid page/rotation replacement, fit transitions, exact scroll deltas and clamps, zoom bounds, DPR transforms, help-state generation, source immutability, lifecycle regression, and the retained no-bundle Windows x64 executable.

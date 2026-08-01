@@ -42,7 +42,7 @@ describe("shortcut workflow", () => {
     engine.handle(token("1"), 806, context());
     engine.handle(token("7"), 807, context());
     applyResult(reader, engine.handle(token("Enter"), 808, context()));
-    expect(reader.snapshot).toMatchObject({ page: 17, status: "Page 17 of 25" });
+    expect(reader.snapshot).toMatchObject({ page: 17, status: "Page 17 of 25 · Fit page · 0°" });
   });
 
   it("uses the same registry for behavior and visible help", () => {
