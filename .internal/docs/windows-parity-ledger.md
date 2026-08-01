@@ -24,3 +24,14 @@ This ledger tracks behavior, not AppKit/PDFKit implementation structure. Windows
 | Distribution | upstream macOS release assets | Later run | Registered association, signed installer, Scoop and WinGet begin only after the reader is basically usable. |
 
 Any new intentional deviation requires an owner decision and a corresponding acceptance-test update.
+
+## CP1 implementation record
+
+- The native chooser opens exactly one local `.pdf`, resolves supported reparse metadata without following it, accepts targets proven fixed/removable, rejects UNC/remote/unprovable targets before invoking the PDF opener, revalidates the final handle, and returns only an opaque session ID, generation, byte length, and basename.
+- PDF.js uses bundled worker, CMap, font, WASM, and ICC assets through the narrow packaged self-origin CSP. Renderer requests are bounded opaque byte ranges; no path, URL, whole-file payload, or network fallback enters the WebView.
+- A candidate document replaces the current document only after metadata and page 1 render successfully. Failed replacement, malformed input, timeout, password exhaustion, and locality rejection preserve the healthy canvas.
+- Page rendering is generation-checked, process-reserved, canvas-byte-reserved, and cancellation-aware. A cancelled render retains its process slot until its own promise settles, and stale cleanup cannot cancel a successor. Candidate plus healthy canvases must fit the aggregate process cap.
+- `Ctrl+O`, `n`, `p`, `g` + digits + `Enter`, `gg`, `G`, `?`, `Escape`, and prompt `Backspace` remain registry-backed and operate against the real reader lifecycle.
+- Password input is modal, disables login/autofill semantics, clears after each attempt, and stops after five incorrect attempts. Cancellation preserves the healthy document. Error/status strings expose neither local paths nor native details.
+- CP1 verification covers the opaque native boundary, cancellation-barrier teardown, exact range delivery, resource and deadline limits, candidate commit behavior, password handling, Korean fixtures, generated adversarial fixtures, production web build, Rust tests/checks, and a no-bundle Windows x64 release executable.
+- Native desktop interaction may also be replayed with `tools/windows/smoke-cp1.ps1`; the automated browser contract uses the same production controller and bundled PDF.js assets while Rust tests independently prove the native boundary.

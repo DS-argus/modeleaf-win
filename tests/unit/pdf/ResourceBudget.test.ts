@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MEBIBYTE,
   RESOURCE_LIMITS,
@@ -7,7 +7,7 @@ import {
   validateDocumentBytes,
   validateRange,
 } from "../../../src/pdf/ResourceBudget";
-import { BinaryRangeTransport } from "../../../src/pdf/BinaryRangeTransport";
+import { BinaryRangeTransport, RANGE_DEADLINE_MS } from "../../../src/pdf/BinaryRangeTransport";
 
 describe("resource budgets", () => {
   it("keeps the approved checked constants", () => {
@@ -74,6 +74,27 @@ describe("resource budgets", () => {
     current = false;
     await expect(transport.read({ sessionId: "session", documentGeneration: 3, requestId: "request", offset: 4, length: 4 }))
       .resolves.toEqual({ ok: false, tag: "RANGE_STALE" });
+  });
+  it("terminates a stalled binary range at the fixed deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new BinaryRangeTransport(
+        { sessionId: "session", documentGeneration: 3, byteLength: 8 },
+        { invoke: async () => new Promise<Uint8Array>(() => undefined) },
+        () => true,
+      );
+      const result = transport.read({
+        sessionId: "session",
+        documentGeneration: 3,
+        requestId: "stalled",
+        offset: 0,
+        length: 4,
+      });
+      await vi.advanceTimersByTimeAsync(RANGE_DEADLINE_MS);
+      await expect(result).resolves.toEqual({ ok: false, tag: "PDF_TIMEOUT" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("caps sessions and detects outstanding reservations", () => {

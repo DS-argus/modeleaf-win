@@ -1,14 +1,29 @@
 pub mod local_path;
+pub mod open_dialog;
 pub mod pdf_session;
 
+use open_dialog::{choose_pdf_file, open_selected_path, OpenPdfResponse};
 use pdf_session::{CancelBarrier, PdfOwner, PdfSessionError, PdfSessionManager, SessionId};
-use tauri::{ipc::Response, State, Window};
+use tauri::{ipc::Response, Manager, State, Window};
 
 fn command_owner(window: &Window, generation: u64) -> PdfOwner {
     PdfOwner {
         window_label: window.label().to_owned(),
         generation,
     }
+}
+#[tauri::command]
+fn open_pdf_dialog(
+    window: Window,
+    state: State<'_, PdfSessionManager>,
+    owner_generation: u64,
+) -> Result<Option<OpenPdfResponse>, PdfSessionError> {
+    let selected = choose_pdf_file(&window)?;
+    open_selected_path(
+        &state,
+        command_owner(&window, owner_generation),
+        selected.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -70,11 +85,24 @@ async fn close_pdf_session(
 pub fn run() {
     tauri::Builder::default()
         .manage(PdfSessionManager::new())
+        .on_window_event(|window, event| {
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window
+                    .state::<PdfSessionManager>()
+                    .drain_owner(window.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            open_pdf_dialog,
             read_pdf_range,
             cancel_pdf_session,
             close_pdf_session
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Modeleaf");
+        .build(tauri::generate_context!())
+        .expect("failed to build Modeleaf")
+        .run(|app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                app.state::<PdfSessionManager>().drain_all();
+            }
+        });
 }

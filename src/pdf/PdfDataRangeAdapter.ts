@@ -94,7 +94,7 @@ export class OpaquePdfDataRangeTransport extends PDFDataRangeTransport {
 
   /** PDF.js calls this synchronously; native teardown continues through the shared once-only promise. */
   public override abort(): void {
-    void this.destroy();
+    void this.destroy().catch(() => {});
   }
 
   public destroy(): Promise<void> {
@@ -144,8 +144,9 @@ export class OpaquePdfDataRangeTransport extends PDFDataRangeTransport {
       await this.options.nativeLifecycle.cancel(this.options.session);
       await this.options.nativeLifecycle.waitForBarrier(this.options.session);
       await this.options.nativeLifecycle.close(this.options.session);
-    } catch {
+    } catch (error) {
       this.fail("NATIVE_CLOSE_FAILED");
+      throw error;
     }
   }
 
