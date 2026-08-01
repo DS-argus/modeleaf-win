@@ -1,11 +1,26 @@
 import type { Action } from "./Action";
 
+export type ZoomMode = "custom" | "fit-width" | "fit-page";
+const DEFAULT_SCALE = 1.25;
+const MIN_SCALE = 0.1;
+const MAX_SCALE = 8;
+
+export interface PendingScrollIntent {
+  readonly horizontalCssPixels: number;
+  readonly verticalCssPixels: number;
+  readonly viewportFactor: number;
+}
+
 export interface ReaderSnapshot {
   readonly hasDocument: boolean;
   readonly page: number;
   readonly pageCount: number;
   readonly documentGeneration: number;
   readonly helpVisible: boolean;
+  readonly zoomMode: ZoomMode;
+  readonly customScale: number;
+  readonly rotationQuarterTurns: number;
+  readonly pendingScroll: PendingScrollIntent;
   readonly status: string;
 }
 
@@ -16,6 +31,14 @@ export class ReaderState {
     pageCount: 0,
     documentGeneration: 0,
     helpVisible: false,
+    zoomMode: "fit-page",
+    customScale: DEFAULT_SCALE,
+    rotationQuarterTurns: 0,
+    pendingScroll: {
+      horizontalCssPixels: 0,
+      verticalCssPixels: 0,
+      viewportFactor: 0,
+    },
     status: "No document open",
   };
 
@@ -33,7 +56,11 @@ export class ReaderState {
       page: 1,
       pageCount,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      status: `Page 1 of ${pageCount}`,
+      zoomMode: "fit-page",
+      customScale: DEFAULT_SCALE,
+      rotationQuarterTurns: 0,
+      pendingScroll: this.emptyScrollIntent(),
+      status: this.pageStatus(1, pageCount, "fit-page", DEFAULT_SCALE, 0),
     };
   }
 
@@ -44,6 +71,10 @@ export class ReaderState {
       page: 0,
       pageCount: 0,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
+      zoomMode: "fit-page",
+      customScale: DEFAULT_SCALE,
+      rotationQuarterTurns: 0,
+      pendingScroll: this.emptyScrollIntent(),
       status: "No document open",
     };
   }
@@ -68,6 +99,24 @@ export class ReaderState {
       case "page.goTo":
         this.navigateTo(action.page);
         break;
+      case "scroll.byCssPixels":
+        this.addCssScroll(action.axis, action.delta);
+        break;
+      case "scroll.byViewport":
+        this.addViewportScroll(action.factor);
+        break;
+      case "view.fitWidth":
+        this.setZoomMode("fit-width");
+        break;
+      case "view.fitPage":
+        this.setZoomMode("fit-page");
+        break;
+      case "view.zoom":
+        this.zoomBy(action.factor);
+        break;
+      case "view.rotate":
+        this.rotateBy(action.quarterTurns);
+        break;
       case "help.toggle":
         this.snapshotValue = {
           ...this.snapshotValue,
@@ -86,6 +135,25 @@ export class ReaderState {
     }
   }
 
+  consumePendingScroll(): PendingScrollIntent {
+    const pendingScroll = this.snapshotValue.pendingScroll;
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      pendingScroll: this.emptyScrollIntent(),
+    };
+    return pendingScroll;
+  }
+  restoreView(view: Pick<ReaderSnapshot, "zoomMode" | "customScale" | "rotationQuarterTurns">): void {
+    if (!this.snapshotValue.hasDocument) return;
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      zoomMode: view.zoomMode,
+      customScale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.customScale)),
+      rotationQuarterTurns: ((view.rotationQuarterTurns % 4) + 4) % 4,
+    };
+    this.refreshPageStatus();
+  }
+
   setStatus(status: string): void {
     this.snapshotValue = { ...this.snapshotValue, status };
   }
@@ -98,13 +166,118 @@ export class ReaderState {
     this.snapshotValue = {
       ...this.snapshotValue,
       page,
-      status: `Page ${page} of ${this.snapshotValue.pageCount}`,
+      status: this.pageStatus(
+        page,
+        this.snapshotValue.pageCount,
+        this.snapshotValue.zoomMode,
+        this.snapshotValue.customScale,
+        this.snapshotValue.rotationQuarterTurns,
+      ),
     };
+  }
+
+  private addCssScroll(axis: "horizontal" | "vertical", delta: number): void {
+    if (!this.snapshotValue.hasDocument || !Number.isFinite(delta)) {
+      return;
+    }
+    const pendingScroll = this.snapshotValue.pendingScroll;
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      pendingScroll: {
+        ...pendingScroll,
+        horizontalCssPixels: pendingScroll.horizontalCssPixels
+          + (axis === "horizontal" ? delta : 0),
+        verticalCssPixels: pendingScroll.verticalCssPixels
+          + (axis === "vertical" ? delta : 0),
+      },
+    };
+  }
+
+  private addViewportScroll(factor: number): void {
+    if (!this.snapshotValue.hasDocument || !Number.isFinite(factor)) {
+      return;
+    }
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      pendingScroll: {
+        ...this.snapshotValue.pendingScroll,
+        viewportFactor: this.snapshotValue.pendingScroll.viewportFactor + factor,
+      },
+    };
+  }
+
+  private setZoomMode(zoomMode: ZoomMode): void {
+    if (!this.snapshotValue.hasDocument) {
+      return;
+    }
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      zoomMode,
+    };
+    this.refreshPageStatus();
+  }
+
+  private zoomBy(factor: number): void {
+    if (!this.snapshotValue.hasDocument || !Number.isFinite(factor) || factor <= 0) {
+      return;
+    }
+    const customScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, this.snapshotValue.customScale * factor));
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      zoomMode: "custom",
+      customScale,
+    };
+    this.refreshPageStatus();
+  }
+
+  private rotateBy(quarterTurns: number): void {
+    if (!this.snapshotValue.hasDocument || !Number.isFinite(quarterTurns)) {
+      return;
+    }
+    const rotationQuarterTurns = (
+      (this.snapshotValue.rotationQuarterTurns + quarterTurns) % 4 + 4
+    ) % 4;
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      rotationQuarterTurns,
+    };
+    this.refreshPageStatus();
+  }
+
+  private emptyScrollIntent(): PendingScrollIntent {
+    return {
+      horizontalCssPixels: 0,
+      verticalCssPixels: 0,
+      viewportFactor: 0,
+    };
+  }
+
+  private pageStatus(
+    page: number,
+    pageCount: number,
+    zoomMode: ZoomMode,
+    customScale: number,
+    rotationQuarterTurns: number,
+  ): string {
+    const zoom = zoomMode === "custom"
+      ? `Custom ${this.formatScale(customScale)}`
+      : zoomMode === "fit-width" ? "Fit width" : "Fit page";
+    return `Page ${page} of ${pageCount} · ${zoom} · ${rotationQuarterTurns * 90}°`;
+  }
+
+  private formatScale(scale: number): string {
+    return `${Number((scale * 100).toFixed(2))}%`;
   }
 
   private refreshPageStatus(): void {
     this.setStatus(this.snapshotValue.hasDocument
-      ? `Page ${this.snapshotValue.page} of ${this.snapshotValue.pageCount}`
+      ? this.pageStatus(
+        this.snapshotValue.page,
+        this.snapshotValue.pageCount,
+        this.snapshotValue.zoomMode,
+        this.snapshotValue.customScale,
+        this.snapshotValue.rotationQuarterTurns,
+      )
       : "No document open");
   }
 }

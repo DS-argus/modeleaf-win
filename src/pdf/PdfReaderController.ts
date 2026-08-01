@@ -22,7 +22,7 @@ export interface ReaderNativeBoundary {
 }
 
 export interface PdfRenderTask { promise: Promise<void>; cancel(): void; }
-export interface PdfPage { getViewport(options: { readonly scale: number }): { readonly width: number; readonly height: number }; render(options: { readonly canvas: HTMLCanvasElement; readonly canvasContext: CanvasRenderingContext2D; readonly viewport: unknown; readonly annotationMode: number }): PdfRenderTask; }
+export interface PdfPage { getViewport(options: { readonly scale: number; readonly rotation: number }): { readonly width: number; readonly height: number }; render(options: { readonly canvas: HTMLCanvasElement; readonly canvasContext: CanvasRenderingContext2D; readonly viewport: unknown; readonly transform?: readonly [number, number, number, number, number, number]; readonly annotationMode: number }): PdfRenderTask; }
 export interface PdfDocument { numPages: number; getPage(page: number): Promise<PdfPage>; destroy(): Promise<void> | void; }
 export interface PdfLoadingTask {
   promise: Promise<PdfDocument>;
@@ -41,6 +41,16 @@ export interface PdfReaderControllerOptions {
   readonly onStatus: (message: string) => void;
   readonly requestPassword: (reason: "need" | "incorrect") => Promise<string | null>;
 }
+export interface PdfViewTransform {
+  readonly scale: number;
+  readonly rotation: number;
+  readonly devicePixelRatio: number;
+}
+
+export interface PdfScrollAnchor {
+  readonly x: number;
+  readonly y: number;
+}
 
 interface Candidate {
   readonly session: OpenPdfResult;
@@ -50,6 +60,7 @@ interface Candidate {
   readonly ownerGeneration: number;
   document?: PdfDocument;
   canvasReservation?: ResourceReservation;
+  pageNumber?: number;
 }
 interface ActiveRender {
   readonly task: PdfRenderTask;
@@ -108,6 +119,11 @@ export class PdfReaderController {
   private disposed = false;
   private openSequence = 0;
   private readonly pendingCleanups = new Map<string, PendingCleanup>();
+  private viewTransform: PdfViewTransform = {
+    scale: 1.25,
+    rotation: 0,
+    devicePixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
+  };
 
   public constructor(private readonly options: PdfReaderControllerOptions) {}
 
@@ -201,11 +217,18 @@ export class PdfReaderController {
       const document = await withDeadline(task.promise, METADATA_DEADLINE_MS, "PDF_TIMEOUT");
       candidate.document = document;
       if (document.numPages < 1) throw new Error("Malformed PDF");
-      const rendered = await this.renderCandidatePage(candidate, 1);
+      const openingTransform = this.normalizeViewTransform({
+        scale: 1.25,
+        rotation: 0,
+        devicePixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
+      });
+      const rendered = await this.renderCandidatePage(candidate, 1, openingTransform);
       candidate.canvasReservation = rendered.reservation;
+      candidate.pageNumber = 1;
       if (this.disposed || this.opening !== candidate) throw new Error("Opening PDF cancelled");
       const prior = this.current;
       this.current = candidate;
+      this.viewTransform = openingTransform;
       this.opening = undefined;
       this.canvasReplace(rendered.canvas);
       this.options.onCommitted(document.numPages, session.displayName);
@@ -221,6 +244,50 @@ export class PdfReaderController {
       }
     }
   }
+  public async setViewTransform(transform: PdfViewTransform): Promise<boolean> {
+    const normalized = this.normalizeViewTransform(transform);
+    if (normalized.scale === this.viewTransform.scale
+      && normalized.rotation === this.viewTransform.rotation
+      && normalized.devicePixelRatio === this.viewTransform.devicePixelRatio) return true;
+    this.viewTransform = normalized;
+    const pageNumber = this.current?.pageNumber;
+    return pageNumber === undefined ? true : this.renderPage(pageNumber);
+  }
+
+  public async rerenderForResize(): Promise<boolean> {
+    const pageNumber = this.current?.pageNumber;
+    return pageNumber === undefined ? false : this.renderPage(pageNumber);
+  }
+
+  public captureScrollAnchor(): PdfScrollAnchor {
+    const canvas = this.options.canvasHost.firstElementChild as HTMLCanvasElement | null;
+    if (canvas === null) return { x: 0, y: 0 };
+    const width = canvas.getBoundingClientRect().width || canvas.width;
+    const height = canvas.getBoundingClientRect().height || canvas.height;
+    return {
+      x: width === 0
+        ? 0
+        : (this.options.canvasHost.scrollLeft + this.options.canvasHost.clientWidth / 2 - canvas.offsetLeft) / width,
+      y: height === 0
+        ? 0
+        : (this.options.canvasHost.scrollTop + this.options.canvasHost.clientHeight / 2 - canvas.offsetTop) / height,
+    };
+  }
+
+  public restoreScrollAnchor(anchor: PdfScrollAnchor): void {
+    const canvas = this.options.canvasHost.firstElementChild as HTMLCanvasElement | null;
+    if (canvas === null) return;
+    const width = canvas.getBoundingClientRect().width || canvas.width;
+    const height = canvas.getBoundingClientRect().height || canvas.height;
+    this.options.canvasHost.scrollLeft = Math.max(
+      0,
+      canvas.offsetLeft + anchor.x * width - this.options.canvasHost.clientWidth / 2,
+    );
+    this.options.canvasHost.scrollTop = Math.max(
+      0,
+      canvas.offsetTop + anchor.y * height - this.options.canvasHost.clientHeight / 2,
+    );
+  }
 
   public async renderPage(page: number): Promise<boolean> {
     const current = this.current;
@@ -231,9 +298,11 @@ export class PdfReaderController {
         this.options.resources.release(rendered.reservation);
         return false;
       }
-      this.canvasReplace(rendered.canvas);
+      const anchor = current.pageNumber === page ? this.captureScrollAnchor() : undefined;
+      this.canvasReplace(rendered.canvas, anchor);
       if (current.canvasReservation !== undefined) this.options.resources.release(current.canvasReservation);
       current.canvasReservation = rendered.reservation;
+      current.pageNumber = page;
       this.options.onPage(page);
       return true;
     } catch (error) {
@@ -258,11 +327,19 @@ export class PdfReaderController {
     await this.retryPendingCleanups();
   }
 
-  private async renderCandidatePage(candidate: Candidate, pageNumber: number): Promise<{ readonly canvas: HTMLCanvasElement; readonly reservation: ResourceReservation }> {
-    return this.renderPageUnchecked(candidate, pageNumber);
+  private async renderCandidatePage(
+    candidate: Candidate,
+    pageNumber: number,
+    transform = this.viewTransform,
+  ): Promise<{ readonly canvas: HTMLCanvasElement; readonly reservation: ResourceReservation }> {
+    return this.renderPageUnchecked(candidate, pageNumber, transform);
   }
 
-  private async renderPageUnchecked(candidate: Candidate, pageNumber: number): Promise<{ readonly canvas: HTMLCanvasElement; readonly reservation: ResourceReservation }> {
+  private async renderPageUnchecked(
+    candidate: Candidate,
+    pageNumber: number,
+    transform: PdfViewTransform,
+  ): Promise<{ readonly canvas: HTMLCanvasElement; readonly reservation: ResourceReservation }> {
     if (candidate.document === undefined) throw new Error("PDF is not loaded");
     const sequence = ++this.renderSequence;
     const page = await withDeadline(candidate.document.getPage(pageNumber), RENDER_DEADLINE_MS, "RENDER_FAILED");
@@ -280,9 +357,11 @@ export class PdfReaderController {
     let canvasReservation: ResourceReservation | undefined;
     let operation: ActiveRender | undefined;
     try {
-      const viewport = page.getViewport({ scale: 1.25 });
-      const width = Math.max(1, Math.ceil(viewport.width));
-      const height = Math.max(1, Math.ceil(viewport.height));
+      const viewport = page.getViewport({ scale: transform.scale, rotation: transform.rotation });
+      const cssWidth = Math.max(1, Math.ceil(viewport.width));
+      const cssHeight = Math.max(1, Math.ceil(viewport.height));
+      const width = Math.max(1, Math.ceil(cssWidth * transform.devicePixelRatio));
+      const height = Math.max(1, Math.ceil(cssHeight * transform.devicePixelRatio));
       const canvasBytes = checkedCanvasBytes(width, height, 1);
       if (typeof canvasBytes === "string") throw new Error(canvasBytes);
       const reservation = this.options.resources.reserve({
@@ -296,11 +375,23 @@ export class PdfReaderController {
       canvas.className = "pdf-page";
       canvas.width = width;
       canvas.height = height;
+      canvas.style.width = `${cssWidth}px`;
+      canvas.style.height = `${cssHeight}px`;
+      canvas.dataset.page = String(pageNumber);
+      canvas.dataset.scale = String(transform.scale);
+      canvas.dataset.rotation = String(transform.rotation);
+      canvas.dataset.devicePixelRatio = String(transform.devicePixelRatio);
       canvas.setAttribute("role", "img");
       canvas.setAttribute("aria-label", `PDF page ${pageNumber}`);
       const context = canvas.getContext("2d");
       if (context === null) throw new Error("Canvas unavailable");
-      const task = page.render({ canvas, canvasContext: context, viewport, annotationMode: this.options.pdf.annotationMode });
+      const task = page.render({
+        canvas,
+        canvasContext: context,
+        viewport,
+        transform: [transform.devicePixelRatio, 0, 0, transform.devicePixelRatio, 0, 0],
+        annotationMode: this.options.pdf.annotationMode,
+      });
       const settled = task.promise.then(
         () => undefined,
         () => undefined,
@@ -327,8 +418,29 @@ export class PdfReaderController {
     }
   }
 
-  private canvasReplace(canvas: HTMLCanvasElement): void {
+  private canvasReplace(canvas: HTMLCanvasElement, anchor?: PdfScrollAnchor): void {
     this.options.canvasHost.replaceChildren(canvas);
+    if (anchor !== undefined) {
+      this.restoreScrollAnchor(anchor);
+    } else {
+      this.options.canvasHost.scrollLeft = 0;
+      this.options.canvasHost.scrollTop = 0;
+    }
+  }
+
+  private normalizeViewTransform(transform: PdfViewTransform): PdfViewTransform {
+    if (!Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Invalid PDF scale");
+    if (!Number.isFinite(transform.devicePixelRatio) || transform.devicePixelRatio <= 0) {
+      throw new Error("Invalid device pixel ratio");
+    }
+    if (!Number.isFinite(transform.rotation) || transform.rotation % 90 !== 0) {
+      throw new Error("Rotation must be a quarter turn");
+    }
+    return {
+      scale: transform.scale,
+      rotation: ((transform.rotation % 360) + 360) % 360,
+      devicePixelRatio: transform.devicePixelRatio,
+    };
   }
 
   private async disposeCandidate(candidate: Candidate | undefined): Promise<void> {

@@ -1,6 +1,6 @@
 import "./styles/app.css";
 import { KeySequenceEngine, type SequenceResult } from "./core/KeySequenceEngine";
-import { ReaderState } from "./core/ReaderState";
+import { ReaderState, type ReaderSnapshot } from "./core/ReaderState";
 import {
   createKeyboardAdapter,
   isNativeOwnedTarget,
@@ -110,9 +110,18 @@ const pdfReader = new PdfReaderController({
   canvasHost,
   onCommitted: (pageCount, displayName) => {
     reader.mountDocument(pageCount);
-    reader.setStatus(`${displayName} — Page 1 of ${pageCount}`);
+    reader.setStatus(`${displayName} — ${reader.snapshot.status}`);
     keyboard.syncContext();
     render();
+    const openedView = reader.snapshot;
+    void applyCurrentViewTransform().then((rendered) => {
+      if (!rendered && reader.snapshot.documentGeneration === openedView.documentGeneration) {
+        const failureStatus = reader.snapshot.status;
+        reader.restoreView({ zoomMode: "custom", customScale: 1.25, rotationQuarterTurns: 0 });
+        reader.setStatus(failureStatus);
+        render();
+      }
+    });
   },
   onPage: (page) => {
     committedPage = page;
@@ -123,6 +132,73 @@ const pdfReader = new PdfReaderController({
   },
   requestPassword,
 });
+let pendingPageRender: Promise<boolean> = Promise.resolve(true);
+const clampScale = (scale: number): number => Math.max(0.1, Math.min(8, scale));
+
+function availableReaderSize(): { readonly width: number; readonly height: number } {
+  const style = getComputedStyle(canvasHost);
+  const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+  const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+  return {
+    width: Math.max(1, canvasHost.clientWidth - horizontalPadding),
+    height: Math.max(1, canvasHost.clientHeight - verticalPadding),
+  };
+}
+
+function resolveViewScale(snapshot: ReaderSnapshot): number {
+  if (snapshot.zoomMode === "custom") return clampScale(snapshot.customScale);
+  const canvas = canvasHost.querySelector<HTMLCanvasElement>("canvas.pdf-page");
+  if (canvas === null) return clampScale(snapshot.customScale);
+
+  const priorScale = Number.parseFloat(canvas.dataset.scale ?? "") || 1.25;
+  let naturalWidth = (Number.parseFloat(canvas.style.width) || canvas.width) / priorScale;
+  let naturalHeight = (Number.parseFloat(canvas.style.height) || canvas.height) / priorScale;
+  const priorRotation = Number.parseFloat(canvas.dataset.rotation ?? "") || 0;
+  const requestedRotation = snapshot.rotationQuarterTurns * 90;
+  if ((Math.abs(priorRotation - requestedRotation) / 90) % 2 === 1) {
+    [naturalWidth, naturalHeight] = [naturalHeight, naturalWidth];
+  }
+
+  const available = availableReaderSize();
+  const widthScale = available.width / naturalWidth;
+  return clampScale(snapshot.zoomMode === "fit-width"
+    ? widthScale
+    : Math.min(widthScale, available.height / naturalHeight));
+}
+
+async function applyCurrentViewTransform(): Promise<boolean> {
+  const snapshot = reader.snapshot;
+  if (!snapshot.hasDocument) return false;
+  return pdfReader.setViewTransform({
+    scale: resolveViewScale(snapshot),
+    rotation: snapshot.rotationQuarterTurns * 90,
+    devicePixelRatio: window.devicePixelRatio || 1,
+  });
+}
+
+function applyPendingScroll(): void {
+  const intent = reader.consumePendingScroll();
+  canvasHost.scrollBy({
+    left: intent.horizontalCssPixels,
+    top: intent.verticalCssPixels + intent.viewportFactor * canvasHost.clientHeight,
+    behavior: "auto",
+  });
+}
+
+function isPageAction(type: string): boolean {
+  return type === "page.next"
+    || type === "page.previous"
+    || type === "page.first"
+    || type === "page.last"
+    || type === "page.goTo";
+}
+
+function isViewAction(type: string): boolean {
+  return type === "view.fitWidth"
+    || type === "view.fitPage"
+    || type === "view.zoom"
+    || type === "view.rotate";
+}
 
 function render(result?: SequenceResult): void {
   if (result?.error) {
@@ -161,17 +237,46 @@ keyboard = createKeyboardAdapter({
       void pdfReader.open(ownerGeneration);
       return;
     }
+    const prior = reader.snapshot;
+    if (action.type === "view.zoom" && prior.zoomMode !== "custom") {
+      const renderedScale = Number.parseFloat(
+        canvasHost.querySelector<HTMLCanvasElement>("canvas.pdf-page")?.dataset.scale ?? "",
+      );
+      if (Number.isFinite(renderedScale) && renderedScale > 0) {
+        reader.restoreView({ ...prior, customScale: renderedScale });
+      }
+    }
     reader.apply(action);
     keyboard.syncContext();
     render();
-    if (action.type === "page.next" || action.type === "page.previous" || action.type === "page.first" || action.type === "page.last" || action.type === "page.goTo") {
+    if (isPageAction(action.type)) {
       const requestedPage = reader.snapshot.page;
-      void pdfReader.renderPage(requestedPage).then((rendered) => {
+      const pageRender = pdfReader.renderPage(requestedPage);
+      pendingPageRender = pageRender;
+      void pageRender.then((rendered) => {
         if (!rendered && reader.snapshot.page === requestedPage && committedPage !== requestedPage) {
           const failureStatus = reader.snapshot.status;
           reader.apply({ type: "page.goTo", page: committedPage });
           reader.setStatus(failureStatus);
           keyboard.syncContext();
+          render();
+        }
+      });
+    } else if (action.type === "scroll.byCssPixels" || action.type === "scroll.byViewport") {
+      applyPendingScroll();
+    } else if (isViewAction(action.type)) {
+      const requestedGeneration = reader.snapshot.documentGeneration;
+      const requestedView = reader.snapshot;
+      void pendingPageRender.then(() => applyCurrentViewTransform()).then((rendered) => {
+        const current = reader.snapshot;
+        if (!rendered
+          && current.documentGeneration === requestedGeneration
+          && current.zoomMode === requestedView.zoomMode
+          && current.customScale === requestedView.customScale
+          && current.rotationQuarterTurns === requestedView.rotationQuarterTurns) {
+          const failureStatus = current.status;
+          reader.restoreView(prior);
+          reader.setStatus(failureStatus);
           render();
         }
       });
@@ -188,9 +293,44 @@ window.addEventListener("focusin", (event) => {
     keyboard.cancelPending();
   }
 });
+let resizeFrame = 0;
+let lastDevicePixelRatio = window.devicePixelRatio || 1;
+let dprQuery: MediaQueryList | undefined;
+
+function scheduleViewportRerender(): void {
+  cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    void pendingPageRender.then(() => applyCurrentViewTransform());
+  });
+}
+
+function bindDprListener(): void {
+  dprQuery?.removeEventListener("change", handleDprChange);
+  dprQuery = matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+  dprQuery.addEventListener("change", handleDprChange);
+}
+
+function handleDprChange(): void {
+  lastDevicePixelRatio = window.devicePixelRatio || 1;
+  bindDprListener();
+  scheduleViewportRerender();
+}
+
+bindDprListener();
+window.addEventListener("resize", scheduleViewportRerender);
+const dprPoll = window.setInterval(() => {
+  const current = window.devicePixelRatio || 1;
+  if (current === lastDevicePixelRatio) return;
+  lastDevicePixelRatio = current;
+  bindDprListener();
+  scheduleViewportRerender();
+}, 250);
 window.addEventListener("beforeunload", () => {
   passwordInput.value = "";
   if (passwordDialog.open) passwordDialog.close("cancel");
+  dprQuery?.removeEventListener("change", handleDprChange);
+  clearInterval(dprPoll);
+  cancelAnimationFrame(resizeFrame);
   keyboard.dispose();
   void pdfReader.dispose();
 });

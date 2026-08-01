@@ -424,4 +424,84 @@ describe("PdfReaderController", () => {
       vi.useRealTimers();
     }
   });
+  it("renders transforms in CSS pixels while reserving DPR backing bytes and rerenders after resize", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const viewport = vi.fn(({ scale, rotation }: { scale: number; rotation: number }) => ({
+      width: 20 * scale,
+      height: rotation === 90 ? 40 * scale : 30 * scale,
+    }));
+    const rendered = vi.fn((_options: Parameters<PdfPage["render"]>[0]) => ({ promise: Promise.resolve(), cancel: vi.fn() }));
+    const pdfPage: PdfPage = { getViewport: viewport, render: rendered };
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("transform", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => pdfPage)))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      requestPassword: vi.fn(),
+    });
+
+    await controller.open(1);
+    await controller.setViewTransform({ scale: 2, rotation: 90, devicePixelRatio: 2 });
+    const canvas = host.firstElementChild as HTMLCanvasElement;
+
+    expect(viewport).toHaveBeenLastCalledWith({ scale: 2, rotation: 90 });
+    expect(canvas.width).toBe(80);
+    expect(canvas.height).toBe(160);
+    expect(canvas.style.width).toBe("40px");
+    expect(canvas.style.height).toBe("80px");
+    expect(canvas.dataset).toMatchObject({ page: "1", scale: "2", rotation: "90", devicePixelRatio: "2" });
+    expect(rendered.mock.calls.at(-1)?.[0].transform).toEqual([2, 0, 0, 2, 0, 0]);
+    expect(resources.snapshot().totals["canvas-bytes"]).toBe(80 * 160 * 4);
+
+    await controller.rerenderForResize();
+    expect(viewport).toHaveBeenCalledTimes(3);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+
+  it("cancels an obsolete transform generation before it can replace the current canvas", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const stalled = deferred<void>();
+    const cancel = vi.fn(() => stalled.reject(Object.assign(new Error("Rendering cancelled"), {
+      name: "RenderingCancelledException",
+    })));
+    let renders = 0;
+    const pdfPage: PdfPage = {
+      getViewport: ({ scale }) => ({ width: 20 * scale, height: 30 * scale }),
+      render: () => {
+        renders += 1;
+        return renders === 2 ? { promise: stalled.promise, cancel } : { promise: Promise.resolve(), cancel: vi.fn() };
+      },
+    };
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("transform-stale", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => pdfPage)))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      requestPassword: vi.fn(),
+    });
+
+    await controller.open(1);
+    const stale = controller.setViewTransform({ scale: 2, rotation: 0, devicePixelRatio: 1 });
+    await vi.waitFor(() => expect(resources.snapshot().totals.render).toBe(1));
+    const latest = controller.setViewTransform({ scale: 3, rotation: 90, devicePixelRatio: 1 });
+
+    expect(await latest).toBe(true);
+    expect(await stale).toBe(false);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect((host.firstElementChild as HTMLCanvasElement).dataset).toMatchObject({ scale: "3", rotation: "90" });
+    expect(resources.snapshot().totals["canvas-bytes"]).toBe(60 * 90 * 4);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
 });

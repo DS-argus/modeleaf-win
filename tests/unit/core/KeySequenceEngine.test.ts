@@ -22,6 +22,63 @@ describe("KeySequenceEngine", () => {
       dispatches: [],
     });
   });
+  it("dispatches reader scrolling and view actions with CP2 values", () => {
+    const engine = new KeySequenceEngine();
+
+    expect(engine.handle(token("h"), 0, documentContext).dispatches).toEqual([
+      { action: { type: "scroll.byCssPixels", axis: "horizontal", delta: -48 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("j"), 1, documentContext).dispatches).toEqual([
+      { action: { type: "scroll.byCssPixels", axis: "vertical", delta: 48 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("k"), 2, documentContext).dispatches).toEqual([
+      { action: { type: "scroll.byCssPixels", axis: "vertical", delta: -48 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("l"), 3, documentContext).dispatches).toEqual([
+      { action: { type: "scroll.byCssPixels", axis: "horizontal", delta: 48 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("d"), 4, documentContext).dispatches).toEqual([
+      { action: { type: "scroll.byViewport", factor: 0.8 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("u"), 5, documentContext).dispatches).toEqual([
+      { action: { type: "scroll.byViewport", factor: -0.8 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("w"), 6, documentContext).dispatches).toEqual([
+      { action: { type: "view.fitWidth" }, source: "binding" },
+    ]);
+    expect(engine.handle(token("F"), 7, documentContext).dispatches).toEqual([
+      { action: { type: "view.fitPage" }, source: "binding" },
+    ]);
+    expect(engine.handle(token("="), 8, documentContext).dispatches).toEqual([
+      { action: { type: "view.zoom", factor: 1.1 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("-"), 9, documentContext).dispatches).toEqual([
+      { action: { type: "view.zoom", factor: 1 / 1.1 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("["), 10, documentContext).dispatches).toEqual([
+      { action: { type: "view.rotate", quarterTurns: -1 }, source: "binding" },
+    ]);
+    expect(engine.handle(token("]"), 11, documentContext).dispatches).toEqual([
+      { action: { type: "view.rotate", quarterTurns: 1 }, source: "binding" },
+    ]);
+  });
+
+  it("keeps non-repeatable view commands from dispatching on held keys", () => {
+    const engine = new KeySequenceEngine();
+
+    expect(engine.handle(token("w", { repeat: true }), 0, documentContext)).toMatchObject({
+      claimed: false,
+      dispatches: [],
+    });
+    expect(engine.handle(token("[", { repeat: true }), 1, documentContext)).toMatchObject({
+      claimed: false,
+      dispatches: [],
+    });
+    expect(engine.handle(token("j", { repeat: true }), 2, documentContext)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "scroll.byCssPixels", axis: "vertical", delta: 48 } }],
+    });
+  });
 
   it("keeps reader-only bindings native without a document", () => {
     const engine = new KeySequenceEngine();

@@ -5,7 +5,6 @@ import {
   isPageTargetDigit,
   isRegisteredCtrlChord,
   matchesDirectToken,
-  type BindingCommand,
 } from "./defaultBindings.windows";
 import type { KeyToken } from "./KeyToken";
 import {
@@ -46,19 +45,45 @@ export interface SequenceResult {
 
 const PREFIX_TIMEOUT_MS = 800;
 
-function directAction(command: BindingCommand): Action {
-  switch (command) {
+function directAction(binding: ReturnType<typeof bindingById>): Action {
+  switch (binding.command) {
     case "document.open":
     case "page.next":
     case "page.previous":
     case "page.first":
     case "page.last":
+    case "view.fitWidth":
+    case "view.fitPage":
     case "help.toggle":
     case "prompt.cancel":
-      return { type: command };
+      return { type: binding.command };
+    case "scroll.byCssPixels":
+      switch (binding.id) {
+        case "scroll.left": return { type: binding.command, axis: "horizontal", delta: -48 };
+        case "scroll.right": return { type: binding.command, axis: "horizontal", delta: 48 };
+        case "scroll.up": return { type: binding.command, axis: "vertical", delta: -48 };
+        case "scroll.down": return { type: binding.command, axis: "vertical", delta: 48 };
+        default: break;
+      }
+      break;
+    case "scroll.byViewport":
+      if (binding.id === "scroll.viewportDown") return { type: binding.command, factor: 0.8 };
+      if (binding.id === "scroll.viewportUp") return { type: binding.command, factor: -0.8 };
+      break;
+    case "view.zoom":
+      if (binding.id === "view.zoomIn") return { type: binding.command, factor: 1.1 };
+      if (binding.id === "view.zoomOut") return { type: binding.command, factor: 1 / 1.1 };
+      break;
+    case "view.rotate":
+      if (binding.id === "view.rotateCounterclockwise") {
+        return { type: binding.command, quarterTurns: -1 };
+      }
+      if (binding.id === "view.rotateClockwise") return { type: binding.command, quarterTurns: 1 };
+      break;
     default:
-      throw new Error(`Binding ${command} requires sequence data`);
+      break;
   }
+  throw new Error(`Binding ${binding.id} requires sequence data`);
 }
 
 export class KeySequenceEngine {
@@ -129,7 +154,7 @@ export class KeySequenceEngine {
 
     return this.result(true, [
       ...timeoutDispatches,
-      { action: directAction(binding.command), source: "binding" },
+      { action: directAction(binding), source: "binding" },
     ]);
   }
 
