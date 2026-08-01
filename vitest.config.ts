@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     environment: "node",
+    setupFiles: ["tests/setup/pdfjs.ts"],
     coverage: {
       enabled: false,
     },

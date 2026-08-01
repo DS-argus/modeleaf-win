@@ -6,3 +6,5 @@ src-tauri/target/
 .DS_Store
 .gjc/
 .internal/evidence/
+fixtures/phase0-generated/*.pdf
+evidence/phase0/
