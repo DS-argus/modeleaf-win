@@ -13,6 +13,10 @@ describe("HelpModel", () => {
       shortcut: "g g",
       label: "First page",
     });
+    expect(rows).toEqual(expect.arrayContaining([
+      { id: "search.open", shortcut: "/", label: "Search text" },
+      { id: "linkHints.toggle", shortcut: "f", label: "Open link hint" },
+    ]));
     expect(rows.map((row) => row.id)).toEqual(expect.arrayContaining([
       "prompt.commit",
       "prompt.cancel",
