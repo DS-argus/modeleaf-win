@@ -1729,6 +1729,7 @@ dependencies = [
  "serde",
  "tauri",
  "tauri-build",
+ "url",
  "windows",
 ]
 

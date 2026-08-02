@@ -30,9 +30,8 @@ export function isNativeOwnedTarget(target: EventTarget | null): boolean {
   ) !== null;
 }
 
-export function isNativeOwnedKeyboardEvent(event: KeyboardEvent): boolean {
-  if (
-    event.isComposing
+export function isNativeKeyboardCompositionOrModifierEvent(event: KeyboardEvent): boolean {
+  return event.isComposing
     || event.key === "Dead"
     || event.key === "Process"
     || event.key === "Unidentified"
@@ -40,12 +39,33 @@ export function isNativeOwnedKeyboardEvent(event: KeyboardEvent): boolean {
     || event.getModifierState("AltGraph")
     || event.altKey
     || event.metaKey
-    || (event.ctrlKey && event.altKey)
-  ) {
-    return true;
+    || (event.ctrlKey && event.altKey);
+}
+
+export function isNativeOwnedKeyboardEvent(event: KeyboardEvent): boolean {
+  return isNativeKeyboardCompositionOrModifierEvent(event)
+    || isNativeOwnedTarget(event.target);
+}
+
+export type PromptKeyAction = "close" | "search" | "searchReverse";
+
+export function getPromptKeyAction(event: KeyboardEvent): PromptKeyAction | undefined {
+  if (isNativeKeyboardCompositionOrModifierEvent(event)
+    || event.ctrlKey
+    || event.metaKey
+    || (event.key === "Escape" && event.shiftKey)) {
+    return undefined;
   }
 
-  return isNativeOwnedTarget(event.target);
+  if (event.key === "Escape") {
+    return "close";
+  }
+
+  if (event.key === "Enter") {
+    return event.shiftKey ? "searchReverse" : "search";
+  }
+
+  return undefined;
 }
 
 export function createKeyboardAdapter(options: KeyboardAdapterOptions): KeyboardAdapter {

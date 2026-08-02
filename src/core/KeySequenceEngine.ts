@@ -56,6 +56,8 @@ function directAction(binding: ReturnType<typeof bindingById>): Action {
     case "view.fitPage":
     case "help.toggle":
     case "prompt.cancel":
+    case "search.open":
+    case "linkHints.toggle":
       return { type: binding.command };
     case "scroll.byCssPixels":
       switch (binding.id) {

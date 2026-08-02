@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { KeySequenceEngine } from "../../../src/core/KeySequenceEngine";
 import {
   createKeyboardAdapter,
+  getPromptKeyAction,
+  isNativeKeyboardCompositionOrModifierEvent,
   isNativeOwnedKeyboardEvent,
   isNativeOwnedTarget,
 } from "../../../src/platform/keyboardAdapter";
@@ -69,6 +71,51 @@ describe("keyboardAdapter", () => {
     expect(isNativeOwnedKeyboardEvent(altGraph)).toBe(true);
     adapter.dispose();
     input.remove();
+  });
+  it("identifies target-independent composition and modifier ownership", () => {
+    const ime = keydown("a");
+    Object.defineProperty(ime, "keyCode", { value: 229 });
+
+    const altGraph = keydown("@", { ctrlKey: true, altKey: true });
+    Object.defineProperty(altGraph, "getModifierState", {
+      value: (modifier: string) => modifier === "AltGraph",
+    });
+
+    for (const event of [
+      keydown("a", { isComposing: true }),
+      keydown("Dead"),
+      keydown("Process"),
+      keydown("Unidentified"),
+      ime,
+      altGraph,
+      keydown("a", { altKey: true }),
+      keydown("a", { metaKey: true }),
+      keydown("a", { ctrlKey: true, altKey: true }),
+    ]) {
+      expect(isNativeKeyboardCompositionOrModifierEvent(event)).toBe(true);
+    }
+
+    expect(isNativeKeyboardCompositionOrModifierEvent(keydown("a"))).toBe(false);
+  });
+
+  it("claims only unmodified prompt Enter and Escape", () => {
+    expect(getPromptKeyAction(keydown("Enter"))).toBe("search");
+    expect(getPromptKeyAction(keydown("Enter", { shiftKey: true }))).toBe("searchReverse");
+    expect(getPromptKeyAction(keydown("Escape"))).toBe("close");
+
+    for (const event of [
+      keydown("Enter", { ctrlKey: true }),
+      keydown("Enter", { altKey: true }),
+      keydown("Enter", { metaKey: true }),
+      keydown("Enter", { isComposing: true }),
+      keydown("Escape", { shiftKey: true }),
+      keydown("Escape", { ctrlKey: true }),
+      keydown("Escape", { altKey: true }),
+      keydown("Escape", { metaKey: true }),
+      keydown("Escape", { isComposing: true }),
+    ]) {
+      expect(getPromptKeyAction(event)).toBeUndefined();
+    }
   });
 
   it("uses an epoch-bound timer for the g prefix", () => {

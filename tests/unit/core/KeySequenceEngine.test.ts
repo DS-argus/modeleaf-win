@@ -61,6 +61,12 @@ describe("KeySequenceEngine", () => {
     expect(engine.handle(token("]"), 11, documentContext).dispatches).toEqual([
       { action: { type: "view.rotate", quarterTurns: 1 }, source: "binding" },
     ]);
+    expect(engine.handle(token("/"), 12, documentContext).dispatches).toEqual([
+      { action: { type: "search.open" }, source: "binding" },
+    ]);
+    expect(engine.handle(token("f"), 13, documentContext).dispatches).toEqual([
+      { action: { type: "linkHints.toggle" }, source: "binding" },
+    ]);
   });
 
   it("keeps non-repeatable view commands from dispatching on held keys", () => {

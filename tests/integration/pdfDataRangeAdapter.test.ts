@@ -63,10 +63,16 @@ describe("PDFDataRangeTransport opaque binary adapter", () => {
 
     expect(adapter.rangeChunkSize).toBe(RESOURCE_LIMITS.normalRangeBytes);
     expect(vi.mocked(invoker.invoke).mock.calls.map(([request]) => request.length)).toEqual([RESOURCE_LIMITS.normalRangeBytes, 3]);
-    expect(delivered).toEqual([
-      { begin: 0, chunk: bytes.slice(0, RESOURCE_LIMITS.normalRangeBytes) },
-      { begin: RESOURCE_LIMITS.normalRangeBytes, chunk: bytes.slice(RESOURCE_LIMITS.normalRangeBytes) },
-    ]);
+    expect(delivered).toHaveLength(2);
+    expect(delivered[0]?.begin).toBe(0);
+    expect(Buffer.compare(
+      Buffer.from(delivered[0]!.chunk),
+      Buffer.from(bytes.subarray(0, RESOURCE_LIMITS.normalRangeBytes)),
+    )).toBe(0);
+    expect(delivered[1]).toEqual({
+      begin: RESOURCE_LIMITS.normalRangeBytes,
+      chunk: bytes.slice(RESOURCE_LIMITS.normalRangeBytes),
+    });
     expect(progress.sort((left, right) => left - right)).toEqual([RESOURCE_LIMITS.normalRangeBytes, bytes.byteLength]);
   });
 

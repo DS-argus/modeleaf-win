@@ -42,6 +42,7 @@ body { overflow: hidden; }
   overflow: auto;
   overscroll-behavior: contain;
   contain: layout paint;
+  position: relative;
   background: #16161e;
 }
 
@@ -59,6 +60,108 @@ body { overflow: hidden; }
   margin: 0 auto;
   background: white;
   box-shadow: 0 4px 20px rgb(0 0 0 / 35%);
+}
+
+.pdf-content-layer {
+  z-index: 2;
+  overflow: hidden;
+  transform-origin: 0 0;
+}
+
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: transparent;
+  line-height: 1;
+  text-align: initial;
+  transform-origin: 0 0;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+}
+
+.textLayer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  transform-origin: 0 0;
+  cursor: text;
+}
+
+.textLayer > :not(.markedContent),
+.textLayer .markedContent span:not(.markedContent) {
+  z-index: 1;
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.textLayer .markedContent { display: contents; }
+
+.textLayer ::selection { background: rgb(122 162 247 / 45%); }
+.textLayer .pdf-search-hit {
+  border-radius: 2px;
+  background: rgb(224 175 104 / 38%);
+}
+
+::highlight(modeleaf-pdf-search-hits) {
+  background: rgb(224 175 104 / 38%);
+  border-radius: 2px;
+}
+
+::highlight(modeleaf-pdf-search-current) {
+  background: rgb(255 158 100 / 62%);
+  outline: 2px solid #ff9e64;
+}
+
+.textLayer .pdf-search-current {
+  background: rgb(255 158 100 / 62%);
+  outline: 2px solid #ff9e64;
+}
+
+.pdf-search-fallback {
+  pointer-events: none;
+  z-index: 1;
+  background: rgb(224 175 104 / 38%);
+  border-radius: 2px;
+}
+
+.pdf-search-fallback[data-search-current="true"] {
+  background: rgb(255 158 100 / 62%);
+  outline: 2px solid #ff9e64;
+}
+.pdf-link-overlay {
+  z-index: 3;
+  min-width: 1px;
+  min-height: 1px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+}
+
+.pdf-link-overlay:hover,
+.pdf-link-overlay:focus-visible {
+  border-color: #7aa2f7;
+  background: rgb(122 162 247 / 18%);
+  outline: none;
+}
+
+.pdf-link-hint {
+  z-index: 4;
+  padding: 1px 4px;
+  border: 1px solid #e0af68;
+  border-radius: 3px;
+  background: #1f2335;
+  color: #e0af68;
+  font: 700 11px/1.2 "Cascadia Mono", monospace;
+  pointer-events: none;
 }
 
 kbd {
@@ -102,3 +205,6 @@ dialog dd { margin: 0; }
 #password-dialog label { display: grid; gap: 6px; }
 #password-dialog input { min-width: 260px; padding: 7px; color: #c0caf5; background: #16161e; border: 1px solid #565f89; }
 #password-dialog menu { display: flex; justify-content: end; gap: 8px; margin: 0; padding: 0; }
+#search-dialog form { display: grid; gap: 14px; }
+#search-dialog label { display: grid; gap: 6px; }
+#search-dialog input { min-width: 320px; padding: 7px; color: #c0caf5; background: #16161e; border: 1px solid #565f89; }
