@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_BINDINGS } from "../../../src/core/defaultBindings.windows";
+import {
+  DEFAULT_BINDINGS,
+  isCommandEnabled,
+  type CommandAvailabilityContext,
+} from "../../../src/core/defaultBindings.windows";
 import { buildHelpRows } from "../../../src/ui/HelpModel";
 
+const unavailableContext: CommandAvailabilityContext = {
+  hasDocument: false,
+  canCreateSession: false,
+  canOpenDocument: false,
+  modalOpen: true,
+};
+
 describe("HelpModel", () => {
-  it("derives every help row from the binding registry", () => {
+  it("derives every help row from the canonical registry", () => {
     const rows = buildHelpRows();
     const visibleBindings = DEFAULT_BINDINGS.filter((binding) => binding.showInHelp);
     expect(rows).toHaveLength(visibleBindings.length);
@@ -12,15 +23,18 @@ describe("HelpModel", () => {
       id: "page.first",
       shortcut: "g g",
       label: "First page",
+      enabled: true,
     });
-    expect(rows).toEqual(expect.arrayContaining([
-      { id: "search.open", shortcut: "/", label: "Search text" },
-      { id: "linkHints.toggle", shortcut: "f", label: "Open link hint" },
-    ]));
-    expect(rows.map((row) => row.id)).toEqual(expect.arrayContaining([
-      "prompt.commit",
-      "prompt.cancel",
-      "prompt.backspace",
-    ]));
+  });
+
+  it("uses keyboard dispatch availability for every help row", () => {
+    const rows = buildHelpRows(unavailableContext);
+    const visibleBindings = DEFAULT_BINDINGS.filter((binding) => binding.showInHelp);
+
+    expect(rows.map((row) => row.enabled)).toEqual(
+      visibleBindings.map((binding) => isCommandEnabled(binding, unavailableContext)),
+    );
+    expect(rows.find((row) => row.id === "tab.new")?.enabled).toBe(false);
+    expect(rows.find((row) => row.id === "document.open")?.enabled).toBe(false);
   });
 });

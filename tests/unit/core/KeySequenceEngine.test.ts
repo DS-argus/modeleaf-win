@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { KeySequenceEngine } from "../../../src/core/KeySequenceEngine";
+import { DEFAULT_BINDINGS, bindingById, isCommandEnabled, resolvePaletteBindingAction } from "../../../src/core/defaultBindings.windows";
 import { token } from "../../../src/core/KeyToken";
 
-const documentContext = { hasDocument: true, pageCount: 120, documentGeneration: 1 };
-const emptyContext = { hasDocument: false, pageCount: 0, documentGeneration: 0 };
+const documentContext = {
+  hasDocument: true,
+  pageCount: 120,
+  documentGeneration: 1,
+  commandAvailability: { hasDocument: true, canCreateSession: true, canOpenDocument: true, modalOpen: false },
+};
+const emptyContext = {
+  hasDocument: false,
+  pageCount: 0,
+  documentGeneration: 0,
+  commandAvailability: { hasDocument: false, canCreateSession: true, canOpenDocument: true, modalOpen: false },
+};
 
 describe("KeySequenceEngine", () => {
   it("dispatches registered direct bindings and respects repeat policy", () => {
@@ -22,6 +33,109 @@ describe("KeySequenceEngine", () => {
       dispatches: [],
     });
   });
+  it("dispatches Ctrl+N once only when tab creation is available", () => {
+    const engine = new KeySequenceEngine();
+    const available = {
+      ...emptyContext,
+      commandAvailability: { hasDocument: false, canCreateSession: true, canOpenDocument: true, modalOpen: false },
+    };
+
+    expect(engine.handle(token("n", { ctrl: true }), 0, available)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "tab.new" }, source: "binding" }],
+    });
+    expect(engine.handle(token("n", { ctrl: true, repeat: true }), 1, available)).toMatchObject({
+      claimed: false,
+      dispatches: [],
+    });
+    expect(engine.handle(token("n", { ctrl: true }), 2, {
+      ...emptyContext,
+      commandAvailability: { hasDocument: false, canCreateSession: false, canOpenDocument: false, modalOpen: false },
+    })).toMatchObject({ claimed: false, dispatches: [] });
+    expect(engine.handle(token("n", { ctrl: true }), 3, {
+      ...emptyContext,
+      commandAvailability: { hasDocument: false, canCreateSession: true, canOpenDocument: true, modalOpen: true },
+    })).toMatchObject({ claimed: false, dispatches: [] });
+  });
+  it("dispatches the command palette only for Ctrl+Shift+P regardless of letter case", () => {
+    const engine = new KeySequenceEngine();
+
+    for (const key of ["P", "p"]) {
+      expect(engine.handle(token(key, { ctrl: true, shift: true }), 0, emptyContext)).toMatchObject({
+        claimed: true,
+        dispatches: [{ action: { type: "palette.toggle" }, source: "binding" }],
+      });
+    }
+    for (const modifiers of [{ ctrl: true }, { ctrl: true, shift: true, alt: true }]) {
+      expect(engine.handle(token("p", modifiers), 1, emptyContext)).toMatchObject({
+        claimed: false,
+        dispatches: [],
+      });
+    }
+  });
+
+  it("matches real Shift shortcuts while preserving Caps-Lock and Ctrl normalization", () => {
+    expect(new KeySequenceEngine().handle(token("G", { shift: true }), 0, documentContext)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "page.last" }, source: "binding" }],
+    });
+    expect(new KeySequenceEngine().handle(token("F", { shift: true }), 0, documentContext)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "view.fitPage" }, source: "binding" }],
+    });
+    expect(new KeySequenceEngine().handle(token("?", { shift: true }), 0, emptyContext)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "help.toggle" }, source: "binding" }],
+    });
+    expect(new KeySequenceEngine().handle(token("G"), 0, documentContext).state.kind).toBe("gPending");
+    expect(new KeySequenceEngine().handle(token("O", { ctrl: true }), 0, emptyContext)).toMatchObject({
+      dispatches: [{ action: { type: "document.open" }, source: "binding" }],
+    });
+    expect(new KeySequenceEngine().handle(token("P", { ctrl: true, shift: true }), 0, emptyContext)).toMatchObject({
+      dispatches: [{ action: { type: "palette.toggle" }, source: "binding" }],
+    });
+  });
+
+  it("only advertises page-prompt commands while the prompt is active", () => {
+    const unavailable = { ...documentContext.commandAvailability, pagePromptActive: false };
+    const available = { ...unavailable, pagePromptActive: true };
+
+    for (const id of ["prompt.commit", "prompt.backspace"] as const) {
+      expect(isCommandEnabled(bindingById(id), unavailable)).toBe(false);
+      expect(isCommandEnabled(bindingById(id), available)).toBe(true);
+    }
+  });
+  it("dispatches tab close, indexed activation, and Ctrl+9 last-tab actions", () => {
+    const engine = new KeySequenceEngine();
+
+    expect(engine.handle(token("w", { ctrl: true }), 0, emptyContext)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "tab.close" }, source: "binding" }],
+    });
+    for (const [key, index] of [["1", 0], ["2", 1], ["3", 2], ["9", -1]] as const) {
+      expect(engine.handle(token(key, { ctrl: true }), index + 1, emptyContext)).toMatchObject({
+        claimed: true,
+        dispatches: [{ action: { type: "tab.activate", index }, source: "binding" }],
+      });
+    }
+    expect(bindingById("tab.activate.last")).toMatchObject({
+      keys: ["Ctrl+9"],
+      label: "Activate last tab",
+      action: { type: "tab.activate", index: -1 },
+    });
+  });
+
+  it("only enables tab activation commands with an existing target", () => {
+    const oneTab = { ...emptyContext.commandAvailability, tabCount: 1 };
+    const eightTabs = { ...emptyContext.commandAvailability, tabCount: 8 };
+
+    expect(isCommandEnabled(bindingById("tab.activate.1"), oneTab)).toBe(true);
+    expect(isCommandEnabled(bindingById("tab.activate.2"), oneTab)).toBe(false);
+    expect(isCommandEnabled(bindingById("tab.activate.last"), oneTab)).toBe(true);
+    expect(isCommandEnabled(bindingById("tab.activate.last"), { ...oneTab, tabCount: 0 })).toBe(false);
+    expect(isCommandEnabled(bindingById("tab.activate.8"), eightTabs)).toBe(true);
+  });
+
   it("dispatches reader scrolling and view actions with CP2 values", () => {
     const engine = new KeySequenceEngine();
 
@@ -46,7 +160,7 @@ describe("KeySequenceEngine", () => {
     expect(engine.handle(token("w"), 6, documentContext).dispatches).toEqual([
       { action: { type: "view.fitWidth" }, source: "binding" },
     ]);
-    expect(engine.handle(token("F"), 7, documentContext).dispatches).toEqual([
+    expect(engine.handle(token("F", { shift: true }), 7, documentContext).dispatches).toEqual([
       { action: { type: "view.fitPage" }, source: "binding" },
     ]);
     expect(engine.handle(token("="), 8, documentContext).dispatches).toEqual([
@@ -67,6 +181,43 @@ describe("KeySequenceEngine", () => {
     expect(engine.handle(token("f"), 13, documentContext).dispatches).toEqual([
       { action: { type: "linkHints.toggle" }, source: "binding" },
     ]);
+  });
+
+
+  it("resolves palette scroll, zoom, and rotation commands to the keyboard payloads", () => {
+    const engine = new KeySequenceEngine();
+    const cases = [
+      ["scroll.left", token("h")],
+      ["scroll.viewportDown", token("d")],
+      ["view.zoomOut", token("-")],
+      ["view.rotateClockwise", token("]")],
+    ] as const;
+
+    for (const [id, key] of cases) {
+      const palette = resolvePaletteBindingAction(bindingById(id));
+      expect(palette).toMatchObject({ kind: "dispatch" });
+      if (palette?.kind !== "dispatch") throw new Error("Missing palette action");
+      expect(engine.handle(key, 0, documentContext).dispatches).toEqual([
+        { action: palette.action, source: "binding" },
+      ]);
+    }
+  });
+
+  it("does not advertise palette commands without a canonical action", () => {
+    for (const binding of DEFAULT_BINDINGS.filter((candidate) => candidate.showInPalette)) {
+      expect(resolvePaletteBindingAction(binding)).toBeDefined();
+    }
+  });
+
+  it("enters the page prompt from the canonical palette page-target command", () => {
+    const engine = new KeySequenceEngine();
+    expect(resolvePaletteBindingAction(bindingById("page.target"))).toEqual({ kind: "page.target" });
+    expect(engine.enterPagePrompt(documentContext)).toMatchObject({
+      claimed: true,
+      dispatches: [{ action: { type: "prompt.open" }, source: "sequence" }],
+      state: { kind: "pagePrompt", digits: "" },
+    });
+    expect(engine.enterPagePrompt(emptyContext)).toMatchObject({ claimed: false, dispatches: [] });
   });
 
   it("keeps non-repeatable view commands from dispatching on held keys", () => {

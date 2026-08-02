@@ -58,7 +58,7 @@ describe("resource budgets", () => {
     manager = new ResourceReservationManager(() => {
       if (inactive?.ok) manager.release(inactive.reservation);
     });
-    inactive = manager.reserve({ kind: "canvas-cache-bytes", amount: RESOURCE_LIMITS.maxCanvasCacheBytes, sessionId: "inactive", inactive: true });
+    inactive = manager.reserve({ kind: "canvas-cache-bytes", amount: RESOURCE_LIMITS.maxCanvasCacheBytes, sessionId: "inactive" });
     const active = manager.reserve({ kind: "canvas-cache-bytes", amount: 1, sessionId: "active" });
     expect(active.ok).toBe(true);
     expect(manager.snapshot().totals["canvas-cache-bytes"]).toBe(1);

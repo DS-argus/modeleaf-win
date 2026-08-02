@@ -132,6 +132,7 @@ export function createKeyboardAdapter(options: KeyboardAdapterOptions): Keyboard
 
     const result = options.engine.handle(token(event.key, {
       ctrl: event.ctrlKey,
+      shift: event.shiftKey,
       alt: event.altKey,
       meta: event.metaKey,
       repeat: event.repeat,

@@ -331,10 +331,17 @@ impl LocalPathPolicy for SystemLocalPathPolicy {
     }
 }
 
-/// Classifies the final path of an already-open handle. This is required after pre-open policy
-/// validation so a local reparse point cannot redirect the retained handle to a remote location.
+/// Classifies and resolves the final path of an already-open handle. This is required after
+/// pre-open policy validation so a local reparse point cannot redirect the retained handle to a
+/// remote location.
 pub trait FinalHandlePolicy: Send + Sync {
     fn classify_final(&self, file: &std::fs::File) -> Result<DriveKind, PathPolicyError>;
+
+    /// Returns the local canonical identity of the retained handle. Production callers must use
+    /// this instead of resolving the mutable input path after opening it.
+    fn canonical_path(&self, _: &std::fs::File) -> Result<PathBuf, PathPolicyError> {
+        Err(PathPolicyError::PathRejected)
+    }
 }
 
 #[derive(Default)]
@@ -343,40 +350,50 @@ pub struct SystemFinalHandlePolicy;
 #[cfg(windows)]
 impl FinalHandlePolicy for SystemFinalHandlePolicy {
     fn classify_final(&self, file: &std::fs::File) -> Result<DriveKind, PathPolicyError> {
-        use std::os::windows::io::AsRawHandle;
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::Storage::FileSystem::{
-            GetFinalPathNameByHandleW, GETFINALPATHNAMEBYHANDLE_FLAGS,
-        };
-        let mut buffer = vec![0_u16; 32768];
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                HANDLE(file.as_raw_handle()),
-                &mut buffer,
-                GETFINALPATHNAMEBYHANDLE_FLAGS(0),
-            )
-        } as usize;
-        if length == 0 || length >= buffer.len() {
-            return Err(PathPolicyError::PathRejected);
-        }
-        let final_path =
-            String::from_utf16(&buffer[..length]).map_err(|_| PathPolicyError::PathRejected)?;
-        if final_path.starts_with(r"\\?\UNC\") {
-            return Err(PathPolicyError::RemotePath);
-        }
-        let local = final_path
-            .strip_prefix(r"\\?\")
-            .ok_or(PathPolicyError::PathRejected)?;
-        let bytes = local.as_bytes();
-        if bytes.len() < 3
-            || !bytes[0].is_ascii_alphabetic()
-            || bytes[1] != b':'
-            || (bytes[2] != b'\\' && bytes[2] != b'/')
-        {
-            return Err(PathPolicyError::PathRejected);
-        }
-        SystemLocalPathPolicy.classify(Path::new(local))
+        let path = self.canonical_path(file)?;
+        SystemLocalPathPolicy.classify(&path)
     }
+
+    fn canonical_path(&self, file: &std::fs::File) -> Result<PathBuf, PathPolicyError> {
+        final_handle_canonical_path(file)
+    }
+}
+
+#[cfg(windows)]
+fn final_handle_canonical_path(file: &std::fs::File) -> Result<PathBuf, PathPolicyError> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        GetFinalPathNameByHandleW, GETFINALPATHNAMEBYHANDLE_FLAGS,
+    };
+
+    let mut buffer = vec![0_u16; 32768];
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            HANDLE(file.as_raw_handle()),
+            &mut buffer,
+            GETFINALPATHNAMEBYHANDLE_FLAGS(0),
+        )
+    } as usize;
+    if length == 0 || length >= buffer.len() {
+        return Err(PathPolicyError::PathRejected);
+    }
+    let final_path =
+        String::from_utf16(&buffer[..length]).map_err(|_| PathPolicyError::PathRejected)?;
+    normalize_final_handle_path(&final_path)
+}
+
+#[cfg(windows)]
+fn normalize_final_handle_path(final_path: &str) -> Result<PathBuf, PathPolicyError> {
+    if final_path.starts_with(r"\\?\UNC\") {
+        return Err(PathPolicyError::RemotePath);
+    }
+    let local = final_path
+        .strip_prefix(r"\\?\")
+        .ok_or(PathPolicyError::PathRejected)?;
+    let path = PathBuf::from(local);
+    reject_unsafe_input(&path)?;
+    Ok(path)
 }
 
 #[cfg(not(windows))]
@@ -384,8 +401,12 @@ impl FinalHandlePolicy for SystemFinalHandlePolicy {
     fn classify_final(&self, _: &std::fs::File) -> Result<DriveKind, PathPolicyError> {
         Ok(DriveKind::Fixed)
     }
-}
 
+    fn canonical_path(&self, file: &std::fs::File) -> Result<PathBuf, PathPolicyError> {
+        file.metadata().map_err(|_| PathPolicyError::PathRejected)?;
+        Err(PathPolicyError::PathRejected)
+    }
+}
 #[cfg(all(test, windows))]
 mod reparse_tests {
     use super::*;
