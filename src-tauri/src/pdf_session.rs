@@ -8,7 +8,7 @@ use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -46,7 +46,7 @@ impl SessionId {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize)]
 pub struct PdfOwner {
     pub window_label: String,
     pub generation: u64,
@@ -57,6 +57,17 @@ pub struct PdfSessionMetadata {
     pub document_generation: u64,
     pub length: u64,
 }
+#[derive(Debug, Eq, PartialEq)]
+pub struct TrustedRecentIdentity {
+    canonical_path: PathBuf,
+}
+
+impl TrustedRecentIdentity {
+    pub(crate) fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ExternalLinkRegistration {
     pub annotation_id: String,
@@ -113,6 +124,7 @@ impl PdfSessionError {
         }
     }
 }
+
 enum ExternalLinkTransaction {
     Prepared {
         revision: u64,
@@ -137,6 +149,7 @@ struct Session {
     generation: u64,
     length: u64,
     file: Arc<Mutex<File>>,
+    canonical_path: PathBuf,
     teardown: TeardownOwner,
     queued: usize,
     in_flight: usize,
@@ -271,8 +284,25 @@ impl PdfSessionManager {
         }
     }
 
-    /// Opens only a local PDF. The retained handle is locality-checked after open to prevent
-    /// reparse targets from bypassing the pre-open policy.
+    /// Opens a production local PDF, validates the retained handle's locality, and derives its
+    /// identity from that handle rather than resolving the mutable input path.
+    #[cfg(windows)]
+    pub fn open_local_file(
+        &self,
+        owner: PdfOwner,
+        path: &Path,
+    ) -> Result<PdfSessionMetadata, PdfSessionError> {
+        self.open_local_with_identity(
+            owner,
+            path,
+            &SystemLocalPathPolicy,
+            &SystemFinalHandlePolicy,
+            |path| File::open(path),
+            |file| SystemFinalHandlePolicy.canonical_path(file),
+        )
+    }
+
+    #[cfg(not(windows))]
     pub fn open_local_file(
         &self,
         owner: PdfOwner,
@@ -287,6 +317,8 @@ impl PdfSessionManager {
         )
     }
 
+    /// Test/injected opener boundary. Its supplied path is an explicitly trusted identity; the
+    /// production entry point above always obtains identity from the retained handle instead.
     pub fn open_local<P, F, O>(
         &self,
         owner: PdfOwner,
@@ -299,6 +331,26 @@ impl PdfSessionManager {
         P: LocalPathPolicy,
         F: FinalHandlePolicy,
         O: FnOnce(&Path) -> io::Result<File>,
+    {
+        self.open_local_with_identity(owner, path, policy, final_policy, opener, |_| {
+            Ok(path.to_path_buf())
+        })
+    }
+
+    fn open_local_with_identity<P, F, O, I>(
+        &self,
+        owner: PdfOwner,
+        path: &Path,
+        policy: &P,
+        final_policy: &F,
+        opener: O,
+        identity: I,
+    ) -> Result<PdfSessionMetadata, PdfSessionError>
+    where
+        P: LocalPathPolicy,
+        F: FinalHandlePolicy,
+        O: FnOnce(&Path) -> io::Result<File>,
+        I: FnOnce(&File) -> Result<PathBuf, crate::local_path::PathPolicyError>,
     {
         match policy.classify(path) {
             Ok(crate::local_path::DriveKind::Fixed | crate::local_path::DriveKind::Removable) => {}
@@ -338,6 +390,10 @@ impl PdfSessionManager {
                 return Err(PdfSessionError::PathRejected)
             }
         }
+        let canonical_path = identity(&file).map_err(|error| match error {
+            crate::local_path::PathPolicyError::RemotePath => PdfSessionError::RemotePath,
+            crate::local_path::PathPolicyError::PathRejected => PdfSessionError::PathRejected,
+        })?;
         let metadata = file
             .metadata()
             .map_err(|_| PdfSessionError::FileUnreadable)?;
@@ -376,6 +432,7 @@ impl PdfSessionManager {
                 generation,
                 length,
                 file: Arc::new(Mutex::new(file)),
+                canonical_path,
                 queued: 0,
                 in_flight: 0,
                 barrier: None,
@@ -396,6 +453,49 @@ impl PdfSessionManager {
             document_generation: generation,
             length,
         })
+    }
+    /// Re-validates the retained file handle and returns its canonical local identity for native
+    /// recent-document persistence. This never resolves the mutable path used to open it.
+    pub fn trusted_recent_identity(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<TrustedRecentIdentity, PdfSessionError> {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        let session = Self::checked_session(&mut sessions, owner, id, generation)?;
+        let file = session.file.lock().expect("session file poisoned");
+        match SystemFinalHandlePolicy.classify_final(&file) {
+            Ok(crate::local_path::DriveKind::Fixed | crate::local_path::DriveKind::Removable) => {}
+            Ok(crate::local_path::DriveKind::Remote)
+            | Err(crate::local_path::PathPolicyError::RemotePath) => {
+                return Err(PdfSessionError::RemotePath)
+            }
+            Err(crate::local_path::PathPolicyError::PathRejected) => {
+                return Err(PdfSessionError::PathRejected)
+            }
+        }
+        let canonical_path = SystemFinalHandlePolicy
+            .canonical_path(&file)
+            .map_err(|error| match error {
+                crate::local_path::PathPolicyError::RemotePath => PdfSessionError::RemotePath,
+                crate::local_path::PathPolicyError::PathRejected => PdfSessionError::PathRejected,
+            })?;
+        Ok(TrustedRecentIdentity { canonical_path })
+    }
+
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn resolve_canonical_path(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<PathBuf, PdfSessionError> {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        Ok(Self::checked_session(&mut sessions, owner, id, generation)?
+            .canonical_path
+            .clone())
     }
 
     pub fn read_range(
@@ -1016,6 +1116,51 @@ impl PdfSessionManager {
         }
         Ok(())
     }
+    /// Transfers timed-out command cancellation to lifecycle cleanup without releasing its owner.
+    pub(crate) fn defer_command_cancellation(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<(), PdfSessionError> {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        let session = Self::checked_session(&mut sessions, owner, id, generation)?;
+        match session.teardown {
+            TeardownOwner::CommandCancelling => session.teardown = TeardownOwner::LifecycleDeferred,
+            TeardownOwner::LifecycleDeferred => {}
+            TeardownOwner::Active => return Err(PdfSessionError::SessionClosing),
+        }
+        Self::remove_deferred_drained_session(&mut sessions, id);
+        self.drained.notify_all();
+        Ok(())
+    }
+
+    /// Reaps a deferred cancellation after its raw work has settled.
+    pub(crate) fn reap_deferred_cancellation(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<bool, PdfSessionError> {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        let Some(session) = sessions.entries.get(id) else {
+            return Ok(true);
+        };
+        if session.owner.window_label != owner.window_label {
+            return Err(PdfSessionError::OwnerMismatch);
+        }
+        if session.owner.generation != owner.generation || session.generation != generation {
+            return Err(PdfSessionError::GenerationMismatch);
+        }
+        if session.teardown != TeardownOwner::LifecycleDeferred {
+            return Err(PdfSessionError::SessionClosing);
+        }
+        if session.in_flight != 0 || session.queued != 0 || session.external_link_in_flight != 0 {
+            return Ok(false);
+        }
+        sessions.entries.remove(id);
+        Ok(true)
+    }
 
     pub fn drain_owner(&self, window_label: &str) {
         self.drain_matching(
@@ -1023,7 +1168,21 @@ impl PdfSessionManager {
             EXTERNAL_LINK_DRAIN_TIMEOUT,
         );
     }
-
+    pub fn drain_owned(&self, owner: &PdfOwner) {
+        {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            for session in sessions.entries.values_mut() {
+                if session.owner == *owner && session.teardown == TeardownOwner::CommandCancelling {
+                    session.teardown = TeardownOwner::LifecycleDeferred;
+                }
+            }
+            self.drained.notify_all();
+        }
+        self.drain_matching(
+            |session_owner| session_owner == owner,
+            EXTERNAL_LINK_DRAIN_TIMEOUT,
+        );
+    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn drain_owner_with_timeout_for_test(&self, window_label: &str, timeout: Duration) {
@@ -1216,6 +1375,7 @@ mod tests {
                 teardown: TeardownOwner::Active,
                 length: 9,
                 file: Arc::new(Mutex::new(File::open(&path).unwrap())),
+                canonical_path: path.clone(),
                 queued: 0,
                 in_flight: 0,
                 barrier: None,
@@ -1545,6 +1705,7 @@ mod tests {
                         generation: 7,
                         length: 9,
                         file: Arc::new(Mutex::new(File::open(&path).unwrap())),
+                        canonical_path: path.clone(),
                         teardown,
                         queued: 0,
                         in_flight: 0,

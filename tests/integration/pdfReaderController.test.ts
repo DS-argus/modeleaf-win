@@ -319,8 +319,9 @@ describe("PdfReaderController", () => {
 
       await controller.open(1);
       const disposing = controller.dispose();
+      const rejected = expect(disposing).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
       await vi.advanceTimersByTimeAsync(15_000);
-      await disposing;
+      await rejected;
 
       expect(native.cancelSession).toHaveBeenCalledOnce();
       expect(native.closeSession).toHaveBeenCalledOnce();
@@ -328,6 +329,7 @@ describe("PdfReaderController", () => {
       close.resolve(undefined);
       await Promise.resolve();
       await Promise.resolve();
+      await vi.runAllTimersAsync();
       await controller.dispose();
 
       expect(native.cancelSession).toHaveBeenCalledOnce();
@@ -354,8 +356,9 @@ describe("PdfReaderController", () => {
 
       await controller.open(1);
       const disposing = controller.dispose();
+      const rejected = expect(disposing).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
       await vi.advanceTimersByTimeAsync(15_000);
-      await disposing;
+      await rejected;
       expect(pdf.destroy).toHaveBeenCalledOnce();
       expect(native.cancelSession).not.toHaveBeenCalled();
       expect(native.closeSession).not.toHaveBeenCalled();
@@ -364,6 +367,7 @@ describe("PdfReaderController", () => {
       await vi.runAllTimersAsync();
       expect(native.cancelSession).toHaveBeenCalledOnce();
       expect(native.closeSession).toHaveBeenCalledOnce();
+      await controller.dispose();
     } finally {
       vi.useRealTimers();
     }
@@ -1078,8 +1082,9 @@ describe("PdfReaderController", () => {
       const opening = controller.open(1);
       await vi.waitFor(() => expect(staged).toBe(true));
       const disposing = controller.dispose();
+      const rejected = expect(disposing).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
       await vi.advanceTimersByTimeAsync(10_000);
-      await disposing;
+      await rejected;
       expect(teardown).toHaveBeenCalledOnce();
       expect(pdf.destroy).not.toHaveBeenCalled();
 
@@ -1087,6 +1092,7 @@ describe("PdfReaderController", () => {
       await vi.runAllTimersAsync();
       await opening;
       expect(teardown).toHaveBeenCalledOnce();
+      await controller.dispose();
       expect(pdf.destroy).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
@@ -1147,17 +1153,17 @@ describe("PdfReaderController", () => {
       });
       await controller.open(1);
       const naturalSize = controller.getPageNaturalSize(2, 0);
-      const naturalSizeFailure = expect(naturalSize).rejects.toThrow("RENDER_FAILED");
       await vi.advanceTimersByTimeAsync(10_000);
-      await naturalSizeFailure;
+      await expect(naturalSize).resolves.toBeUndefined();
       const disposing = controller.dispose();
+      const rejected = expect(disposing).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
       await vi.advanceTimersByTimeAsync(10_000);
-      await disposing;
-      expect(pdf.destroy).not.toHaveBeenCalled();
+      await rejected;
       rawPage.resolve(page(2));
       await vi.runAllTimersAsync();
       await Promise.resolve();
       expect(pdf.destroy).toHaveBeenCalledOnce();
+      await controller.dispose();
     } finally {
       vi.useRealTimers();
     }
@@ -1215,9 +1221,80 @@ describe("PdfReaderController", () => {
     });
 
     await controller.open(1);
-    await controller.dispose();
+    await expect(controller.dispose()).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
 
     expect(pdf.destroy).not.toHaveBeenCalled();
     expect(native.cancelSession).not.toHaveBeenCalled();
+  });
+  it("adopts an opaque session without reopening the dialog", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const native = nativeBoundary(vi.fn());
+    const committed = vi.fn();
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => task(documentWith(1))), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: committed,
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      requestPassword: vi.fn(),
+    });
+
+    await controller.adopt(session("opaque-adopted", 71), 14);
+
+    expect(native.openPdfDialog).not.toHaveBeenCalled();
+    expect(committed).toHaveBeenCalledWith(1, "opaque-adopted.pdf", expect.anything(), expect.objectContaining({ sessionId: "opaque-adopted" }), 14);
+    await controller.dispose();
+  });
+
+  it("rejects a failed adopted candidate after cleaning it up and preserving the committed document", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const healthy = documentWith(1);
+    const failed = documentWith(1, vi.fn(async () => { throw new Error("corrupt"); }));
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("healthy", 1)));
+    const host = document.createElement("div");
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn().mockReturnValueOnce(task(healthy)).mockReturnValueOnce(task(failed)), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      requestPassword: vi.fn(),
+    });
+
+    await controller.open(1);
+    const committedCanvas = host.firstElementChild;
+    await expect(controller.adopt(session("failed-adoption", 2), 2)).rejects.toThrow("PDF_ADOPTION_NOT_COMMITTED");
+
+    expect(host.firstElementChild).toBe(committedCanvas);
+    expect(healthy.destroy).not.toHaveBeenCalled();
+    expect(native.openPdfDialog).toHaveBeenCalledOnce();
+    expect(failed.destroy).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "failed-adoption" }), 7, 2);
+    await controller.dispose();
+  });
+
+  it("makes duplicate disposal close a native session exactly once", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("duplicate-close", 1)));
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => task(documentWith(1))), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      requestPassword: vi.fn(),
+    });
+
+    await controller.open(1);
+    await Promise.all([controller.dispose(), controller.dispose()]);
+
+    expect(native.cancelSession).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
   });
 });

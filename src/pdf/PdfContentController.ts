@@ -91,6 +91,7 @@ export interface PdfContentSnapshot {
   readonly results: readonly PdfSearchResult[];
   readonly currentResult: number;
   readonly searchPending: boolean;
+  readonly searchIncomplete: boolean;
   readonly hintsVisible: boolean;
 }
 
@@ -102,6 +103,7 @@ interface LinkGroup {
   registryRevision: number | undefined;
   readonly rectangles: readonly DOMRect[];
 }
+
 interface RegistryPublication {
   readonly revision: number;
   readonly staged: Promise<void>;
@@ -298,6 +300,9 @@ export class PdfContentController {
   private results: PdfSearchResult[] = [];
   private resultReservations: ResourceReservation[] = [];
   private currentResult = -1;
+  private evictedPage: number | undefined;
+  private evictedCurrentResult: number | undefined;
+  private searchIncomplete = false;
   private searchPending = false;
   private activeSearchSettlement: Promise<void> | undefined;
   private activeTextReader: ReadableStreamDefaultReader<PdfContentTextContent> | undefined;
@@ -324,16 +329,16 @@ export class PdfContentController {
 
   public get snapshot(): PdfContentSnapshot {
     return {
-      pageNumber: this.renderedPage ?? null,
+      pageNumber: this.renderedPage ?? this.evictedPage ?? null,
       query: this.query,
       generation: this.generation ?? null,
       results: [...this.results],
       currentResult: this.currentResult,
       searchPending: this.searchPending,
+      searchIncomplete: this.searchIncomplete,
       hintsVisible: this.hintsVisible,
     };
   }
-
 
   public mount(document: PdfContentDocument, generation: number, sessionId: string): void {
     void this.unmount().catch(() => undefined);
@@ -349,7 +354,51 @@ export class PdfContentController {
     this.pendingDestination = undefined;
     this.searchCleanupFailure = undefined;
     this.partialSearchReason = undefined;
+    this.evictedPage = undefined;
+    this.evictedCurrentResult = undefined;
   }
+
+  /** Cancels foreground rendering/search while retaining completed search state. */
+  public suspend(): void {
+    this.renderSequence += 1;
+    this.searchSequence += 1;
+    if (this.activeSearchSettlement !== undefined && this.query.length > 0) {
+      this.releaseResultReservations();
+      this.results = [];
+      this.currentResult = -1;
+      if (this.evictedCurrentResult === undefined) this.evictedCurrentResult = 0;
+      this.searchIncomplete = true;
+    }
+    this.searchPending = false;
+    this.cancelDestination();
+    this.cancelActiveSearch();
+    if (typeof this.pendingTextRenderer?.cancel === "function") this.pendingTextRenderer.cancel();
+  }
+
+  /** Releases published inactive-tab content only after its foreground work has settled. */
+  public evictInactiveHeavyResources(): boolean {
+    let evicted = false;
+    if (this.pendingRenderSettlement === undefined && this.pendingTextReservation === undefined && this.unsettledVisibleTextCleanup === undefined) {
+      this.evictedPage = this.renderedPage ?? this.evictedPage;
+      this.clearRenderedContent();
+      evicted = true;
+    }
+    if (this.activeSearchSettlement === undefined && this.activeTextReader === undefined && this.unsettledSearchCleanup === undefined && this.results.length > 0) {
+      this.evictedCurrentResult = this.currentResult;
+      this.releaseResultReservations();
+      this.results = [];
+      this.currentResult = -1;
+      evicted = true;
+    }
+    return evicted;
+  }
+
+  /** Recomputes results evicted or interrupted while the tab was inactive. */
+  public async restoreEvictedSearch(): Promise<void> {
+    if ((this.evictedCurrentResult === undefined && !this.searchIncomplete) || this.query.length === 0 || this.searchPending) return;
+    await this.search(this.query, true);
+  }
+
   public async unmount(): Promise<void> {
     this.closingEpoch = this.mountedEpoch;
     const document = this.document;
@@ -375,6 +424,7 @@ export class PdfContentController {
     this.cancelDestination();
     this.cancelActiveSearch();
     if (typeof this.pendingTextRenderer?.cancel === "function") this.pendingTextRenderer.cancel();
+      this.searchIncomplete = false;
     this.renderSequence += 1;
     this.searchSequence += 1;
     this.linkActivationSequence += 1;
@@ -546,6 +596,7 @@ export class PdfContentController {
       ownsReservation = false;
       this.renderedPage = request.pageNumber;
       this.renderedSequence = sequence;
+      this.evictedPage = undefined;
       published = true;
       try {
         this.applyPendingDestination(request);
@@ -680,7 +731,7 @@ export class PdfContentController {
     }
   }
 
-  public async search(query: string): Promise<void> {
+  public async search(query: string, restoreEvictedResult = false): Promise<void> {
     const deadline = Date.now() + SEARCH_TIMEOUT_MS;
     const sequence = ++this.searchSequence;
     const source = query.trim();
@@ -690,6 +741,8 @@ export class PdfContentController {
     this.results = [];
     this.currentResult = -1;
     this.searchPending = false;
+    this.searchIncomplete = false;
+    if (!restoreEvictedResult) this.evictedCurrentResult = undefined;
     this.partialSearchReason = undefined;
     this.applyHighlights(deadline);
     if (encoder.encode(source).byteLength > RESOURCE_LIMITS.maxTextPageBytes) {
@@ -772,14 +825,17 @@ export class PdfContentController {
       }
       assertDeadline(deadline);
       if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
-      if (this.results.length === 0) this.options.onStatus(hasExtractedText ? "No text matches found in this PDF." : "This PDF has no searchable text. OCR is unavailable.");
-      else {
-        this.currentResult = 0;
+      if (this.results.length === 0) {
+        this.options.onStatus(hasExtractedText ? "No text matches found in this PDF." : "This PDF has no searchable text. OCR is unavailable.");
+      } else {
+        this.currentResult = restoreEvictedResult && this.evictedCurrentResult !== undefined && this.evictedCurrentResult >= 0
+          ? Math.min(this.evictedCurrentResult, this.results.length - 1)
+          : 0;
+        this.evictedCurrentResult = undefined;
         assertDeadline(deadline);
-        this.options.navigateToPage(this.results[0]!.pageNumber);
+        this.options.navigateToPage(this.results[this.currentResult]!.pageNumber);
         this.reportCurrentMatch("");
       }
-      assertDeadline(deadline);
       this.applyHighlights(deadline);
     } catch (error) {
       let cause = error instanceof Error ? error.message : "Search could not be completed.";
@@ -841,7 +897,7 @@ export class PdfContentController {
   }
 
   public handleHintKey(key: string): boolean {
-    if (key === "Escape") {
+    if (key === "Escape" && this.hintsVisible) {
       this.cancelHints();
       return true;
     }

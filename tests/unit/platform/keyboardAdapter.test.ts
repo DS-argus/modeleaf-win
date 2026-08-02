@@ -44,6 +44,30 @@ describe("keyboardAdapter", () => {
     target.remove();
   });
 
+  it("propagates Shift so Ctrl+Shift+P is case-independent and Ctrl+P remains native", () => {
+    const target = document.createElement("button");
+    document.body.append(target);
+    const dispatched: string[] = [];
+    const adapter = createKeyboardAdapter({
+      engine: new KeySequenceEngine(),
+      getContext: () => ({ hasDocument: false, pageCount: 0, documentGeneration: 0 }),
+      onDispatch: ({ action }) => dispatched.push(action.type),
+    });
+    target.addEventListener("keydown", adapter.handleKeyDown);
+
+    for (const key of ["P", "p"]) {
+      const palette = keydown(key, { ctrlKey: true, shiftKey: true });
+      target.dispatchEvent(palette);
+      expect(palette.defaultPrevented).toBe(true);
+    }
+    const plainCtrlP = keydown("p", { ctrlKey: true });
+    target.dispatchEvent(plainCtrlP);
+    expect(plainCtrlP.defaultPrevented).toBe(false);
+    expect(dispatched).toEqual(["palette.toggle", "palette.toggle"]);
+
+    adapter.dispose();
+    target.remove();
+  });
   it("leaves editable, composition, Alt, Meta, and AltGraph input native", () => {
     const input = document.createElement("input");
     document.body.append(input);
@@ -158,7 +182,7 @@ describe("keyboardAdapter", () => {
     document.body.append(input);
     const engine = new KeySequenceEngine();
     engine.handle(
-      { key: "g", ctrl: false, alt: false, meta: false, repeat: false },
+      { key: "g", ctrl: false, shift: false, alt: false, meta: false, repeat: false },
       0,
       { hasDocument: true, pageCount: 10, documentGeneration: 1 },
     );

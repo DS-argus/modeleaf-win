@@ -22,6 +22,15 @@ vi.mock("pdfjs-dist", () => ({
 import { addPdfTextUtf8Bytes, normalizePdfSearchQuery, PdfContentController, type PdfContentAnnotation, type PdfContentDocument, type PdfContentPage } from "../../src/pdf/PdfContentController";
 import { RESOURCE_LIMITS, ResourceReservationManager } from "../../src/pdf/ResourceBudget";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 const page = (text: string, annotations: readonly PdfContentAnnotation[] = []): PdfContentPage => ({
   getTextContent: async () => ({ items: [{ str: text }] }),
   streamTextContent: () => new ReadableStream({
@@ -1277,9 +1286,10 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector(".pdf-content-layer")).toBeNull();
     expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(0);
   });
-  it("cancels visible hints", async () => {
+  it("consumes Escape only while hints are visible", async () => {
     const subject = setup([page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test" }])]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    expect(subject.controller.handleHintKey("Escape")).toBe(false);
     subject.controller.toggleHints();
     expect(subject.controller.handleHintKey("Escape")).toBe(true);
     expect(subject.controller.snapshot.hintsVisible).toBe(false);
@@ -1400,5 +1410,94 @@ describe("PdfContentController", () => {
 
     expect(subject.host.scrollLeft).toBe(0);
     expect(subject.host.scrollTop).toBe(0);
+  });
+  it("suspends foreground render/search work while retaining completed search state", async () => {
+    const annotation = deferred<readonly PdfContentAnnotation[]>();
+    const slowRenderPage: PdfContentPage = {
+      getTextContent: async () => ({ items: [{ str: "completed match" }] }),
+      getAnnotations: () => annotation.promise,
+    };
+    const subject = setup([page("completed match"), slowRenderPage]);
+    await subject.controller.search("match");
+    const completed = subject.controller.snapshot;
+    expect(completed.results).toHaveLength(1);
+
+    const rendering = subject.controller.renderPage({ pageNumber: 1, page: slowRenderPage, viewport, canvas: subject.canvas });
+    await Promise.resolve();
+    subject.controller.suspend();
+    annotation.resolve([]);
+    await rendering;
+
+    expect(subject.controller.snapshot.results).toEqual(completed.results);
+    expect(subject.controller.snapshot.searchPending).toBe(false);
+    expect(subject.host.querySelector(".pdf-content-layer")).toBeNull();
+  });
+
+  it("invalidates an in-flight search when suspended", async () => {
+    const text = deferred<{ readonly items: readonly { readonly str?: string }[] }>();
+    const slowSearchPage: PdfContentPage = {
+      getTextContent: () => text.promise,
+      getAnnotations: async () => [],
+    };
+    const subject = setup([slowSearchPage]);
+    const searching = subject.controller.search("late");
+    await Promise.resolve();
+    subject.controller.suspend();
+    text.resolve({ items: [{ str: "late" }] });
+    await searching;
+
+    expect(subject.controller.snapshot.searchPending).toBe(false);
+    expect(subject.controller.snapshot.results).toEqual([]);
+  });
+  it("evicts only settled presentation and recomputes released search results", async () => {
+    const subject = setup([page("match one"), page("match two")]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    await subject.controller.search("match");
+    subject.controller.nextMatch(false);
+
+    expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes);
+    expect(subject.resources.snapshot().totals["search-document-results"]).toBe(2);
+    expect(subject.controller.evictInactiveHeavyResources()).toBe(true);
+    expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(0);
+    expect(subject.resources.snapshot().totals["search-document-results"]).toBe(0);
+    expect(subject.controller.snapshot).toMatchObject({ pageNumber: 1, query: "match", results: [], currentResult: -1 });
+
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    await subject.controller.restoreEvictedSearch();
+    expect(subject.controller.snapshot).toMatchObject({ results: expect.any(Array), currentResult: 1 });
+    expect(subject.controller.snapshot.results).toHaveLength(2);
+    await subject.controller.unmount();
+    subject.resources.assertEmpty();
+  });
+  it("preserves a selected evicted result across interrupted restoration", async () => {
+    let delayRestore = false;
+    const interruptedRestoreText = deferred<{ readonly items: readonly { readonly str?: string }[] }>();
+    const loadText = vi.fn(() => delayRestore
+      ? interruptedRestoreText.promise
+      : Promise.resolve({ items: [{ str: "match one" }] }));
+    const slowRestorePage: PdfContentPage = {
+      getTextContent: loadText,
+      streamTextContent: () => streamText(loadText),
+      getAnnotations: async () => [],
+    };
+    const subject = setup([slowRestorePage, page("match two"), page("match three")]);
+    await subject.controller.search("match");
+    subject.controller.nextMatch();
+    subject.controller.nextMatch();
+    expect(subject.controller.snapshot.currentResult).toBe(2);
+    expect(subject.controller.evictInactiveHeavyResources()).toBe(true);
+
+    delayRestore = true;
+    const interruptedRestore = subject.controller.restoreEvictedSearch();
+    await vi.waitFor(() => expect(loadText).toHaveBeenCalledTimes(2));
+    subject.controller.suspend();
+    await interruptedRestore;
+
+    delayRestore = false;
+    await subject.controller.restoreEvictedSearch();
+    expect(subject.controller.snapshot).toMatchObject({ results: expect.any(Array), currentResult: 2 });
+    expect(subject.controller.snapshot.results).toHaveLength(3);
+    await subject.controller.unmount();
+    subject.resources.assertEmpty();
   });
 });

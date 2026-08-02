@@ -158,7 +158,6 @@ async function withDeadline<T>(operation: Promise<T>, milliseconds: number, tag:
     if (timeoutId !== undefined) clearTimeout(timeoutId);
   }
 }
-
 const errorTag = (error: unknown): string => {
   if (typeof error === "object" && error !== null && "tag" in error && typeof error.tag === "string") return error.tag;
   return error instanceof Error ? error.message : String(error);
@@ -203,27 +202,35 @@ export class PdfReaderController {
 
   public constructor(private readonly options: PdfReaderControllerOptions) {}
 
-  public async open(ownerGeneration: number): Promise<void> {
+  private evictedScrollAnchor: { readonly pageNumber: number; readonly anchor: PdfScrollAnchor } | undefined;
+  public async open(ownerGeneration: number, adoptedSession?: OpenPdfResult): Promise<void> {
     if (this.disposed) return;
-    if (!(await this.retryPendingCleanups())) return;
+    if (!(await this.retryPendingCleanups())) {
+      if (adoptedSession !== undefined) await this.closeUnloadedSession(adoptedSession, ownerGeneration);
+      return;
+    }
     await this.retryQuarantinedCandidates();
     if (this.quarantinedCandidates.size > 0) {
       this.options.onStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
+      if (adoptedSession !== undefined) await this.closeUnloadedSession(adoptedSession, ownerGeneration);
       return;
     }
     const openSequence = ++this.openSequence;
     await this.disposeCandidate(this.opening);
     if (this.quarantinedCandidates.size > 0) {
       this.options.onStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
+      if (adoptedSession !== undefined) await this.closeUnloadedSession(adoptedSession, ownerGeneration);
       return;
     }
     this.opening = undefined;
-    let session: OpenPdfResult | null;
-    try {
-      session = await this.options.native.openPdfDialog({ ownerGeneration });
-    } catch (error) {
-      this.options.onStatus(safeMessage(error));
-      return;
+    let session: OpenPdfResult | null = adoptedSession ?? null;
+    if (adoptedSession === undefined) {
+      try {
+        session = await this.options.native.openPdfDialog({ ownerGeneration });
+      } catch (error) {
+        this.options.onStatus(safeMessage(error));
+        return;
+      }
     }
     if (session === null) return;
     if (this.disposed) {
@@ -354,6 +361,40 @@ export class PdfReaderController {
       }
     }
   }
+  /** Adopts an opaque native session without reopening the dialog. */
+  public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
+    await this.open(ownerGeneration, session);
+    const committed = this.current;
+    if (
+      committed?.session.sessionId !== session.sessionId
+      || committed.session.documentGeneration !== session.documentGeneration
+    ) {
+      throw new Error("PDF_ADOPTION_NOT_COMMITTED");
+    }
+    return true;
+  }
+
+  /** Returns the target page's CSS size at unit scale and the requested rotation. */
+  public async getPageNaturalSize(
+    pageNumber: number,
+    rotation: number,
+    requestCommitGuard?: PdfRequestCommitGuard,
+  ): Promise<{ readonly width: number; readonly height: number } | undefined> {
+    const current = this.current;
+    if (current === undefined || current.document === undefined || this.disposed
+      || (requestCommitGuard !== undefined && !requestCommitGuard())) return undefined;
+    try {
+      const page = await this.getOwnedPage(current, pageNumber);
+      if (this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) return undefined;
+      const viewport = page.getViewport({ scale: 1, rotation });
+      return Number.isFinite(viewport.width) && viewport.width > 0 && Number.isFinite(viewport.height) && viewport.height > 0
+        ? { width: viewport.width, height: viewport.height }
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   public async setViewTransform(transform: PdfViewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     const normalized = this.normalizeViewTransform(transform);
     if (normalized.scale === this.viewTransform.scale
@@ -377,19 +418,6 @@ export class PdfReaderController {
     const rendered = await this.renderPage(page, normalized, requestCommitGuard);
     if (!rendered) return false;
     return true;
-  }
-  public async getPageNaturalSize(
-    pageNumber: number,
-    rotation: number,
-  ): Promise<{ readonly width: number; readonly height: number } | undefined> {
-    const current = this.current;
-    if (current?.document === undefined || current.cleanup !== undefined || this.disposed) return undefined;
-    const page = await this.getOwnedPage(current, pageNumber);
-    if (this.current !== current || current.cleanup !== undefined || this.disposed) return undefined;
-    const viewport = page.getViewport({ scale: 1, rotation });
-    if (!Number.isFinite(viewport.width) || viewport.width <= 0
-      || !Number.isFinite(viewport.height) || viewport.height <= 0) return undefined;
-    return { width: viewport.width, height: viewport.height };
   }
 
 
@@ -445,7 +473,9 @@ export class PdfReaderController {
         this.options.resources.release(rendered.reservation);
         return false;
       }
-      const anchor = current.pageNumber === page ? this.captureScrollAnchor() : undefined;
+      const capturedAnchor = current.pageNumber === page ? this.captureScrollAnchor() : undefined;
+      const evictedAnchor = this.evictedScrollAnchor?.pageNumber === page ? this.evictedScrollAnchor.anchor : undefined;
+      const anchor = evictedAnchor ?? capturedAnchor;
       let canvasCommitted = false;
       const commitCanvas = (accessory?: HTMLElement): boolean => {
         if (canvasCommitted || this.current !== current || this.disposed
@@ -456,6 +486,7 @@ export class PdfReaderController {
         this.viewTransform = transform;
         this.canvasReplace(rendered.canvas, accessory, anchor);
         canvasCommitted = true;
+        this.evictedScrollAnchor = undefined;
         if (priorReservation !== undefined) this.options.resources.release(priorReservation);
         this.notifyObserver(() => this.options.onPage(page, transform));
         return true;
@@ -486,6 +517,23 @@ export class PdfReaderController {
     }
   }
 
+  /** Cancels foreground rendering without releasing the owned document session. */
+  public async suspend(): Promise<void> {
+    this.renderSequence += 1;
+    await this.cancelActiveRender();
+  }
+
+  /** Releases a suspended tab's committed canvas without closing its native PDF session. */
+  public evictInactiveCanvas(): boolean {
+    const current = this.current;
+    if (current === undefined || current.canvasReservation === undefined || this.activeRender !== undefined) return false;
+    this.evictedScrollAnchor = { pageNumber: current.pageNumber ?? 1, anchor: this.captureScrollAnchor() };
+    this.options.resources.release(current.canvasReservation);
+    delete current.canvasReservation;
+    this.options.canvasHost.replaceChildren();
+    return true;
+  }
+
   public async dispose(): Promise<void> {
     this.disposed = true;
     this.renderSequence += 1;
@@ -499,9 +547,10 @@ export class PdfReaderController {
     await this.disposeCandidate(this.current);
     this.opening = undefined;
     this.current = undefined;
-    await this.retryPendingCleanups(false);
+    if (!(await this.retryPendingCleanups(false)) || this.quarantinedCandidates.size > 0) {
+      throw new Error("PDF_OWNERSHIP_INCOMPLETE");
+    }
   }
-
   private async getOwnedPage(candidate: Candidate, pageNumber: number): Promise<PdfPage> {
     const document = candidate.document;
     if (document === undefined || candidate.closed) throw new Error("Render cancelled");

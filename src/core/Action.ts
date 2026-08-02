@@ -15,6 +15,10 @@ export type Action =
   | { readonly type: "view.fitPage" }
   | { readonly type: "view.zoom"; readonly factor: number }
   | { readonly type: "view.rotate"; readonly quarterTurns: 1 | -1 }
+  | { readonly type: "tab.new" }
+  | { readonly type: "palette.toggle" }
+  | { readonly type: "tab.close" }
+  | { readonly type: "tab.activate"; readonly index: number }
   | { readonly type: "search.open" }
   | { readonly type: "linkHints.toggle" }
   | { readonly type: "help.toggle" }

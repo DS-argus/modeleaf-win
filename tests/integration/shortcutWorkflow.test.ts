@@ -28,7 +28,7 @@ describe("shortcut workflow", () => {
     applyResult(reader, engine.handle(token("n"), 1, context()));
     expect(reader.snapshot.page).toBe(3);
 
-    applyResult(reader, engine.handle(token("G"), 2, context()));
+    applyResult(reader, engine.handle(token("G", { shift: true }), 2, context()));
     expect(reader.snapshot.page).toBe(25);
 
     engine.handle(token("g"), 3, context());
@@ -47,6 +47,8 @@ describe("shortcut workflow", () => {
 
   it("uses the same registry for behavior and visible help", () => {
     const shortcuts = buildHelpRows().map((row) => row.shortcut);
-    expect(shortcuts).toEqual(expect.arrayContaining(["Ctrl+O", "n", "p", "g g", "G", "?"]));
+    expect(shortcuts).toEqual(expect.arrayContaining([
+      "Ctrl+O", "Ctrl+N", "Ctrl+W", "Ctrl+1", "Ctrl+9", "Ctrl+Shift+P", "n", "p", "g g", "G", "?",
+    ]));
   });
 });

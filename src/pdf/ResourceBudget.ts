@@ -62,7 +62,6 @@ export interface ReservationRequest {
   readonly kind: ResourceKind;
   readonly amount: number;
   readonly sessionId?: string;
-  readonly inactive?: boolean;
 }
 
 export interface ResourceReservation {
@@ -70,7 +69,6 @@ export interface ResourceReservation {
   readonly kind: ResourceKind;
   readonly amount: number;
   readonly sessionId?: string;
-  readonly inactive: boolean;
 }
 
 export type ReservationResult =
@@ -83,7 +81,7 @@ export interface ResourceBudgetSnapshot {
   readonly reservationCount: number;
 }
 
-export type InactiveHeavyResourceEvictor = (needed: ReservationRequest) => void;
+export type InactiveHeavyResourceEvictor = (needed: ReservationRequest, amount: number) => void;
 
 const EMPTY_TOTALS = (): Record<ResourceKind, number> => ({
   "session": 0, "range-work": 0, "range-queue": 0, render: 0,
@@ -171,7 +169,9 @@ export class ResourceReservationManager {
     if (!Number.isSafeInteger(request.amount) || request.amount <= 0) return { ok: false, tag: "RESOURCE_ACCOUNTING" };
     const first = this.tryReserve(request);
     if (first.ok || this.evictInactiveHeavyResources === undefined || !this.isHeavy(request.kind)) return first;
-    this.evictInactiveHeavyResources(request);
+    const needed = this.processShortfall(request);
+    if (needed === 0) return first;
+    this.evictInactiveHeavyResources(request, needed);
     return this.tryReserve(request);
   }
 
@@ -205,7 +205,7 @@ export class ResourceReservationManager {
     const sessionCapacity = request.sessionId === undefined ? undefined : capacityFor(request.kind, true);
     const sessionTotal = request.sessionId === undefined ? 0 : (this.sessionTotals.get(request.sessionId)?.[request.kind] ?? 0);
     if (request.amount > processCapacity || this.totals[request.kind] > processCapacity - request.amount || (sessionCapacity !== undefined && (request.amount > sessionCapacity || sessionTotal > sessionCapacity - request.amount))) return { ok: false, tag: tagFor(request.kind) };
-    const reservation: ResourceReservation = Object.freeze({ id: this.nextId++, kind: request.kind, amount: request.amount, ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }), inactive: request.inactive === true });
+    const reservation: ResourceReservation = Object.freeze({ id: this.nextId++, kind: request.kind, amount: request.amount, ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }) });
     this.totals[request.kind] += request.amount;
     if (request.sessionId !== undefined) {
       const totals = this.sessionTotals.get(request.sessionId) ?? {};
@@ -214,6 +214,10 @@ export class ResourceReservationManager {
     }
     this.reservations.set(reservation.id, reservation);
     return { ok: true, reservation };
+  }
+
+  private processShortfall(request: ReservationRequest): number {
+    return Math.max(0, this.totals[request.kind] + request.amount - capacityFor(request.kind, false));
   }
 
   private isHeavy(kind: ResourceKind): boolean {
