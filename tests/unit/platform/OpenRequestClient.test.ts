@@ -30,6 +30,21 @@ describe("OpenRequestClient", () => {
     client.dispose();
   });
 
+  it("reconciles retained startup ingress when event listener registration is unavailable", async () => {
+    const requestId = opaque("0");
+    const listen: OpenRequestListener = vi.fn(async () => { throw new Error("EVENT_LISTEN_DENIED"); });
+    const adopt = vi.fn();
+    const invoke = vi.fn(async (command: string) => command === "list_pending_open_ingress" ? [request(requestId)] : command === "claim_open_request" ? claim() : undefined);
+    const client = createOpenRequestClient({ listen, invoke, adopt });
+    await client.ready;
+    await waitFor(() => invoke.mock.calls.some(([command]) => command === "ack_open_request"));
+    expect(adopt).toHaveBeenCalledWith(expect.objectContaining({ requestId }));
+    expect(listen).toHaveBeenCalled();
+    for (let attempt = 0; attempt < 4; attempt += 1) { client.retryPending(); await settle(); }
+    expect(listen).toHaveBeenCalledTimes(1);
+    client.dispose();
+  });
+
   it("preserves native order when a chooser wake retries a transient head", async () => {
     vi.useFakeTimers();
     const events = listenerHarness();

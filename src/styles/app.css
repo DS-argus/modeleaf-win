@@ -1,6 +1,6 @@
 :root {
-  color: #c0caf5;
-  background: #16161e;
+  color: var(--theme-foreground);
+  background: var(--theme-inactive-tab);
   font-family: "Segoe UI Variable", "Segoe UI", sans-serif;
   font-synthesis: none;
 }
@@ -16,7 +16,7 @@ body { overflow: hidden; }
   grid-template-rows: 42px 1fr auto 28px;
   width: 100%;
   height: 100%;
-  background: #1a1b26;
+  background: var(--theme-background);
 }
 
 .titlebar,
@@ -24,16 +24,16 @@ body { overflow: hidden; }
   display: flex;
   align-items: center;
   padding: 0 14px;
-  background: #24283b;
+  background: var(--theme-active-tab);
 }
 
 .titlebar {
   justify-content: space-between;
-  border-bottom: 1px solid #3b4261;
+  border-bottom: 1px solid var(--theme-border);
 }
 
 .titlebar h1 { margin: 0; font-size: 15px; font-weight: 600; }
-.platform-badge { color: #7aa2f7; font-size: 12px; }
+.platform-badge { color: var(--theme-accent); font-size: 12px; }
 
 .reader-surface {
   display: block;
@@ -43,17 +43,17 @@ body { overflow: hidden; }
   overscroll-behavior: contain;
   contain: layout paint;
   position: relative;
-  background: #16161e;
+  background: var(--theme-inactive-tab);
 }
 
 .empty-state {
   max-width: 560px;
-  color: #a9b1d6;
+  color: var(--theme-muted-text);
   text-align: center;
   line-height: 1.55;
 }
 
-.empty-state strong { color: #c0caf5; font-size: 20px; }
+.empty-state strong { color: var(--theme-foreground); font-size: 20px; }
 .empty-state p { margin: 10px 0; }
 .pdf-page {
   display: block;
@@ -104,37 +104,37 @@ body { overflow: hidden; }
 
 .textLayer .markedContent { display: contents; }
 
-.textLayer ::selection { background: rgb(122 162 247 / 45%); }
+.textLayer ::selection { background: color-mix(in srgb, var(--theme-accent) 45%, transparent); }
 .textLayer .pdf-search-hit {
   border-radius: 2px;
-  background: rgb(224 175 104 / 38%);
+  background: color-mix(in srgb, var(--theme-search-highlight) 38%, transparent);
 }
 
 ::highlight(modeleaf-pdf-search-hits) {
-  background: rgb(224 175 104 / 38%);
+  background: color-mix(in srgb, var(--theme-search-highlight) 38%, transparent);
   border-radius: 2px;
 }
 
 ::highlight(modeleaf-pdf-search-current) {
-  background: rgb(255 158 100 / 62%);
-  outline: 2px solid #ff9e64;
+  background: color-mix(in srgb, var(--theme-active-search-highlight) 62%, transparent);
+  outline: 2px solid var(--theme-active-search-highlight);
 }
 
 .textLayer .pdf-search-current {
-  background: rgb(255 158 100 / 62%);
-  outline: 2px solid #ff9e64;
+  background: color-mix(in srgb, var(--theme-active-search-highlight) 62%, transparent);
+  outline: 2px solid var(--theme-active-search-highlight);
 }
 
 .pdf-search-fallback {
   pointer-events: none;
   z-index: 1;
-  background: rgb(224 175 104 / 38%);
+  background: color-mix(in srgb, var(--theme-search-highlight) 38%, transparent);
   border-radius: 2px;
 }
 
 .pdf-search-fallback[data-search-current="true"] {
-  background: rgb(255 158 100 / 62%);
-  outline: 2px solid #ff9e64;
+  background: color-mix(in srgb, var(--theme-active-search-highlight) 62%, transparent);
+  outline: 2px solid var(--theme-active-search-highlight);
 }
 .pdf-link-overlay {
   z-index: 3;
@@ -148,28 +148,28 @@ body { overflow: hidden; }
 
 .pdf-link-overlay:hover,
 .pdf-link-overlay:focus-visible {
-  border-color: #7aa2f7;
-  background: rgb(122 162 247 / 18%);
+  border-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 18%, transparent);
   outline: none;
 }
 
 .pdf-link-hint {
   z-index: 4;
   padding: 1px 4px;
-  border: 1px solid #e0af68;
+  border: 1px solid var(--theme-search-highlight);
   border-radius: 3px;
-  background: #1f2335;
-  color: #e0af68;
+  background: var(--theme-inactive-tab);
+  color: var(--theme-search-highlight);
   font: 700 11px/1.2 "Cascadia Mono", monospace;
   pointer-events: none;
 }
 
 kbd {
   padding: 1px 6px;
-  border: 1px solid #565f89;
+  border: 1px solid var(--theme-border);
   border-radius: 4px;
-  background: #292e42;
-  color: #c0caf5;
+  background: var(--theme-active-tab);
+  color: var(--theme-foreground);
   font: inherit;
   font-size: 0.9em;
 }
@@ -177,46 +177,46 @@ kbd {
 .prompt {
   margin: 0 12px 8px;
   padding: 8px 10px;
-  border: 1px solid #7aa2f7;
+  border: 1px solid var(--theme-accent);
   border-radius: 5px;
-  background: #1f2335;
+  background: var(--theme-inactive-tab);
 }
 
-.statusbar { color: #9aa5ce; font-size: 12px; }
+.statusbar { color: var(--theme-muted-text); font-size: 12px; }
 
 dialog {
   width: min(520px, calc(100vw - 48px));
   max-height: calc(100vh - 80px);
   overflow: auto;
-  border: 1px solid #565f89;
+  border: 1px solid var(--theme-border);
   border-radius: 8px;
-  background: #1f2335;
-  color: #c0caf5;
+  background: var(--theme-inactive-tab);
+  color: var(--theme-foreground);
   box-shadow: 0 20px 60px rgb(0 0 0 / 45%);
 }
 
 dialog::backdrop { background: rgb(10 11 18 / 72%); }
 dialog h2 { margin: 0 0 16px; font-size: 18px; }
 dialog dl { display: grid; grid-template-columns: 150px 1fr; gap: 8px 16px; }
-dialog dt { color: #7aa2f7; font-family: "Cascadia Mono", monospace; }
+dialog dt { color: var(--theme-accent); font-family: "Cascadia Mono", monospace; }
 dialog dd { margin: 0; }
-.dialog-hint { margin: 18px 0 0; color: #9aa5ce; font-size: 12px; }
+.dialog-hint { margin: 18px 0 0; color: var(--theme-muted-text); font-size: 12px; }
 #password-dialog form { display: grid; gap: 14px; }
 #password-dialog label { display: grid; gap: 6px; }
-#password-dialog input { min-width: 260px; padding: 7px; color: #c0caf5; background: #16161e; border: 1px solid #565f89; }
+#password-dialog input { min-width: 260px; padding: 7px; color: var(--theme-foreground); background: var(--theme-inactive-tab); border: 1px solid var(--theme-border); }
 #password-dialog menu { display: flex; justify-content: end; gap: 8px; margin: 0; padding: 0; }
 #search-dialog form { display: grid; gap: 14px; }
 #search-dialog label { display: grid; gap: 6px; }
-#search-dialog input { min-width: 320px; padding: 7px; color: #c0caf5; background: #16161e; border: 1px solid #565f89; }
+#search-dialog input { min-width: 320px; padding: 7px; color: var(--theme-foreground); background: var(--theme-inactive-tab); border: 1px solid var(--theme-border); }
 
 #command-palette-dialog form { display: grid; gap: 12px; }
 #command-palette-dialog input {
   width: 100%;
   min-width: 320px;
   padding: 8px;
-  color: #c0caf5;
-  background: #16161e;
-  border: 1px solid #565f89;
+  color: var(--theme-foreground);
+  background: var(--theme-inactive-tab);
+  border: 1px solid var(--theme-border);
 }
 .command-palette-list {
   display: grid;
@@ -233,7 +233,7 @@ dialog dd { margin: 0; }
   gap: 12px;
   width: 100%;
   padding: 8px 10px;
-  color: #c0caf5;
+  color: var(--theme-foreground);
   text-align: left;
   background: transparent;
   border: 1px solid transparent;
@@ -241,26 +241,93 @@ dialog dd { margin: 0; }
 }
 .command-palette-entry:not(:disabled):hover,
 .command-palette-entry:not(:disabled):focus-visible {
-  background: rgb(122 162 247 / 18%);
-  border-color: #7aa2f7;
+  background: color-mix(in srgb, var(--theme-accent) 18%, transparent);
+  border-color: var(--theme-accent);
   outline: none;
 }
 .command-palette-entry:disabled,
 .command-palette-entry[aria-disabled="true"] {
-  color: #565f89;
+  color: var(--theme-border);
   cursor: not-allowed;
 }
-.command-palette-entry-shortcut { color: #9aa5ce; font-family: "Cascadia Mono", monospace; }
+.command-palette-entry-shortcut { color: var(--theme-muted-text); font-family: "Cascadia Mono", monospace; }
 .command-palette-entry:disabled .command-palette-entry-shortcut,
 .command-palette-entry[aria-disabled="true"] .command-palette-entry-shortcut { color: inherit; }
 .app-shell { grid-template-rows: 42px auto 1fr auto 28px; }
-.tab-strip { display: flex; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; background: #1f2335; border-bottom: 1px solid #3b4261; }
+.tab-strip { display: flex; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; background: var(--theme-inactive-tab); border-bottom: 1px solid var(--theme-border); }
 .workspace-tab-item { display: flex; min-width: 0; }
-.workspace-tab, .workspace-tab-close { border: 0; color: #a9b1d6; background: #292e42; }
+.workspace-tab, .workspace-tab-close { border: 0; color: var(--theme-muted-text); background: var(--theme-active-tab); }
 .workspace-tab { max-width: 220px; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-tab[aria-selected="true"] { color: #c0caf5; background: #3b4261; }
+.workspace-tab[aria-selected="true"] { color: var(--theme-foreground); background: var(--theme-border); }
 .workspace-tab-close { padding: 4px 8px; font-size: 17px; }
-.workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid #7aa2f7; outline-offset: -2px; }
+.workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }
 .tab-hosts { min-height: 0; position: relative; }
 .tab-host { width: 100%; height: 100%; }
 .tab-host[hidden] { display: none; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:root {
+  --theme-background: #1a1b26;
+  --theme-foreground: #c0caf5;
+  --theme-muted-text: #9aa5ce;
+  --theme-border: #3b4261;
+  --theme-accent: #7aa2f7;
+  --theme-active-tab: #24283b;
+  --theme-inactive-tab: #16161e;
+  --theme-statusline: #101014;
+  --theme-error: #f7768e;
+  --theme-search-highlight: #e0af68;
+  --theme-active-search-highlight: #ff9e64;
+  --theme-focus-indicator: #7aa2f7;
+}
+
+body, .app-shell, .reader-surface { color: var(--theme-foreground); background: var(--theme-background); }
+.titlebar { background: var(--theme-active-tab); border-color: var(--theme-border); }
+.statusbar { color: var(--theme-muted-text); background: var(--theme-statusline); }
+.platform-badge, dialog dt { color: var(--theme-accent); }
+.tab-strip, dialog, .prompt { background: var(--theme-inactive-tab); border-color: var(--theme-border); color: var(--theme-foreground); }
+.workspace-tab, .workspace-tab-close, kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
+.workspace-tab[aria-selected="true"] { color: var(--theme-foreground); background: var(--theme-active-tab); }
+.workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline-color: var(--theme-focus-indicator); }
+.theme-list { display: grid; gap: 6px; }
+.theme-option { width: 100%; padding: 9px 10px; color: var(--theme-foreground); text-align: left; background: var(--theme-inactive-tab); border: 1px solid var(--theme-border); border-radius: 5px; }
+.theme-option[aria-checked="true"] { border-color: var(--theme-accent); background: var(--theme-active-tab); }
+.titlebar-actions { display: flex; align-items: center; gap: 12px; }
+#theme-button, #theme-dialog button { color: var(--theme-foreground); background: var(--theme-inactive-tab); border: 1px solid var(--theme-border); border-radius: 4px; padding: 5px 8px; }
+#theme-dialog menu { display: flex; justify-content: end; gap: 8px; margin: 16px 0 0; padding: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+}
+
+@media (forced-colors: active) {
+  .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
+  .theme-option[aria-checked="true"], .workspace-tab[aria-selected="true"] { outline: 2px solid Highlight; outline-offset: -2px; }
+  .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+  .textLayer ::selection,
+  .textLayer .pdf-search-hit,
+  ::highlight(modeleaf-pdf-search-hits),
+  .pdf-search-fallback { background: Highlight; }
+  ::highlight(modeleaf-pdf-search-current),
+  .textLayer .pdf-search-current,
+  .pdf-search-fallback[data-search-current="true"] { background: Highlight; outline-color: HighlightText; }
+  .pdf-link-hint { color: CanvasText; background: Canvas; border-color: Highlight; forced-color-adjust: none; }
+}
+
+@media (min-resolution: 2dppx), (min-width: 1600px) {
+  .app-shell { min-width: 0; }
+  .titlebar { min-height: 42px; }
+  .tab-strip { min-height: 40px; }
+  .reader-surface { padding: clamp(16px, 2vw, 28px); }
+  dialog { width: min(520px, calc(100vw - 24px)); }
+}

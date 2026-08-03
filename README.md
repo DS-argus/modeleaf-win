@@ -26,3 +26,8 @@ npm test
 npm run build
 npm run tauri -- build --no-bundle
 ```
+## CP5 runtime guidance and limitations
+
+Theme selection changes application chrome only; it does not filter PDF pixels. Accessibility support covers named application controls, keyboard focus, dialogs, status, and bounded live announcements, not full PDF-content accessibility, OCR, scanned-document remediation, reading-order remediation, or keyboard range selection. Diagnostics are local, bounded, redacted, and have no application network transport. The WebView2 runtime can independently contact Microsoft services according to Windows/WebView2 diagnostic policy. `Ctrl+Q` uses renderer-first cleanup with a bounded native fallback, and the retained CP5 evidence verifies clean process/job teardown.
+
+Third-party review is tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [direct dependency inventory](.internal/docs/dependency-licenses.txt). Run `node tools/legal/verify-third-party.mjs` after a production manifest, lockfile, copied PDF.js asset, or upstream theme attribution changes. This verifier is a local release gate for the reviewed inventory; it does not replace authoritative review of Rust crates and transitive dependencies.

@@ -628,7 +628,7 @@ export class PdfReaderController {
       canvas.dataset.naturalWidth = String(naturalWidth);
       canvas.dataset.naturalHeight = String(naturalHeight);
       canvas.setAttribute("role", "img");
-      canvas.setAttribute("aria-label", `PDF page ${pageNumber}`);
+      canvas.setAttribute("aria-label", `PDF page ${pageNumber} of ${candidate.document?.numPages ?? pageNumber}`);
       const context = canvas.getContext("2d");
       if (context === null) throw new Error("Canvas unavailable");
       const task = page.render({

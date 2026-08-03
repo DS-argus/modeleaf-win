@@ -149,7 +149,6 @@ struct Session {
     generation: u64,
     length: u64,
     file: Arc<Mutex<File>>,
-    canonical_path: PathBuf,
     teardown: TeardownOwner,
     queued: usize,
     in_flight: usize,
@@ -390,7 +389,7 @@ impl PdfSessionManager {
                 return Err(PdfSessionError::PathRejected)
             }
         }
-        let canonical_path = identity(&file).map_err(|error| match error {
+        identity(&file).map_err(|error| match error {
             crate::local_path::PathPolicyError::RemotePath => PdfSessionError::RemotePath,
             crate::local_path::PathPolicyError::PathRejected => PdfSessionError::PathRejected,
         })?;
@@ -432,7 +431,6 @@ impl PdfSessionManager {
                 generation,
                 length,
                 file: Arc::new(Mutex::new(file)),
-                canonical_path,
                 queued: 0,
                 in_flight: 0,
                 barrier: None,
@@ -454,8 +452,8 @@ impl PdfSessionManager {
             length,
         })
     }
-    /// Re-validates the retained file handle and returns its canonical local identity for native
-    /// recent-document persistence. This never resolves the mutable path used to open it.
+    /// Re-validates the retained file handle and returns its opening-time canonical local identity
+    /// for native recent-document persistence. This never resolves the mutable path used to open it.
     pub fn trusted_recent_identity(
         &self,
         owner: &PdfOwner,
@@ -492,10 +490,9 @@ impl PdfSessionManager {
         id: &SessionId,
         generation: u64,
     ) -> Result<PathBuf, PdfSessionError> {
-        let mut sessions = self.sessions.lock().expect("session state poisoned");
-        Ok(Self::checked_session(&mut sessions, owner, id, generation)?
-            .canonical_path
-            .clone())
+        Ok(self
+            .trusted_recent_identity(owner, id, generation)?
+            .canonical_path)
     }
 
     pub fn read_range(
@@ -572,6 +569,7 @@ impl PdfSessionManager {
             };
             sessions.process_queued -= 1;
             if closing {
+                Self::remove_deferred_drained_session(&mut sessions, id);
                 self.drained.notify_all();
                 return Err(PdfSessionError::SessionClosing);
             }
@@ -596,6 +594,7 @@ impl PdfSessionManager {
                     .ok_or(PdfSessionError::SessionNotFound)?
                     .in_flight -= 1;
                 sessions.process_in_flight -= 1;
+                Self::remove_deferred_drained_session(&mut sessions, id);
                 self.drained.notify_all();
                 return Err(PdfSessionError::RangeInvalid);
             }
@@ -608,6 +607,7 @@ impl PdfSessionManager {
             .ok_or(PdfSessionError::SessionNotFound)?
             .in_flight -= 1;
         sessions.process_in_flight -= 1;
+        Self::remove_deferred_drained_session(&mut sessions, id);
         self.drained.notify_all();
         result
     }
@@ -1194,6 +1194,7 @@ impl PdfSessionManager {
     }
 
     fn drain_matching(&self, matches: impl Fn(&PdfOwner) -> bool, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
         let mut sessions = self.sessions.lock().expect("session state poisoned");
         for session in sessions.entries.values_mut() {
             if matches(&session.owner) && session.teardown == TeardownOwner::Active {
@@ -1203,15 +1204,9 @@ impl PdfSessionManager {
         while sessions.entries.values().any(|session| {
             session.teardown == TeardownOwner::LifecycleDeferred
                 && matches(&session.owner)
-                && (session.in_flight != 0 || session.queued != 0)
-        }) {
-            sessions = self.drained.wait(sessions).expect("session state poisoned");
-        }
-        let deadline = Instant::now() + timeout;
-        while sessions.entries.values().any(|session| {
-            session.teardown == TeardownOwner::LifecycleDeferred
-                && matches(&session.owner)
-                && session.external_link_in_flight != 0
+                && (session.in_flight != 0
+                    || session.queued != 0
+                    || session.external_link_in_flight != 0)
         }) {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return;
@@ -1225,7 +1220,9 @@ impl PdfSessionManager {
                 && sessions.entries.values().any(|session| {
                     session.teardown == TeardownOwner::LifecycleDeferred
                         && matches(&session.owner)
-                        && session.external_link_in_flight != 0
+                        && (session.in_flight != 0
+                            || session.queued != 0
+                            || session.external_link_in_flight != 0)
                 })
             {
                 return;
@@ -1375,7 +1372,6 @@ mod tests {
                 teardown: TeardownOwner::Active,
                 length: 9,
                 file: Arc::new(Mutex::new(File::open(&path).unwrap())),
-                canonical_path: path.clone(),
                 queued: 0,
                 in_flight: 0,
                 barrier: None,
@@ -1624,6 +1620,32 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_drain_deadline_retains_never_settling_range_ownership() {
+        let (manager, id, path) = session();
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            sessions.entries.get_mut(&id).unwrap().queued = 1;
+            sessions.process_queued = 1;
+        }
+
+        manager.drain_owner_with_timeout_for_test(&owner().window_label, Duration::ZERO);
+        {
+            let sessions = manager.sessions.lock().unwrap();
+            let retained = sessions.entries.get(&id).unwrap();
+            assert_eq!(retained.teardown, TeardownOwner::LifecycleDeferred);
+            assert_eq!(retained.queued, 1);
+        }
+
+        {
+            let mut sessions = manager.sessions.lock().unwrap();
+            sessions.entries.get_mut(&id).unwrap().queued = 0;
+            sessions.process_queued = 0;
+            PdfSessionManager::remove_deferred_drained_session(&mut sessions, &id);
+        }
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn command_cancel_first_keeps_its_ownership_through_lifecycle_drain() {
         let (manager, id, path) = session();
         let admission = external_link_admission(&manager, &id);
@@ -1705,7 +1727,6 @@ mod tests {
                         generation: 7,
                         length: 9,
                         file: Arc::new(Mutex::new(File::open(&path).unwrap())),
-                        canonical_path: path.clone(),
                         teardown,
                         queued: 0,
                         in_flight: 0,
