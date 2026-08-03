@@ -6,6 +6,7 @@
   "scripts": {
     "assets:sync": "node tools/pdfjs/sync-assets.mjs",
     "fixtures:generate-adversarial": "node tools/fixtures/generate-adversarial-pdfs.mjs",
+    "legal:verify": "node tools/legal/verify-third-party.mjs",
     "fixtures:verify-korean": "node tools/fixtures/verify-korean-pdfs.mjs",
     "predev": "npm run assets:sync",
     "dev": "vite",

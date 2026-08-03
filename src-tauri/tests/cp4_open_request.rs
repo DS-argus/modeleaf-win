@@ -110,7 +110,7 @@ fn production_session_identity_and_bytes_follow_the_opened_handle_after_path_rep
         sessions
             .resolve_canonical_path(&owner, &opened.session_id, opened.document_generation)
             .unwrap(),
-        identity
+        without_verbatim_prefix(std::fs::canonicalize(&retained).unwrap())
     );
 
     sessions.drain_all();

@@ -47,6 +47,7 @@ function ingressList(value: unknown): Ingress[] | undefined { if (!Array.isArray
 export function createOpenRequestClient(options: OpenRequestClientOptions): OpenRequestClient {
   let active = true;
   let listenersReady = false;
+  let listenersAttempted = false;
   let reconcileQueued = false;
   let retryDelay = RETRY_INITIAL;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -117,7 +118,7 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
       fifo.shift();
     }
   };
-  const registerListeners = async (): Promise<boolean> => { let requestUnlisten: OpenRequestUnlisten | undefined; let failureUnlisten: OpenRequestUnlisten | undefined; try { requestUnlisten = await options.listen(OPEN_REQUEST_EVENT, () => retryPending()); failureUnlisten = await options.listen(OPEN_FAILURE_EVENT, () => retryPending()); if (!active) { requestUnlisten(); failureUnlisten(); return false; } unlistenRequest = requestUnlisten; unlistenFailure = failureUnlisten; listenersReady = true; resetRetry(); return true; } catch { requestUnlisten?.(); failureUnlisten?.(); scheduleRetry(); return false; } };
+  const registerListeners = async (): Promise<boolean> => { listenersAttempted = true; let requestUnlisten: OpenRequestUnlisten | undefined; let failureUnlisten: OpenRequestUnlisten | undefined; try { requestUnlisten = await options.listen(OPEN_REQUEST_EVENT, () => retryPending()); failureUnlisten = await options.listen(OPEN_FAILURE_EVENT, () => retryPending()); if (!active) { requestUnlisten(); failureUnlisten(); return false; } unlistenRequest = requestUnlisten; unlistenFailure = failureUnlisten; listenersReady = true; resetRetry(); return true; } catch { requestUnlisten?.(); failureUnlisten?.(); return false; } };
   const admitNotice = (value: unknown, onTerminal?: OpenRequestTerminal) => {
     const item = notice(value);
     if (!active || item === undefined) return;
@@ -127,7 +128,7 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
     } else if (onTerminal !== undefined) rememberTerminal(item.requestId, onTerminal);
     retryPending();
   };
-  retryPending = () => { if (!active || reconcileQueued) return; reconcileQueued = true; enqueue(async () => { reconcileQueued = false; if (!active) return; const registered = !listenersReady; if (registered && !(await registerListeners())) return; const complete = await enumerate(); await drain(); if (complete) scheduleReconcile(); else scheduleRetry(); if (registered) { resolveReady?.(); resolveReady = undefined; } }); };
+  retryPending = () => { if (!active || reconcileQueued) return; reconcileQueued = true; enqueue(async () => { reconcileQueued = false; if (!active) return; const shouldRegister = !listenersReady && !listenersAttempted; const complete = await enumerate(); await drain(); const listenerComplete = shouldRegister ? await registerListeners() : listenersReady; if (complete) scheduleReconcile(); else scheduleRetry(); if (complete || listenerComplete) { resolveReady?.(); resolveReady = undefined; } }); };
   retryPending();
   return { ready, admitNotice, retryPending, dispose: () => { if (!active) return; active = false; clearTimer(); unlistenRequest?.(); unlistenFailure?.(); } };
 }

@@ -1,11 +1,12 @@
+pub mod diagnostics;
 pub mod external_link;
 pub mod local_path;
 pub mod open_dialog;
 pub mod open_request;
 pub mod pdf_session;
 pub mod recent;
+pub mod theme_state;
 pub mod workspace;
-
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
 use open_dialog::choose_pdf_file;
@@ -21,9 +22,192 @@ use recent::{RecentDocument, RecentStore, RecentStoreError};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use tauri::{ipc::Response, Emitter, Manager, State, Window};
+use theme_state::{ThemeId, ThemeStateError, ThemeStateManager};
 use workspace::{WorkspaceError, WorkspaceManager};
+
+#[derive(Clone, Default)]
+pub struct QuitCoordinator {
+    shutting_down: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
+}
+
+impl QuitCoordinator {
+    pub fn begin(&self) -> bool {
+        self.shutting_down
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::Acquire)
+    }
+    fn claim_finish(&self) -> bool {
+        self.is_shutting_down()
+            && self
+                .finished
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+    }
+}
+
+pub fn drain_owner_for_lifecycle(
+    coordinator: &OpenRequestCoordinator,
+    workspace: &WorkspaceManager,
+    sessions: &PdfSessionManager,
+    owner: &PdfOwner,
+) {
+    coordinator.target_lost_for_lifecycle(owner);
+    let _ = workspace.destroy_window(owner);
+    sessions.drain_owned(owner);
+}
+
+fn drain_app_owners<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let coordinator = app.state::<OpenRequestCoordinator>();
+    let workspace = app.state::<WorkspaceManager>();
+    let sessions = app.state::<PdfSessionManager>();
+    for label in app.webview_windows().keys() {
+        if let Some(owner) = workspace.active_owner(label) {
+            drain_owner_for_lifecycle(&coordinator, &workspace, &sessions, &owner);
+        }
+    }
+    sessions.drain_all();
+}
+
+fn record_native_diagnostic<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    event: diagnostics::DiagnosticEventName,
+    outcome: diagnostics::DiagnosticOutcome,
+    tag: diagnostics::DiagnosticTag,
+) {
+    let Some(log) = app.try_state::<diagnostics::DiagnosticLog>() else {
+        return;
+    };
+    let epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let event = diagnostics::DiagnosticEvent {
+        event,
+        outcome,
+        tag,
+        storage_class: diagnostics::DiagnosticStorageClass::Local,
+        epoch_ms,
+        app_version: env!("CARGO_PKG_VERSION").to_owned(),
+        runtime_version: "0.0.0".to_owned(),
+        trace_id: None,
+        request_id: None,
+        session_id: None,
+        page: None,
+        count: None,
+        duration_ms: None,
+        generation: None,
+    };
+    let _ = log.record(&event);
+}
+
+fn begin_quit_application<R: tauri::Runtime + 'static>(app: &tauri::AppHandle<R>) {
+    if app.state::<QuitCoordinator>().begin() {
+        let _ = app.emit("quit-requested", ());
+        let fallback = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            finish_quit_application(&fallback, false);
+        });
+    }
+}
+
+fn finish_quit_application<R: tauri::Runtime>(app: &tauri::AppHandle<R>, renderer_drained: bool) {
+    if !app.state::<QuitCoordinator>().claim_finish() {
+        return;
+    }
+    drain_app_owners(app);
+    shutdown_external_link_dispatcher();
+    record_native_diagnostic(
+        app,
+        diagnostics::DiagnosticEventName::Quit,
+        if renderer_drained {
+            diagnostics::DiagnosticOutcome::Success
+        } else {
+            diagnostics::DiagnosticOutcome::Failure
+        },
+        if renderer_drained {
+            diagnostics::DiagnosticTag::None
+        } else {
+            diagnostics::DiagnosticTag::Timeout
+        },
+    );
+    app.exit(0);
+}
+
+#[tauri::command]
+fn begin_quit(app: tauri::AppHandle) {
+    begin_quit_application(&app);
+}
+
+#[tauri::command]
+fn renderer_ready(app: tauri::AppHandle) {
+    if app.state::<QuitCoordinator>().is_shutting_down() {
+        let _ = app.emit("quit-requested", ());
+    }
+}
+
+#[tauri::command]
+fn finish_quit(app: tauri::AppHandle, renderer_drained: bool) {
+    finish_quit_application(&app, renderer_drained);
+}
+
+#[tauri::command]
+fn read_theme_state(state: State<'_, ThemeStateManager>) -> theme_state::ThemeState {
+    state.current()
+}
+
+#[tauri::command]
+fn commit_theme_state(
+    app: tauri::AppHandle,
+    state: State<'_, ThemeStateManager>,
+    theme_id: ThemeId,
+    base_revision: u64,
+) -> Result<theme_state::ThemeState, ThemeStateError> {
+    match state.commit(theme_id, base_revision) {
+        Ok(committed) => {
+            let _ = app.emit("theme-state-committed", committed);
+            record_native_diagnostic(
+                &app,
+                diagnostics::DiagnosticEventName::ThemeState,
+                diagnostics::DiagnosticOutcome::Success,
+                diagnostics::DiagnosticTag::None,
+            );
+            Ok(committed)
+        }
+        Err(error) => {
+            let tag = if error == ThemeStateError::Conflict {
+                diagnostics::DiagnosticTag::Conflict
+            } else {
+                diagnostics::DiagnosticTag::IoFailure
+            };
+            record_native_diagnostic(
+                &app,
+                diagnostics::DiagnosticEventName::ThemeState,
+                diagnostics::DiagnosticOutcome::Failure,
+                tag,
+            );
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+fn record_diagnostic(
+    diagnostics: State<'_, diagnostics::DiagnosticLog>,
+    event: diagnostics::DiagnosticEvent,
+) -> Result<(), diagnostics::DiagnosticError> {
+    diagnostics.record(&event)
+}
 
 const MAX_PENDING_SECOND_INSTANCE_PATHS: usize = 8;
 
@@ -504,7 +688,6 @@ async fn close_pdf_session(
         .release_session(&owner, &session_id)
         .map_err(workspace_error)
 }
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sessions = PdfSessionManager::new();
@@ -514,7 +697,11 @@ pub fn run() {
     second_instance_ingress.enqueue_paths(std::env::args_os().skip(1).map(PathBuf::from));
     tauri::Builder::default()
         .manage(second_instance_ingress)
+        .manage(QuitCoordinator::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            if app.state::<QuitCoordinator>().is_shutting_down() {
+                return;
+            }
             let ingress = app.state::<SecondInstanceIngress>();
             enqueue_second_instance(&ingress, argv, &cwd);
             if let Some(window) = app.get_webview_window("main") {
@@ -532,11 +719,28 @@ pub fn run() {
         .manage(workspace)
         .manage(coordinator)
         .setup(|app| {
+            let app_data_directory = app.path().app_data_dir()?;
             let window = app.get_webview_window("main").expect("main window missing");
-            let state_path = app.path().app_data_dir()?.join("recent.json");
-            let mut recents = RecentStore::load(state_path, &SystemLocalPathPolicy)?;
+            let mut recents = RecentStore::load(
+                app_data_directory.join("recent.json"),
+                &SystemLocalPathPolicy,
+            )?;
             let recent_recovery_needed = recents.take_startup_recovery_needed();
             app.manage(Mutex::new(recents));
+            let themes = ThemeStateManager::load(app_data_directory.join("theme-state.json"));
+            let theme_recovery_needed = themes.take_startup_recovery_needed();
+            app.manage(themes);
+            app.manage(diagnostics::DiagnosticLog::open(
+                app_data_directory.join("diagnostics"),
+            )?);
+            if theme_recovery_needed {
+                record_native_diagnostic(
+                    app.handle(),
+                    diagnostics::DiagnosticEventName::ThemeState,
+                    diagnostics::DiagnosticOutcome::Rejected,
+                    diagnostics::DiagnosticTag::ValidationRejected,
+                );
+            }
             app.state::<WorkspaceManager>()
                 .claim_window(window.label())
                 .expect("main window capacity");
@@ -558,6 +762,9 @@ pub fn run() {
         })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                if window.state::<QuitCoordinator>().is_shutting_down() {
+                    return;
+                }
                 let ingress = window.state::<SecondInstanceIngress>();
                 ingress.enqueue_paths(paths.iter().cloned());
                 drain_second_instance_ingress(
@@ -567,19 +774,30 @@ pub fn run() {
                     &ingress,
                 );
             }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                begin_quit_application(&window.app_handle());
+            }
             tauri::WindowEvent::Destroyed => {
                 let workspace = window.state::<WorkspaceManager>();
                 if let Some(owner) = workspace.active_owner(window.label()) {
-                    window
-                        .state::<OpenRequestCoordinator>()
-                        .target_lost_for_lifecycle(&owner);
-                    let _ = workspace.destroy_window(&owner);
-                    window.state::<PdfSessionManager>().drain_owned(&owner);
+                    drain_owner_for_lifecycle(
+                        &window.state::<OpenRequestCoordinator>(),
+                        &workspace,
+                        &window.state::<PdfSessionManager>(),
+                        &owner,
+                    );
                 }
             }
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            begin_quit,
+            renderer_ready,
+            finish_quit,
+            read_theme_state,
+            commit_theme_state,
+            record_diagnostic,
             open_pdf_dialog,
             record_recent,
             list_recents,
@@ -601,8 +819,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Modeleaf")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                app.state::<PdfSessionManager>().drain_all();
+            if matches!(event, tauri::RunEvent::Exit) && app.state::<QuitCoordinator>().begin() {
+                drain_app_owners(app);
                 shutdown_external_link_dispatcher();
             }
         });

@@ -1,0 +1,29 @@
+Modeleaf Windows direct dependency review
+========================================
+
+Scope: current direct production dependencies declared in package.json and src-tauri/Cargo.toml, resolved by package-lock.json and src-tauri/Cargo.lock. Development-only dependencies and all transitive dependency terms are intentionally outside this inventory.
+
+The verifier-compatible reviewed records, copied PDF.js asset notices, and six upstream palette attributions are in ../../THIRD_PARTY_NOTICES.md. Run `node tools/legal/verify-third-party.mjs` after any manifest, lockfile, copied-asset, or theme-source change.
+
+Current reviewed resolution
+---------------------------
+
+JavaScript production dependencies:
+- @tauri-apps/api 2.11.1 — Apache-2.0 OR MIT, recorded in package-lock.json.
+- pdfjs-dist 5.7.284 — Apache-2.0, recorded in package-lock.json.
+
+Rust production and build dependencies:
+- tauri-build 2.6.3 — Apache-2.0 OR MIT
+- tauri 2.11.5 — Apache-2.0 OR MIT
+- rand 0.8.7 — MIT OR Apache-2.0
+- tauri-plugin-single-instance 2.4.3 — Apache-2.0 OR MIT
+- serde 1.0.229 — MIT OR Apache-2.0
+- windows 0.61.3 — MIT OR Apache-2.0
+- url 2.5.8 — MIT OR Apache-2.0
+
+The exact resolved crate manifests and included license files were reviewed; their license expressions and source repositories are recorded in THIRD_PARTY_NOTICES.md.
+
+Copied PDF.js assets
+--------------------
+
+The checked-in PDF.js 5.7.284 manifest records every copied production file's path, byte length, and SHA-256. Included CMap, ICC, font, and WASM license files are retained in the asset tree and referenced by THIRD_PARTY_NOTICES.md; this inventory does not rewrite their terms.
