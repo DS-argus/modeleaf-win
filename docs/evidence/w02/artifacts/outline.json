@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "modeleaf.w02.outline.v1",
+  "fixtureRefs": [
+    { "id": "outline.pdf", "sha256": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3", "bytes": 2545, "beforeSha256": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3", "afterSha256": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3" }
+  ],
+  "fixture": "outline.pdf",
+  "rowCount": 10,
+  "titles": [
+    "Modeleaf outline wrapper",
+    "1 Root",
+    "2 Interior",
+    "3 Duplicate A",
+    "4 Duplicate B",
+    "5 Nested parent",
+    "6 Hidden child",
+    "7 Deeper hidden child",
+    "8 Invalid row",
+    "12 Edge destination"
+  ],
+  "depths": [0, 1, 1, 1, 1, 1, 2, 3, 2, 2],
+  "destinationStatuses": [
+    "wrapper",
+    "resolved",
+    "resolved",
+    "resolved",
+    "duplicate",
+    "resolved",
+    "resolved",
+    "resolved",
+    "invalid",
+    "edge-clamped"
+  ],
+  "edgeDestination": {
+    "pageNumber": 1,
+    "rawY": 679,
+    "clampedY": 676.3
+  },
+  "nullOutlineStableEmpty": true,
+  "emptyOutlineStableEmpty": true,
+  "cycleFailsClosed": true,
+  "result": "pass"
+}

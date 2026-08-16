@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "modeleaf.w02.evidence.v1",
+  "recordId": "w02-outline",
+  "recordType": "outline",
+  "recordedAt": "2026-08-16T16:05:16.6847036Z",
+  "machine": {
+    "id": "reference-workstation-2026-08-16",
+    "os": "Windows 11 Enterprise",
+    "build": "Microsoft Windows NT 10.0.26200.0",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) Ultra 5 125H",
+    "ramBytes": 33838469120,
+    "gpu": "Intel(R) Arc(TM) Graphics",
+    "webview2": "151.0.4129.86"
+  },
+  "app": {
+    "name": "Modeleaf",
+    "version": "0.1.0",
+    "commit": "f306207e3ceab329c9f496a79c74142fc441222f",
+    "dirty": true,
+    "buildProfile": "debug",
+    "sourceTreeSha256": "e6867ef09514b607d72b8e9dd87f89523b37a52cfff0f458481792c397dbb10e",
+    "binarySha256": "b5e674fc902fc038f44bc13568228c79531ee1d7f3db812c4cf1c21ae6bf1e73",
+    "pdfjsVersion": "6.2.108"
+  },
+  "fixture": {
+    "id": "outline.pdf",
+    "sha256": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3",
+    "bytes": 2545
+  },
+  "sourceHashes": {
+    "before": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3",
+    "after": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3"
+  },
+  "result": "pass",
+  "details": {
+    "rowCount": 10,
+    "nullStableEmpty": true,
+    "emptyStableEmpty": true,
+    "nestedDepth": 3,
+    "duplicateClassified": true,
+    "invalidClassified": true,
+    "cycleFailsClosed": true,
+    "edgeRawY": 679,
+    "edgeClampedY": 676.3
+  },
+  "artifactRefs": [
+    {
+      "path": "artifacts/outline.json",
+      "sha256": "094163522de1a54dfdb78e4e46608d1fda849b78d9b1586c728a52215f549cbe",
+      "bytes": 1096
+    }
+  ]
+}

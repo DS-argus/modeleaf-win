@@ -50,8 +50,13 @@ export interface PdfContentViewport {
   readonly width: number;
   readonly scale: number;
   readonly height: number;
-  convertToViewportRectangle(rectangle: readonly number[]): readonly number[];
-  convertToPdfPoint?(x: number, y: number): readonly [number, number];
+  readonly rotation: number;
+  readonly rawDims: {
+    readonly pageWidth: number;
+    readonly pageHeight: number;
+  };
+  convertToViewportPoint(x: number, y: number): readonly [number, number];
+  convertToPdfPoint(x: number, y: number): readonly [number, number];
 }
 
 export interface PdfContentRenderRequest {
@@ -254,18 +259,7 @@ const isExternalUrl = (value: string): boolean => {
         && parsed.password.length === 0
         && !authority.includes("@");
     }
-    if (protocol !== "mailto:" || /%0[aAdD]/u.test(value)) return false;
-    const recipients = decodeURIComponent(parsed.pathname);
-    return recipients.length > 0
-      && !recipients.startsWith("/")
-      && !recipients.includes("/")
-      && recipients.split(",").every((recipient) => {
-        const parts = recipient.split("@");
-        return parts.length === 2
-          && parts[0]!.length > 0
-          && parts[1]!.length > 0
-          && !/[\s\u0000-\u001f\u007f-\u009f]/u.test(recipient);
-      });
+    return false;
   } catch {
     return false;
   }
@@ -560,6 +554,13 @@ export class PdfContentController {
       });
       this.pendingTextRenderer = renderer;
       await awaitOwned(renderer.render(), Math.max(1, deadline - Date.now()));
+      const rawWidth = request.viewport.rawDims.pageWidth * request.viewport.scale;
+      const rawHeight = request.viewport.rawDims.pageHeight * request.viewport.scale;
+      if (!Number.isFinite(rawWidth) || rawWidth <= 0 || !Number.isFinite(rawHeight) || rawHeight <= 0) {
+        throw new Error("PDF_GEOMETRY_INVALID");
+      }
+      textLayer.style.width = `${rawWidth}px`;
+      textLayer.style.height = `${rawHeight}px`;
       if (!this.isCurrent(generation, document) || sequence !== this.renderSequence) return;
       layer.append(textLayer);
       const hintGroups = await awaitOwned(
@@ -643,17 +644,41 @@ export class PdfContentController {
     this.applyHighlights();
   }
 
+  private canvasScrollOrigin(canvas: HTMLCanvasElement): readonly [number, number] {
+    let current: HTMLElement | null = canvas;
+    let x = 0;
+    let y = 0;
+    while (current !== null && current !== this.options.host) {
+      x += current.offsetLeft;
+      y += current.offsetTop;
+      const offsetParent = current.offsetParent as HTMLElement | null;
+      if (offsetParent !== null) current = offsetParent;
+      else if (current.parentElement === this.options.host) current = this.options.host;
+      else break;
+    }
+    if (current === this.options.host) return [x, y];
+
+    const hostRect = this.options.host.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    return [
+      this.options.host.scrollLeft + canvasRect.left - hostRect.left - this.options.host.clientLeft,
+      this.options.host.scrollTop + canvasRect.top - hostRect.top - this.options.host.clientTop,
+    ];
+  }
   public queueDestination(pageNumber: number, destination: readonly unknown[]): number | undefined {
     const document = this.document;
     const generation = this.generation;
     if (document === undefined || generation === undefined) return undefined;
     const viewport = this.renderedViewport;
     const canvas = this.renderedCanvas;
-    const preservedPoint = viewport?.convertToPdfPoint === undefined || canvas === undefined
+    const canvasOrigin = canvas === undefined ? undefined : this.canvasScrollOrigin(canvas);
+    const preservedPoint = viewport?.convertToPdfPoint === undefined
+      || canvas === undefined
+      || canvasOrigin === undefined
       ? undefined
       : viewport.convertToPdfPoint(
-        this.options.host.scrollLeft - canvas.offsetLeft,
-        this.options.host.scrollTop - canvas.offsetTop,
+        this.options.host.scrollLeft - canvasOrigin[0],
+        this.options.host.scrollTop - canvasOrigin[1],
       );
     this.pendingDestination = {
       document,
@@ -678,10 +703,7 @@ export class PdfContentController {
   private applyPendingDestination(request: PdfContentRenderRequest): void {
     const intent = this.pendingDestination;
     if (intent === undefined) return;
-    if (
-      intent.document !== this.document
-      || intent.generation !== this.generation
-    ) {
+    if (intent.document !== this.document || intent.generation !== this.generation) {
       this.pendingDestination = undefined;
       return;
     }
@@ -693,48 +715,47 @@ export class PdfContentController {
       ? String((mode as { readonly name?: unknown }).name)
       : String(mode ?? "");
     const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+    const canvasOrigin = this.canvasScrollOrigin(request.canvas);
+    const scrollTo = (point: readonly number[]): void => {
+      if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+      this.options.host.scrollLeft = Math.max(0, canvasOrigin[0] + point[0]!);
+      this.options.host.scrollTop = Math.max(0, canvasOrigin[1] + point[1]!);
+    };
+
+    if (name === "FitR"
+      && finite(intent.destination[2])
+      && finite(intent.destination[3])
+      && finite(intent.destination[4])
+      && finite(intent.destination[5])) {
+      const first = request.viewport.convertToViewportPoint(intent.destination[2], intent.destination[3]);
+      const second = request.viewport.convertToViewportPoint(intent.destination[4], intent.destination[5]);
+      scrollTo([Math.min(first[0], second[0]), Math.min(first[1], second[1])]);
+      return;
+    }
+
     const destinationX = name === "XYZ" && finite(intent.destination[2])
       ? intent.destination[2]
-      : (name === "FitV" || name === "FitBV" || name === "FitR") && finite(intent.destination[2])
+      : (name === "FitV" || name === "FitBV") && finite(intent.destination[2])
         ? intent.destination[2]
         : undefined;
     const destinationY = name === "XYZ" && finite(intent.destination[3])
       ? intent.destination[3]
       : (name === "FitH" || name === "FitBH") && finite(intent.destination[2])
         ? intent.destination[2]
-        : name === "FitR" && finite(intent.destination[5])
-          ? intent.destination[5]
-          : undefined;
+        : undefined;
     const x = destinationX ?? intent.preservedPoint?.[0];
     const y = destinationY ?? intent.preservedPoint?.[1];
     if (x === undefined && y === undefined) return;
 
-    const inverse = request.viewport.convertToPdfPoint;
-    if (inverse !== undefined) {
-      const current = intent.preservedPoint ?? inverse(
-        this.options.host.scrollLeft - request.canvas.offsetLeft,
-        this.options.host.scrollTop - request.canvas.offsetTop,
-      );
-      const targetX = x ?? current[0];
-      const targetY = y ?? current[1];
-      if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
-      const point = request.viewport.convertToViewportRectangle([targetX, targetY, targetX, targetY]);
-      if (Number.isFinite(point[0]) && Number.isFinite(point[1])) {
-        this.options.host.scrollLeft = Math.max(0, request.canvas.offsetLeft + point[0]!);
-        this.options.host.scrollTop = Math.max(0, request.canvas.offsetTop + point[1]!);
-      }
-      return;
-    }
-
-    const point = request.viewport.convertToViewportRectangle([x ?? 0, y ?? 0, x ?? 0, y ?? 0]);
-    if (x !== undefined && Number.isFinite(point[0])) {
-      this.options.host.scrollLeft = Math.max(0, request.canvas.offsetLeft + point[0]!);
-    }
-    if (y !== undefined && Number.isFinite(point[1])) {
-      this.options.host.scrollTop = Math.max(0, request.canvas.offsetTop + point[1]!);
-    }
+    const current = intent.preservedPoint ?? request.viewport.convertToPdfPoint(
+      this.options.host.scrollLeft - canvasOrigin[0],
+      this.options.host.scrollTop - canvasOrigin[1],
+    );
+    const targetX = x ?? current[0];
+    const targetY = y ?? current[1];
+    if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
+    scrollTo(request.viewport.convertToViewportPoint(targetX, targetY));
   }
-
   public async search(query: string, restoreEvictedResult = false): Promise<void> {
     const deadline = Date.now() + SEARCH_TIMEOUT_MS;
     const sequence = ++this.searchSequence;
@@ -939,23 +960,19 @@ export class PdfContentController {
         annotation, annotationId: `page-${pageNumber}-render-${sequence}-annotation-${index}`, rect, index, key,
       };
     }))).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
-    const buckets: (typeof candidates)[] = [];
-    for (const candidate of candidates) {
-      const bucket = buckets.find((current) => this.sameDestination(current[0]!.key, candidate.key));
-      if (bucket === undefined) buckets.push([candidate]);
-      else bucket.push(candidate);
-    }
     const groups: LinkGroup[] = [];
-    for (const bucket of buckets) {
-      bucket.sort((left, right) => this.compareRectangles(left.rect, right.rect) || left.index - right.index);
-      for (const candidate of bucket) {
-        const previous = groups[groups.length - 1];
-        if (previous !== undefined && this.sameDestination(previous.key, candidate.key) && this.areAdjacentRectangles(previous.rectangles[previous.rectangles.length - 1]!, candidate.rect)) {
-          groups[groups.length - 1] = { ...previous, rectangles: [...previous.rectangles, candidate.rect] };
-        } else {
-          groups.push({ key: candidate.key, annotation: candidate.annotation, annotationId: candidate.annotationId, renderSequence: sequence, registryRevision: undefined, rectangles: [candidate.rect] });
-        }
-      }
+    for (const candidate of candidates.sort((left, right) =>
+      this.compareRectangles(left.rect, right.rect) || left.index - right.index)) {
+      if (groups.some((group) =>
+        this.sameDestination(group.key, candidate.key) && this.sameRectangle(group.rectangles[0]!, candidate.rect))) continue;
+      groups.push({
+        key: candidate.key,
+        annotation: candidate.annotation,
+        annotationId: candidate.annotationId,
+        renderSequence: sequence,
+        registryRevision: undefined,
+        rectangles: [candidate.rect],
+      });
     }
     const hintGroups = groups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!) || this.compareStrings(left.key, right.key) || this.compareStrings(left.annotationId, right.annotationId));
     hintGroups.forEach((group, index) => {
@@ -1121,23 +1138,20 @@ export class PdfContentController {
 
   private toRectangle(rectangle: readonly number[], viewport: PdfContentViewport): DOMRect | null {
     if (rectangle.length !== 4) return null;
-    const transformed = viewport.convertToViewportRectangle(rectangle);
-    const left = Math.min(transformed[0]!, transformed[2]!);
-    const top = Math.min(transformed[1]!, transformed[3]!);
-    const width = Math.abs(transformed[2]! - transformed[0]!);
-    const height = Math.abs(transformed[3]! - transformed[1]!);
+    const first = viewport.convertToViewportPoint(rectangle[0]!, rectangle[1]!);
+    const second = viewport.convertToViewportPoint(rectangle[2]!, rectangle[3]!);
+    const left = Math.min(first[0], second[0]);
+    const top = Math.min(first[1], second[1]);
+    const width = Math.abs(second[0] - first[0]);
+    const height = Math.abs(second[1] - first[1]);
     return width > 0 && height > 0 ? new DOMRect(left, top, width, height) : null;
   }
 
-  private areAdjacentRectangles(previous: DOMRect, next: DOMRect): boolean {
-    const minHeight = Math.min(previous.height, next.height);
-    const heightRatio = Math.max(previous.height, next.height) / minHeight;
-    const verticalGap = next.top - (previous.top + previous.height);
-    const overlap = Math.max(0, Math.min(previous.right, next.right) - Math.max(previous.left, next.left));
-    return heightRatio <= 1.5
-      && overlap >= 0.5 * Math.min(previous.width, next.width)
-      && verticalGap >= -1
-      && verticalGap <= 0.6 * minHeight;
+  private sameRectangle(left: DOMRect, right: DOMRect): boolean {
+    return left.left === right.left
+      && left.top === right.top
+      && left.width === right.width
+      && left.height === right.height;
   }
   private compareRectangles(left: DOMRect, right: DOMRect): number {
     return left.top - right.top

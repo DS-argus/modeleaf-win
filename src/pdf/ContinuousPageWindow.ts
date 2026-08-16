@@ -4,6 +4,10 @@ export interface PageMetric {
 }
 
 export interface PageWindowPlan {
+  readonly generation: number;
+  /** Pages requested for the current viewport, whether or not they are rendered yet. */
+  readonly plannedPages: readonly number[];
+  /** Pages whose materialization has been successfully published. */
   readonly residentPages: readonly number[];
   readonly materializePages: readonly number[];
   readonly evictPages: readonly number[];
@@ -36,6 +40,9 @@ function nonNegativeInteger(value: number, label: string): number {
   return value;
 }
 
+function setsEqual(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
+  return left.size === right.size && [...left].every((page) => right.has(page));
+}
 export class ContinuousPageWindow {
   private readonly pageCount: number;
   private readonly estimatedPageHeight: number;
@@ -44,7 +51,10 @@ export class ContinuousPageWindow {
   private readonly overscanPages: number;
   private readonly maxRememberedMetrics: number;
   private readonly measuredHeights = new Map<number, number>();
+  private planned = new Set<number>();
   private resident = new Set<number>();
+  private readonly inFlight = new Map<number, number>();
+  private generation = 0;
 
   public constructor(options: ContinuousPageWindowOptions) {
     this.pageCount = nonNegativeInteger(options.pageCount, "pageCount");
@@ -71,10 +81,48 @@ export class ContinuousPageWindow {
     }
   }
 
+  /** Clears CSS page metrics after a scale or rotation change. */
+  public resetMetricsForTransform(): readonly number[] {
+    const invalidated = [...this.resident].sort((a, b) => a - b);
+    this.measuredHeights.clear();
+    this.resident.clear();
+    this.inFlight.clear();
+    this.generation += 1;
+    return invalidated;
+  }
+
+  /** Records a completed materialization for a page in the current plan. */
+  public publish(pageNumber: number, generation: number): void {
+    this.assertPage(pageNumber);
+    if (generation !== this.generation || this.inFlight.get(pageNumber) !== generation) {
+      throw new Error(`Page ${pageNumber} materialization is stale`);
+    }
+    if (!this.planned.has(pageNumber)) throw new Error(`Page ${pageNumber} is not in the current plan`);
+    if (!this.resident.has(pageNumber) && this.resident.size >= this.maxResidentPages) {
+      throw new Error("Resident page capacity exceeded");
+    }
+    this.inFlight.delete(pageNumber);
+    this.resident.add(pageNumber);
+  }
+
+  public fail(pageNumber: number, generation: number): void {
+    this.assertPage(pageNumber);
+    if (this.inFlight.get(pageNumber) === generation) this.inFlight.delete(pageNumber);
+  }
+
+  /** Records that the page's published backing has been released. */
+  public unpublish(pageNumber: number): void {
+    this.assertPage(pageNumber);
+    this.resident.delete(pageNumber);
+  }
+
   public plan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
     if (this.pageCount === 0) {
+      this.planned.clear();
       this.resident.clear();
-      return { residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
+      this.inFlight.clear();
+      this.generation += 1;
+      return { generation: this.generation, plannedPages: [], residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
     }
     this.assertPage(firstVisiblePage);
     this.assertPage(lastVisiblePage);
@@ -101,13 +149,20 @@ export class ContinuousPageWindow {
     }
 
     const next = new Set(pages);
-    const materializePages = pages.filter((page) => !this.resident.has(page));
+    if (!setsEqual(next, this.planned)) {
+      this.generation += 1;
+      this.inFlight.clear();
+    }
+    const materializePages = pages.filter((page) => !this.resident.has(page) && !this.inFlight.has(page));
+    for (const page of materializePages) this.inFlight.set(page, this.generation);
     const evictPages = [...this.resident].filter((page) => !next.has(page)).sort((a, b) => a - b);
-    this.resident = next;
+    this.planned = next;
     const firstResident = pages[0]!;
     const lastResident = pages.at(-1)!;
     return {
-      residentPages: pages,
+      generation: this.generation,
+      plannedPages: pages,
+      residentPages: [...this.resident].sort((a, b) => a - b),
       materializePages,
       evictPages,
       topSpacer: this.offsetForPage(firstResident),
