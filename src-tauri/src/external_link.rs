@@ -213,6 +213,11 @@ struct DispatchJob {
     start: Arc<DispatchStart>,
     completion: SyncSender<Result<(), ExternalLinkError>>,
 }
+#[cfg(windows)]
+type DispatchCompletion = mpsc::Receiver<Result<(), ExternalLinkError>>;
+
+#[cfg(windows)]
+type EnqueuedDispatch = (Arc<DispatchStart>, DispatchCompletion);
 
 #[cfg(windows)]
 enum DispatcherStatus {
@@ -330,7 +335,6 @@ fn dispatcher_lifecycle() -> &'static DispatcherLifecycle {
     static DISPATCHER: OnceLock<DispatcherLifecycle> = OnceLock::new();
     DISPATCHER.get_or_init(DispatcherLifecycle::new)
 }
-
 #[cfg(windows)]
 fn dispatcher(deadline: Instant) -> Result<SyncSender<DispatchJob>, ExternalLinkError> {
     dispatcher_lifecycle().acquire(deadline, || {
@@ -352,16 +356,13 @@ fn dispatcher(deadline: Instant) -> Result<SyncSender<DispatchJob>, ExternalLink
         if spawned.is_err() {
             return Err(ExternalLinkError::LinkDispatcherUnavailable);
         }
-        match remaining_until(deadline).and_then(|remaining| {
-            ready_receiver
-                .recv_timeout(remaining)
-                .map_err(|_| ExternalLinkError::LinkDispatcherUnavailable)
-        }) {
-            Ok(true) => Ok(sender),
-            Ok(false) | Err(ExternalLinkError::LinkDispatcherUnavailable) => {
-                Err(ExternalLinkError::LinkDispatcherUnavailable)
-            }
-            Err(error) => Err(error),
+        let ready = ready_receiver
+            .recv_timeout(remaining_until(deadline)?)
+            .map_err(|_| ExternalLinkError::LinkDispatcherUnavailable)?;
+        if ready {
+            Ok(sender)
+        } else {
+            Err(ExternalLinkError::LinkDispatcherUnavailable)
         }
     })
 }
@@ -413,6 +414,7 @@ where
     };
     let _ = job.completion.send(result);
 }
+
 #[cfg(windows)]
 fn await_dispatch_start(start: &DispatchStart, deadline: Instant) -> Result<(), ExternalLinkError> {
     let mut state = start
@@ -442,9 +444,7 @@ fn await_dispatch_start(start: &DispatchStart, deadline: Instant) -> Result<(), 
 }
 
 #[cfg(windows)]
-fn await_dispatch_completion(
-    completion: mpsc::Receiver<Result<(), ExternalLinkError>>,
-) -> Result<(), ExternalLinkError> {
+fn await_dispatch_completion(completion: DispatchCompletion) -> Result<(), ExternalLinkError> {
     completion
         .recv()
         .unwrap_or(Err(ExternalLinkError::LinkDispatcherUnavailable))
@@ -455,13 +455,7 @@ fn enqueue_dispatch(
     sender: &SyncSender<DispatchJob>,
     target: Vec<u16>,
     deadline: Instant,
-) -> Result<
-    (
-        Arc<DispatchStart>,
-        mpsc::Receiver<Result<(), ExternalLinkError>>,
-    ),
-    ExternalLinkError,
-> {
+) -> Result<EnqueuedDispatch, ExternalLinkError> {
     remaining_until(deadline)?;
     let start = Arc::new(DispatchStart::new());
     let (completion_sender, completion_receiver) = mpsc::sync_channel(1);
@@ -483,8 +477,9 @@ fn enqueue_dispatch(
 fn dispatch_registered_handler(target: String) -> Result<(), ExternalLinkError> {
     let deadline = Instant::now() + EXTERNAL_LINK_DISPATCH_TIMEOUT;
     let target = target.encode_utf16().chain(std::iter::once(0)).collect();
-    let (start, completion) = enqueue_dispatch(&dispatcher(deadline)?, target, deadline)?;
-    await_dispatch_start(&start, deadline)?;
+    let sender = dispatcher(deadline)?;
+    let (start, completion) = enqueue_dispatch(&sender, target, deadline)?;
+    await_dispatch_start(start.as_ref(), deadline)?;
     await_dispatch_completion(completion)
 }
 

@@ -3,12 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "24.19.0",
+    "npm": "11.17.0"
+  },
   "scripts": {
     "assets:sync": "node tools/pdfjs/sync-assets.mjs",
     "fixtures:generate-adversarial": "node tools/fixtures/generate-adversarial-pdfs.mjs",
     "fixtures:generate-golden": "node tools/fixtures/generate-golden-pdfs.mjs",
     "fixtures:verify-golden": "vitest run tests/contract/goldenFixtures.test.ts tests/contract/goldenSnapshots.test.ts",
     "legal:verify": "node tools/legal/verify-third-party.mjs",
+    "security:verify": "npm audit --omit=dev --audit-level=high",
+    "tauri:build-debug": "node tools/tauri/build-debug.mjs",
+    "gate:w01": "npm run legal:verify && npm run security:verify && npm run test && npm run build && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml && npm run tauri:build-debug",
     "fixtures:verify-korean": "node tools/fixtures/verify-korean-pdfs.mjs",
     "predev": "npm run assets:sync",
     "dev": "vite",
@@ -20,7 +27,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",
-    "pdfjs-dist": "5.7.284"
+    "pdfjs-dist": "6.2.108"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.8.4",

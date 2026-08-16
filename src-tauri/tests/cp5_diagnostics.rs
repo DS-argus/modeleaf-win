@@ -25,7 +25,7 @@ fn event() -> DiagnosticEvent {
         storage_class: DiagnosticStorageClass::Local,
         epoch_ms: 1_700_000_000_000,
         app_version: "0.1.0".to_owned(),
-        runtime_version: "5.7.284".to_owned(),
+        runtime_version: "6.2.108".to_owned(),
         trace_id: Some("0123456789abcdef0123456789abcdef".to_owned()),
         request_id: Some("11111111111111111111111111111111".to_owned()),
         session_id: Some("22222222222222222222222222222222".to_owned()),

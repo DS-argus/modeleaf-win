@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Minimal Modeleaf window capability",
-  "windows": ["main"],
-  "permissions": []
+  "windows": ["main", "reader-*"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

@@ -10,7 +10,7 @@ Current reviewed resolution
 
 JavaScript production dependencies:
 - @tauri-apps/api 2.11.1 — Apache-2.0 OR MIT, recorded in package-lock.json.
-- pdfjs-dist 5.7.284 — Apache-2.0, recorded in package-lock.json.
+- pdfjs-dist 6.2.108 — Apache-2.0, recorded in package-lock.json.
 
 Rust production and build dependencies:
 - tauri-build 2.6.3 — Apache-2.0 OR MIT
@@ -18,6 +18,7 @@ Rust production and build dependencies:
 - rand 0.8.7 — MIT OR Apache-2.0
 - tauri-plugin-single-instance 2.4.3 — Apache-2.0 OR MIT
 - serde 1.0.229 — MIT OR Apache-2.0
+- webview2-com 0.38.2 — MIT
 - windows 0.61.3 — MIT OR Apache-2.0
 - url 2.5.8 — MIT OR Apache-2.0
 
@@ -26,4 +27,4 @@ The exact resolved crate manifests and included license files were reviewed; the
 Copied PDF.js assets
 --------------------
 
-The checked-in PDF.js 5.7.284 manifest records every copied production file's path, byte length, and SHA-256. Included CMap, ICC, font, and WASM license files are retained in the asset tree and referenced by THIRD_PARTY_NOTICES.md; this inventory does not rewrite their terms.
+The checked-in PDF.js 6.2.108 manifest records every copied production file's path, byte length, and SHA-256. Included CMap, ICC, font, and WASM license files are retained in the asset tree and referenced by THIRD_PARTY_NOTICES.md; this inventory does not rewrite their terms.

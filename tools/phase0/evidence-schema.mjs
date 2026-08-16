@@ -43,7 +43,7 @@ export function validateEnvironment(value) {
   if (value.schema !== EVIDENCE_SCHEMA_VERSION) fail("environment.schema is unsupported");
   string(value.cpu, "environment.cpu"); integer(value.cores, "environment.cores", 1); integer(value.ramBytes, "environment.ramBytes", 1);
   for (const key of ["windows", "webview2", "node", "rust", "tauri", "pdfjs", "scaling", "power", "commit"]) string(value[key], `environment.${key}`);
-  if (value.pdfjs !== "5.7.284") fail("environment.pdfjs must be 5.7.284");
+  if (value.pdfjs !== "6.2.108") fail("environment.pdfjs must be 6.2.108");
   return value;
 }
 
