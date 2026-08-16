@@ -245,6 +245,12 @@ export class PdfTabSession {
     }
   }
 
+  public async activateViewportPage(page: number): Promise<boolean> {
+    if (this.closed || !this.active || !Number.isInteger(page)) return false;
+    if (page === this.reader.snapshot.page) return true;
+    this.apply({ type: "page.goTo", page });
+    return this.renderPage(this.reader.snapshot.page);
+  }
   public submitSearch(source: string, reverse = false): PdfTabSearchDecision {
     if (this.closed || !this.active) return { kind: "ignore" };
     const content = this.content;

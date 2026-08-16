@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_BINDINGS,
@@ -6,6 +7,9 @@ import {
 } from "../../../src/core/defaultBindings.windows";
 import {
   buildCommandPaletteEntries,
+  commandPaletteKeyAction,
+  isPaletteClearShortcut,
+  moveCommandPaletteIndex,
   type CommandPaletteCommandEntry,
   type RecentPaletteRecord,
 } from "../../../src/ui/CommandPaletteModel";
@@ -162,5 +166,50 @@ describe("CommandPaletteModel", () => {
       displayName: "Safe name.pdf",
     });
     expect(entry).not.toHaveProperty("path");
+  });
+
+  it("recognizes Ctrl+Shift+C by physical key code under non-Latin input", () => {
+    expect(isPaletteClearShortcut({ key: "ㅊ", code: "KeyC", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false, isComposing: false })).toBe(true);
+    expect(isPaletteClearShortcut({ key: "C", code: "KeyC", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false, isComposing: false })).toBe(false);
+  });
+
+  it("handles Ctrl+J/K across dialog controls without moving an empty palette", () => {
+    const dialog = document.createElement("dialog");
+    const input = document.createElement("input");
+    const button = document.createElement("button");
+    dialog.append(input, button);
+    let activeIndex = 0;
+    let entryCount = 3;
+    const actions: string[] = [];
+    dialog.addEventListener("keydown", (event) => {
+      const action = commandPaletteKeyAction(event);
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      actions.push(action);
+      if (action === "next" || action === "previous") {
+        activeIndex = moveCommandPaletteIndex(activeIndex, entryCount, action);
+      }
+    }, { capture: true });
+    const press = (target: HTMLElement, key: string, ctrlKey = false): void => {
+      const event = new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    };
+
+    press(input, "j", true);
+    expect(activeIndex).toBe(1);
+    press(button, "ArrowDown");
+    expect(activeIndex).toBe(2);
+    press(button, "k", true);
+    expect(activeIndex).toBe(1);
+    press(input, "ArrowUp");
+    expect(activeIndex).toBe(0);
+    entryCount = 0;
+    press(button, "j", true);
+    expect(activeIndex).toBe(0);
+    press(button, "Enter");
+    press(button, "Escape");
+    expect(actions).toEqual(["next", "next", "previous", "previous", "next", "submit", "close"]);
   });
 });

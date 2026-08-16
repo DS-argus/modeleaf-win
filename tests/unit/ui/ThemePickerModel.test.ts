@@ -34,6 +34,7 @@ describe("ThemePickerModel", () => {
       activeIndex: 0,
       transaction: { baselineId: "tokyo-night", baselineRevision: 17, previewId: "tokyo-night" },
     });
+    expect(openThemePicker("dracula", 18).activeIndex).toBe(3);
   });
 
   it("previews a bounded row without emitting a durable-write intent", () => {

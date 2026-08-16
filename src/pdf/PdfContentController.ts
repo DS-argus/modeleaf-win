@@ -26,6 +26,11 @@ export interface PdfContentAnnotation {
   readonly id?: string;
   readonly dest?: unknown;
   readonly action?: string;
+  readonly color?: readonly number[] | Uint8ClampedArray;
+  readonly borderStyle?: {
+    readonly width?: number;
+    readonly style?: number;
+  };
 }
 
 export interface PdfContentPage {
@@ -583,14 +588,13 @@ export class PdfContentController {
       } else {
         this.options.host.replaceChildren(request.canvas, layer);
       }
-      layer.style.left = `${request.canvas.offsetLeft}px`;
-      layer.style.top = `${request.canvas.offsetTop}px`;
       this.clearRenderedContent();
       this.layer = layer;
       this.textLayer = textLayer;
       this.renderedViewport = request.viewport;
       this.renderedCanvas = request.canvas;
       this.hintGroups = hintGroups;
+      this.updateHintVisibility();
       this.pendingTextReservation = undefined;
       this.visibleTextReservation = reserved.reservation;
       ownsReservation = false;
@@ -966,6 +970,18 @@ export class PdfContentController {
         target.style.pointerEvents = "auto";
         target.dataset.hintTarget = this.hintLabelFor(index, hintGroups.length);
         target.setAttribute("aria-label", `PDF link ${this.hintLabelFor(index, hintGroups.length)}`);
+        const annotationColor = group.annotation.color;
+        if (annotationColor !== undefined && annotationColor.length >= 3) {
+          const channels = [annotationColor[0], annotationColor[1], annotationColor[2]].map(Number);
+          if (channels.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255)) {
+            target.style.setProperty("--pdf-link-color", `rgb(${channels.map((channel) => Math.round(channel)).join(" ")})`);
+          }
+        }
+        const borderWidth = group.annotation.borderStyle?.width;
+        if (typeof borderWidth === "number" && Number.isFinite(borderWidth) && borderWidth > 0) {
+          target.style.borderWidth = `${Math.min(4, Math.max(1, borderWidth))}px`;
+        }
+        if (group.annotation.borderStyle?.style === 2) target.style.borderStyle = "dashed";
         target.addEventListener("click", () => {
           if (this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group);
         });
@@ -1159,6 +1175,7 @@ export class PdfContentController {
     this.layer?.querySelectorAll<HTMLElement>("[data-hint-label]").forEach((hint) => {
       hint.style.display = this.hintsVisible ? "block" : "none";
     });
+    this.layer?.classList.toggle("pdf-link-hints-active", this.hintsVisible);
   }
 
   private stageExternalLinks(

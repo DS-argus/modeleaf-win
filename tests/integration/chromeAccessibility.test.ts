@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AccessibilityController, focusRestoreTarget,
   readerAccessibilityName,
   tabAccessibilitySemantics,
   visualPageAccessibilityName,
 } from "../../src/ui/AccessibilityController";
-import { THEME_PICKER_ROWS, commitThemePicker, openThemePicker, previewThemePickerRow, revertThemePicker } from "../../src/ui/ThemePickerModel";
-
+import { bindSearchPrompt } from "../../src/ui/SearchPromptController";
+import { THEME_PICKER_ROWS, commitThemePicker, openThemePicker, previewThemePickerRow, revertThemePicker, themePickerDialogKeyAction } from "../../src/ui/ThemePickerModel";
 
 describe("CP5 theme accessibility contract", () => {
   it("keeps all six theme choices keyboard-addressable and makes preview reversible", () => {
@@ -19,6 +19,31 @@ describe("CP5 theme accessibility contract", () => {
     expect(revertThemePicker(preview.model).effect).toEqual({ kind: "revert", themeId: "tokyo-night" });
   });
 
+  it("handles arrows, Ctrl+J/K, Enter, and Escape from focused dialog controls", () => {
+    const dialog = document.createElement("dialog");
+    const option = document.createElement("button");
+    const apply = document.createElement("button");
+    dialog.append(option, apply);
+    const actions: string[] = [];
+    dialog.addEventListener("keydown", (event) => {
+      const action = themePickerDialogKeyAction(event);
+      if (action) actions.push(action);
+    });
+    const press = (target: HTMLElement, key: string, ctrlKey = false): void => {
+      const event = new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    };
+    press(option, "j", true);
+    press(apply, "k", true);
+    press(option, "ArrowDown");
+    press(option, "ArrowRight");
+    press(apply, "ArrowUp");
+    press(apply, "ArrowLeft");
+    press(apply, "Enter");
+    press(option, "Escape");
+    expect(actions).toEqual(["next", "previous", "next", "next", "previous", "previous", "commit", "revert"]);
+  });
   it("uses atomic polite and assertive live regions without document data", () => {
     const polite = document.createElement("div");
     const assertive = document.createElement("div");
@@ -126,5 +151,39 @@ describe("chrome accessibility contract", () => {
     expect(focusRestoreTarget(cancel, activeTab, reader)).toBe(cancel);
     cancel.remove();
     expect(focusRestoreTarget(cancel, activeTab, reader)).toBe(activeTab);
+  });
+});
+describe("search prompt production binding", () => {
+  it("clears and cancels on Escape without submitting or moving the reader", () => {
+    const dialog = document.createElement("dialog");
+    const form = document.createElement("form");
+    const input = document.createElement("input");
+    form.append(input);
+    dialog.append(form);
+    document.body.append(dialog);
+    const invalidateSearch = vi.fn();
+    const submitSearch = vi.fn();
+    const render = vi.fn();
+    const dispose = bindSearchPrompt(
+      { dialog, form, input },
+      () => ({ invalidateSearch, submitSearch }),
+      render,
+    );
+
+    dialog.setAttribute("open", "");
+    dialog.close = vi.fn(() => dialog.removeAttribute("open"));
+    input.value = "retained query";
+    input.focus();
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    input.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(invalidateSearch).toHaveBeenCalledOnce();
+    expect(submitSearch).not.toHaveBeenCalled();
+    expect(input.value).toBe("");
+    expect(dialog.open).toBe(false);
+    expect(render).toHaveBeenCalledOnce();
+
+    dispose();
   });
 });

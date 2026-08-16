@@ -46,6 +46,31 @@ export const THEME_PICKER_ROWS: readonly ThemePickerRow[] = Object.freeze(THEMES
 
 export const CLOSED_THEME_PICKER: ThemePickerClosedModel = Object.freeze({ status: "closed" });
 
+export type ThemePickerKeyAction = "next" | "previous" | "commit" | "revert";
+
+export function themePickerKeyAction(key: string): ThemePickerKeyAction | undefined {
+  if (key === "ArrowDown" || key === "ArrowRight") return "next";
+  if (key === "ArrowUp" || key === "ArrowLeft") return "previous";
+  if (key === "Enter") return "commit";
+  if (key === "Escape") return "revert";
+  return undefined;
+}
+
+export function themePickerDialogKeyAction(event: KeyboardEvent): ThemePickerKeyAction | undefined {
+  if (event.isComposing || event.altKey || event.metaKey || event.shiftKey) return undefined;
+  const ctrlKey = event.ctrlKey ? event.key.toLowerCase() : "";
+  const action = ctrlKey === "j"
+    ? "next"
+    : ctrlKey === "k"
+      ? "previous"
+      : event.ctrlKey
+        ? undefined
+        : themePickerKeyAction(event.key);
+  if (!action) return undefined;
+  event.preventDefault();
+  event.stopPropagation();
+  return action;
+}
 function assertThemeId(value: string): asserts value is ThemeId {
   if (!isThemeId(value)) throw new RangeError(`Unknown theme id: ${value}`);
 }

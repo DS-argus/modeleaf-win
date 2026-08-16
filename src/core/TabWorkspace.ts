@@ -85,6 +85,12 @@ export class TabWorkspace<T = undefined> {
     return true;
   }
 
+  adjacentId(direction: 1 | -1): TabId {
+    const activeIndex = this.findTabIndex(this.activeId);
+    const nextIndex = (activeIndex + direction + this.tabs.length) % this.tabs.length;
+    return this.tabs[nextIndex]!.id;
+  }
+
   stageAdoption(payload: T, lifecycle?: TabLifecycle<T>): TabId | null {
     if (this.tabs.length >= this.maximumTabs) return null;
     const tab = this.createTab(payload, lifecycle, true, this.activeId);

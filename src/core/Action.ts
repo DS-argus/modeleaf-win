@@ -19,6 +19,8 @@ export type Action =
   | { readonly type: "palette.toggle" }
   | { readonly type: "tab.close" }
   | { readonly type: "tab.activate"; readonly index: number }
+  | { readonly type: "tab.next" }
+  | { readonly type: "tab.previous" }
   | { readonly type: "theme.open" }
   | { readonly type: "application.quit" }
   | { readonly type: "search.open" }

@@ -125,8 +125,8 @@ interface Candidate {
   readonly ownedPagePromises: Set<Promise<PdfPage>>;
   readonly ownedRenderSettlements: Set<Promise<void>>;
   document?: PdfDocument;
-  canvasReservation?: ResourceReservation;
-  pageNumber?: number;
+  readonly residentRasters: Map<number, ResourceReservation>;
+  activePageNumber?: number;
 
 }
 interface CleanupPhase {
@@ -192,6 +192,7 @@ export class PdfReaderController {
   private disposed = false;
   private openSequence = 0;
   private readonly quarantinedCandidates = new Set<Candidate>();
+  private prefetchSequence = 0;
   private readonly pendingCleanups = new Map<string, PendingCleanup>();
   private readonly teardownSessions = new Map<string, Promise<void>>();
   private viewTransform: PdfViewTransform = {
@@ -283,7 +284,7 @@ export class PdfReaderController {
       iccUrl: PDFJS_POLICY.assets.iccUrl,
     });
     const candidate: Candidate = {
-      session, adapter, task, ownerGeneration, passwordFailures: 0, closed: false, ownedPagePromises: new Set(), ownedRenderSettlements: new Set(),
+      session, adapter, task, ownerGeneration, passwordFailures: 0, closed: false, ownedPagePromises: new Set(), ownedRenderSettlements: new Set(), residentRasters: new Map(),
     };
     task.onPassword = (updatePassword, reason) => {
       if (reason === 2) candidate.passwordFailures += 1;
@@ -316,8 +317,8 @@ export class PdfReaderController {
         this.options.resources.release(rendered.reservation);
         throw new Error("Opening PDF cancelled");
       }
-      candidate.canvasReservation = rendered.reservation;
-      candidate.pageNumber = 1;
+      candidate.residentRasters.set(1, rendered.reservation);
+      candidate.activePageNumber = 1;
       if (this.disposed || this.opening !== candidate) throw new Error("Opening PDF cancelled");
       let priorCleanup: Promise<void> | undefined;
       let canvasCommitted = false;
@@ -327,12 +328,13 @@ export class PdfReaderController {
         this.current = candidate;
         this.opening = undefined;
         this.viewTransform = openingTransform;
-        this.canvasReplace(rendered.canvas, accessory);
+        this.canvasReplace(rendered.canvas, accessory, undefined, true);
         canvasCommitted = true;
         delete candidate.stagedTeardown;
         priorCleanup = this.disposeCandidate(prior);
         this.notifyObserver(() => this.options.onCommitted(document.numPages, session.displayName, document, session, ownerGeneration));
         this.notifyObserver(() => this.options.onPage(1, openingTransform));
+        this.scheduleAdjacentRasters(candidate, 1, openingTransform);
         return true;
       };
       if (this.options.onBeforeCommit === undefined) commitCanvas();
@@ -400,7 +402,7 @@ export class PdfReaderController {
     if (normalized.scale === this.viewTransform.scale
       && normalized.rotation === this.viewTransform.rotation
       && normalized.devicePixelRatio === this.viewTransform.devicePixelRatio) return requestCommitGuard?.() ?? true;
-    const pageNumber = this.current?.pageNumber;
+    const pageNumber = this.current?.activePageNumber;
     if (pageNumber === undefined) {
       if (requestCommitGuard !== undefined && !requestCommitGuard()) return false;
       this.viewTransform = normalized;
@@ -422,37 +424,39 @@ export class PdfReaderController {
 
 
   public async rerenderForResize(requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
-    const pageNumber = this.current?.pageNumber;
+    const pageNumber = this.current?.activePageNumber;
     return pageNumber === undefined ? false : this.renderPage(pageNumber, this.viewTransform, requestCommitGuard);
   }
 
   public captureScrollAnchor(): PdfScrollAnchor {
-    const canvas = this.options.canvasHost.firstElementChild as HTMLCanvasElement | null;
+    const canvas = this.publishedCanvas();
     if (canvas === null) return { x: 0, y: 0 };
     const width = canvas.getBoundingClientRect().width || canvas.width;
     const height = canvas.getBoundingClientRect().height || canvas.height;
+    const frame = canvas.parentElement!;
     return {
       x: width === 0
         ? 0
-        : (this.options.canvasHost.scrollLeft + this.options.canvasHost.clientWidth / 2 - canvas.offsetLeft) / width,
+        : (this.options.canvasHost.scrollLeft + this.options.canvasHost.clientWidth / 2 - frame.offsetLeft - canvas.offsetLeft) / width,
       y: height === 0
         ? 0
-        : (this.options.canvasHost.scrollTop + this.options.canvasHost.clientHeight / 2 - canvas.offsetTop) / height,
+        : (this.options.canvasHost.scrollTop + this.options.canvasHost.clientHeight / 2 - frame.offsetTop - canvas.offsetTop) / height,
     };
   }
 
   public restoreScrollAnchor(anchor: PdfScrollAnchor): void {
-    const canvas = this.options.canvasHost.firstElementChild as HTMLCanvasElement | null;
+    const canvas = this.publishedCanvas();
     if (canvas === null) return;
     const width = canvas.getBoundingClientRect().width || canvas.width;
     const height = canvas.getBoundingClientRect().height || canvas.height;
+    const frame = canvas.parentElement!;
     this.options.canvasHost.scrollLeft = Math.max(
       0,
-      canvas.offsetLeft + anchor.x * width - this.options.canvasHost.clientWidth / 2,
+      frame.offsetLeft + canvas.offsetLeft + anchor.x * width - this.options.canvasHost.clientWidth / 2,
     );
     this.options.canvasHost.scrollTop = Math.max(
       0,
-      canvas.offsetTop + anchor.y * height - this.options.canvasHost.clientHeight / 2,
+      frame.offsetTop + canvas.offsetTop + anchor.y * height - this.options.canvasHost.clientHeight / 2,
     );
   }
 
@@ -463,6 +467,7 @@ export class PdfReaderController {
   ): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
+    this.prefetchSequence += 1;
     try {
       const rendered = await this.renderCandidatePage(current, page, transform);
       if (this.current !== current || this.disposed) {
@@ -473,22 +478,24 @@ export class PdfReaderController {
         this.options.resources.release(rendered.reservation);
         return false;
       }
-      const capturedAnchor = current.pageNumber === page ? this.captureScrollAnchor() : undefined;
+      const capturedAnchor = current.activePageNumber === page ? this.captureScrollAnchor() : undefined;
       const evictedAnchor = this.evictedScrollAnchor?.pageNumber === page ? this.evictedScrollAnchor.anchor : undefined;
       const anchor = evictedAnchor ?? capturedAnchor;
       let canvasCommitted = false;
       const commitCanvas = (accessory?: HTMLElement): boolean => {
         if (canvasCommitted || this.current !== current || this.disposed
           || (requestCommitGuard !== undefined && !requestCommitGuard())) return false;
-        const priorReservation = current.canvasReservation;
-        current.canvasReservation = rendered.reservation;
-        current.pageNumber = page;
+        const priorReservation = current.residentRasters.get(page);
+        current.residentRasters.set(page, rendered.reservation);
+        current.activePageNumber = page;
         this.viewTransform = transform;
         this.canvasReplace(rendered.canvas, accessory, anchor);
         canvasCommitted = true;
         this.evictedScrollAnchor = undefined;
         if (priorReservation !== undefined) this.options.resources.release(priorReservation);
         this.notifyObserver(() => this.options.onPage(page, transform));
+        this.pruneResidentRasters(current, page);
+        this.scheduleAdjacentRasters(current, page, transform);
         return true;
       };
       try {
@@ -520,16 +527,17 @@ export class PdfReaderController {
   /** Cancels foreground rendering without releasing the owned document session. */
   public async suspend(): Promise<void> {
     this.renderSequence += 1;
+    this.prefetchSequence += 1;
     await this.cancelActiveRender();
   }
 
   /** Releases a suspended tab's committed canvas without closing its native PDF session. */
   public evictInactiveCanvas(): boolean {
     const current = this.current;
-    if (current === undefined || current.canvasReservation === undefined || this.activeRender !== undefined) return false;
-    this.evictedScrollAnchor = { pageNumber: current.pageNumber ?? 1, anchor: this.captureScrollAnchor() };
-    this.options.resources.release(current.canvasReservation);
-    delete current.canvasReservation;
+    if (current === undefined || current.residentRasters.size === 0 || this.activeRender !== undefined) return false;
+    this.evictedScrollAnchor = { pageNumber: current.activePageNumber ?? 1, anchor: this.captureScrollAnchor() };
+    for (const reservation of current.residentRasters.values()) this.options.resources.release(reservation);
+    current.residentRasters.clear();
     this.options.canvasHost.replaceChildren();
     return true;
   }
@@ -684,16 +692,101 @@ export class PdfReaderController {
       }
     }
   }
-  private canvasReplace(canvas: HTMLCanvasElement, accessory?: HTMLElement, anchor?: PdfScrollAnchor): void {
-    this.options.canvasHost.replaceChildren(canvas, ...(accessory === undefined ? [] : [accessory]));
+  private publishedCanvas(): HTMLCanvasElement | null {
+    return this.options.canvasHost.querySelector<HTMLCanvasElement>(":scope > .pdf-page-frame[data-active-page='true'] > canvas");
+  }
+
+  private createPageFrame(canvas: HTMLCanvasElement, accessory?: HTMLElement): HTMLElement {
+    const frame = document.createElement("div");
+    frame.className = "pdf-page-frame";
+    frame.dataset.page = canvas.dataset.page;
+    frame.style.width = canvas.style.width;
+    frame.style.height = canvas.style.height;
+    frame.append(canvas);
+    if (accessory !== undefined) frame.append(accessory);
+    return frame;
+  }
+
+  private publishPageFrame(
+    canvas: HTMLCanvasElement,
+    accessory?: HTMLElement,
+    replaceDocument = false,
+    activate = true,
+  ): HTMLElement {
+    const frame = this.createPageFrame(canvas, accessory);
+    const pageNumber = Number(canvas.dataset.page);
+    if (replaceDocument) this.options.canvasHost.replaceChildren();
+    const existing = this.options.canvasHost.querySelector<HTMLElement>(
+      `:scope > .pdf-page-frame[data-page='${pageNumber}']`,
+    );
+    if (existing !== null) {
+      existing.replaceWith(frame);
+    } else {
+      const successor = [...this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")]
+        .find((candidate) => Number(candidate.dataset.page) > pageNumber);
+      if (successor === undefined) this.options.canvasHost.append(frame);
+      else this.options.canvasHost.insertBefore(frame, successor);
+    }
+    if (activate) {
+      for (const candidate of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+        candidate.dataset.activePage = String(candidate === frame);
+      }
+    }
+    return frame;
+  }
+  private canvasReplace(
+    canvas: HTMLCanvasElement,
+    accessory?: HTMLElement,
+    anchor?: PdfScrollAnchor,
+    replaceDocument = false,
+  ): void {
+    this.publishPageFrame(canvas, accessory, replaceDocument);
     if (anchor !== undefined) {
       this.restoreScrollAnchor(anchor);
-    } else {
+    } else if (replaceDocument) {
       this.options.canvasHost.scrollLeft = 0;
       this.options.canvasHost.scrollTop = 0;
     }
   }
 
+  private pruneResidentRasters(candidate: Candidate, centerPage: number): void {
+    const minimum = Math.max(1, centerPage - 1);
+    const maximum = Math.min(candidate.document?.numPages ?? centerPage, centerPage + 1);
+    for (const [page, reservation] of [...candidate.residentRasters]) {
+      if (page >= minimum && page <= maximum) continue;
+      this.options.resources.release(reservation);
+      candidate.residentRasters.delete(page);
+      this.options.canvasHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${page}']`)?.remove();
+    }
+  }
+
+  private scheduleAdjacentRasters(candidate: Candidate, centerPage: number, transform: PdfViewTransform): void {
+    const document = candidate.document;
+    if (document === undefined || candidate.closed || this.disposed) return;
+    const pages = [centerPage - 1, centerPage + 1].filter((page) => page >= 1 && page <= document.numPages);
+    const generation = ++this.prefetchSequence;
+    void (async () => {
+      for (const page of pages) {
+        if (candidate.residentRasters.has(page)) continue;
+        let rendered: RenderedCanvas | undefined;
+        try {
+          rendered = await this.renderPageUnchecked(candidate, page, transform);
+          if (generation !== this.prefetchSequence || this.current !== candidate || candidate.closed || this.disposed
+            || candidate.activePageNumber !== centerPage) {
+            this.options.resources.release(rendered.reservation);
+            return;
+          }
+          candidate.residentRasters.set(page, rendered.reservation);
+          this.publishPageFrame(rendered.canvas, undefined, false, false);
+          rendered = undefined;
+        } catch {
+          if (rendered !== undefined) this.options.resources.release(rendered.reservation);
+          return;
+        }
+      }
+      this.pruneResidentRasters(candidate, centerPage);
+    })();
+  }
   private normalizeViewTransform(transform: PdfViewTransform): PdfViewTransform {
     if (!Number.isFinite(transform.scale) || transform.scale <= 0) throw new Error("Invalid PDF scale");
     if (!Number.isFinite(transform.devicePixelRatio) || transform.devicePixelRatio <= 0) {
@@ -737,10 +830,10 @@ export class PdfReaderController {
   }
 
   private releaseCandidateOwnership(candidate: Candidate): void {
-    if (candidate.canvasReservation !== undefined) {
-      this.options.resources.release(candidate.canvasReservation);
-      delete candidate.canvasReservation;
+    for (const reservation of candidate.residentRasters.values()) {
+      this.options.resources.release(reservation);
     }
+    candidate.residentRasters.clear();
     this.liveSessions.delete(candidate.session.sessionId);
   }
 

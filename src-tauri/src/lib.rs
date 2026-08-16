@@ -688,6 +688,36 @@ async fn close_pdf_session(
         .release_session(&owner, &session_id)
         .map_err(workspace_error)
 }
+#[cfg(windows)]
+fn disable_browser_accelerators<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> tauri::Result<()> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+    use windows::core::Interface;
+
+    window.with_webview(|webview| unsafe {
+        let core = webview
+            .controller()
+            .CoreWebView2()
+            .expect("main WebView2 controller is unavailable");
+        let settings = core
+            .Settings()
+            .expect("main WebView2 settings are unavailable");
+        let settings3 = settings
+            .cast::<ICoreWebView2Settings3>()
+            .expect("WebView2 browser accelerator settings are unavailable");
+        settings3
+            .SetAreBrowserAcceleratorKeysEnabled(false)
+            .expect("could not disable WebView2 browser accelerator keys");
+    })
+}
+
+#[cfg(not(windows))]
+fn disable_browser_accelerators<R: tauri::Runtime>(
+    _window: &tauri::WebviewWindow<R>,
+) -> tauri::Result<()> {
+    Ok(())
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sessions = PdfSessionManager::new();
@@ -721,6 +751,7 @@ pub fn run() {
         .setup(|app| {
             let app_data_directory = app.path().app_data_dir()?;
             let window = app.get_webview_window("main").expect("main window missing");
+            disable_browser_accelerators(&window)?;
             let mut recents = RecentStore::load(
                 app_data_directory.join("recent.json"),
                 &SystemLocalPathPolicy,
