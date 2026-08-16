@@ -57,7 +57,7 @@ describe("shortcut workflow", () => {
   it("uses the same registry for behavior and visible help", () => {
     const shortcuts = buildHelpRows().map((row) => row.shortcut);
     expect(shortcuts).toEqual(expect.arrayContaining([
-      "Ctrl+O", "Ctrl+N", "Ctrl+W", "Ctrl+1", "Ctrl+9", "Ctrl+Shift+P", "n", "p", "g g", "G", "?",
+      "Ctrl+O", "Ctrl+N", "Ctrl+W", "Ctrl+1", "Ctrl+9", "Ctrl+Shift+P", ":", "Shift+N", "Shift+P", "n", "p", "g g", "Shift+G", "?",
     ]));
   });
 
@@ -69,7 +69,7 @@ describe("shortcut workflow", () => {
       modalOpen: true,
     };
     const expected = [
-      { id: "theme.open", shortcut: "T", label: "Choose theme", enabled: true },
+      { id: "theme.open", shortcut: "Shift+T", label: "Choose theme", enabled: true },
       { id: "application.quit", shortcut: "Ctrl+Q", label: "Quit after owned cleanup", enabled: true },
     ];
 
@@ -79,7 +79,9 @@ describe("shortcut workflow", () => {
     expect(bindingById("application.quit")).toMatchObject({
       keys: ["Ctrl+Q"], action: { type: "application.quit" }, repeatable: false, contexts: ["global"],
     });
-    expect(buildHelpRows(unavailableContext).filter((row) => row.id === "theme.open" || row.id === "application.quit"))
+    expect(buildHelpRows(unavailableContext)
+      .filter((row) => row.id === "theme.open" || row.id === "application.quit")
+      .map(({ id, shortcut, label, enabled }) => ({ id, shortcut, label, enabled })))
       .toEqual(expected);
     expect(buildCommandPaletteEntries(unavailableContext)
       .filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command" && (entry.id === "theme.open" || entry.id === "application.quit"))
@@ -140,5 +142,19 @@ describe("shortcut workflow", () => {
     adapter.dispose();
     target.remove();
     input.remove();
+  });
+  it("keeps uppercase tab cycling distinct from page keys and opens the palette with colon", () => {
+    const engine = new KeySequenceEngine();
+    const context = { hasDocument: true, pageCount: 10, documentGeneration: 1 };
+
+    expect(engine.handle(token("N", { shift: true }), 0, context).dispatches[0]?.action).toEqual({ type: "tab.next" });
+    expect(engine.handle(token("P", { shift: true }), 1, context).dispatches[0]?.action).toEqual({ type: "tab.previous" });
+    expect(engine.handle(token("n"), 2, context).dispatches[0]?.action).toEqual({ type: "page.next" });
+    expect(engine.handle(token("p"), 3, context).dispatches[0]?.action).toEqual({ type: "page.previous" });
+    expect(engine.handle(token("ArrowLeft"), 4, context).dispatches[0]?.action).toEqual({ type: "page.previous" });
+    expect(engine.handle(token("ArrowRight"), 5, context).dispatches[0]?.action).toEqual({ type: "page.next" });
+    expect(engine.handle(token("ArrowUp"), 6, context).dispatches[0]?.action).toEqual({ type: "scroll.byCssPixels", axis: "vertical", delta: -48 });
+    expect(engine.handle(token("ArrowDown"), 7, context).dispatches[0]?.action).toEqual({ type: "scroll.byCssPixels", axis: "vertical", delta: 48 });
+    expect(engine.handle(token(":", { shift: true }), 8, context).dispatches[0]?.action).toEqual({ type: "palette.toggle" });
   });
 });

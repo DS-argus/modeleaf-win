@@ -1,0 +1,389 @@
+# 테스트 전략과 위험 게이트
+
+## 1. 완료 판단 원칙
+
+기능은 해당 fixture와 회귀 테스트가 없으면 미완성이다. 테스트 숫자를 Swift와 1:1로 맞추는 대신 각 기존 behavior branch를 Windows test ID로 추적한다.
+
+권장 추적 형식:
+
+```text
+WIN-HIST-014  source: NavigationHistoryTests / PR #35
+WIN-LINK-009  source: LinkHintMergeTests / PR #23
+WIN-OPEN-021  source: PDFOpenServiceTests / PR #7
+```
+
+모든 E2E evidence에는 app version, WebView2 version, fixture SHA를 기록한다.
+
+## 2. 테스트 도구
+
+### TypeScript pure/unit
+
+- Vitest
+- fake timers for prefix/search/update timing and TOC numeric 399/400ms boundary/digit-and-Backspace deadline renewal
+- table/property tests for parser, reducer, geometry round trips
+- no DOM/Tauri/PDF.js imports in domain tests
+
+### UI component
+
+- Testing Library 또는 현재 UI framework의 semantic query 도구
+- JSDOM은 focus/ARIA/state projection용
+- 실제 layout/geometry 판정은 browser/native E2E로 넘김
+
+### Rust
+
+- `cargo test`
+- temp directories and explicit fault injection
+- protocol Range parser property/fuzz tests
+- multi-process lock/transaction integration tests
+- Windows-only tests는 `#[cfg(windows)]`로 실제 Windows runner에서 실행
+
+### Tauri native E2E
+
+Tauri 공식 권장 경로인 WebdriverIO + `@wdio/tauri-service`를 우선한다. frontend-only fast tests는 service의 browser mode 또는 일반 browser runner에서 Tauri IPC를 mock한다. packaged/native window tests는 Windows에서 embedded driver 또는 `tauri-driver` 경로를 사용한다.
+
+Playwright를 frontend visual test에 이미 쓰고 있다면 유지할 수 있지만, Tauri binary 제어 표준으로 가정하지 않는다.
+
+공식 근거:
+
+- [Tauri WebDriver testing](https://v2.tauri.app/develop/tests/webdriver/)
+- [Tauri WebDriver CI](https://v2.tauri.app/develop/tests/webdriver/ci/)
+
+### OS/manual automation
+
+WebDriver가 직접 다루기 어려운 native dialog와 installer는 별도 smoke로 검증한다.
+
+- file picker
+- Microsoft Print to PDF dialog/output
+- Explorer Open With/default-app UI
+- NSIS install/upgrade/uninstall
+- Authenticode signature
+- SmartScreen behavior
+- Narrator/high contrast
+
+가능하면 Windows UI Automation 또는 PowerShell 기반 검사로 자동화하되, 불안정한 UI automation을 unit test 대체로 쓰지 않는다.
+
+## 3. PDF fixture manifest
+
+| Fixture | 필수 계약 |
+|---|---|
+| `text-3-page.pdf` | open, page nav, literal search, text selection |
+| `fixture-S-text-10.pdf` | normal first render와 visible sentinel |
+| `fixture-L-text-300.pdf` | Range, virtualization, long search, memory |
+| `fixture-F-raster-12.pdf` | raster render/zoom/print, no text false positive |
+| `fixture-B-blank.pdf` | blank page render, no match |
+| `image-only-2-page.pdf` | no OCR, no searchable text |
+| `malformed.pdf` | stable malformed error |
+| `locked.pdf` | password UI 없이 locked error |
+| `empty.pdf` | 0-page/empty error가 만들 수 있는 parser fixture |
+| `links.pdf` | URL, point/no-point GoTo, unresolved, foreign, text-only URL |
+| `link-duplicates.pdf` | exact duplicate, adjacent same target, wrapped rectangles |
+| `outline.pdf` | embedded outline wrapper, two visible depths, deeper child, duplicate/invalid/edge destination |
+| `interactive.pdf` | forms, annotations, scripting, media suppression |
+| `unicode-text.pdf` | Korean, composed/decomposed text, RTL sample |
+| Unicode filename copy | 한글/공백/emoji path |
+| long path copy | Windows long-path behavior |
+| UNC copy | network path and transient error behavior |
+
+`manifest.json` fields:
+
+```json
+{
+  "schema_version": 1,
+  "generator_version": "1",
+  "files": [
+    {
+      "name": "fixture-S-text-10.pdf",
+      "sha256": "...",
+      "bytes": 0,
+      "pages": 10,
+      "expected_text": ["..."],
+      "expected_annotations": { "links": 0, "forms": 0, "media": 0 },
+      "expected_outline": { "row_count": 0, "rows": [] },
+      "license": "test-generated"
+    }
+  ]
+}
+```
+
+원본 PDF를 test 중 수정하지 않는다. 각 mutation-sensitive E2E는 before/after SHA를 비교한다.
+
+## 4. 계약별 test mapping
+
+### Action/input/config
+
+Port source suites:
+
+- `ActionRegistryTests`
+- `BuiltInDefaultsTests`
+- `ConfigValidatorTests`
+- `KeySequenceEngineTests`
+- `KeyGrammarAndPromptSafetyTests`
+- generated reservation snapshots
+
+추가 Windows cases:
+
+- `D` migration error
+- `C-A-S` canonical order
+- `Ctrl+O` Open vs `Alt+Left` history
+- AltGraph/composition/dead keys
+- WebView accelerator interception
+- physical `Ctrl+I` distinct from Tab when user-bound
+
+### Open/recent/state
+
+Port:
+
+- `PDFOpenServiceTests`
+- `RecentFileFilterTests`
+- `RecentFilesStoreTests`
+- `StateFileStoreTests`
+- `ConfigFileStoreTests`
+- config load/reload/write/reset integration tests
+
+추가 Windows cases:
+
+- file/path not found vs access denied/locked/network
+- Unicode/long/UNC/junction path
+- two-window and two-process concurrent update
+- antivirus-like replace sharing violation
+- partial batch Open With
+- read-only file handle and source hash
+
+### Reader/search/links/history
+
+Port:
+
+- `ReaderSearchCoordinatorTests`
+- `ReaderSearchWorkflowTests`
+- `NavigationHistoryTests`
+- `N11NavigationRedTeamTests`
+- `LinkHintLabels/Filter/MergeTests`
+- `LinkHintIntegration/AcceptanceTests`
+- `ReadOnlyBoundaryTests`
+- `ReaderOutlineTests`
+- `TOCWidgetTests`
+- `TOCNumericRoutingTests`
+- TOC cases in `PaneShellTests`, `ReaderSessionTests`, `ReaderWorkflowUITests`
+- `PDFCapabilityPolicyTests`
+
+추가 Windows cases:
+
+- PDF.js layer geometry at four DPI/four rotations
+- stale render/search generation
+- Range loading and invalid Range
+- generic viewer internal history disabled
+- unsupported URL scheme
+- form/script/media suppression
+
+### Tabs/panes/window/UI
+
+Port:
+
+- `TabStoreTests`
+- `ReaderSessionStoreTests`
+- `PaneCoordinatorTests`
+- `PaneShellTests`
+- `PaneRedTeamTests`
+- `FourPaneLiveDisplayTests`
+- palette/help/recent/theme/indicator integration tests
+
+추가 Windows cases:
+
+- same-process two windows
+- `Alt+F4`/`app.quit` current-window-only close와 last-window process exit
+- second-instance argv handoff
+- native titlebar/snap/resize
+- `480×360` and 4-pane minimum
+- Narrator/high contrast/text scaling
+
+## 5. 단계별 hard gates
+
+| Gate | 통과 조건 | 실패 시 |
+|---|---|---|
+| Scaffold | Windows build/launch, narrow capability, CI green | W02 금지 |
+| Transport | packaged Range works or measured binary fallback ADR | feature work 금지 |
+| Geometry | 4 DPI × 4 rotation에서 ≤1 CSS px | links/search 공개 금지 |
+| Virtualization | visible ±2 이외 canvas 해제, task cancel | long doc 기능 미완성 |
+| Read-only | interactive fixture inert, source hash unchanged | release 금지 |
+| Input | IME/dead/AltGraph isolation, no default collision | keyboard feature 미완성 |
+| History | producer/exclusion/rollback matrix green | Back/Forward 공개 금지 |
+| Print | all-page system print, cancel cleanup, state invariant | release 금지 |
+| TOC | packaged Windows `outline.pdf` toggle/scroll/numeric-jump E2E, before/after SHA, normalization, 399/400ms fake clock, active-pane routing, z-order/lifecycle | TOC 공개 금지 |
+| Shell | Open With/single instance/file association clean VM | installer release 금지 |
+| Signing | executable/installer signature verified | 공개 release 금지 |
+| Accessibility | keyboard-only/Narrator/high contrast | release 금지 |
+
+## 6. 성능과 자원 budget
+
+### 구조적 hard budgets
+
+- canvas/text/annotation DOM: visible pages + 상하 각 2-page overscan 이하
+- active render tasks: mounted render candidates 이하
+- geometry error: 최대 1 CSS px
+- input-to-dispatch: sync path에서 50ms를 목표, 반복 100ms long task는 blocker
+- source file: 전체 user action suite 전후 SHA 동일
+- background tab/pane: active rendering 중단
+- close: document worker, render tasks, Rust ref-count 모두 해제
+
+### reference-machine provisional budgets
+
+- `fixture-S`: cold first visible page ≤1.5s
+- `fixture-L`: cold first visible page ≤2.5s
+- 300-page continuous scroll 60초 후 working set이 page count와 선형 증가하지 않음
+- scroll 종료 10초 후 reclaim 가능한 peak memory가 감소
+
+시간과 MB 수치는 CI hardware마다 흔들리므로 W02에서 reference environment와 함께 고정한다. 이후 regression gate는 같은 machine/image baseline 대비 20% 이상 악화를 차단하는 방식이 더 안정적이다.
+
+### 측정 지점
+
+```text
+open.requested
+open.preflight.completed
+pdf.metadata.ready
+first.page.render.started
+first.page.visible
+search.started/completed/cancelled
+render.task.created/cancelled/completed
+document.closed/handle.released
+print.prepare.started/dialog.opened/cleanup.completed
+```
+
+telemetry 전송은 비범위다. 측정은 local diagnostics/test logs에만 남긴다.
+
+## 7. 위험 register
+
+| Rank | 위험 | Trigger/evidence | 예방/완화 | Release gate |
+|---:|---|---|---|---|
+| 1 | PDF.js/WebView2 geometry drift | DPI/rotation screenshot delta | 단일 transform module, visual fixtures | ≤1px |
+| 2 | large PDF memory 폭증 | canvas/task/working-set 증가 | Range + virtualization + cancellation | 구조 budget 통과 |
+| 3 | keyboard/IME routing 오류 | composition 중 action 실행 | input state machine, real IME manual test | 0 misroute |
+| 4 | print가 일부 page만 출력/OOM | output page count 또는 crash | hidden sequential print service | 1/12/300-page 통과 |
+| 5 | state/config corruption | concurrent/fault tests | lock + temp flush + atomic replace | 모든 fault matrix 통과 |
+| 6 | shell handoff가 path를 잃음 | second launch/Open With | single-instance first, normalized OpenRequest | clean VM 통과 |
+| 7 | read-only 경계 누수 | form/editor/save UI 또는 hash 변화 | capability policy + fixture | 0 mutation surface |
+| 8 | PDF.js internal API drift | dependency upgrade failure | adapter + exact pin + isolated upgrade PR | full adapter suite |
+| 9 | updater/asset channel 혼선 | wrong OS/arch/version URL | Windows-specific metadata tests | exact asset match |
+| 10 | code signing/SmartScreen | untrusted download | Authenticode + timestamp + reputation plan | signature verified |
+| 11 | focus/overlay 회귀 | focus on body/closed pane | overlay owner reducer | all focus E2E |
+| 12 | accessibility 회귀 | Narrator/forced-colors failure | semantic HTML + manual audit | checklist complete |
+| 13 | TOC destination/routing/z-order 회귀 | wrong row, inactive-pane input, overlay under canvas | canonical outline model, pane ownership, re-raise | outline + 1–4 pane matrix |
+
+## 8. 위험별 stop/escalation
+
+### PDF transport
+
+Custom protocol Range와 optimized binary fallback 둘 다 budget을 못 맞추면 PDF.js integration architecture를 재검토한다. 기능을 더 구현해 sunk cost를 늘리지 않는다.
+
+### 인쇄
+
+WebView2/PDF.js가 all-page system print를 안정적으로 만들지 못하면 release blocker다. default PDF viewer에 조용히 위임하는 것은 동작·privacy·focus가 달라 별도 제품 결정 없이는 허용하지 않는다.
+
+### File transaction
+
+Windows에서 crash-safe replace 의미를 증명하지 못하면 state/config write surface를 read-only로 임시 축소할 수는 있지만, 성공했다고 표시해서는 안 된다. feature scope 변경은 사용자/owner 결정이 필요하다.
+
+### Signing
+
+certificate/CI secret가 아직 없으면 unsigned internal artifact는 만들 수 있다. 공개 release는 blocked이고 문서에서 signed라고 표현하지 않는다.
+
+## 9. CI 구성
+
+### PR required checks
+
+- `toc-packaged-e2e`: packaged Windows binary에서 `outline.pdf` toggle, `J/K`, numeric jump, 1–4 pane ownership, before/after SHA를 검증한다.
+
+```text
+frontend-lint-typecheck
+frontend-unit
+rust-fmt-clippy-test
+contract-fixture-verify
+tauri-debug-build-windows
+webdriver-smoke-windows
+markdown-links-and-diff-check
+```
+
+### Scheduled/nightly
+
+- full PDF fixture E2E
+- 4-DPI visual matrix where runner permits
+- dependency audit
+- 300-page performance/memory trace
+- installer unsigned smoke
+
+### Release candidate
+
+- exact locked dependencies
+- release Tauri build on Windows runner
+- Authenticode sign and timestamp
+- signature verification before upload
+- clean Windows 10/11 VM install
+- double-click/Open With
+- print to PDF
+- upgrade from prior Windows version when one exists
+- uninstall without deleting user PDFs/config/state
+- update notice targets exact Windows release asset
+
+## 10. Manual QA checklist
+
+### Files
+
+- Browse valid/invalid/locked/empty
+- drag/drop
+- Explorer double-click and Open With, app closed/open
+- Unicode/long/UNC path
+- stale recent missing vs denied
+
+### Keyboard/focus
+
+- all default bindings
+- `Ctrl+O/W/P/N`, `Alt+Left/Right`, `Alt+F4`
+- Korean IME, dead keys, AltGraph
+- prefix timeout and status
+- every overlay Esc/restore
+
+### Reader
+
+- 100/125/150/200% DPI
+- monitor-to-monitor DPI move
+- zoom/fit/rotation/anchor
+- search replacement/wrap/clear
+- URL/GoTo/hints/indicator
+- selection/Copy-only context menu
+- 1–4 panes/tabs/two windows
+- embedded-outline TOC: no-outline, wrapper/two-depth, invalid rows, numeric 399/400ms, pointer/Narrator, 1–4 pane isolation
+
+### Windows integration
+
+- native titlebar, minimize/maximize/snap/system menu
+- Narrator/high contrast/text scaling
+- Microsoft Print to PDF and cancel
+- NSIS install/upgrade/uninstall
+- offline update check
+- signature properties and SmartScreen observation
+
+## 11. Done evidence template
+
+```markdown
+### Contract
+- macOS source/tests:
+- related PRs:
+- Windows delta:
+
+### Automated evidence
+- command:
+- result:
+- fixture + SHA:
+
+### Native Windows evidence
+- OS/WebView2/build:
+- scenario:
+- result/artifact:
+
+### Invariants
+- source PDF SHA unchanged:
+- no leaked document/render task:
+- parity matrix updated:
+
+### Remaining risk
+- none / linked issue:
+```

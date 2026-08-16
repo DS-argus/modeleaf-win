@@ -91,6 +91,18 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       .toEqual({ kind: "ignore" });
   });
 
+  it("activates the page nearest the scrolling viewport", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals;
+    session.reader.mountDocument(3);
+    session.reader.restoreView({ zoomMode: "custom", customScale: 1, rotationQuarterTurns: 0 });
+    await session.activate();
+    const render = vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockResolvedValue(true);
+
+    expect(await session.activateViewportPage(2)).toBe(true);
+    expect(session.snapshot.reader.page).toBe(2);
+    expect(render).toHaveBeenCalledWith(2, expect.objectContaining({ scale: 1 }), expect.any(Function));
+  });
   it("preserves fit and custom zoom modes when a canvas commit publishes its transform", () => {
     const session = createSession();
     const internals = session as unknown as { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };

@@ -174,7 +174,7 @@ describe("PdfContentController", () => {
       expect(subject.host.querySelector(".pdf-search-hit")).toBeNull();
       expect(subject.host.querySelector(".textLayer")?.textContent).toBe("prefixmatchtail");
       subject.controller.invalidateSearch();
-      expect(subject.host.querySelectorAll("[data-search-fallback]")).toHaveLength(0);
+      expect(subject.host.querySelectorAll(".pdf-search-hit, [data-search-fallback]")).toHaveLength(0);
     } finally {
       Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: originalGetClientRects });
     }
@@ -320,12 +320,35 @@ describe("PdfContentController", () => {
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     subject.controller.toggleHints();
 
+    expect(subject.host.querySelector(".pdf-content-layer")?.classList.contains("pdf-link-hints-active")).toBe(true);
     const labels = [...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent);
     expect(labels).toHaveLength(27);
     expect(labels.every((label) => label?.length === 2)).toBe(true);
     expect(subject.controller.handleHintKey(labels[0]![0]!)).toBe(true);
     expect(subject.openExternal).not.toHaveBeenCalled();
     expect(subject.controller.handleHintKey(labels[0]![1]!)).toBe(true);
+    expect(subject.host.querySelector(".pdf-content-layer")?.classList.contains("pdf-link-hints-active")).toBe(false);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
+  });
+  it("keeps PDF links mouse-clickable and applies valid annotation appearance", async () => {
+    const subject = setup([page("link", [{
+      subtype: "Link",
+      rect: [10, 10, 40, 24],
+      url: "https://example.test/mouse",
+      color: new Uint8ClampedArray([0, 90, 255]),
+      borderStyle: { width: 3, style: 2 },
+    }])]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    expect(overlay.type).toBe("button");
+    expect(overlay.style.pointerEvents).toBe("auto");
+    expect(overlay.style.getPropertyValue("--pdf-link-color")).toBe("rgb(0 90 255)");
+    expect(overlay.style.borderWidth).toBe("3px");
+    expect(overlay.style.borderStyle).toBe("dashed");
+
+    overlay.click();
+    await Promise.resolve();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
   it("swallows rejected overlay work after its document generation becomes stale", async () => {
@@ -1034,19 +1057,36 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector(".textLayer")?.textContent).toContain("selectable");
     expect(subject.prepareExternalLinks).toHaveBeenCalledWith([], 1);
   });
-  it("invalidates controller publication when the search input changes", async () => {
+  it("clears search state and rejects late publication without moving the rendered page", async () => {
     let resolvePage!: (value: PdfContentPage) => void;
     const pendingPage = new Promise<PdfContentPage>((resolve) => { resolvePage = resolve; });
-    const subject = setup([page("unused")]);
+    const subject = setup([page("old old")]);
+    await subject.controller.renderPage({
+      pageNumber: 1,
+      page: await subject.pdf.getPage(1),
+      viewport,
+      canvas: subject.canvas,
+    });
+    await subject.controller.search("old");
+    expect(subject.controller.snapshot.results).toHaveLength(2);
+    subject.navigateToPage.mockClear();
     subject.pdf.getPage = () => pendingPage;
 
-    const searching = subject.controller.search("old");
+    const searching = subject.controller.search("new");
     subject.controller.invalidateSearch();
-    resolvePage(page("old old"));
+    resolvePage(page("new new"));
     await searching;
 
-    expect(subject.controller.snapshot.results).toHaveLength(0);
+    expect(subject.controller.snapshot).toMatchObject({
+      pageNumber: 1,
+      query: "",
+      results: [],
+      currentResult: -1,
+      searchPending: false,
+    });
+    expect(subject.host.querySelectorAll(".pdf-search-hit, [data-search-fallback]")).toHaveLength(0);
     expect(subject.navigateToPage).not.toHaveBeenCalled();
+    expect(subject.host.querySelector(".pdf-content-layer")).not.toBeNull();
   });
   it("registers inspected external annotations before exposing their link targets", async () => {
     const subject = setup([page("x", [

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 const mainSource = readFileSync(new URL("../../src/main.ts", import.meta.url), "utf8");
 const styles = readFileSync(new URL("../../src/styles/app.css", import.meta.url), "utf8");
+const nativeMainSource = readFileSync(new URL("../../src-tauri/src/main.rs", import.meta.url), "utf8");
 const tauriConfig = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.conf.json", import.meta.url), "utf8")) as { app: { windows: Array<{ additionalBrowserArgs?: string }> } };
 
 describe("CP5 shell integration", () => {
@@ -31,5 +32,25 @@ describe("CP5 shell integration", () => {
     expect(styles).toContain("var(--theme-background)");
     expect(styles).toContain(".theme-option[aria-checked=\"true\"]");
     expect(tauriConfig.app.windows[0]?.additionalBrowserArgs).toBe("--force-renderer-accessibility");
+  });
+  it("ships release builds without a console and keeps internal chrome out of the renderer", () => {
+    expect(nativeMainSource).toContain('#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]');
+    expect(mainSource).not.toContain('id="theme-button"');
+    expect(mainSource).not.toContain("Windows foundation");
+    expect(mainSource).not.toContain("Keyboard-first PDF reading for Windows");
+    expect(mainSource).toContain('<p><kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF');
+    expect(styles).toContain("place-content: center");
+  });
+
+  it("keeps palette geometry stable across short and ordinary viewports", () => {
+    expect(styles).toContain("max-height: min(58vh, 540px)");
+    expect(styles).not.toContain("height: clamp(220px, 40vh, 420px)");
+  });
+  it("keeps command palette entries command-only and claims navigation across the dialog", () => {
+    expect(mainSource).toContain(".filter((entry): entry is CommandPaletteCommandEntry => entry.kind === \"command\")");
+    expect(mainSource).toContain('invoke("open_recent"');
+    expect(mainSource).toContain('invoke<unknown>("list_recents")');
+    expect(mainSource).toContain('paletteDialog.addEventListener("keydown"');
+    expect(mainSource).toContain("}, { capture: true });");
   });
 });

@@ -6,14 +6,16 @@ import { KeySequenceEngine, type SequenceResult } from "./core/KeySequenceEngine
 import { TabWorkspace, type TabId } from "./core/TabWorkspace";
 import { DEFAULT_BINDINGS, isCommandEnabled, resolvePaletteBindingAction, type CommandAvailabilityContext } from "./core/defaultBindings.windows";
 import type { Action } from "./core/Action";
-import { createKeyboardAdapter, getPromptKeyAction, isNativeKeyboardCompositionOrModifierEvent, isNativeOwnedTarget, type KeyboardAdapter } from "./platform/keyboardAdapter";
+import { createKeyboardAdapter, isNativeKeyboardCompositionOrModifierEvent, isNativeOwnedTarget, type KeyboardAdapter } from "./platform/keyboardAdapter";
+import { wheelPageDirection } from "./platform/readerInput";
 import { type OpenFailureNotice, type OpenRequestAdoption } from "./platform/OpenRequestClient";
-import { buildCommandPaletteEntries, type RecentPaletteRecord } from "./ui/CommandPaletteModel";
+import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry, type RecentPaletteRecord } from "./ui/CommandPaletteModel";
+import { bindSearchPrompt } from "./ui/SearchPromptController";
 import { buildHelpRows } from "./ui/HelpModel";
 import { createRemovedTabTeardownSupervisor, createShellOpenCoordinator, createWorkspaceTransitionQueue } from "./platform/ShellOpenCoordinator";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
 import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./core/Theme";
-import { CLOSED_THEME_PICKER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
+import { CLOSED_THEME_PICKER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
 import { AccessibilityController, focusRestoreTarget, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
@@ -28,15 +30,15 @@ function required<T extends Element>(selector: string): T {
 const root = required<HTMLElement>("#app");
 root.innerHTML = `
 <section class="app-shell" role="application" aria-label="Modeleaf PDF reader">
-  <header class="titlebar"><h1>Modeleaf</h1><div class="titlebar-actions"><button id="theme-button" type="button" aria-haspopup="dialog">Theme</button><span class="platform-badge">Windows foundation</span></div></header>
   <div id="tab-strip" class="tab-strip" role="tablist" aria-label="Open documents"></div>
   <section id="tab-hosts" class="tab-hosts"></section>
   <section id="prompt" class="prompt" hidden></section>
-  <dialog id="theme-dialog" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Choose theme</h2><p id="theme-description" class="dialog-hint">Arrow keys preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
-  <dialog id="help-dialog" aria-labelledby="help-title"><header><h2 id="help-title">Keyboard shortcuts</h2><p class="dialog-hint">Limitations: keyboard range selection, reading-order remediation, and OCR/scanned-PDF remediation are unavailable.</p></header><dl id="help-rows"></dl></dialog>
+  <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">Arrow keys or Control J and K preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
+  <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="password-dialog" aria-labelledby="password-title"><form method="dialog" autocomplete="off"><h2 id="password-title">PDF password required</h2><label>Password <input id="password-input" type="password" autocomplete="off" data-form-type="other" spellcheck="false"></label><menu><button id="password-cancel" type="button" value="cancel">Cancel</button><button type="submit" value="submit">Open</button></menu></form></dialog>
   <dialog id="search-dialog" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><h2 id="search-title">Search PDF text</h2><label>Literal text <input id="search-input" type="search" spellcheck="false"></label><p class="dialog-hint">Press <kbd>Enter</kbd> or <kbd>Shift</kbd>+<kbd>Enter</kbd> to cycle matches.</p></form></dialog>
-  <dialog id="command-palette-dialog" aria-labelledby="palette-title"><form id="command-palette-form"><h2 id="palette-title">Command palette</h2><input id="palette-input" type="search" autocomplete="off" spellcheck="false"><ul id="palette-list" class="command-palette-list"></ul></form></dialog>
+  <dialog id="file-opener-dialog" class="mac-overlay list-overlay" aria-label="Open PDF"><form id="file-opener-form"><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type to search..." aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list"></ul><p class="overlay-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
+  <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
   <footer id="status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
   <div id="announcements-assertive" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
@@ -54,12 +56,15 @@ const passwordCancel = required<HTMLButtonElement>("#password-cancel");
 const searchDialog = required<HTMLDialogElement>("#search-dialog");
 const searchForm = required<HTMLFormElement>("#search-form");
 const searchInput = required<HTMLInputElement>("#search-input");
+const fileOpenerDialog = required<HTMLDialogElement>("#file-opener-dialog");
+const fileOpenerForm = required<HTMLFormElement>("#file-opener-form");
+const fileOpenerInput = required<HTMLInputElement>("#file-opener-input");
+const fileOpenerList = required<HTMLElement>("#file-opener-list");
 const paletteDialog = required<HTMLDialogElement>("#command-palette-dialog");
 const paletteInput = required<HTMLInputElement>("#palette-input");
 const paletteList = required<HTMLElement>("#palette-list");
 GlobalWorkerOptions.workerSrc = PDFJS_POLICY.assets.workerSrc;
 const paletteForm = required<HTMLFormElement>("#command-palette-form");
-const themeButton = required<HTMLButtonElement>("#theme-button");
 const themeDialog = required<HTMLDialogElement>("#theme-dialog");
 const themeForm = required<HTMLFormElement>("#theme-form");
 const themeList = required<HTMLElement>("#theme-list");
@@ -125,11 +130,11 @@ function previewTheme(index: number): void {
   themeList.querySelectorAll<HTMLButtonElement>(".theme-option")[result.model.activeIndex]?.focus();
 }
 function openThemePicker(): void {
-  themeRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : themeButton;
+  themeRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : active().host;
   themePicker = createThemePicker(durableTheme.themeId, durableTheme.revision);
   renderThemePicker();
   themeDialog.showModal();
-  themeList.querySelector<HTMLButtonElement>(".theme-option")?.focus();
+  themeList.querySelector<HTMLButtonElement>(".theme-option[tabindex='0']")?.focus();
 }
 function closeThemePicker(revert: boolean): void {
   const picker = activeThemePicker();
@@ -187,16 +192,20 @@ void listen<unknown>("theme-state-committed", (event) => {
   if (themeDialog.open) { themeDialog.close(); restoreThemeFocus(); }
   accessibility.announce({ kind: "theme", themeId: durableTheme.themeId });
 }).then((unlisten) => { if (shellDisposing) unlisten(); else themeUnlisten = unlisten; }, () => undefined);
-themeButton.addEventListener("click", openThemePicker);
 themeCancel.addEventListener("click", () => closeThemePicker(true));
 themeForm.addEventListener("submit", (event) => { event.preventDefault(); void commitTheme(); });
 themeDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeThemePicker(true); });
-themeList.addEventListener("keydown", (event) => {
+themeDialog.addEventListener("keydown", (event) => {
+  if (isNativeKeyboardCompositionOrModifierEvent(event)) return;
   const picker = activeThemePicker();
   if (!picker) return;
-  const direction = event.key === "ArrowDown" || event.key === "ArrowRight" ? 1 : event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 0;
-  if (direction === 0) return;
+  const action = themePickerDialogKeyAction(event);
+  if (!action) return;
   event.preventDefault();
+  event.stopPropagation();
+  if (action === "commit") { void commitTheme(); return; }
+  if (action === "revert") { closeThemePicker(true); return; }
+  const direction = action === "next" ? 1 : -1;
   previewTheme((picker.activeIndex + direction + THEME_PICKER_ROWS.length) % THEME_PICKER_ROWS.length);
 });
 const native = {
@@ -268,9 +277,11 @@ const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
 function safeAdoptionFailureStatus(status: string): string {
   return SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : "The PDF could not be opened.";
 }
-let recents: readonly RecentPaletteRecord[] = [];
 let paletteActiveIndex = 0;
 let paletteRestoreFocus: HTMLElement | null = null;
+let fileOpenerActiveIndex = 0;
+let fileOpenerRecents: readonly RecentPaletteRecord[] = [];
+let fileOpenerRestoreFocus: HTMLElement | null = null;
 const workspaceTransitions = createWorkspaceTransitionQueue(() => {
   active().session.reader.setStatus("WORKSPACE_BUSY");
   render();
@@ -296,22 +307,72 @@ function commandAvailabilityContext(): CommandAvailabilityContext {
   };
 }
 function renderHelpRows(): void {
-  const rows = buildHelpRows(commandAvailabilityContext());
-  helpRows.replaceChildren(...rows.flatMap((row) => {
-    const term = document.createElement("dt");
-    term.textContent = row.shortcut;
-    const description = document.createElement("dd");
-    description.textContent = row.label;
-    description.setAttribute("aria-disabled", String(!row.enabled));
-    return [term, description];
+  const groups = new Map<string, ReturnType<typeof buildHelpRows>>();
+  for (const row of buildHelpRows()) {
+    groups.set(row.category, [...(groups.get(row.category) ?? []), row]);
+  }
+  helpRows.replaceChildren(...[...groups].map(([category, rows]) => {
+    const section = document.createElement("section");
+    section.className = "help-group";
+    const heading = document.createElement("h2");
+    heading.textContent = category;
+    const list = document.createElement("dl");
+    for (const row of rows) {
+      const description = document.createElement("dt");
+      description.textContent = row.label;
+      const shortcut = document.createElement("dd");
+      shortcut.textContent = row.shortcut;
+      list.append(description, shortcut);
+    }
+    section.append(heading, list);
+    return section;
   }));
+}
+function pageNearestViewportCenter(host: HTMLElement): number | undefined {
+  const frames = [...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")];
+  if (frames.length === 0) return undefined;
+  const hostRect = host.getBoundingClientRect();
+  const viewportCenter = hostRect.top + host.clientHeight / 2;
+  let nearest: { readonly page: number; readonly distance: number } | undefined;
+  for (const frame of frames) {
+    const page = Number(frame.dataset.page);
+    if (!Number.isInteger(page)) continue;
+    const rect = frame.getBoundingClientRect();
+    if (viewportCenter >= rect.top && viewportCenter <= rect.bottom) return page;
+    const distance = Math.min(Math.abs(viewportCenter - rect.top), Math.abs(viewportCenter - rect.bottom));
+    if (nearest === undefined || distance < nearest.distance || (distance === nearest.distance && page < nearest.page)) {
+      nearest = { page, distance };
+    }
+  }
+  return nearest?.page;
+}
+const boundaryPageTurns = new WeakSet<HTMLElement>();
+function turnPageAtBoundary(payload: TabPayload, direction: -1 | 1): boolean {
+  if (boundaryPageTurns.has(payload.host)) return true;
+  const previousPage = payload.session.snapshot.reader.page;
+  payload.session.apply({ type: direction > 0 ? "page.next" : "page.previous" });
+  const page = payload.session.snapshot.reader.page;
+  if (page === previousPage) return false;
+  boundaryPageTurns.add(payload.host);
+  keyboard.syncContext();
+  render();
+  void payload.session.renderPage(page).then((committed) => {
+    if (committed && direction < 0) {
+      payload.host.scrollTop = Math.max(0, payload.host.scrollHeight - payload.host.clientHeight);
+    }
+  }).finally(() => {
+    boundaryPageTurns.delete(payload.host);
+    keyboard.syncContext();
+    render();
+  });
+  return true;
 }
 function createTab(): TabPayload {
   const host = document.createElement("section");
   host.className = "reader-surface tab-host";
   host.tabIndex = 0;
   host.setAttribute("role", "tabpanel");
-  host.innerHTML = '<div class="empty-state"><strong>Keyboard-first PDF reading for Windows</strong><p>Press <kbd>Ctrl</kbd>+<kbd>O</kbd> to open a local PDF.</p></div>';
+  host.innerHTML = '<div class="empty-state"><p><kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF</p></div>';
   host.addEventListener("dragover", (event) => event.preventDefault());
   host.addEventListener("drop", (event) => event.preventDefault());
   tabHosts.append(host);
@@ -353,6 +414,42 @@ function createTab(): TabPayload {
       accessibility.announce({ kind: "link-hints", generation: reader.documentGeneration, visible: content.hintsVisible, count: content.hintsVisible ? host.querySelectorAll(".pdf-link-hint").length : 0 });
     },
   });
+  host.addEventListener("wheel", (event) => {
+    if (active().session !== session) return;
+    const reader = session.snapshot.reader;
+    const direction = wheelPageDirection({
+      deltaX: event.deltaX,
+      deltaY: event.deltaY,
+      scrollTop: host.scrollTop,
+      scrollHeight: host.scrollHeight,
+      clientHeight: host.clientHeight,
+      page: reader.page,
+      pageCount: reader.pageCount,
+      ctrlKey: event.ctrlKey,
+    });
+    if (direction === 0) return;
+    event.preventDefault();
+    turnPageAtBoundary({ host, session }, direction);
+  }, { passive: false });
+  let viewportFrameRequest: number | undefined;
+  let viewportActivation: Promise<boolean> | undefined;
+  const synchronizeViewportPage = (): void => {
+    viewportFrameRequest = undefined;
+    if (active().session !== session || viewportActivation !== undefined) return;
+    const page = pageNearestViewportCenter(host);
+    if (page === undefined || page === session.snapshot.reader.page) return;
+    viewportActivation = session.activateViewportPage(page);
+    void viewportActivation.finally(() => {
+      viewportActivation = undefined;
+      keyboard.syncContext();
+      render();
+      if (active().session === session) synchronizeViewportPage();
+    });
+  };
+  host.addEventListener("scroll", () => {
+    if (viewportFrameRequest !== undefined) return;
+    viewportFrameRequest = window.requestAnimationFrame(synchronizeViewportPage);
+  }, { passive: true });
   return { host, session };
 }
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
@@ -433,7 +530,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
     }
   });
   void invoke("record_recent", { sessionId: request.sessionId, documentGeneration: request.documentGeneration }).then(
-    () => { void loadRecents().catch(() => undefined); },
+    () => undefined,
     () => { if (adoptedSession) reportRecentStorageFailure(adoptedSession); },
   );
 }
@@ -444,22 +541,127 @@ const shellOpen = createShellOpenCoordinator({
   adopt: adoptRequest,
   onFailure: (tag) => reportOpenInvokeFailure({ tag }),
 });
-async function loadRecents(): Promise<void> { const value = await invoke<RecentPaletteRecord[]>("list_recents"); recents = value.slice(0, 15); }
-void loadRecents().catch(() => undefined);
-function openPalette(): void { if (!paletteDialog.open) { paletteRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; paletteDialog.showModal(); accessibility.announce({ kind: "palette", open: true }); } paletteActiveIndex = 0; renderPalette(); paletteInput.focus(); }
-function closePalette(): void { if (paletteDialog.open) paletteDialog.close(); accessibility.announce({ kind: "palette", open: false }); paletteRestoreFocus?.focus(); paletteRestoreFocus = null; }
+function isRecentPaletteRecord(value: unknown): value is RecentPaletteRecord {
+  return typeof value === "object" && value !== null
+    && "recentId" in value && typeof value.recentId === "string"
+    && "displayName" in value && typeof value.displayName === "string";
+}
+function paletteEntries(): readonly CommandPaletteCommandEntry[] {
+  return buildCommandPaletteEntries(commandAvailabilityContext(), [], paletteInput.value)
+    .filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
+}
+function recentEntries(): readonly RecentPaletteRecord[] {
+  return buildCommandPaletteEntries(undefined, fileOpenerRecents, fileOpenerInput.value)
+    .filter((entry) => entry.kind === "recent")
+    .map(({ recentId, displayName }) => ({ recentId, displayName }));
+}
+function openPalette(): void {
+  if (!paletteDialog.open) {
+    paletteRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    paletteInput.value = "";
+    paletteDialog.showModal();
+    accessibility.announce({ kind: "palette", open: true });
+  }
+  paletteActiveIndex = 0;
+  renderPalette();
+  paletteInput.focus();
+}
+function closePalette(): void {
+  if (paletteDialog.open) paletteDialog.close();
+  accessibility.announce({ kind: "palette", open: false });
+  paletteRestoreFocus?.focus();
+  paletteRestoreFocus = null;
+}
 function dispatchPaletteEntry(index = paletteActiveIndex): void {
-  const entries = buildCommandPaletteEntries(commandAvailabilityContext(), recents, paletteInput.value); const entry = entries[index]; if (!entry) return;
-  if (entry.kind === "recent") { if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } void invoke("open_recent", { recentId: entry.recentId }).catch(reportOpenInvokeFailure); closePalette(); return; }
-  const binding = DEFAULT_BINDINGS.find((candidate) => candidate.id === entry.id); if (!binding || !isCommandEnabled(binding, commandAvailabilityContext())) return;
+  const entry = paletteEntries()[index];
+  if (!entry) return;
+  const binding = DEFAULT_BINDINGS.find((candidate) => candidate.id === entry.id);
+  if (!binding || !isCommandEnabled(binding, commandAvailabilityContext())) return;
   const paletteAction = resolvePaletteBindingAction(binding);
   closePalette();
   if (paletteAction?.kind === "dispatch") dispatch(paletteAction.action);
-  if (paletteAction?.kind === "page.target") { const result = engine.enterPagePrompt(sequenceContext()); for (const dispatched of result.dispatches) dispatch(dispatched.action); if (result.error) active().session.reader.setStatus(result.error); }
+  if (paletteAction?.kind === "page.target") {
+    const result = engine.enterPagePrompt(sequenceContext());
+    for (const dispatched of result.dispatches) dispatch(dispatched.action);
+    if (result.error) active().session.reader.setStatus(result.error);
+  }
 }
 function renderPalette(): void {
-  const entries = buildCommandPaletteEntries(commandAvailabilityContext(), recents, paletteInput.value); paletteActiveIndex = Math.min(paletteActiveIndex, Math.max(0, entries.length - 1));
-  paletteList.replaceChildren(...entries.map((entry, index) => { const item = document.createElement("li"); const button = document.createElement("button"); button.type = "button"; button.className = "command-palette-entry"; button.textContent = entry.kind === "recent" ? entry.displayName : entry.label; button.setAttribute("aria-selected", String(index === paletteActiveIndex)); button.disabled = entry.kind === "recent" ? !commandAvailabilityContext().canOpenDocument : !entry.enabled; button.addEventListener("click", () => { paletteActiveIndex = index; dispatchPaletteEntry(); }); item.append(button); return item; }));
+  const entries = paletteEntries();
+  paletteActiveIndex = Math.min(paletteActiveIndex, Math.max(0, entries.length - 1));
+  paletteList.replaceChildren(...entries.map((entry, index) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "overlay-list-entry command-palette-entry";
+    button.setAttribute("aria-selected", String(index === paletteActiveIndex));
+    button.disabled = !entry.enabled;
+    const label = document.createElement("span");
+    label.textContent = entry.label;
+    const shortcut = document.createElement("span");
+    shortcut.className = "command-palette-entry-shortcut";
+    shortcut.textContent = entry.shortcut;
+    button.append(label, shortcut);
+    button.addEventListener("click", () => { paletteActiveIndex = index; dispatchPaletteEntry(); });
+    item.append(button);
+    return item;
+  }));
+  paletteList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
+}
+function renderFileOpener(): void {
+  const entries = recentEntries();
+  fileOpenerActiveIndex = Math.min(fileOpenerActiveIndex, entries.length);
+  const browse = document.createElement("li");
+  const browseButton = document.createElement("button");
+  browseButton.type = "button";
+  browseButton.className = "overlay-list-entry file-opener-entry";
+  browseButton.textContent = "Browse...";
+  browseButton.setAttribute("aria-selected", String(fileOpenerActiveIndex === 0));
+  browseButton.addEventListener("click", () => { fileOpenerActiveIndex = 0; dispatchFileOpenerEntry(); });
+  browse.append(browseButton);
+  const recentRows = entries.map((entry, index) => {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "overlay-list-entry file-opener-entry";
+    button.textContent = entry.displayName;
+    button.setAttribute("aria-selected", String(fileOpenerActiveIndex === index + 1));
+    button.addEventListener("click", () => { fileOpenerActiveIndex = index + 1; dispatchFileOpenerEntry(); });
+    item.append(button);
+    return item;
+  });
+  fileOpenerList.replaceChildren(browse, ...recentRows);
+  fileOpenerList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
+}
+function closeFileOpener(): void {
+  if (fileOpenerDialog.open) fileOpenerDialog.close();
+  fileOpenerRestoreFocus?.focus();
+  fileOpenerRestoreFocus = null;
+}
+function dispatchFileOpenerEntry(): void {
+  if (fileOpenerActiveIndex === 0) {
+    closeFileOpener();
+    shellOpen.requestOpen();
+    return;
+  }
+  const entry = recentEntries()[fileOpenerActiveIndex - 1];
+  if (!entry) return;
+  closeFileOpener();
+  void invoke("open_recent", { recentId: entry.recentId }).catch(reportOpenInvokeFailure);
+}
+function openFileOpener(): void {
+  fileOpenerRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : active().host;
+  fileOpenerInput.value = "";
+  fileOpenerRecents = [];
+  fileOpenerActiveIndex = 0;
+  renderFileOpener();
+  fileOpenerDialog.showModal();
+  fileOpenerInput.focus();
+  void invoke<unknown>("list_recents").then((value) => {
+    if (!fileOpenerDialog.open || !Array.isArray(value)) return;
+    fileOpenerRecents = value.filter(isRecentPaletteRecord).slice(0, 15);
+    renderFileOpener();
+  }, () => undefined);
 }
 let quitRequest: Promise<void> | undefined;
 let quitUnlisten: (() => void) | undefined;
@@ -471,6 +673,7 @@ function requestApplicationQuit(beginNative = true): Promise<void> {
     try {
       if (themeDialog.open) closeThemePicker(true);
       if (paletteDialog.open) closePalette();
+      if (fileOpenerDialog.open) closeFileOpener();
       if (helpDialog.open) helpDialog.close();
       if (searchDialog.open) searchDialog.close();
       if (passwordDialog.open) passwordDialog.close();
@@ -484,6 +687,7 @@ function requestApplicationQuit(beginNative = true): Promise<void> {
       for (const { id } of tabs) workspace.close(id);
       removedTabTeardown.retryParked();
       removedTabTeardown.dispose();
+      disposeSearchPrompt();
       keyboard.dispose();
       disposeDprChange();
       resources.assertEmpty();
@@ -506,18 +710,35 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
 );
 function dispatch(action: Action): void {
   const type = action.type;
-  if (type === "document.open") { if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } shellOpen.requestOpen(); return; }
+  if (type === "document.open") { if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } openFileOpener(); return; }
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
   if (type === "tab.new") { appendTab(); return; }
   if (type === "palette.toggle") { openPalette(); return; }
+  if (type === "tab.next") { void switchTab(workspace.adjacentId(1)); return; }
+  if (type === "tab.previous") { void switchTab(workspace.adjacentId(-1)); return; }
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "application.quit") { void requestApplicationQuit(); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
   if (type.startsWith("page.")) void session.renderPage(reader.page); if (type.startsWith("view.")) void session.renderCurrentView();
   if (type === "search.open") { searchInput.value = session.query; searchDialog.showModal(); searchInput.focus(); }
   if (type === "linkHints.toggle") session.toggleHints(); if (type === "prompt.cancel") session.cancelHints();
-  if (type.startsWith("scroll.")) { const intent = session.reader.consumePendingScroll(); payload.host.scrollBy({ left: intent.horizontalCssPixels, top: intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight }); }
+  if (type.startsWith("scroll.")) {
+    const intent = session.reader.consumePendingScroll();
+    const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
+    const direction = wheelPageDirection({
+      deltaX: intent.horizontalCssPixels,
+      deltaY: verticalCssPixels,
+      scrollTop: payload.host.scrollTop,
+      scrollHeight: payload.host.scrollHeight,
+      clientHeight: payload.host.clientHeight,
+      page: reader.page,
+      pageCount: reader.pageCount,
+    });
+    if (direction === 0 || !turnPageAtBoundary(payload, direction)) {
+      payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels });
+    }
+  }
   keyboard.syncContext(); render();
 }
 const engine = new KeySequenceEngine();
@@ -578,38 +799,53 @@ function disposeDprChange(): void {
 }
 bindDprChange();
 scheduleDprPollFallback();
-searchInput.addEventListener("input", () => active().session.invalidateSearch());
+const disposeSearchPrompt = bindSearchPrompt(
+  { dialog: searchDialog, form: searchForm, input: searchInput },
+  () => active().session,
+  render,
+);
 window.addEventListener("resize", () => { scheduleDprPollFallback(); void active().session.renderCurrentView(); });
 window.addEventListener("blur", keyboard.cancelPending);
 window.addEventListener("compositionstart", keyboard.cancelPending);
 window.addEventListener("focusin", (event) => { if (isNativeOwnedTarget(event.target)) keyboard.cancelPending(); });
-searchForm.addEventListener("submit", (event) => event.preventDefault());
-searchInput.addEventListener("keydown", (event) => {
-  if (isNativeKeyboardCompositionOrModifierEvent(event)) return;
-  const action = getPromptKeyAction(event);
-  if (action === "close") {
+fileOpenerInput.addEventListener("input", () => { fileOpenerActiveIndex = 0; renderFileOpener(); });
+fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); dispatchFileOpenerEntry(); });
+fileOpenerDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeFileOpener(); });
+fileOpenerDialog.addEventListener("keydown", (event) => {
+  if (isPaletteClearShortcut(event)) {
     event.preventDefault();
-    searchDialog.close();
-  } else if (action === "search" || action === "searchReverse") {
-    event.preventDefault();
-    active().session.submitSearch(searchInput.value, action === "searchReverse");
+    event.stopPropagation();
+    fileOpenerInput.value = "";
+    fileOpenerActiveIndex = 0;
+    renderFileOpener();
+    return;
   }
-});
+  const action = commandPaletteKeyAction(event);
+  if (!action) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (action === "close") { closeFileOpener(); return; }
+  if (action === "submit") { dispatchFileOpenerEntry(); return; }
+  fileOpenerActiveIndex = moveCommandPaletteIndex(fileOpenerActiveIndex, recentEntries().length + 1, action);
+  renderFileOpener();
+}, { capture: true });
 paletteInput.addEventListener("input", renderPalette);
 paletteForm.addEventListener("submit", (event) => { event.preventDefault(); dispatchPaletteEntry(); });
 window.addEventListener("focus", () => removedTabTeardown.retryParked());
-paletteInput.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") { event.preventDefault(); closePalette(); return; }
-  const down = event.key === "ArrowDown" || (event.ctrlKey && event.key.toLowerCase() === "j");
-  const up = event.key === "ArrowUp" || (event.ctrlKey && event.key.toLowerCase() === "k");
-  if (event.key === "Enter") { event.preventDefault(); dispatchPaletteEntry(); return; }
-  if (!down && !up) return;
+paletteDialog.addEventListener("keydown", (event) => {
+  const action = commandPaletteKeyAction(event);
+  if (!action) return;
   event.preventDefault();
-  const count = buildCommandPaletteEntries(commandAvailabilityContext(), recents, paletteInput.value).length;
-  if (count > 0) { paletteActiveIndex = (paletteActiveIndex + (down ? 1 : count - 1)) % count; renderPalette(); }
-});
+  event.stopPropagation();
+  if (action === "close") { closePalette(); return; }
+  if (action === "submit") { dispatchPaletteEntry(); return; }
+  const count = paletteEntries().length;
+  paletteActiveIndex = moveCommandPaletteIndex(paletteActiveIndex, count, action);
+  if (count > 0) renderPalette();
+}, { capture: true });
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); helpDialog.close(); render(); });
 window.addEventListener("beforeunload", () => {
+  disposeSearchPrompt();
   themeUnlisten?.();
   quitUnlisten?.();
   shellDisposing = true;

@@ -9,3 +9,6 @@ src-tauri/target/
 fixtures/phase0-generated/*.pdf
 fixtures/adversarial-generated/*.pdf
 evidence/phase0/
+
+builds/
+docs/window-porting/

@@ -1,5 +1,6 @@
 import {
   DEFAULT_BINDINGS,
+  formatShortcutKeys,
   isCommandEnabled,
   type CommandAvailabilityContext,
 } from "../core/defaultBindings.windows";
@@ -136,7 +137,7 @@ export function buildCommandPaletteEntries(
     .map((binding) => ({
       kind: "command",
       id: binding.id,
-      shortcut: binding.keys.join(" "),
+      shortcut: formatShortcutKeys(binding.keys),
       label: binding.label,
       enabled: isCommandEnabled(binding, context),
     }));
@@ -182,4 +183,37 @@ export function buildCommandPaletteEntries(
       || compareStableIds(left.stableId, right.stableId)
     ))
     .map(({ entry }) => entry);
+}
+
+type PaletteKeyboardEvent = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "isComposing">;
+
+function matchesLetter(event: PaletteKeyboardEvent, letter: string): boolean {
+  return event.code === `Key${letter.toUpperCase()}` || event.key.toLowerCase() === letter.toLowerCase();
+}
+
+export function isPaletteClearShortcut(event: PaletteKeyboardEvent): boolean {
+  return !event.isComposing && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && matchesLetter(event, "c");
+}
+export type CommandPaletteKeyAction = "close" | "submit" | "next" | "previous";
+
+export function commandPaletteKeyAction(
+  event: PaletteKeyboardEvent,
+): CommandPaletteKeyAction | undefined {
+  if (event.isComposing || event.altKey || event.metaKey) return undefined;
+  if (event.key === "Escape" && !event.ctrlKey) return "close";
+  if (event.key === "Enter" && !event.ctrlKey) return "submit";
+  if (event.key === "ArrowDown" || (event.ctrlKey && matchesLetter(event, "j"))) return "next";
+  if (event.key === "ArrowUp" || (event.ctrlKey && matchesLetter(event, "k"))) return "previous";
+  return undefined;
+}
+
+export function moveCommandPaletteIndex(
+  currentIndex: number,
+  entryCount: number,
+  action: "next" | "previous",
+): number {
+  if (!Number.isSafeInteger(entryCount) || entryCount < 0) throw new RangeError("Palette entry count is invalid");
+  if (entryCount === 0) return 0;
+  const normalized = ((currentIndex % entryCount) + entryCount) % entryCount;
+  return (normalized + (action === "next" ? 1 : entryCount - 1)) % entryCount;
 }

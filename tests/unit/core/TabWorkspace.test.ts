@@ -109,4 +109,18 @@ describe("TabWorkspace", () => {
     expect(Object.keys(tab!).sort()).toEqual(["id", "payload", "staged"]);
     expect(Object.keys(workspace.snapshot).sort()).toEqual(["activeTabId", "history", "tabs"]);
   });
+  it("selects cyclic next and previous tab identities without mutating state", () => {
+    const workspace = new TabWorkspace(() => "first");
+    const first = workspace.activeTabId;
+    const second = workspace.appendAndActivate("second") as TabId;
+    const third = workspace.appendAndActivate("third") as TabId;
+    const snapshot = workspace.snapshot;
+
+    expect(workspace.adjacentId(1)).toBe(first);
+    expect(workspace.adjacentId(-1)).toBe(second);
+    expect(workspace.snapshot).toBe(snapshot);
+    workspace.activate(first);
+    expect(workspace.adjacentId(-1)).toBe(third);
+    expect(workspace.adjacentId(1)).toBe(second);
+  });
 });
