@@ -1,0 +1,155 @@
+{
+  "schemaVersion": 1,
+  "baseline": {
+    "repository": "DS-argus/modeleaf",
+    "sha": "0f7ff0b54c3674c48f6b555261f939397cfbfb88",
+    "sources": [
+      "PDFReaderCore/Theme/Theme.swift",
+      "PDFReaderCore/Theme/BuiltInThemes.swift"
+    ]
+  },
+  "themeCount": 7,
+  "tokenCount": 12,
+  "tokenOrder": [
+    "background",
+    "foreground",
+    "muted-text",
+    "border",
+    "accent",
+    "active-tab",
+    "inactive-tab",
+    "statusline",
+    "error",
+    "search-highlight",
+    "active-search-highlight",
+    "focus-indicator"
+  ],
+  "themes": [
+    {
+      "id": "tokyo-night",
+      "displayName": "Tokyo Night",
+      "palette": {
+        "background": "#1A1B26",
+        "foreground": "#C0CAF5",
+        "muted-text": "#9AA5CE",
+        "border": "#3B4261",
+        "accent": "#7AA2F7",
+        "active-tab": "#24283B",
+        "inactive-tab": "#16161E",
+        "statusline": "#101014",
+        "error": "#F7768E",
+        "search-highlight": "#E0AF68",
+        "active-search-highlight": "#FF9E64",
+        "focus-indicator": "#7AA2F7"
+      }
+    },
+    {
+      "id": "gruvbox-dark",
+      "displayName": "Gruvbox Dark",
+      "palette": {
+        "background": "#282828",
+        "foreground": "#EBDBB2",
+        "muted-text": "#A89984",
+        "border": "#504945",
+        "accent": "#83A598",
+        "active-tab": "#3C3836",
+        "inactive-tab": "#1D2021",
+        "statusline": "#1D2021",
+        "error": "#FB4934",
+        "search-highlight": "#FABD2F",
+        "active-search-highlight": "#FE8019",
+        "focus-indicator": "#83A598"
+      }
+    },
+    {
+      "id": "solarized-dark",
+      "displayName": "Solarized Dark",
+      "palette": {
+        "background": "#002B36",
+        "foreground": "#839496",
+        "muted-text": "#586E75",
+        "border": "#0B4F5E",
+        "accent": "#268BD2",
+        "active-tab": "#073642",
+        "inactive-tab": "#001F27",
+        "statusline": "#001F27",
+        "error": "#DC322F",
+        "search-highlight": "#B58900",
+        "active-search-highlight": "#CB4B16",
+        "focus-indicator": "#268BD2"
+      }
+    },
+    {
+      "id": "dracula",
+      "displayName": "Dracula",
+      "palette": {
+        "background": "#282A36",
+        "foreground": "#F8F8F2",
+        "muted-text": "#6272A4",
+        "border": "#44475A",
+        "accent": "#BD93F9",
+        "active-tab": "#44475A",
+        "inactive-tab": "#21222C",
+        "statusline": "#191A21",
+        "error": "#FF5555",
+        "search-highlight": "#F1FA8C",
+        "active-search-highlight": "#FFB86C",
+        "focus-indicator": "#BD93F9"
+      }
+    },
+    {
+      "id": "everforest",
+      "displayName": "Everforest",
+      "palette": {
+        "background": "#2D353B",
+        "foreground": "#D3C6AA",
+        "muted-text": "#859289",
+        "border": "#475258",
+        "accent": "#A7C080",
+        "active-tab": "#343F44",
+        "inactive-tab": "#232A2E",
+        "statusline": "#232A2E",
+        "error": "#E67E80",
+        "search-highlight": "#DBBC7F",
+        "active-search-highlight": "#E69875",
+        "focus-indicator": "#A7C080"
+      }
+    },
+    {
+      "id": "nord",
+      "displayName": "Nord",
+      "palette": {
+        "background": "#2E3440",
+        "foreground": "#D8DEE9",
+        "muted-text": "#81A1C1",
+        "border": "#4C566A",
+        "accent": "#88C0D0",
+        "active-tab": "#3B4252",
+        "inactive-tab": "#272C36",
+        "statusline": "#242933",
+        "error": "#BF616A",
+        "search-highlight": "#EBCB8B",
+        "active-search-highlight": "#D08770",
+        "focus-indicator": "#88C0D0"
+      }
+    },
+    {
+      "id": "catppuccin-latte",
+      "displayName": "Catppuccin Latte",
+      "palette": {
+        "background": "#EFF1F5",
+        "foreground": "#4C4F69",
+        "muted-text": "#6C6F85",
+        "border": "#BCC0CC",
+        "accent": "#1E66F5",
+        "active-tab": "#DCE0E8",
+        "inactive-tab": "#E6E9EF",
+        "statusline": "#DCE0E8",
+        "error": "#D20F39",
+        "search-highlight": "#DF8E1D",
+        "active-search-highlight": "#FE640B",
+        "focus-indicator": "#1E66F5"
+      }
+    }
+  ]
+}
