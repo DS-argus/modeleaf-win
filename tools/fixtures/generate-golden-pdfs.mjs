@@ -161,7 +161,7 @@ function textPages(count, prefix, sentinel = "") {
   );
 }
 function imageBytes(page) {
-  const pixels = Buffer.alloc(256 * 256 * 3);
+  const pixels = Buffer.alloc(850 * 1_100 * 3);
   let state = (0x4d4f4445 ^ Math.imul(page, 0x9e3779b9)) >>> 0;
   for (let index = 0; index < pixels.length; index += 1) {
     state ^= state << 13;
@@ -186,14 +186,14 @@ function imagePages(count, sentinel = "") {
       stream(
         "<<",
         ascii(
-          `q 512 0 0 512 50 140 cm /Im${page} Do Q\n${page === 1 ? sentinelCommands(sentinel) : ""}`,
+          `q 612 0 0 792 0 0 cm /Im${page} Do Q\n${page === 1 ? sentinelCommands(sentinel) : ""}`,
         ),
       ),
     );
     const imageId = objects.length + 1;
     objects.push(
       stream(
-        "<< /Type /XObject /Subtype /Image /Width 256 /Height 256 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+        "<< /Type /XObject /Subtype /Image /Width 850 /Height 1100 /ColorSpace /DeviceRGB /BitsPerComponent 8",
         imageBytes(page),
       ),
     );
@@ -254,7 +254,7 @@ function outlinePdf() {
     const content = objects.length + 1;
     objects.push(stream("<<", ascii(p.content)));
     objects[id - 1] =
-      `<< /Type /Page /Parent 2 0 R /MediaBox ${A4} /Resources ${p.resources} /Contents ${content} 0 R >>`;
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 676.3] /Resources ${p.resources} /Contents ${content} 0 R >>`;
     pageIds.push(id);
   }
   objects[1] = `<< /Type /Pages /Count 2 /Kids [${pageIds[0]} 0 R ${pageIds[1]} 0 R] >>`;
@@ -505,6 +505,8 @@ function expected(name) {
         duplicate_destinations: 2,
         invalid_row: true,
         edge_destination_y: 679,
+        page_height: 676.3,
+        edge_overshoot: 2.7,
       },
     };
   if (name === "interactive.pdf")
@@ -525,11 +527,20 @@ function expected(name) {
       pages,
       sentinel: {
         pattern: "f-magenta-lime-frame-v1",
+        raster_width: 850,
+        raster_height: 1100,
+        full_page: true,
         no_searchable_text: true,
       },
     };
-  if (name === "fixture-B-blank.pdf" || name === "image-only-2-page.pdf")
+  if (name === "fixture-B-blank.pdf")
     return { ...base, pages, sentinel: { no_searchable_text: true } };
+  if (name === "image-only-2-page.pdf")
+    return {
+      ...base,
+      pages,
+      sentinel: { no_searchable_text: true, no_ocr: true },
+    };
   if (name === "unicode-text.pdf")
     return {
       ...base,
@@ -613,7 +624,8 @@ export async function generateGoldenFixtures({
       bytes: fixture.bytes.length,
       ...expected(name),
       license: "test-generated",
-      source: "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md",
+      source:
+        "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md",
     });
   }
   const manifest = {

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
+const PRODUCT_DEFAULTS_FINGERPRINT =
+  "cf50e6169221bc93d371336173298ba49538f8e8a5586e777641107a59fd81a1";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -111,6 +113,10 @@ describe("v0.10.0 golden snapshots", () => {
     const defaults = await json(
       "tests/contract/snapshots/product-defaults.json",
     );
+    expect(
+      fingerprint(defaults),
+      "complete product-default snapshot changed",
+    ).toBe(PRODUCT_DEFAULTS_FINGERPRINT);
     expect(actions.schemaVersion).toBe(1);
     expect(actions.baseline.sha).toBe(BASELINE_SHA);
     expect(actions.count).toBe(61);

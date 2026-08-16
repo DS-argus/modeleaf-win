@@ -28,6 +28,55 @@ const standardFontDataUrl = `${join(
   "pdfjs-dist",
   "standard_fonts",
 ).replaceAll("\\", "/")}/`;
+const EXPECTED_SENTINELS: Record<string, unknown> = {
+  "text-3-page.pdf": {},
+  "fixture-S-text-10.pdf": { pattern: "s-magenta-lime-diagonal-v1" },
+  "fixture-L-text-300.pdf": { pattern: "l-lime-magenta-columns-v1" },
+  "fixture-F-raster-12.pdf": {
+    pattern: "f-magenta-lime-frame-v1",
+    raster_width: 850,
+    raster_height: 1100,
+    full_page: true,
+    no_searchable_text: true,
+  },
+  "fixture-B-blank.pdf": { no_searchable_text: true },
+  "image-only-2-page.pdf": { no_searchable_text: true, no_ocr: true },
+  "malformed.pdf": { class: "malformed" },
+  "locked.pdf": { class: "locked" },
+  "empty.pdf": { class: "zero-pages" },
+  "links.pdf": {
+    allowed_url: "https://example.invalid/allowed",
+    forbidden_url: "file:///C:/forbidden",
+    goto_point: true,
+    goto_no_point: true,
+    unresolved: true,
+    foreign: true,
+    text_only_url: true,
+  },
+  "link-duplicates.pdf": {
+    exact_duplicates: 2,
+    adjacent_same_target: true,
+    wrapped_rectangles: true,
+  },
+  "outline.pdf": {
+    wrapper: true,
+    visible_depths: 2,
+    deeper_hidden_child: true,
+    duplicate_destinations: 2,
+    invalid_row: true,
+    edge_destination_y: 679,
+    page_height: 676.3,
+    edge_overshoot: 2.7,
+  },
+  "interactive.pdf": {
+    widget: "sentinel-widget-value",
+    note: "sentinel-note-contents",
+    scripting_suppressed: true,
+    media_suppressed: true,
+  },
+  "unicode-text.pdf": { nfc: "café", nfd: "café", rtl: "مرحبا" },
+  "한글 공백 😀.pdf": { unicode_filename: true },
+};
 const digest = (value: Uint8Array) =>
   createHash("sha256").update(value).digest("hex");
 
@@ -41,9 +90,10 @@ function flattenOutline(
   ]);
 }
 
-async function inspectPdf(pdf: Uint8Array) {
+async function inspectPdf(pdf: Uint8Array, password?: string) {
   const task = getDocument({
     data: pdf,
+    password,
     isEvalSupported: false,
     useWorkerFetch: false,
     standardFontDataUrl,
@@ -51,8 +101,10 @@ async function inspectPdf(pdf: Uint8Array) {
   const document = await task.promise;
   const text: string[] = [];
   const annotations: AnnotationRecord[] = [];
+  const pageViews: number[][] = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
+    pageViews.push([...page.view]);
     const content = await page.getTextContent();
     text.push(
       content.items.map((item) => ("str" in item ? item.str : "")).join(""),
@@ -68,7 +120,7 @@ async function inspectPdf(pdf: Uint8Array) {
   );
   const pages = document.numPages;
   await document.destroy();
-  return { pages, text: text.join("\n"), annotations, outline };
+  return { pages, text: text.join("\n"), annotations, outline, pageViews };
 }
 
 function countAnnotations(annotations: AnnotationRecord[]) {
@@ -157,6 +209,10 @@ describe("golden PDF fixtures", () => {
         expect(firstBytes.length, `${file.name} byte count`).toBe(file.bytes);
         expect(file.license, `${file.name} license`).toBe("test-generated");
         expect(file.source, `${file.name} source`).toContain("v0.10.0");
+        expect(
+          file.sentinel,
+          `${file.name} complete sentinel contract`,
+        ).toEqual(EXPECTED_SENTINELS[file.name]);
 
         if (file.name === "malformed.pdf") {
           expect(firstBytes.subarray(0, 5).toString("ascii")).not.toBe("%PDF-");
@@ -173,6 +229,17 @@ describe("golden PDF fixtures", () => {
           await expect(
             inspectPdf(new Uint8Array(firstBytes)),
           ).rejects.toMatchObject({ name: "PasswordException" });
+          const unlocked = await inspectPdf(
+            new Uint8Array(firstBytes),
+            "modeleaf",
+          );
+          expect(unlocked.pages, "locked.pdf page count").toBe(file.pages);
+          expect(countAnnotations(unlocked.annotations)).toEqual(
+            file.expected_annotations,
+          );
+          expect(unlocked.outline).toHaveLength(
+            file.expected_outline.row_count,
+          );
           continue;
         }
 
@@ -192,6 +259,14 @@ describe("golden PDF fixtures", () => {
             `${file.name} must not contain extractable text`,
           ).toBe("");
         }
+        if (file.name === "image-only-2-page.pdf") {
+          const raw = firstBytes.toString("latin1");
+          expect(raw.match(/\/Subtype \/Image/g) ?? []).toHaveLength(2);
+          expect(file.sentinel).toMatchObject({
+            no_searchable_text: true,
+            no_ocr: true,
+          });
+        }
         if (sentinel.pattern) {
           const raw = firstBytes.toString("latin1");
           expect(raw, `${file.name} visible sentinel name`).toContain(
@@ -204,12 +279,23 @@ describe("golden PDF fixtures", () => {
             expect(raw.match(/\/Subtype \/Image/g) ?? []).toHaveLength(
               file.pages,
             );
+            expect(raw).toContain("/Width 850 /Height 1100");
+            expect(raw).toContain("q 612 0 0 792 0 0 cm");
+            expect(firstBytes.length).toBeGreaterThan(32 * 1024 * 1024);
+            expect(file.sentinel).toMatchObject({
+              raster_width: 850,
+              raster_height: 1100,
+              full_page: true,
+            });
           }
         }
         expect(
           countAnnotations(parsed.annotations),
           `${file.name} annotation contract`,
         ).toEqual(file.expected_annotations);
+        expect(parsed.outline, `${file.name} outline row count`).toHaveLength(
+          file.expected_outline.row_count,
+        );
         expect(
           parsed.outline.map(({ title }) => title),
           `${file.name} outline rows`,
@@ -225,9 +311,26 @@ describe("golden PDF fixtures", () => {
       expect(
         links.annotations.some(({ url }) => url?.includes("text-only-url")),
       ).toBe(false);
+      const internalDestinations = links.annotations.flatMap(({ dest }) =>
+        Array.isArray(dest) ? [dest] : [],
+      );
+      expect(internalDestinations).toHaveLength(2);
       expect(
-        links.annotations.filter(({ dest }) => Array.isArray(dest)),
-      ).toHaveLength(2);
+        internalDestinations.some(
+          (dest) =>
+            (dest[1] as { name?: string })?.name === "XYZ" &&
+            dest[2] === 42 &&
+            dest[3] === 600,
+        ),
+      ).toBe(true);
+      expect(
+        internalDestinations.some(
+          (dest) => (dest[1] as { name?: string })?.name === "Fit",
+        ),
+      ).toBe(true);
+      expect(
+        links.annotations.some(({ dest }) => dest === "unresolved-destination"),
+      ).toBe(true);
       const linksRaw = (
         await readFile(join(first, "pdf", "links.pdf"))
       ).toString("latin1");
@@ -253,6 +356,11 @@ describe("golden PDF fixtures", () => {
       expect(duplicateLinks).toHaveLength(3);
       expect(duplicateLinks[0]?.rect).toEqual(duplicateLinks[1]?.rect);
       expect(duplicateLinks[2]?.rect).not.toEqual(duplicateLinks[0]?.rect);
+      const wrappedLinks = duplicates.annotations.filter(
+        ({ url }) => url === "https://example.invalid/wrapped",
+      );
+      expect(wrappedLinks).toHaveLength(2);
+      expect(wrappedLinks[0]?.rect).not.toEqual(wrappedLinks[1]?.rect);
 
       const outline = await inspectPdf(
         new Uint8Array(await readFile(join(first, "pdf", "outline.pdf"))),
@@ -277,6 +385,18 @@ describe("golden PDF fixtures", () => {
         outline.outline.find(({ title }) => title === "12 Edge destination")
           ?.dest,
       ).toEqual([{ num: 4, gen: 0 }, { name: "XYZ" }, 42, 679, null]);
+      expect(outline.pageViews[0]).toEqual([0, 0, 612, 676.3]);
+      const outlineHeight = outline.pageViews[0]?.[3] ?? Number.NaN;
+      expect(679).toBeGreaterThan(outlineHeight);
+      expect(679 - outlineHeight).toBeCloseTo(2.7, 5);
+      expect(679 - outlineHeight).toBeLessThanOrEqual(8);
+      expect(
+        one.files.find(({ name }) => name === "outline.pdf")?.sentinel,
+      ).toMatchObject({
+        page_height: 676.3,
+        edge_destination_y: 679,
+        edge_overshoot: 2.7,
+      });
 
       const interactiveRaw = (
         await readFile(join(first, "pdf", "interactive.pdf"))

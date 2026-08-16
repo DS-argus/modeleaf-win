@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generator_version": "1",
-  "generator_sha256": "1429c25d01d53225b76cc62df6eefbd274a712e0947f71d298ca35a375cb85d5",
+  "generator_sha256": "55f48bf594697a6d2cf8f5edd748fa88609d9ac89d659c238eaee9a73de0f0c3",
   "files": [
     {
       "name": "text-3-page.pdf",
@@ -75,8 +75,8 @@
     },
     {
       "name": "fixture-F-raster-12.pdf",
-      "sha256": "405e6345ae3429496713811b8ced9bfb4e99c2e37a23486f33153971ecc2ac04",
-      "bytes": 2365287,
+      "sha256": "53cfe725923b584062ecd1082611b4c38105f7c58c0251966af47ad7718682dc",
+      "bytes": 33665980,
       "expected_text": [],
       "expected_annotations": {
         "links": 0,
@@ -89,6 +89,9 @@
       },
       "sentinel": {
         "pattern": "f-magenta-lime-frame-v1",
+        "raster_width": 850,
+        "raster_height": 1100,
+        "full_page": true,
         "no_searchable_text": true
       },
       "pages": 12,
@@ -118,8 +121,8 @@
     },
     {
       "name": "image-only-2-page.pdf",
-      "sha256": "8751d2c982d090117f59dc9a2e93a8dadfac1871620a58df68b86709d8f3c08d",
-      "bytes": 394551,
+      "sha256": "fa0ed3afca712e96c0b76fa0acf0b35bc78d1fab2671c10af55f99737fbd2c45",
+      "bytes": 5611334,
       "expected_text": [],
       "expected_annotations": {
         "links": 0,
@@ -131,7 +134,8 @@
         "rows": []
       },
       "sentinel": {
-        "no_searchable_text": true
+        "no_searchable_text": true,
+        "no_ocr": true
       },
       "pages": 2,
       "license": "test-generated",
@@ -254,8 +258,8 @@
     },
     {
       "name": "outline.pdf",
-      "sha256": "b928708d5d147ab0630a366cb937a81c920e58f95568fe687cdc2aa0312f7183",
-      "bytes": 2541,
+      "sha256": "88205ff3951b13629947676844d847d547b61b9400bc370503ec0564bb8ce9f3",
+      "bytes": 2545,
       "expected_text": [],
       "expected_annotations": {
         "links": 0,
@@ -283,7 +287,9 @@
         "deeper_hidden_child": true,
         "duplicate_destinations": 2,
         "invalid_row": true,
-        "edge_destination_y": 679
+        "edge_destination_y": 679,
+        "page_height": 676.3,
+        "edge_overshoot": 2.7
       },
       "pages": 2,
       "license": "test-generated",
