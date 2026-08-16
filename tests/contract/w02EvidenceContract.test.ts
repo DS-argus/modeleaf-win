@@ -1,14 +1,15 @@
 import Ajv2020 from "ajv/dist/2020.js";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { join, relative } from "node:path";
 
 interface EvidenceRecord {
   readonly recordType: string;
   readonly result: "pass" | "fail";
-  readonly app: { readonly sourceTreeSha256: string; readonly binarySha256: string };
+  readonly app: { readonly commit: string; readonly dirty: boolean; readonly sourceTreeSha256: string; readonly binarySha256: string };
   readonly recordId: string;
   readonly fixture: { readonly id: string; readonly sha256: string; readonly bytes: number };
   readonly sourceHashes: { readonly before: string; readonly after: string };
@@ -116,43 +117,26 @@ describe("W02 evidence contract", () => {
       }
     }
   });
-
-  it("recomputes the documented source tree and verifies the retained packaged binary", () => {
-    const sourceFiles: string[] = [];
-    const visit = (directory: string): void => {
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const absolute = join(directory, entry.name);
-        if (entry.isDirectory()) visit(absolute);
-        else sourceFiles.push(absolute);
-      }
-    };
-    visit(join(root, "src"));
-    visit(join(root, "src-tauri", "src"));
-    sourceFiles.push(
-      join(root, "package.json"),
-      join(root, "package-lock.json"),
-      join(root, "src-tauri", "tauri.conf.json"),
-      join(root, "public", "assets", "pdfjs-6.2.108", "pdfjs-assets-6.2.108.json"),
-    );
-    sourceFiles.sort((left, right) => relative(root, left).replaceAll("\\", "/")
-      .localeCompare(relative(root, right).replaceAll("\\", "/")));
+  it("recomputes historical W02 source and retained-binary provenance from the merged commit", () => {
+    const loaded = records();
+    const commit = loaded[0]!.app.commit;
+    expect(loaded.every((record) => record.app.commit === commit && record.app.dirty === false)).toBe(true);
+    const sourceFiles = execFileSync("git", ["ls-tree", "-r", "--name-only", commit, "--", "src", "src-tauri/src"], { cwd: root, encoding: "utf8" })
+      .split(/\r?\n/u).filter(Boolean);
+    sourceFiles.push("package.json", "package-lock.json", "src-tauri/tauri.conf.json", "public/assets/pdfjs-6.2.108/pdfjs-assets-6.2.108.json");
+    sourceFiles.sort((left, right) => left.localeCompare(right));
     const digest = createHash("sha256");
-    for (const file of sourceFiles) {
-      digest.update(relative(root, file).replaceAll("\\", "/"));
+    for (const path of sourceFiles) {
+      digest.update(path);
       digest.update(Buffer.from([0]));
-      digest.update(readFileSync(file));
+      digest.update(execFileSync("git", ["show", `${commit}:${path}`], { cwd: root, encoding: "buffer" }));
       digest.update(Buffer.from([0]));
     }
-    const expectedSource = records()[0]!.app.sourceTreeSha256;
+    const expectedSource = loaded[0]!.app.sourceTreeSha256;
     expect(digest.digest("hex")).toBe(expectedSource);
-    expect(records().every((record) => record.app.sourceTreeSha256 === expectedSource)).toBe(true);
-
-    const binary = join(root, "src-tauri", "target", "debug", "modeleaf.exe");
-    if (existsSync(binary)) {
-      const expectedBinary = records()[0]!.app.binarySha256;
-      expect(sha256(readFileSync(binary))).toBe(expectedBinary);
-      expect(records().every((record) => record.app.binarySha256 === expectedBinary)).toBe(true);
-    }
+    expect(loaded.every((record) => record.app.sourceTreeSha256 === expectedSource)).toBe(true);
+    const retainedBinary = join(evidenceRoot, "artifacts", "modeleaf-w02.exe");
+    if (existsSync(retainedBinary)) expect(sha256(readFileSync(retainedBinary))).toBe(loaded[0]!.app.binarySha256);
   });
   it("keeps decoded evidence values path-free and credential-free", () => {
     const prohibited: string[] = [];
