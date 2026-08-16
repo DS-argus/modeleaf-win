@@ -1,5 +1,6 @@
 export type Action =
   | { readonly type: "document.open" }
+  | { readonly type: "document.print" }
   | { readonly type: "page.next" }
   | { readonly type: "page.previous" }
   | { readonly type: "page.first" }

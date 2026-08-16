@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { join, relative } from "node:path";
 import {
   PDFJS_POLICY,
   PDFJS_VERSION,
@@ -81,13 +84,42 @@ describe("PDF.js policy", () => {
     `);
   });
 
-  it("allows only packaged self-origin PDF.js fetches through the Tauri CSP", () => {
+  it("allows only packaged and custom PDF origins through the Tauri CSP", () => {
     const config = JSON.parse(readFileSync(new URL("../../../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
     const csp = config.app.security.csp as string;
-    expect(csp).toContain("connect-src 'self' ipc: http://ipc.localhost");
-    expect(csp).not.toMatch(/connect-src[^;]*https?:\/\/(?!ipc\.localhost)/);
+    const connectSources = csp.match(/(?:^|; )connect-src ([^;]+)/)?.[1]?.split(/\s+/);
+    expect(connectSources).toEqual(["'self'", "ipc:", "http://ipc.localhost", "http://modeleaf-pdf.localhost"]);
   });
 
+  it("validates the complete generated 6.2.108 asset inventory", () => {
+    const generated = JSON.parse(readFileSync(new URL(
+      `../../../public/assets/pdfjs-${PDFJS_VERSION}/pdfjs-assets-${PDFJS_VERSION}.json`,
+      import.meta.url,
+    ), "utf8")) as PdfJsAssetManifest;
+    expect(() => validatePdfJsAssetManifest(generated)).not.toThrow();
+    const root = fileURLToPath(new URL(`../../../public/assets/pdfjs-${PDFJS_VERSION}/`, import.meta.url));
+    const physical: string[] = [];
+    const visit = (directory: string): void => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const absolute = join(directory, entry.name);
+        if (entry.isDirectory()) visit(absolute);
+        else if (entry.name !== `pdfjs-assets-${PDFJS_VERSION}.json`) {
+          physical.push(relative(root, absolute).replaceAll("\\", "/"));
+        }
+      }
+    };
+    visit(root);
+    const prefix = `./assets/pdfjs-${PDFJS_VERSION}/`;
+    expect(physical.sort()).toEqual(generated.assets.map((entry) => entry.path.slice(prefix.length)).sort());
+    for (const entry of generated.assets) {
+      const bytes = readFileSync(join(root, entry.path.slice(prefix.length)));
+      expect(bytes.byteLength, entry.path).toBe(entry.byteLength);
+      expect(createHash("sha256").update(bytes).digest("hex"), entry.path).toBe(entry.sha256);
+    }
+    expect(Object.fromEntries([...new Set(generated.assets.map((entry) => entry.kind))]
+      .map((kind) => [kind, generated.assets.filter((entry) => entry.kind === kind).length])))
+      .toEqual({ core: 1, worker: 1, cMaps: 169, icc: 2, standardFonts: 16, wasm: 13, viewerCss: 1, viewer: 1 });
+  });
   it("accepts multiple runtime files for each directory kind", () => {
     expect(() => validatePdfJsAssetManifest(manifest)).not.toThrow();
     expect(requirePdfJsAsset(manifest, `./assets/pdfjs-${PDFJS_VERSION}/cmaps/UniJIS-UTF16-H.bcmap`).kind).toBe("cMaps");
@@ -97,6 +129,7 @@ describe("PDF.js policy", () => {
     expect(() => validatePdfJsAssetManifest({ ...manifest, pdfjsVersion: "6.2.107" as unknown as typeof PDFJS_VERSION })).toThrow("version mismatch");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: manifest.assets.filter((entry) => entry.kind !== "wasm") })).toThrow("missing");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: [...manifest.assets, { ...manifest.assets[0]! }] })).toThrow("duplicate");
+    expect(() => validatePdfJsAssetManifest({ ...manifest, assets: [{ ...manifest.assets[0]!, path: `./assets/pdfjs-${PDFJS_VERSION}/cmaps/fake.bcmap` }, ...manifest.assets.slice(1)] })).toThrow("invalid");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: [{ ...manifest.assets[0]!, path: "https://cdn.invalid/worker.mjs" }, ...manifest.assets.slice(1)] })).toThrow("invalid");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: [{ ...manifest.assets[0]!, path: `./assets/pdfjs-${PDFJS_VERSION}/cmaps/../worker.mjs` }, ...manifest.assets.slice(1)] })).toThrow("invalid");
     expect(() => requirePdfJsAsset(manifest, `./assets/pdfjs-${PDFJS_VERSION}/cmaps/not-listed.bcmap`)).toThrow("not listed");

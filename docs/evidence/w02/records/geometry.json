@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "modeleaf.w02.evidence.v1",
+  "recordId": "w02-geometry",
+  "recordType": "geometry",
+  "recordedAt": "2026-08-16T16:05:16.6847036Z",
+  "machine": {
+    "id": "reference-workstation-2026-08-16",
+    "os": "Windows 11 Enterprise",
+    "build": "Microsoft Windows NT 10.0.26200.0",
+    "arch": "x64",
+    "cpu": "Intel(R) Core(TM) Ultra 5 125H",
+    "ramBytes": 33838469120,
+    "gpu": "Intel(R) Arc(TM) Graphics",
+    "webview2": "151.0.4129.86"
+  },
+  "app": {
+    "name": "Modeleaf",
+    "version": "0.1.0",
+    "commit": "f306207e3ceab329c9f496a79c74142fc441222f",
+    "dirty": true,
+    "buildProfile": "debug",
+    "sourceTreeSha256": "e6867ef09514b607d72b8e9dd87f89523b37a52cfff0f458481792c397dbb10e",
+    "binarySha256": "b5e674fc902fc038f44bc13568228c79531ee1d7f3db812c4cf1c21ae6bf1e73",
+    "pdfjsVersion": "6.2.108"
+  },
+  "fixture": {
+    "id": "links.pdf",
+    "sha256": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4",
+    "bytes": 2019
+  },
+  "sourceHashes": {
+    "before": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4",
+    "after": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4"
+  },
+  "result": "pass",
+  "details": {
+    "cases": [
+      { "dpr": 1, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.25, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.25, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.25, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.25, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.5, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.5, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.5, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 1.5, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 2, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 2, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 2, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+      { "dpr": 2, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 }
+    ],
+    "thresholdCssPx": 1,
+    "allLinksInsideFrame": true,
+    "allTextSpansInsideFrame": true
+  },
+  "artifactRefs": [
+    {
+      "path": "artifacts/geometry.json",
+      "sha256": "8d5a58e57ac3524c7dd75f28dec4a8b0489beedc4b29d41acc64c029188310f6",
+      "bytes": 1866
+    }
+  ]
+}

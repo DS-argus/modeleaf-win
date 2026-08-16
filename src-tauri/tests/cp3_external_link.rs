@@ -7,12 +7,10 @@ use modeleaf_lib::pdf_session::{
 use std::io::Write;
 
 #[test]
-fn allows_http_https_and_mailto_targets() {
+fn allows_only_http_and_https_targets() {
     for target in [
         "http://example.com/path?query=value#fragment",
         "HTTPS://example.com/%E2%9C%93?q=%C3%A9",
-        "mailto:reader@example.com?subject=PDF%20question",
-        "mailto:reader%40example.com",
     ] {
         assert_eq!(validate_external_link(target), Ok(()), "{target}");
     }
@@ -23,6 +21,7 @@ fn rejected_targets_never_reach_the_launcher() {
     let oversized = format!("https://example.com/{}", "a".repeat(8_192));
     let rejected = [
         "javascript:alert(1)",
+        "mailto:reader@example.com?subject=PDF%20question",
         "file:///C:/document.pdf",
         "data:text/plain,hello",
         "relative/path",

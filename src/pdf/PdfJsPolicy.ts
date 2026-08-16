@@ -85,6 +85,25 @@ const SHA256 = /^[a-f0-9]{64}$/;
 const ASSET_PREFIX = `./assets/pdfjs-${PDFJS_VERSION}/`;
 const ASSET_PATH_CHARS = /^[A-Za-z0-9._/-]+$/;
 
+const EXACT_ASSET_PATHS: Partial<Record<PdfJsAssetKind, string>> = Object.freeze({
+  worker: assetUrl("build/pdf.worker.min.mjs"),
+  core: assetUrl("build/pdf.mjs"),
+  viewer: assetUrl("web/pdf_viewer.mjs"),
+  viewerCss: assetUrl("web/pdf_viewer.css"),
+});
+const DIRECTORY_ASSET_PREFIXES: Partial<Record<PdfJsAssetKind, string>> = Object.freeze({
+  cMaps: assetUrl("cmaps/"),
+  standardFonts: assetUrl("standard_fonts/"),
+  wasm: assetUrl("wasm/"),
+  icc: assetUrl("iccs/"),
+});
+
+function isPathBoundToKind(asset: PdfJsAssetRecord): boolean {
+  const exact = EXACT_ASSET_PATHS[asset.kind];
+  if (exact !== undefined) return asset.path === exact;
+  const prefix = DIRECTORY_ASSET_PREFIXES[asset.kind];
+  return prefix !== undefined && asset.path.startsWith(prefix) && asset.path.length > prefix.length;
+}
 function isExactLocalAssetPath(path: string): boolean {
   if (!path.startsWith(ASSET_PREFIX)) return false;
   const relativePath = path.slice(ASSET_PREFIX.length);
@@ -105,11 +124,16 @@ export function validatePdfJsAssetManifest(manifest: PdfJsAssetManifest): void {
     if (!REQUIRED_PDFJS_ASSET_KINDS.includes(asset.kind) || listedPaths.has(asset.path)) {
       throw new PdfJsPolicyError("ASSET_MANIFEST_INVALID", "Asset kind is unsupported or file path is duplicate");
     }
-    if (!isExactLocalAssetPath(asset.path) || !Number.isSafeInteger(asset.byteLength) || asset.byteLength <= 0 || !SHA256.test(asset.sha256)) {
+    if (!isExactLocalAssetPath(asset.path) || !isPathBoundToKind(asset) || !Number.isSafeInteger(asset.byteLength) || asset.byteLength <= 0 || !SHA256.test(asset.sha256)) {
       throw new PdfJsPolicyError("ASSET_MANIFEST_INVALID", "Asset metadata is invalid");
     }
     listedPaths.add(asset.path);
     listedKinds.add(asset.kind);
+  }
+  for (const [kind, path] of Object.entries(EXACT_ASSET_PATHS)) {
+    if (manifest.assets.filter((asset) => asset.kind === kind && asset.path === path).length !== 1) {
+      throw new PdfJsPolicyError("ASSET_MISSING", "Required fixed PDF.js asset is missing");
+    }
   }
   if (REQUIRED_PDFJS_ASSET_KINDS.some((kind) => !listedKinds.has(kind))) {
     throw new PdfJsPolicyError("ASSET_MISSING", "Required PDF.js asset is missing");

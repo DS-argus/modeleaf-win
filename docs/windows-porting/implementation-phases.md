@@ -98,10 +98,10 @@ src-tauri/src/main.rs
 5. empty capability에서 시작하고 실제 command/plugin을 추가할 때만 권한을 연다.
 6. single-instance plugin을 setup 첫 plugin으로 등록한다.
 7. window별 opaque ID와 root store 생성/teardown skeleton을 만든다.
-8. CI `windows-latest`에서 install, lint, typecheck, unit, Rust fmt/clippy/test, `tauri build --debug` 또는 equivalent smoke를 실행한다.
-9. dependency license/security audit command를 CI 또는 scheduled workflow에 둔다.
+8. recorded Windows reference workstation에서 install, lint, typecheck, unit, Rust fmt/clippy/test, `tauri build --debug` 또는 equivalent smoke를 실행한다.
+9. dependency license/security audit는 local gate로 실행한다. GitHub Actions는 release phase 전까지 authoritative gate가 아니다.
 
-Windows prerequisites:
+Developer/CI build prerequisites (end-user runtime prerequisites가 아님):
 
 - Microsoft C++ Build Tools
 - WebView2
@@ -114,18 +114,18 @@ Windows prerequisites:
 - frontend empty shell component test
 - single-instance registration order test 또는 source assertion
 - CSP/capability snapshot test
-- clean Windows runner build smoke
+- recorded reference workstation debug build/runtime smoke
 
 ### Exit gate
 
 - empty app가 Windows에서 launch/close/relaunch된다.
 - `Ctrl+N` placeholder가 같은 process에서 두 번째 window를 만들 수 있다.
 - broad fs/shell capability가 없다.
-- CI가 green이다.
+- 기록된 reference workstation의 local quality gate가 통과한다.
 
 ### Stop condition
 
-WebView2 bootstrap 또는 multiwindow/single-instance가 clean VM에서 재현되지 않으면 W02로 넘어가지 않는다.
+W01–W12는 기록된 reference workstation에서 계속 진행하되 clean-VM 재현을 주장하지 않는다. Node/Rust/MSVC가 없는 clean Windows 10/11 VM의 installer, WebView2 bootstrap, multiwindow/single-instance 검증은 W13으로 이관하며, 통과하지 못하면 release blocker다.
 
 ## W02 — PDF feasibility spike
 
@@ -593,7 +593,7 @@ W02 prototype를 memory-bounded, cancellable production feature로 만든다.
 
 ### Exit gate
 
-- clean Windows 10/11에서 print dialog가 반복 재현된다.
+- 기록된 reference workstation에서 print dialog가 반복 재현된다.
 - cancel/error 후 app가 정상 입력 상태로 돌아온다.
 - 실패 시 다른 viewer로 자동 위임하지 않는다.
 
@@ -611,7 +611,7 @@ W02 prototype를 memory-bounded, cancellable production feature로 만든다.
 4. Windows-specific release asset/metadata naming
 5. GitHub latest check와 notify-only banner/overlay
 6. download/release page opener
-7. clean install/upgrade/uninstall automation 또는 scripted checklist
+7. clean Windows 10/11 VM에서 NSIS install/launch, WebView2 bootstrap, multiwindow/single-instance, Open With, print dialog/output, upgrade, uninstall automation 또는 scripted checklist
 8. parity matrix 전 row evidence 연결
 9. performance/accessibility/security final audit
 10. user docs와 troubleshooting
@@ -637,6 +637,7 @@ installer smoke on clean VM
 - parity matrix에 `partial`, `blocked`, undocumented delta가 없다.
 - 모든 hard risk gate가 evidence link를 갖는다.
 - signed installer가 install/Open With/print/update notice/uninstall smoke를 통과한다.
+- clean Windows 10/11 VM에서 WebView2 bootstrap과 multiwindow/single-instance가 재현된다.
 - source PDF mutation test가 전체 suite에서 green이다.
 - release/tag/publish는 별도 승인 없이는 실행하지 않는다.
 

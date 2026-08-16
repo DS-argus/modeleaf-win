@@ -71,6 +71,8 @@
 | 창 상태 | 세션/탭/페이지를 저장하지 않음; 초기 크기 계약만 유지 | `window-state` 플러그인으로 새 persistence를 몰래 추가하지 않음 |
 | 외부 링크 | 첫 릴리스는 `http`/`https`만 OS 브라우저로 전달 | 임의 scheme 실행을 허용하지 않는 보안상 의도적 차이 |
 
+Node.js, Rust, MSVC가 없는 clean Windows 10/11 VM의 installer/WebView2 bootstrap과 multiwindow/single-instance 검증은 W13 release-readiness gate다. W01–W12 reference-workstation evidence를 clean-machine evidence로 표현하지 않는다.
+
 Tauri의 `appConfigDir`와 `appLocalDataDir`는 이미 `tauri.conf.json`의 bundle identifier를 붙여 반환한다. 따라서 그 아래에 `Modeleaf` 디렉터리를 한 번 더 붙이지 않는다.
 
 ## 유지해야 하는 제품 철학

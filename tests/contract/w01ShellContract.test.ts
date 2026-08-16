@@ -43,10 +43,11 @@ describe("W01 secure shell contract", () => {
       "'self'",
       "ipc:",
       "http://ipc.localhost",
+      "http://modeleaf-pdf.localhost",
     ]);
     expect(directive(csp, "style-src")).toEqual(["'self'", "'unsafe-inline'"]);
     expect(directive(csp, "worker-src")).toEqual(["'self'", "blob:"]);
-    expect(csp).not.toMatch(/https?:\/\/(?!ipc\.localhost\b)|\bcdn\b|\*/i);
+    expect(csp).not.toMatch(/https?:\/\/(?!(?:ipc|modeleaf-pdf)\.localhost\b)|\bcdn\b|\*/i);
   });
 
   it("limits the capability to quit-event listening on main and bounded reader windows", async () => {

@@ -103,7 +103,15 @@ const setup = (pages: PdfContentPage[]) => {
   };
 };
 
-const viewport = { width: 100, height: 100, scale: 1.25, convertToViewportRectangle: (rect: readonly number[]) => rect };
+const viewport = {
+  width: 100,
+  height: 100,
+  scale: 1.25,
+  rotation: 0,
+  rawDims: { pageWidth: 80, pageHeight: 80 },
+  convertToViewportPoint: (x: number, y: number) => [x, y] as const,
+  convertToPdfPoint: (x: number, y: number) => [x, y] as const,
+};
 
 describe("PdfContentController", () => {
   it("searches Korean literal text with trimmed case-insensitive cycling and highlights the rendered page", async () => {
@@ -396,7 +404,7 @@ describe("PdfContentController", () => {
       expect.objectContaining({ str: "글", fontName: "second" }),
     ]));
   });
-  it("creates pointer-selectable TextLayer spans and one deterministic hint per wrapped destination", async () => {
+  it("creates pointer-selectable TextLayer spans and one deterministic hint per exact link identity", async () => {
     const links: PdfContentAnnotation[] = [
       { subtype: "Link", rect: [10, 10, 30, 20], url: "https://example.test" },
       { subtype: "Link", rect: [10, 20, 30, 30], url: "https://example.test" },
@@ -410,12 +418,32 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.userSelect).toBe("text");
     expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.getPropertyValue("--total-scale-factor")).toBe("1.25");
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
-    expect([...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent)).toEqual(["A", "S"]);
+    expect([...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent)).toEqual(["A", "S", "D"]);
     subject.controller.handleHintKey("a");
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
     expect(subject.controller.snapshot.hintsVisible).toBe(false);
   });
 
+  it("keeps TextLayer raw dimensions for PDF.js quarter-turn rotation", async () => {
+    const subject = setup([page("select me")]);
+    const rotatedViewport = {
+      ...viewport,
+      width: 200,
+      height: 100,
+      scale: 2,
+      rotation: 90,
+      rawDims: { pageWidth: 50, pageHeight: 100 },
+    };
+    await subject.controller.renderPage({
+      pageNumber: 1,
+      page: await subject.pdf.getPage(1),
+      viewport: rotatedViewport,
+      canvas: subject.canvas,
+    });
+
+    expect(subject.host.querySelector<HTMLElement>(".pdf-content-layer")?.style).toMatchObject({ width: "200px", height: "100px" });
+    expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style).toMatchObject({ width: "100px", height: "200px" });
+  });
   it("uses only injected safe external opening, navigates internal destinations, and rejects actions", async () => {
     const annotations: PdfContentAnnotation[] = [
       { subtype: "Link", rect: [1, 1, 2, 2], url: "javascript:alert(1)" },
@@ -679,34 +707,44 @@ describe("PdfContentController", () => {
       vi.useRealTimers();
     }
   });
-  it("groups only adjacent wrapped rectangles and uses deterministic annotation ids", async () => {
+  it("deduplicates only exact link identities and keeps adjacent links separate", async () => {
     const links: PdfContentAnnotation[] = [
-      { subtype: "Link", rect: [10, 10, 30, 20], url: "https://example.test" },
-      { subtype: "Link", rect: [10, 20, 30, 30], url: "https://example.test" },
-      { subtype: "Link", rect: [10, 70, 30, 80], url: "https://example.test" },
+      { subtype: "Link", rect: [10, 10, 30, 20], url: "https://example.test/a" },
+      { subtype: "Link", rect: [10, 10, 30, 20], url: "https://example.test/a" },
+      { subtype: "Link", rect: [10, 20, 30, 30], url: "https://example.test/a" },
+      { subtype: "Link", rect: [10, 10, 30, 20], url: "https://example.test/b" },
     ];
     const subject = setup([page("x", links)]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     subject.controller.toggleHints();
 
-    expect(subject.host.querySelectorAll("[data-hint-label]")).toHaveLength(2);
+    expect(subject.host.querySelectorAll("[data-hint-label]")).toHaveLength(3);
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
     subject.controller.handleHintKey("A");
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
 
   it("requires the viewport transform instead of using raw annotation rectangles", async () => {
-    const convertToViewportRectangle = vi.fn(() => [40, 30, 60, 50]);
+    const convertToViewportPoint = vi.fn((x: number, y: number) =>
+      x === 1 && y === 2 ? [40, 30] as const : [60, 50] as const);
     const subject = setup([page("x", [{ subtype: "Link", rect: [1, 2, 3, 4], url: "https://example.test" }])]);
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
-      viewport: { width: 100, height: 100, scale: 2, convertToViewportRectangle },
+      viewport: {
+        ...viewport,
+        scale: 2,
+        rawDims: { pageWidth: 50, pageHeight: 50 },
+        convertToViewportPoint,
+      },
       canvas: subject.canvas,
     });
 
-    expect(convertToViewportRectangle).toHaveBeenCalledWith([1, 2, 3, 4]);
+    expect(convertToViewportPoint).toHaveBeenNthCalledWith(1, 1, 2);
+    expect(convertToViewportPoint).toHaveBeenNthCalledWith(2, 3, 4);
     expect(subject.host.querySelector<HTMLElement>(".pdf-link-overlay")?.style.left).toBe("40px");
+    expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.width).toBe("100px");
+    expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.height).toBe("100px");
   });
 
   it("quarantines a pending overlay reservation while raw PDF work never settles", async () => {
@@ -1126,7 +1164,6 @@ describe("PdfContentController", () => {
 
     expect(subject.prepareExternalLinks).toHaveBeenCalledWith([
       { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/safe" },
-      { annotationId: "page-1-render-2-annotation-1", target: "mailto:reader%40example.test" },
     ], 1);
     expect(subject.host.querySelector(".textLayer")?.textContent).toContain("selectable");
   });
@@ -1338,8 +1375,12 @@ describe("PdfContentController", () => {
     const subject = setup([page("one"), page("two")]);
     subject.host.scrollLeft = 7;
     subject.host.scrollTop = 9;
-    const transformed = vi.fn(() => [50, 60, 50, 60]);
-    const destinationViewport = { ...viewport, convertToViewportRectangle: transformed };
+    const transformed = vi.fn((x: number, y: number) => [x * 3, y * 3] as const);
+    const destinationViewport = {
+      ...viewport,
+      convertToViewportPoint: transformed,
+      convertToPdfPoint: (x: number, y: number) => [x / 3, y / 3] as const,
+    };
 
     subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, 2]);
     await subject.controller.renderPage({
@@ -1366,15 +1407,14 @@ describe("PdfContentController", () => {
       viewport: destinationViewport,
       canvas: subject.canvas,
     });
-    expect(subject.host.scrollLeft).toBe(50);
-    expect(subject.host.scrollTop).toBe(60);
+    expect(subject.host.scrollLeft).toBe(90);
+    expect(subject.host.scrollTop).toBe(120);
   });
   it("maps partial destinations through the inverse viewport under rotation", async () => {
     const subject = setup([page("one")]);
     const convertToPdfPoint = vi.fn(() => [70, 80] as const);
-    const convertToViewportRectangle = vi.fn((rectangle: readonly number[]) =>
-      [rectangle[1]!, rectangle[0]!, rectangle[1]!, rectangle[0]!]);
-    const rotatedViewport = { ...viewport, convertToPdfPoint, convertToViewportRectangle };
+    const convertToViewportPoint = vi.fn((x: number, y: number) => [y, x] as const);
+    const rotatedViewport = { ...viewport, convertToPdfPoint, convertToViewportPoint };
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
@@ -1384,7 +1424,7 @@ describe("PdfContentController", () => {
     subject.host.scrollLeft = 17;
     subject.host.scrollTop = 29;
     convertToPdfPoint.mockClear();
-    convertToViewportRectangle.mockClear();
+    convertToViewportPoint.mockClear();
     subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, null]);
 
     await subject.controller.renderPage({
@@ -1395,9 +1435,67 @@ describe("PdfContentController", () => {
     });
 
     expect(convertToPdfPoint).toHaveBeenCalledWith(17, 29);
-    expect(convertToViewportRectangle).toHaveBeenCalledWith([70, 20, 70, 20]);
+    expect(convertToViewportPoint).toHaveBeenCalledWith(70, 20);
     expect(subject.host.scrollLeft).toBe(20);
     expect(subject.host.scrollTop).toBe(70);
+  });
+  it("uses the nested page-frame origin for destination preservation and landing", async () => {
+    const subject = setup([page("one")]);
+    const convertToPdfPoint = vi.fn((x: number, y: number) => [x, y] as const);
+    const convertToViewportPoint = vi.fn((x: number, y: number) => [y, x] as const);
+    const nestedViewport = { ...viewport, convertToPdfPoint, convertToViewportPoint };
+    await subject.controller.renderPage({
+      pageNumber: 1,
+      page: await subject.pdf.getPage(1),
+      viewport: nestedViewport,
+      canvas: subject.canvas,
+    });
+    const frame = document.createElement("div");
+    subject.host.replaceChildren(frame);
+    frame.append(subject.canvas);
+    Object.defineProperties(subject.canvas, {
+      offsetLeft: { configurable: true, value: 10 },
+      offsetTop: { configurable: true, value: 20 },
+      offsetParent: { configurable: true, value: frame },
+    });
+    Object.defineProperties(frame, {
+      offsetLeft: { configurable: true, value: 120 },
+      offsetTop: { configurable: true, value: 300 },
+      offsetParent: { configurable: true, value: subject.host },
+    });
+    subject.host.scrollLeft = 200;
+    subject.host.scrollTop = 400;
+    subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, null]);
+
+    await subject.controller.renderPage({
+      pageNumber: 1,
+      page: await subject.pdf.getPage(1),
+      viewport: nestedViewport,
+      canvas: subject.canvas,
+    });
+
+    expect(convertToPdfPoint).toHaveBeenCalledWith(70, 80);
+    expect(convertToViewportPoint).toHaveBeenCalledWith(70, 20);
+    expect(subject.host.scrollLeft).toBe(150);
+    expect(subject.host.scrollTop).toBe(390);
+  });
+  it("lands FitR on the viewport-space minimum corner under rotation", async () => {
+    const subject = setup([page("one")]);
+    const convertToViewportPoint = vi.fn((x: number, y: number) => [y, 100 - x] as const);
+    const fitViewport = { ...viewport, convertToViewportPoint };
+    subject.controller.queueDestination(1, [0, { name: "FitR" }, 10, 20, 40, 80]);
+
+    await subject.controller.renderPage({
+      pageNumber: 1,
+      page: await subject.pdf.getPage(1),
+      viewport: fitViewport,
+      canvas: subject.canvas,
+    });
+
+    expect(convertToViewportPoint).toHaveBeenNthCalledWith(1, 10, 20);
+    expect(convertToViewportPoint).toHaveBeenNthCalledWith(2, 40, 80);
+    expect(subject.host.scrollLeft).toBe(20);
+    expect(subject.host.scrollTop).toBe(60);
   });
   it("keeps complete destination identities exact for nearby points and fit operands", async () => {
     const subject = setup([page("x", [
@@ -1444,7 +1542,7 @@ describe("PdfContentController", () => {
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
-      viewport: { ...viewport, convertToViewportRectangle: () => [50, 60, 50, 60] },
+      viewport: { ...viewport, convertToViewportPoint: () => [50, 60] as const },
       canvas: subject.canvas,
     });
 

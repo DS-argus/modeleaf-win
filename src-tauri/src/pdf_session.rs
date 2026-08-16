@@ -483,9 +483,15 @@ impl PdfSessionManager {
         id: &SessionId,
         generation: u64,
     ) -> Result<TrustedRecentIdentity, PdfSessionError> {
-        let mut sessions = self.sessions.lock().expect("session state poisoned");
-        let session = Self::checked_session(&mut sessions, owner, id, generation)?;
-        let file = session.file.lock().expect("session file poisoned");
+        let file = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            let session = Self::checked_session(&mut sessions, owner, id, generation)?;
+            if session.teardown != TeardownOwner::Active {
+                return Err(PdfSessionError::SessionClosing);
+            }
+            Arc::clone(&session.file)
+        };
+        let file = file.lock().expect("session file poisoned");
         match SystemFinalHandlePolicy.classify_final(&file) {
             Ok(crate::local_path::DriveKind::Fixed | crate::local_path::DriveKind::Removable) => {}
             Ok(crate::local_path::DriveKind::Remote)
@@ -502,6 +508,14 @@ impl PdfSessionManager {
                 crate::local_path::PathPolicyError::RemotePath => PdfSessionError::RemotePath,
                 crate::local_path::PathPolicyError::PathRejected => PdfSessionError::PathRejected,
             })?;
+        drop(file);
+        {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            let session = Self::checked_session(&mut sessions, owner, id, generation)?;
+            if session.teardown != TeardownOwner::Active {
+                return Err(PdfSessionError::SessionClosing);
+            }
+        }
         Ok(TrustedRecentIdentity { canonical_path })
     }
 
@@ -516,6 +530,19 @@ impl PdfSessionManager {
         Ok(self
             .trusted_recent_identity(owner, id, generation)?
             .canonical_path)
+    }
+    pub fn session_length(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<u64, PdfSessionError> {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        let session = Self::checked_session(&mut sessions, owner, id, generation)?;
+        if session.teardown != TeardownOwner::Active {
+            return Err(PdfSessionError::SessionClosing);
+        }
+        Ok(session.length)
     }
 
     pub fn read_range(
@@ -1034,10 +1061,9 @@ impl PdfSessionManager {
         }
         let session = Self::checked_session(&mut sessions, owner, id, generation)?;
         match session.teardown {
-            TeardownOwner::Active | TeardownOwner::LifecycleDeferred => {
-                session.teardown = TeardownOwner::CommandCancelling
-            }
+            TeardownOwner::Active => session.teardown = TeardownOwner::CommandCancelling,
             TeardownOwner::CommandCancelling => {}
+            TeardownOwner::LifecycleDeferred => return Err(PdfSessionError::SessionClosing),
         }
         self.drained.notify_all();
         if let Some(barrier_id) = session.barrier {
@@ -1084,6 +1110,15 @@ impl PdfSessionManager {
             {
                 return Err(PdfSessionError::ExternalLinkDrainTimeout);
             }
+        }
+        if sessions
+            .entries
+            .get(id)
+            .ok_or(PdfSessionError::SessionNotFound)?
+            .teardown
+            != TeardownOwner::CommandCancelling
+        {
+            return Err(PdfSessionError::SessionClosing);
         }
         if let Some(barrier_id) = sessions
             .entries
@@ -1196,15 +1231,6 @@ impl PdfSessionManager {
         );
     }
     pub fn drain_owned(&self, owner: &PdfOwner) {
-        {
-            let mut sessions = self.sessions.lock().expect("session state poisoned");
-            for session in sessions.entries.values_mut() {
-                if session.owner == *owner && session.teardown == TeardownOwner::CommandCancelling {
-                    session.teardown = TeardownOwner::LifecycleDeferred;
-                }
-            }
-            self.drained.notify_all();
-        }
         self.drain_matching(
             |session_owner| session_owner == owner,
             EXTERNAL_LINK_DRAIN_TIMEOUT,
@@ -1224,7 +1250,12 @@ impl PdfSessionManager {
         let deadline = Instant::now() + timeout;
         let mut sessions = self.sessions.lock().expect("session state poisoned");
         for session in sessions.entries.values_mut() {
-            if matches(&session.owner) && session.teardown == TeardownOwner::Active {
+            if matches(&session.owner)
+                && matches!(
+                    session.teardown,
+                    TeardownOwner::Active | TeardownOwner::CommandCancelling
+                )
+            {
                 session.teardown = TeardownOwner::LifecycleDeferred;
             }
         }
@@ -1440,6 +1471,34 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn recent_identity_does_not_hold_sessions_while_waiting_for_file() {
+        let (manager, id, path) = session();
+        let file = {
+            let sessions = manager.sessions.lock().unwrap();
+            Arc::clone(&sessions.entries.get(&id).unwrap().file)
+        };
+        let file_guard = file.lock().unwrap();
+        let recent_manager = manager.clone();
+        let recent_id = id.clone();
+        let recent = std::thread::spawn(move || {
+            recent_manager.trusted_recent_identity(&owner(), &recent_id, 7)
+        });
+        for _ in 0..100 {
+            if Arc::strong_count(&file) >= 3 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(Arc::strong_count(&file) >= 3);
+        assert_eq!(manager.session_length(&owner(), &id, 7), Ok(9));
+
+        drop(file_guard);
+        assert!(recent.join().unwrap().is_ok());
+        manager.drain_owned(&owner());
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn external_link_transaction_defers_activation_until_commit() {
         let (manager, id, path) = session();
@@ -1673,7 +1732,7 @@ mod tests {
         std::fs::remove_file(path).unwrap();
     }
     #[test]
-    fn command_cancel_first_keeps_its_ownership_through_lifecycle_drain() {
+    fn lifecycle_drain_atomically_claims_command_cancellation() {
         let (manager, id, path) = session();
         let admission = external_link_admission(&manager, &id);
         let cancelling_manager = manager.clone();
@@ -1692,20 +1751,19 @@ mod tests {
                 .get(&id)
                 .unwrap()
                 .teardown,
-            TeardownOwner::CommandCancelling
+            TeardownOwner::LifecycleDeferred
         );
 
         drop(admission);
-        let barrier = cancelling.join().unwrap().unwrap();
-        assert_eq!(manager.cancel(&owner(), &id, 7), Ok(barrier.clone()));
-        manager.close(&owner(), &id, 7, barrier.barrier_id).unwrap();
-        assert_eq!(manager.close(&owner(), &id, 7, barrier.barrier_id), Ok(()));
+        assert!(matches!(
+            cancelling.join().unwrap(),
+            Err(PdfSessionError::SessionClosing | PdfSessionError::SessionNotFound)
+        ));
         assert!(manager.assert_empty());
         std::fs::remove_file(path).unwrap();
     }
-
     #[test]
-    fn lifecycle_deferred_cancel_takeover_prevents_automatic_removal() {
+    fn lifecycle_deferred_rejects_cancel_and_removes_after_admission() {
         let (manager, id, path) = session();
         let admission = external_link_admission(&manager, &id);
         manager.drain_owner_with_timeout_for_test(&owner().window_label, Duration::ZERO);
@@ -1721,15 +1779,11 @@ mod tests {
             TeardownOwner::LifecycleDeferred
         );
 
-        let cancelling_manager = manager.clone();
-        let cancelling_id = id.clone();
-        let cancelling =
-            std::thread::spawn(move || cancelling_manager.cancel(&owner(), &cancelling_id, 7));
-        wait_for_teardown(&manager, &id, TeardownOwner::CommandCancelling);
+        assert_eq!(
+            manager.cancel(&owner(), &id, 7),
+            Err(PdfSessionError::SessionClosing)
+        );
         drop(admission);
-        let barrier = cancelling.join().unwrap().unwrap();
-        assert!(manager.sessions.lock().unwrap().entries.contains_key(&id));
-        manager.close(&owner(), &id, 7, barrier.barrier_id).unwrap();
         assert!(manager.assert_empty());
         std::fs::remove_file(path).unwrap();
     }

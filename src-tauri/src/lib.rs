@@ -3,6 +3,7 @@ pub mod external_link;
 pub mod local_path;
 pub mod open_dialog;
 pub mod open_request;
+pub mod pdf_protocol;
 pub mod pdf_session;
 pub mod recent;
 pub mod theme_state;
@@ -24,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::{ipc::Response, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
+use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
 use theme_state::{ThemeId, ThemeStateError, ThemeStateManager};
 use workspace::{WorkspaceError, WorkspaceManager};
 
@@ -791,27 +792,6 @@ async fn open_external_link(
 }
 
 #[tauri::command]
-async fn read_pdf_range(
-    window: Window,
-    state: State<'_, PdfSessionManager>,
-    session_id: String,
-    document_generation: u64,
-    owner_generation: u64,
-    offset: u64,
-    length: u32,
-) -> Result<Response, PdfSessionError> {
-    let session_id = SessionId::from_opaque(session_id)?;
-    let bytes = state.read_range(
-        &command_owner(&window, owner_generation),
-        &session_id,
-        document_generation,
-        offset,
-        length,
-    )?;
-    Ok(Response::new(bytes))
-}
-
-#[tauri::command]
 async fn cancel_pdf_session(
     window: Window,
     state: State<'_, PdfSessionManager>,
@@ -820,11 +800,13 @@ async fn cancel_pdf_session(
     owner_generation: u64,
 ) -> Result<CancelBarrier, PdfSessionError> {
     let session_id = SessionId::from_opaque(session_id)?;
-    state.cancel(
-        &command_owner(&window, owner_generation),
-        &session_id,
-        document_generation,
-    )
+    let owner = command_owner(&window, owner_generation);
+    let sessions = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        sessions.cancel(&owner, &session_id, document_generation)
+    })
+    .await
+    .map_err(|_| PdfSessionError::SessionClosing)?
 }
 #[tauri::command]
 async fn close_pdf_session(
@@ -889,6 +871,24 @@ pub fn run() {
     let second_instance_ingress = SecondInstanceIngress::default();
     second_instance_ingress.enqueue_paths(std::env::args_os().skip(1).map(PathBuf::from));
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("modeleaf-pdf", |context, request, responder| {
+            let app = context.app_handle().clone();
+            let webview_label = context.webview_label().to_owned();
+            tauri::async_runtime::spawn_blocking(move || {
+                let workspace = app.state::<WorkspaceManager>();
+                let sessions = app.state::<PdfSessionManager>();
+                let response = match workspace.active_owner(&webview_label) {
+                    Some(owner) => {
+                        pdf_protocol::handle_pdf_protocol_request(&request, &owner, &sessions)
+                    }
+                    None => tauri::http::Response::builder()
+                        .status(tauri::http::StatusCode::NOT_FOUND)
+                        .body(Vec::new())
+                        .expect("static protocol response"),
+                };
+                responder.respond(response);
+            });
+        })
         .manage(second_instance_ingress)
         .manage(QuitCoordinator::default())
         .manage(AppWindowRegistry::default())
@@ -1029,7 +1029,6 @@ pub fn run() {
             finalize_external_links,
             abort_external_links,
             open_external_link,
-            read_pdf_range,
             cancel_pdf_session,
             close_pdf_session
         ])
