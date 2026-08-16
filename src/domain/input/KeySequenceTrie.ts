@@ -66,11 +66,22 @@ export class KeySequenceEngine {
   }
 
   public advance(tokenSource: string, context: InputContext, now: number, eventIsRepeat = false): SequenceResult {
-    if (this.deadline !== undefined && now >= this.deadline) return this.expire(context, now);
-    if (eventIsRepeat && this.deadline !== undefined) return { kind: "invalid", reason: "repeat-suppressed" };
     const parsed = parseKeySequence(tokenSource);
     if (!parsed.ok || parsed.tokens.length !== 1) { this.reset(); return { kind: "invalid", reason: "invalid-sequence" }; }
     const token = parsed.tokens[0]!;
+    if (this.deadline !== undefined && now >= this.deadline) {
+      const fallback = this.trie.binding(this.node, context);
+      this.reset();
+      if (fallback?.actionId === "page.prompt" && isDecimalReplay(token)) {
+        return { kind: "dispatch", dispatch: Object.freeze({
+          actionId: fallback.actionId,
+          transitionedContext: "pagePrompt",
+          replay: Object.freeze({ token: token.canonical, tokenClass: "decimalDigit", targetContext: "pagePrompt" }),
+        }) };
+      }
+      if (fallback !== undefined) return dispatch(fallback, false);
+    }
+    if (eventIsRepeat && this.deadline !== undefined) return { kind: "invalid", reason: "repeat-suppressed" };
     const next = this.trie.child(this.node, token.canonical);
     if (next === undefined) {
       const hadPending = this.buffer.length > 0;

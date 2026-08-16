@@ -1,48 +1,31 @@
 import { describe, expect, it } from "vitest";
-import {
-  DEFAULT_BINDINGS,
-  isCommandEnabled,
-  type CommandAvailabilityContext,
-} from "../../../src/core/defaultBindings.windows";
+import { ACTION_DESCRIPTORS, getActionRuntimeAvailability, type ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
 import { buildHelpRows } from "../../../src/ui/HelpModel";
 
-const unavailableContext: CommandAvailabilityContext = {
-  hasDocument: false,
-  canCreateSession: false,
-  canOpenDocument: false,
-  modalOpen: true,
+const unavailableContext: ActionRuntimeContext = {
+  hasDocument: false, canCreateSession: false, canOpenDocument: false, canCreateWindow: false,
+  tabCount: 1, paneCount: 1, modalOpen: true, updateAvailable: false, configExists: false,
+  searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0,
 };
 
 describe("HelpModel", () => {
-  it("derives every help row from the canonical registry", () => {
+  it("derives every help row from the authoritative registry", () => {
     const rows = buildHelpRows();
-    const visibleBindings = DEFAULT_BINDINGS.filter((binding) => binding.showInHelp);
-    expect(rows).toHaveLength(visibleBindings.length);
-    expect(rows.map((row) => row.id)).toEqual(visibleBindings.map((binding) => binding.id));
-    expect(rows).toContainEqual({
-      category: "Pages",
-      id: "page.first",
-      shortcut: "g g",
-      label: "First page",
-      enabled: true,
-    });
+    const visible = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
+    expect(rows.map(({ id }) => id)).toEqual(visible.map(({ id }) => id));
+    expect(rows).toContainEqual(expect.objectContaining({ category: "Pages", id: "page.first", shortcut: "g g", label: "First Page", enabled: true }));
   });
-
   it("spells uppercase bindings as explicit Shift shortcuts", () => {
     const rows = buildHelpRows();
-    expect(rows.find((row) => row.id === "page.last")?.shortcut).toBe("Shift+G");
-    expect(rows.find((row) => row.id === "theme.open")?.shortcut).toBe("Shift+T");
-    expect(rows.find((row) => row.id === "page.next")?.shortcut).toBe("n");
+    expect(rows.find(({ id }) => id === "page.last")?.shortcut).toBe("Shift+G");
+    expect(rows.find(({ id }) => id === "theme.picker")?.shortcut).toBe("Shift+T");
+    expect(rows.find(({ id }) => id === "page.next")?.shortcut).toBe("n");
   });
-
-  it("uses keyboard dispatch availability for every help row", () => {
+  it("uses exact registry availability and reasons", () => {
     const rows = buildHelpRows(unavailableContext);
-    const visibleBindings = DEFAULT_BINDINGS.filter((binding) => binding.showInHelp);
-
-    expect(rows.map((row) => row.enabled)).toEqual(
-      visibleBindings.map((binding) => isCommandEnabled(binding, unavailableContext)),
-    );
-    expect(rows.find((row) => row.id === "app.new")?.enabled).toBe(false);
-    expect(rows.find((row) => row.id === "document.open")?.enabled).toBe(false);
+    for (const row of rows) expect(row.enabled).toBe(getActionRuntimeAvailability(row.id, unavailableContext).enabled);
+    expect(rows.find(({ id }) => id === "app.new")).toMatchObject({ enabled: false, disabledReason: "Close the current dialog" });
+    expect(rows.find(({ id }) => id === "document.open")).toMatchObject({ enabled: false, disabledReason: "Close the current dialog" });
+    expect(rows.find(({ id }) => id === "app.quit")).toMatchObject({ enabled: true });
   });
 });

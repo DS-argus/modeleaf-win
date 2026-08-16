@@ -314,6 +314,14 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .help-group dd { font-size: 12px; }
 .help-group dt { color: var(--theme-foreground); }
 .help-group dd { margin: 0; color: var(--theme-muted-text); font-family: "Cascadia Mono", monospace; text-align: right; }
+.windows-menu { display: flex; gap: 0.15rem; min-height: 2rem; padding: 0 0.35rem; border-bottom: 1px solid var(--theme-border); background: var(--theme-background); }
+.windows-menu details { position: relative; }
+.windows-menu summary { cursor: default; list-style: none; padding: 0.4rem 0.55rem; }
+.windows-menu summary::-webkit-details-marker { display: none; }
+.windows-menu-commands { position: absolute; z-index: 40; display: grid; min-width: 17rem; padding: 0.25rem; border: 1px solid var(--theme-border); background: var(--theme-background); box-shadow: 0 0.5rem 1.2rem color-mix(in srgb, var(--theme-foreground) 18%, transparent); }
+.windows-menu-commands button { border: 0; background: transparent; color: var(--theme-foreground); padding: 0.35rem 0.5rem; text-align: left; white-space: pre; }
+.windows-menu-commands button:hover:not(:disabled), .windows-menu-commands button:focus-visible { background: var(--theme-active-tab); }
+.windows-menu-commands button:disabled { color: var(--theme-muted-text); }
 .tab-strip { display: flex; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; background: var(--theme-inactive-tab); border-bottom: 1px solid var(--theme-border); }
 .workspace-tab-item { display: flex; min-width: 0; }
 .workspace-tab, .workspace-tab-close { border: 0; color: var(--theme-muted-text); background: var(--theme-active-tab); }
@@ -401,4 +409,20 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .pdf-print-surface { position: static; }
   .pdf-print-page { break-after: page; page-break-after: always; }
   .pdf-print-page:last-child { break-after: auto; page-break-after: auto; }
+
 }
+.empty-reader {
+  min-height: 100%;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 0.75rem;
+  color: var(--theme-muted-text);
+  text-align: center;
+}
+.empty-reader[hidden] { display: none; }
+.empty-reader h1 { margin: 0; color: var(--theme-foreground); font-size: 1.25rem; }
+.empty-reader p { margin: 0; }
+.empty-reader button { min-width: 8rem; }
+.command-palette-entry-reason { color: var(--theme-error); font-size: 0.8em; }
+.command-palette-entry[aria-disabled="true"] { opacity: 0.7; }
