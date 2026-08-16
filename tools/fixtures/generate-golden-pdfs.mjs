@@ -613,7 +613,7 @@ export async function generateGoldenFixtures({
       bytes: fixture.bytes.length,
       ...expected(name),
       license: "test-generated",
-      source: "Modeleaf v0.10.0 golden fixture contract",
+      source: "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md",
     });
   }
   const manifest = {

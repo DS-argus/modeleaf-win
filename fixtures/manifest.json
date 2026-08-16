@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generator_version": "1",
-  "generator_sha256": "b527106078b5d0a933d4f607c395f2921c22ebb11efcb648c27b578807dec402",
+  "generator_sha256": "1429c25d01d53225b76cc62df6eefbd274a712e0947f71d298ca35a375cb85d5",
   "files": [
     {
       "name": "text-3-page.pdf",
@@ -23,7 +23,7 @@
       "sentinel": {},
       "pages": 3,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "fixture-S-text-10.pdf",
@@ -47,7 +47,7 @@
       },
       "pages": 10,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "fixture-L-text-300.pdf",
@@ -71,7 +71,7 @@
       },
       "pages": 300,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "fixture-F-raster-12.pdf",
@@ -93,7 +93,7 @@
       },
       "pages": 12,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "fixture-B-blank.pdf",
@@ -114,7 +114,7 @@
       },
       "pages": 1,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "image-only-2-page.pdf",
@@ -135,7 +135,7 @@
       },
       "pages": 2,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "malformed.pdf",
@@ -156,7 +156,7 @@
       },
       "pages": 0,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "locked.pdf",
@@ -177,7 +177,7 @@
       },
       "pages": 1,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "empty.pdf",
@@ -198,7 +198,7 @@
       },
       "pages": 0,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "links.pdf",
@@ -227,7 +227,7 @@
       },
       "pages": 2,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "link-duplicates.pdf",
@@ -250,7 +250,7 @@
       },
       "pages": 2,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "outline.pdf",
@@ -287,7 +287,7 @@
       },
       "pages": 2,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "interactive.pdf",
@@ -311,7 +311,7 @@
       },
       "pages": 1,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "unicode-text.pdf",
@@ -340,7 +340,7 @@
       },
       "pages": 1,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     },
     {
       "name": "한글 공백 😀.pdf",
@@ -363,7 +363,7 @@
       },
       "pages": 1,
       "license": "test-generated",
-      "source": "Modeleaf v0.10.0 golden fixture contract"
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     }
   ],
   "path_scenarios": {
