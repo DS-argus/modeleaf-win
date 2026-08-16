@@ -2,26 +2,52 @@ import "./styles/app.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import { KeySequenceEngine, type SequenceResult } from "./core/KeySequenceEngine";
 import { TabWorkspace, type TabId } from "./core/TabWorkspace";
-import { DEFAULT_BINDINGS, isCommandEnabled, resolvePaletteBindingAction, type CommandAvailabilityContext } from "./core/defaultBindings.windows";
 import type { Action } from "./core/Action";
-import { createKeyboardAdapter, isNativeKeyboardCompositionOrModifierEvent, isNativeOwnedTarget, type KeyboardAdapter } from "./platform/keyboardAdapter";
 import { wheelPageDirection } from "./platform/readerInput";
 import { type OpenFailureNotice, type OpenRequestAdoption } from "./platform/OpenRequestClient";
+import { validateProductConfig } from "./domain/config/ConfigValidator";
+import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
+import type { ActionId, ActionRuntimeContext } from "./domain/actions/ActionRegistry";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry, type RecentPaletteRecord } from "./ui/CommandPaletteModel";
 import { bindSearchPrompt } from "./ui/SearchPromptController";
 import { buildHelpRows } from "./ui/HelpModel";
+import { buildWindowsMenuModel } from "./application/commands/WindowsMenuModel";
 import { createRemovedTabTeardownSupervisor, createShellOpenCoordinator, createWorkspaceTransitionQueue } from "./platform/ShellOpenCoordinator";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
 import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
 import { CLOSED_THEME_PICKER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
-import { AccessibilityController, focusRestoreTarget, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
+import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
+import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
+import { projectWindowShell } from "./ui/shell/ShellProjection";
+import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 
+const shellConfigResult = validateProductConfig({});
+if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
+const shellConfig = shellConfigResult.value;
+const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
+  "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
+  "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
+  "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
+  "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
+  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
+  "config.writeDefault", "config.resetDefault", "theme.picker",
+]);
+function isNativeCompositionEvent(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229 || event.key === "Dead" || event.key === "Process" || event.key === "Unidentified" || event.getModifierState("AltGraph") || (event.ctrlKey && event.altKey);
+}
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : null;
+  return element !== null && element.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']") !== null;
+}
+function isOverlayOwnedKey(event: KeyboardEvent, target: Element | null): boolean {
+  const dialog = target?.closest("dialog");
+  return dialog instanceof HTMLDialogElement && overlayOwnsKey({ dialogId: dialog.id, key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, metaKey: event.metaKey });
+}
 function required<T extends Element>(selector: string): T {
   const value = document.querySelector<T>(selector);
   if (!value) throw new Error(`Missing required element: ${selector}`);
@@ -30,22 +56,26 @@ function required<T extends Element>(selector: string): T {
 
 const root = required<HTMLElement>("#app");
 root.innerHTML = `
-<section class="app-shell" role="application" aria-label="Modeleaf PDF reader">
-  <div id="tab-strip" class="tab-strip" role="tablist" aria-label="Open documents"></div>
-  <section id="tab-hosts" class="tab-hosts"></section>
+<section id="app-shell" data-testid="app-shell" class="app-shell" tabindex="-1" role="application" aria-label="Modeleaf PDF reader">
+  <nav id="windows-menu" data-testid="windows-menu" class="windows-menu" aria-label="Application menu"></nav>
+  <div id="tab-strip" data-testid="tab-strip" class="tab-strip" role="tablist" aria-label="Open PDFs"></div>
+  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader" aria-labelledby="empty-reader-title"><h1 id="empty-reader-title">No PDF open</h1><p>Open a PDF to start reading.</p><button id="empty-reader-open" type="button">Open PDF…</button></section></main>
   <section id="prompt" class="prompt" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">Arrow keys or Control J and K preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><h2 id="search-title">Search PDF text</h2><label>Literal text <input id="search-input" type="search" spellcheck="false"></label><p class="dialog-hint">Press <kbd>Enter</kbd> or <kbd>Shift</kbd>+<kbd>Enter</kbd> to cycle matches.</p></form></dialog>
   <dialog id="file-opener-dialog" class="mac-overlay list-overlay" aria-label="Open PDF"><form id="file-opener-form"><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type to search..." aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list"></ul><p class="overlay-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
-  <footer id="status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
+  <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
   <div id="announcements-assertive" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
 </section>`;
 
+const windowsMenu = required<HTMLElement>("#windows-menu");
 const tabStrip = required<HTMLElement>("#tab-strip");
 const tabHosts = required<HTMLElement>("#tab-hosts");
+const emptyReader = required<HTMLElement>("#empty-reader");
+const emptyReaderOpen = required<HTMLButtonElement>("#empty-reader-open");
 const status = required<HTMLElement>("#status");
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
@@ -59,6 +89,67 @@ const fileOpenerInput = required<HTMLInputElement>("#file-opener-input");
 const fileOpenerList = required<HTMLElement>("#file-opener-list");
 const paletteDialog = required<HTMLDialogElement>("#command-palette-dialog");
 const paletteInput = required<HTMLInputElement>("#palette-input");
+const SHELL_WINDOW_ID = "current-window";
+let cancelPendingShellInput: () => void = () => undefined;
+let focusOwnerSequence = 0;
+let overlayOwner: OverlayOwnerState = createOverlayOwner(SHELL_WINDOW_ID, "empty-reader-open");
+function focusTargetId(element: HTMLElement | null): string | undefined {
+  if (element === null || element === document.body) return undefined;
+  if (element.id.length === 0) { focusOwnerSequence += 1; element.id = `shell-focus-${focusOwnerSequence}`; }
+  return element.id;
+}
+function isRestorableFocusTarget(target: string): boolean {
+  const element = document.getElementById(target);
+  if (!(element instanceof HTMLElement) || !element.isConnected || element === document.body) return false;
+  if (element.matches(":disabled") || element.closest("[hidden], [inert], dialog:not([open])") !== null) return false;
+  const style = getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden" && (element.tabIndex >= 0 || element.isContentEditable);
+}
+function restoreOwnedFocus(target: string): void {
+  const candidates = [target, currentFocusFallback(), "app-shell"];
+  for (const candidate of candidates) {
+    if (candidate !== "app-shell" && !isRestorableFocusTarget(candidate)) continue;
+    const element = document.getElementById(candidate);
+    if (!(element instanceof HTMLElement)) continue;
+    element.focus({ preventScroll: true });
+    if (document.activeElement === element) return;
+  }
+}
+function currentFocusFallback(): string { return active().session.snapshot.reader.hasDocument ? focusTargetId(active().host) ?? "empty-reader-open" : "empty-reader-open"; }
+function overlayDialog(id: OverlayId): HTMLDialogElement | undefined {
+  if (id === "theme") return themeDialog;
+  if (id === "commandPalette") return paletteDialog;
+  if (id === "recent") return fileOpenerDialog;
+  if (id === "search") return searchDialog;
+  if (id === "help") return helpDialog;
+  return undefined;
+}
+function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["effects"]): void {
+  for (const effect of effects) {
+    if (effect.type === "hide") { const dialog = overlayDialog(effect.overlay); if (dialog?.open === true) dialog.close(); }
+    else if (effect.type === "show") { const dialog = overlayDialog(effect.overlay); if (dialog !== undefined && !dialog.open) dialog.showModal(); }
+    else if (effect.type === "restorePrompt") {
+      if (effect.prompt.kind === "page") { pagePromptDigits = effect.prompt.text; prompt.hidden = false; prompt.textContent = `Go to page: ${pagePromptDigits || "_"}`; }
+      else { searchInput.value = effect.prompt.text; searchInput.setSelectionRange(effect.prompt.selectionStart, effect.prompt.selectionEnd); }
+    }
+    else if (effect.type === "focus") restoreOwnedFocus(effect.target);
+  }
+}
+function claimOverlay(id: OverlayId): void {
+  if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
+  const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
+  const suspendedPrompt = pagePromptDigits === undefined ? undefined : { kind: "page" as const, text: pagePromptDigits, selectionStart: pagePromptDigits.length, selectionEnd: pagePromptDigits.length };
+  if (suspendedPrompt !== undefined) pagePromptDigits = undefined;
+  const transition = reduceOverlayOwner(overlayOwner, { type: "open", windowId: SHELL_WINDOW_ID, overlay: id, ...(focusedTarget === undefined ? {} : { focusedTarget }), ...(suspendedPrompt === undefined ? {} : { suspendedPrompt }) }, (target) => isRestorableFocusTarget(target));
+  overlayOwner = transition.state;
+  applyOverlayEffects(transition.effects);
+  cancelPendingShellInput();
+}
+function releaseOverlay(id: OverlayId): void {
+  const transition = reduceOverlayOwner(overlayOwner, { type: "close", windowId: SHELL_WINDOW_ID, overlay: id }, (target) => isRestorableFocusTarget(target));
+  overlayOwner = transition.state;
+  applyOverlayEffects(transition.effects);
+}
 const paletteList = required<HTMLElement>("#palette-list");
 GlobalWorkerOptions.workerSrc = PDFJS_POLICY.assets.workerSrc;
 const paletteForm = required<HTMLFormElement>("#command-palette-form");
@@ -72,7 +163,6 @@ const accessibility = new AccessibilityController({ target: { polite: politeAnno
 
 let durableTheme: DurableThemeState = { themeId: DEFAULT_THEME_ID, revision: 0 };
 let themePicker: ThemePickerModel = CLOSED_THEME_PICKER;
-let themeRestoreFocus: HTMLElement | null = null;
 
 function isDurableThemeState(value: unknown): value is DurableThemeState {
   return typeof value === "object" && value !== null && "themeId" in value && "revision" in value
@@ -95,12 +185,7 @@ function applyTheme(themeId: ThemeId): void {
 function activeThemePicker(): ThemePickerOpenModel | null {
   return themePicker.status === "open" ? themePicker : null;
 }
-function restoreThemeFocus(): void {
-  const activeTab = tabStrip.querySelector<HTMLElement>("[role='tab'][aria-selected='true']");
-  const reader = activeTab ? active().host : null;
-  focusRestoreTarget(themeRestoreFocus, activeTab, reader)?.focus();
-  themeRestoreFocus = null;
-}
+function restoreThemeFocus(): void { releaseOverlay("theme"); }
 function renderThemePicker(): void {
   const picker = activeThemePicker();
   if (!picker) return;
@@ -127,7 +212,7 @@ function previewTheme(index: number): void {
   themeList.querySelectorAll<HTMLButtonElement>(".theme-option")[result.model.activeIndex]?.focus();
 }
 function openThemePicker(): void {
-  themeRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : active().host;
+  claimOverlay("theme");
   themePicker = createThemePicker(durableTheme.themeId, durableTheme.revision);
   renderThemePicker();
   themeDialog.showModal();
@@ -193,7 +278,7 @@ themeCancel.addEventListener("click", () => closeThemePicker(true));
 themeForm.addEventListener("submit", (event) => { event.preventDefault(); void commitTheme(); });
 themeDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeThemePicker(true); });
 themeDialog.addEventListener("keydown", (event) => {
-  if (isNativeKeyboardCompositionOrModifierEvent(event)) return;
+  if (isNativeCompositionEvent(event)) return;
   const picker = activeThemePicker();
   if (!picker) return;
   const action = themePickerDialogKeyAction(event);
@@ -220,7 +305,8 @@ const resources = new ResourceReservationManager((needed) => {
     if (tab.id !== activeTabId) tab.payload.session.evictInactiveHeavyResources();
   }
 });
-let keyboard!: KeyboardAdapter;
+let pagePromptDigits: string | undefined;
+let configExists = false;
 let dialogOpenPending = false;
 const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = {
   DOCUMENT_TOO_LARGE: "This PDF exceeds reader resource limits.",
@@ -266,10 +352,8 @@ function safeAdoptionFailureStatus(status: string): string {
   return SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : "The PDF could not be opened.";
 }
 let paletteActiveIndex = 0;
-let paletteRestoreFocus: HTMLElement | null = null;
 let fileOpenerActiveIndex = 0;
 let fileOpenerRecents: readonly RecentPaletteRecord[] = [];
-let fileOpenerRestoreFocus: HTMLElement | null = null;
 const workspaceTransitions = createWorkspaceTransitionQueue(() => {
   active().session.reader.setStatus("WORKSPACE_BUSY");
   render();
@@ -284,19 +368,44 @@ function queueWorkspaceActivation(work: () => Promise<void> | void): Promise<voi
 function disposeWorkspaceTab(value: TabPayload): void { removedTabTeardown.remove(value); }
 
 function active(): TabPayload { const value = workspace.getPayload(workspace.activeTabId); if (!value) throw new Error("ACTIVE_TAB_MISSING"); return value; }
-function commandAvailabilityContext(): CommandAvailabilityContext {
+function commandAvailabilityContext(): ActionRuntimeContext {
+  const hasDocument = active().session.snapshot.reader.hasDocument;
+  const canCreateSession = workspace.snapshot.tabs.length < 8;
   return {
-    hasDocument: active().session.snapshot.reader.hasDocument,
-    canCreateSession: workspace.snapshot.tabs.length < 8,
+    hasDocument,
+    canCreateSession,
+    canOpenDocument: workspace.snapshot.tabs.some((tab) => !tab.payload.session.snapshot.reader.hasDocument) || canCreateSession,
+    canCreateWindow: true,
     tabCount: workspace.snapshot.tabs.length,
-    canOpenDocument: workspace.snapshot.tabs.some((tab) => !tab.payload.session.snapshot.reader.hasDocument) || workspace.snapshot.tabs.length < 8,
-    modalOpen: dialogOpenPending || searchDialog.open || helpDialog.open || themeDialog.open,
-    pagePromptActive: engine.state.kind === "pagePrompt",
+    paneCount: 1,
+    modalOpen: dialogOpenPending || searchDialog.open || helpDialog.open || themeDialog.open || paletteDialog.open || fileOpenerDialog.open,
+    updateAvailable: false,
+    configExists,
+    searchActive: active().session.query.length > 0,
+    canHistoryBack: false,
+    canHistoryForward: false,
+    linkCount: 0,
+    implementedActionIds: IMPLEMENTED_ACTION_IDS,
   };
+}
+function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): void {
+  windowsMenu.replaceChildren(...model.map((section) => {
+    const group = document.createElement("details");
+    const summary = document.createElement("summary"); summary.textContent = section.label;
+    const commands = document.createElement("div"); commands.className = "windows-menu-commands"; commands.setAttribute("role", "menu");
+    commands.replaceChildren(...section.commands.map((command) => {
+      const button = document.createElement("button"); button.type = "button"; button.setAttribute("role", "menuitem"); button.disabled = !command.enabled;
+      button.textContent = command.shortcuts.length === 0 ? command.title : `${command.title}  ${command.shortcuts.join(", ")}`;
+      if (!command.enabled && command.disabledReason !== undefined) { button.title = command.disabledReason; button.setAttribute("aria-description", command.disabledReason); }
+      button.addEventListener("click", () => { group.open = false; dispatchActionId(command.id); });
+      return button;
+    }));
+    group.append(summary, commands); return group;
+  }));
 }
 function renderHelpRows(): void {
   const groups = new Map<string, ReturnType<typeof buildHelpRows>>();
-  for (const row of buildHelpRows()) {
+  for (const row of buildHelpRows(commandAvailabilityContext())) {
     groups.set(row.category, [...(groups.get(row.category) ?? []), row]);
   }
   helpRows.replaceChildren(...[...groups].map(([category, rows]) => {
@@ -307,7 +416,8 @@ function renderHelpRows(): void {
     const list = document.createElement("dl");
     for (const row of rows) {
       const description = document.createElement("dt");
-      description.textContent = row.label;
+      description.textContent = row.enabled ? row.label : `${row.label} — ${row.disabledReason ?? "Unavailable"}`;
+      description.setAttribute("aria-disabled", String(!row.enabled));
       const shortcut = document.createElement("dd");
       shortcut.textContent = row.shortcut;
       list.append(description, shortcut);
@@ -342,7 +452,7 @@ function turnPageAtBoundary(payload: TabPayload, direction: -1 | 1): boolean {
   const page = payload.session.snapshot.reader.page;
   if (page === previousPage) return false;
   boundaryPageTurns.add(payload.host);
-  keyboard.syncContext();
+  rootKeyboard.syncContext();
   render();
   void payload.session.renderPage(page).then((committed) => {
     if (committed && direction < 0) {
@@ -350,7 +460,7 @@ function turnPageAtBoundary(payload: TabPayload, direction: -1 | 1): boolean {
     }
   }).finally(() => {
     boundaryPageTurns.delete(payload.host);
-    keyboard.syncContext();
+    rootKeyboard.syncContext();
     render();
   });
   return true;
@@ -428,7 +538,7 @@ function createTab(): TabPayload {
     viewportActivation = session.activateViewportPage(page);
     void viewportActivation.finally(() => {
       viewportActivation = undefined;
-      keyboard.syncContext();
+      rootKeyboard.syncContext();
       render();
       if (active().session === session) synchronizeViewportPage();
     });
@@ -445,18 +555,35 @@ active().session.activate();
 function render(): void {
   const current = active();
   const snapshot = current.session.snapshot;
+  const shell = projectWindowShell({
+    windowId: SHELL_WINDOW_ID,
+    activePaneId: "primary",
+    panes: [{ id: "primary", activeTabId: String(workspace.activeTabId), tabs: workspace.snapshot.tabs.map((tab) => { const payload = workspace.getPayload(tab.id); if (payload === undefined) throw new Error("SHELL_TAB_PAYLOAD_MISSING"); const tabSnapshot = payload.session.snapshot; return { id: String(tab.id), title: tabSnapshot.title, hasDocument: tabSnapshot.reader.hasDocument, status: tabSnapshot.status }; }) }],
+  });
+  if (!shell.ok) throw new Error(`SHELL_PROJECTION_INVALID:${shell.code}`);
+  const menuModel = buildWindowsMenuModel(commandAvailabilityContext(), shellConfig);
+  root.dataset.menuCommandCount = String(menuModel.reduce((count, section) => count + section.commands.length, 0));
+  renderWindowsMenu(menuModel);
+  const openCommand = menuModel.flatMap((section) => section.commands).find(({ id }) => id === "document.open");
+  if (openCommand !== undefined) {
+    emptyReaderOpen.textContent = openCommand.shortcuts.length === 0 ? openCommand.title : `${openCommand.title} (${openCommand.shortcuts.join(", ")})`;
+    emptyReaderOpen.disabled = !openCommand.enabled;
+    emptyReaderOpen.title = openCommand.disabledReason ?? "";
+  }
   status.textContent = snapshot.status;
-  if (snapshot.reader.helpVisible && !helpDialog.open) helpDialog.showModal();
-  if (!snapshot.reader.helpVisible && helpDialog.open) helpDialog.close();
+  emptyReader.hidden = shell.emptyState === undefined;
+  emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
+  if (snapshot.reader.helpVisible && !helpDialog.open) { claimOverlay("help"); helpDialog.showModal(); }
+  if (!snapshot.reader.helpVisible && helpDialog.open) { helpDialog.close(); releaseOverlay("help"); }
   renderHelpRows();
-  prompt.hidden = engine.state.kind !== "pagePrompt";
-  prompt.textContent = engine.state.kind === "pagePrompt" ? `Go to page: ${engine.state.digits || "_"}` : "";
+  prompt.hidden = pagePromptDigits === undefined;
+  prompt.textContent = pagePromptDigits === undefined ? "" : `Go to page: ${pagePromptDigits || "_"}`;
   const tabs = workspace.snapshot.tabs;
   for (const [index, tab] of tabs.entries()) {
     const selected = tab.id === workspace.activeTabId;
     const title = tab.payload.session.snapshot.title;
-    tab.payload.host.hidden = !selected;
-    tab.payload.host.setAttribute("aria-hidden", String(!selected));
+    tab.payload.host.hidden = !selected || !tab.payload.session.snapshot.reader.hasDocument;
+    tab.payload.host.setAttribute("aria-hidden", String(!selected || !tab.payload.session.snapshot.reader.hasDocument));
     tab.payload.host.id = `reader-panel-${String(tab.id)}`;
     tab.payload.host.setAttribute("aria-labelledby", `reader-tab-${String(tab.id)}`);
     tab.payload.host.setAttribute("aria-label", readerAccessibilityName(title, tab.payload.session.snapshot.reader.pageCount));
@@ -527,6 +654,8 @@ const shellOpen = createShellOpenCoordinator({
   adopt: adoptRequest,
   onFailure: (tag) => reportOpenInvokeFailure({ tag }),
 });
+emptyReaderOpen.addEventListener("click", () => dispatchActionId("document.open"));
+void invoke<{ readonly tag?: string }>("read_config").then((outcome) => { configExists = outcome.tag === "LOADED"; render(); }, () => undefined);
 function isRecentPaletteRecord(value: unknown): value is RecentPaletteRecord {
   return typeof value === "object" && value !== null
     && "recentId" in value && typeof value.recentId === "string"
@@ -543,7 +672,7 @@ function recentEntries(): readonly RecentPaletteRecord[] {
 }
 function openPalette(): void {
   if (!paletteDialog.open) {
-    paletteRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    claimOverlay("commandPalette");
     paletteInput.value = "";
     paletteDialog.showModal();
     accessibility.announce({ kind: "palette", open: true });
@@ -555,22 +684,18 @@ function openPalette(): void {
 function closePalette(): void {
   if (paletteDialog.open) paletteDialog.close();
   accessibility.announce({ kind: "palette", open: false });
-  paletteRestoreFocus?.focus();
-  paletteRestoreFocus = null;
+  releaseOverlay("commandPalette");
 }
 function dispatchPaletteEntry(index = paletteActiveIndex): void {
   const entry = paletteEntries()[index];
   if (!entry) return;
-  const binding = DEFAULT_BINDINGS.find((candidate) => candidate.id === entry.id);
-  if (!binding || !isCommandEnabled(binding, commandAvailabilityContext())) return;
-  const paletteAction = resolvePaletteBindingAction(binding);
-  closePalette();
-  if (paletteAction?.kind === "dispatch") dispatch(paletteAction.action);
-  if (paletteAction?.kind === "page.target") {
-    const result = engine.enterPagePrompt(sequenceContext());
-    for (const dispatched of result.dispatches) dispatch(dispatched.action);
-    if (result.error) active().session.reader.setStatus(result.error);
+  if (!entry.enabled) {
+    active().session.reader.setStatus(entry.disabledReason ?? "ACTION_DISABLED");
+    render();
+    return;
   }
+  closePalette();
+  dispatchActionId(entry.id);
 }
 function renderPalette(): void {
   const entries = paletteEntries();
@@ -581,12 +706,19 @@ function renderPalette(): void {
     button.type = "button";
     button.className = "overlay-list-entry command-palette-entry";
     button.setAttribute("aria-selected", String(index === paletteActiveIndex));
-    button.disabled = !entry.enabled;
+    button.setAttribute("aria-disabled", String(!entry.enabled));
     const label = document.createElement("span");
     label.textContent = entry.label;
     const shortcut = document.createElement("span");
     shortcut.className = "command-palette-entry-shortcut";
     shortcut.textContent = entry.shortcut;
+    if (!entry.enabled && entry.disabledReason !== undefined) {
+      const reason = document.createElement("span");
+      reason.className = "command-palette-entry-reason";
+      reason.textContent = entry.disabledReason;
+      button.setAttribute("aria-description", entry.disabledReason);
+      button.append(reason);
+    }
     button.append(label, shortcut);
     button.addEventListener("click", () => { paletteActiveIndex = index; dispatchPaletteEntry(); });
     item.append(button);
@@ -621,8 +753,7 @@ function renderFileOpener(): void {
 }
 function closeFileOpener(): void {
   if (fileOpenerDialog.open) fileOpenerDialog.close();
-  fileOpenerRestoreFocus?.focus();
-  fileOpenerRestoreFocus = null;
+  releaseOverlay("recent");
 }
 function dispatchFileOpenerEntry(): void {
   if (fileOpenerActiveIndex === 0) {
@@ -636,7 +767,7 @@ function dispatchFileOpenerEntry(): void {
   void invoke("open_recent", { recentId: entry.recentId }).catch(reportOpenInvokeFailure);
 }
 function openFileOpener(): void {
-  fileOpenerRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : active().host;
+  claimOverlay("recent");
   fileOpenerInput.value = "";
   fileOpenerRecents = [];
   fileOpenerActiveIndex = 0;
@@ -651,10 +782,11 @@ function openFileOpener(): void {
 }
 let quitRequest: Promise<void> | undefined;
 let quitUnlisten: (() => void) | undefined;
-function requestApplicationQuit(beginNative = true): Promise<void> {
+let windowCloseUnlisten: (() => void) | undefined;
+function requestApplicationQuit(beginNative = true, currentWindowOnly = false, closeRequestId?: number): Promise<void> {
   if (quitRequest !== undefined) return quitRequest;
   quitRequest = (async () => {
-    if (beginNative) await invoke("begin_quit");
+    if (beginNative && !currentWindowOnly) await invoke("begin_quit");
     let rendererDrained = false;
     try {
       if (themeDialog.open) closeThemePicker(true);
@@ -665,6 +797,7 @@ function requestApplicationQuit(beginNative = true): Promise<void> {
       shellDisposing = true;
       themeUnlisten?.();
       quitUnlisten?.();
+      windowCloseUnlisten?.();
       shellOpen.dispose();
       const tabs = workspace.snapshot.tabs.map((tab) => ({ id: tab.id, payload: workspace.getPayload(tab.id) })).filter((entry): entry is { id: TabId; payload: TabPayload } => entry.payload !== undefined);
       await Promise.allSettled(tabs.map(({ payload }) => payload.session.close()));
@@ -672,16 +805,23 @@ function requestApplicationQuit(beginNative = true): Promise<void> {
       removedTabTeardown.retryParked();
       removedTabTeardown.dispose();
       disposeSearchPrompt();
-      keyboard.dispose();
+      rootKeyboard.dispose();
       disposeDprChange();
       resources.assertEmpty();
       rendererDrained = true;
     } finally {
-      await invoke("finish_quit", { rendererDrained });
+      if (currentWindowOnly) await invoke("close_current_window", closeRequestId === undefined ? { rendererDrained } : { requestId: closeRequestId, rendererDrained });
+      else await invoke("finish_quit", { rendererDrained });
     }
   })();
   return quitRequest;
 }
+void listen<{ readonly requestId?: number }>("window-close-requested", (event) => {
+  if (typeof event.payload.requestId === "number" && Number.isSafeInteger(event.payload.requestId)) void requestApplicationQuit(false, true, event.payload.requestId);
+}).then(
+  (unlisten) => { if (shellDisposing) unlisten(); else { windowCloseUnlisten = unlisten; void invoke("window_close_ready"); } },
+  () => undefined,
+);
 void listen("quit-requested", () => { void requestApplicationQuit(false); }).then(
   (unlisten) => {
     if (shellDisposing) unlisten();
@@ -692,6 +832,74 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
   },
   () => undefined,
 );
+function dispatchActionId(id: ActionId): void {
+  const tabSelection = /^tab\.select\.(\d)$/u.exec(id);
+  if (tabSelection !== null) { dispatch({ type: "tab.activate", index: Number(tabSelection[1]) - 1 }); return; }
+  const direct: Partial<Record<ActionId, Action>> = {
+    "document.open": { type: "document.open" }, "document.close": { type: "tab.close" }, "document.print": { type: "document.print" },
+    "app.quit": { type: "application.quit" }, "app.new": { type: "application.new" }, "palette.open": { type: "palette.toggle" }, "help.show": { type: "help.toggle" },
+    "tab.next": { type: "tab.next" }, "tab.previous": { type: "tab.previous" },
+    "scroll.left": { type: "scroll.byCssPixels", axis: "horizontal", delta: -32 }, "scroll.right": { type: "scroll.byCssPixels", axis: "horizontal", delta: 32 },
+    "scroll.down": { type: "scroll.byCssPixels", axis: "vertical", delta: 32 }, "scroll.up": { type: "scroll.byCssPixels", axis: "vertical", delta: -32 },
+    "scroll.largeDown": { type: "scroll.byViewport", factor: 0.8 }, "scroll.largeUp": { type: "scroll.byViewport", factor: -0.8 },
+    "page.next": { type: "page.next" }, "page.previous": { type: "page.previous" }, "page.first": { type: "page.first" }, "page.last": { type: "page.last" },
+    "search.prompt": { type: "search.open" },
+    "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.zoom", factor: 1 },
+    "view.fitWidth": { type: "view.fitWidth" }, "view.fitPage": { type: "view.fitPage" }, "view.rotateLeft": { type: "view.rotate", quarterTurns: -1 }, "view.rotateRight": { type: "view.rotate", quarterTurns: 1 },
+    "link.hint": { type: "linkHints.toggle" }, "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
+  };
+  if (id === "page.prompt") {
+    pagePromptDigits = "";
+    active().session.reader.setStatus("Go to page");
+    render();
+    return;
+  }
+  if (id === "prompt.cancel" && pagePromptDigits !== undefined) {
+    pagePromptDigits = undefined;
+    active().session.apply({ type: "prompt.cancel" });
+    render();
+    return;
+  }
+  if (id === "prompt.commit" && pagePromptDigits !== undefined) {
+    const page = Number(pagePromptDigits);
+    if (pagePromptDigits.length === 0) active().session.reader.setStatus("Enter a page number.");
+    else if (!Number.isSafeInteger(page)) active().session.reader.setStatus("Page number is too large.");
+    else if (page < 1) active().session.reader.setStatus("Page numbers start at 1.");
+    else if (page > active().session.snapshot.reader.pageCount) active().session.reader.setStatus(`Page ${page} is outside 1–${active().session.snapshot.reader.pageCount}.`);
+    else { pagePromptDigits = undefined; dispatch({ type: "page.goTo", page }); }
+    render();
+    return;
+  }
+  if (id === "search.next" || id === "search.previous") {
+    active().session.submitSearch(active().session.query, id === "search.previous");
+    render();
+    return;
+  }
+  if (id === "search.cancel") {
+    active().session.invalidateSearch();
+    render();
+    return;
+  }
+  if (id === "config.writeDefault") {
+    void invoke<{ readonly tag?: string }>("write_default_config").then((outcome) => {
+      configExists = outcome.tag === "CREATED" || outcome.tag === "ALREADY_EXISTS";
+      active().session.reader.setStatus(outcome.tag === "CREATED" ? "Default config written." : outcome.tag === "ALREADY_EXISTS" ? "Config already exists" : "Config could not be written.");
+      render();
+    });
+    return;
+  }
+  if (id === "config.resetDefault") {
+    void invoke<{ readonly tag?: string }>("reset_config").then((outcome) => {
+      configExists = outcome.tag !== "MISSING";
+      active().session.reader.setStatus(outcome.tag === "REPLACED" || outcome.tag === "UNCHANGED" ? "Config reset to defaults." : "Config could not be reset.");
+      render();
+    });
+    return;
+  }
+  const action = direct[id];
+  if (action !== undefined) { dispatch(action); return; }
+  throw new Error(`UNIMPLEMENTED_ACTION_DISPATCH:${id}`);
+}
 function dispatch(action: Action): void {
   const type = action.type;
   if (type === "document.open") { if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } openFileOpener(); return; }
@@ -703,10 +911,10 @@ function dispatch(action: Action): void {
   if (type === "tab.next") { void switchTab(workspace.adjacentId(1)); return; }
   if (type === "tab.previous") { void switchTab(workspace.adjacentId(-1)); return; }
   if (type === "theme.open") { openThemePicker(); return; }
-  if (type === "application.quit") { void requestApplicationQuit(); return; }
+  if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
   if (type.startsWith("page.")) void session.renderPage(reader.page); if (type.startsWith("view.")) void session.renderCurrentView();
-  if (type === "search.open") { searchInput.value = session.query; searchDialog.showModal(); searchInput.focus(); }
+  if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchDialog.showModal(); searchInput.focus(); }
   if (type === "linkHints.toggle") session.toggleHints(); if (type === "prompt.cancel") session.cancelHints();
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
@@ -724,35 +932,58 @@ function dispatch(action: Action): void {
       payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels });
     }
   }
-  keyboard.syncContext(); render();
+  rootKeyboard.syncContext(); render();
 }
-const engine = new KeySequenceEngine();
-function sequenceContext() {
-  const snapshot = active().session.snapshot.reader;
-  const commandAvailability = commandAvailabilityContext();
-  return {
-    hasDocument: commandAvailability.hasDocument,
-    pageCount: snapshot.pageCount,
-    documentGeneration: snapshot.documentGeneration,
-    commandAvailability,
-  };
-}
-keyboard = createKeyboardAdapter({
-  engine,
-  getContext: sequenceContext,
-  onDispatch: ({ action }) => dispatch(action),
-  onResult: (result?: SequenceResult) => { if (result?.error) active().session.reader.setStatus(result.error); render(); },
+const rootKeyboard = createRootKeyboardRouter({
+  config: shellConfig,
+  getContext: () => ({
+    windowId: SHELL_WINDOW_ID,
+    routeRevision: String(workspace.activeTabId),
+    generation: active().session.snapshot.reader.documentGeneration,
+    inputContext: pagePromptDigits !== undefined ? "pagePrompt" : searchDialog.open ? "searchPrompt" : active().session.query.length > 0 ? "searchResults" : "navigation",
+    runtime: commandAvailabilityContext(),
+  }),
+  onDispatch: (id, sequenceDispatch) => {
+    dispatchActionId(id);
+    if (sequenceDispatch.replay !== undefined && pagePromptDigits !== undefined) {
+      pagePromptDigits += sequenceDispatch.replay.token;
+      active().session.reader.setStatus(`Go to page: ${pagePromptDigits}`);
+      render();
+    }
+  },
+  onUnboundToken: (key, context) => {
+    if (context.inputContext !== "pagePrompt" || pagePromptDigits === undefined) return false;
+    if (/^[0-9]$/u.test(key) && pagePromptDigits.length < 16) pagePromptDigits += key;
+    else if (key === "<BS>") pagePromptDigits = pagePromptDigits.slice(0, -1);
+    else return false;
+    active().session.reader.setStatus(`Go to page: ${pagePromptDigits || "_"}`);
+    render();
+    return true;
+  },
+  onDisabled: (_id, reason) => { active().session.reader.setStatus(reason); render(); },
+  onState: (state) => { status.textContent = state.kind === "pending" ? `Pending: ${state.sequence}` : active().session.snapshot.status; },
 });
+cancelPendingShellInput = rootKeyboard.cancelPending;
+window.addEventListener("keydown", (event) => {
+  const target = event.target instanceof Element ? event.target : null;
+  const claimed = rootKeyboard.handleKeyDown({
+    key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
+    repeat: event.repeat, isComposing: event.isComposing, keyCode: event.keyCode,
+    altGraph: event.getModifierState("AltGraph"),
+    nativeOwnedTarget: active().session.hintsVisible || (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
+    preventDefault: () => event.preventDefault(),
+  });
+  if (claimed) event.stopImmediatePropagation();
+}, { capture: true });
 window.addEventListener("keydown", (event) => {
   const session = active().session;
-  if (!session.hintsVisible || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || isNativeKeyboardCompositionOrModifierEvent(event) || isNativeOwnedTarget(event.target)) return;
+  if (!session.hintsVisible || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || isNativeCompositionEvent(event) || isEditableTarget(event.target)) return;
   if (event.key !== "Escape" && event.key.length !== 1) return;
   event.preventDefault();
   event.stopImmediatePropagation();
   session.handleHintKey(event.key);
   render();
 }, { capture: true });
-window.addEventListener("keydown", keyboard.handleKeyDown);
 
 const DPR_POLL_DELAY_MS = 250;
 let dprMediaQuery: MediaQueryList | undefined;
@@ -784,15 +1015,16 @@ function disposeDprChange(): void {
 }
 bindDprChange();
 scheduleDprPollFallback();
+searchDialog.addEventListener("close", () => releaseOverlay("search"));
 const disposeSearchPrompt = bindSearchPrompt(
   { dialog: searchDialog, form: searchForm, input: searchInput },
   () => active().session,
   render,
 );
 window.addEventListener("resize", () => { scheduleDprPollFallback(); void active().session.renderCurrentView(); });
-window.addEventListener("blur", keyboard.cancelPending);
-window.addEventListener("compositionstart", keyboard.cancelPending);
-window.addEventListener("focusin", (event) => { if (isNativeOwnedTarget(event.target)) keyboard.cancelPending(); });
+window.addEventListener("blur", rootKeyboard.cancelPending);
+window.addEventListener("compositionstart", rootKeyboard.cancelPending);
+window.addEventListener("focusin", (event) => { if (isEditableTarget(event.target)) rootKeyboard.cancelPending(); });
 fileOpenerInput.addEventListener("input", () => { fileOpenerActiveIndex = 0; renderFileOpener(); });
 fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); dispatchFileOpenerEntry(); });
 fileOpenerDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeFileOpener(); });
@@ -828,15 +1060,16 @@ paletteDialog.addEventListener("keydown", (event) => {
   paletteActiveIndex = moveCommandPaletteIndex(paletteActiveIndex, count, action);
   if (count > 0) renderPalette();
 }, { capture: true });
-helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); helpDialog.close(); render(); });
+helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); helpDialog.close(); releaseOverlay("help"); render(); });
 window.addEventListener("beforeunload", () => {
   disposeSearchPrompt();
   themeUnlisten?.();
   quitUnlisten?.();
+  windowCloseUnlisten?.();
   shellDisposing = true;
   shellOpen.dispose();
   removedTabTeardown.dispose();
-  keyboard.dispose();
+  rootKeyboard.dispose();
   for (const tab of workspace.snapshot.tabs) workspace.close(tab.id);
   disposeDprChange();
 });

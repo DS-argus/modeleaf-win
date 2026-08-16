@@ -43,6 +43,18 @@ describe("KeySequenceTrie", () => {
     expect(engine.expire("navigation", 401, pending.epoch)).toEqual({ kind: "invalid", reason: "stale-timeout" });
   });
 
+  it("resolves 399/400/401ms arrivals without dropping the current token", () => {
+    const before = new KeySequenceEngine(smallTrie()); before.advance("g", "navigation", 0);
+    expect(before.advance("1", "navigation", 399)).toMatchObject({ kind: "dispatch", dispatch: { actionId: "page.prompt", replay: { token: "1" } } });
+    const exact = new KeySequenceEngine(smallTrie()); exact.advance("g", "navigation", 0);
+    expect(exact.advance("1", "navigation", 400)).toMatchObject({ kind: "dispatch", dispatch: { actionId: "page.prompt", replay: { token: "1" } } });
+    const prefixOnly = new KeySequenceEngine(new KeySequenceTrie([
+      { sequence: "<C-b>r", actionId: "config.reload", contexts: ["navigation"] },
+      { sequence: "n", actionId: "page.next", contexts: ["navigation"] },
+    ]));
+    prefixOnly.advance("<C-b>", "navigation", 1);
+    expect(prefixOnly.advance("n", "navigation", 401)).toEqual({ kind: "dispatch", dispatch: { actionId: "page.next" } });
+  });
   it("replays only an unmodified decimal mismatch into the page prompt", () => {
     const engine = new KeySequenceEngine(smallTrie());
     engine.advance("g", "navigation", 0);

@@ -1,5 +1,13 @@
-import { getPromptKeyAction, isNativeKeyboardCompositionOrModifierEvent } from "../platform/keyboardAdapter";
-
+type PromptKeyAction = "close" | "search" | "searchReverse";
+function isNativePromptInput(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229 || event.key === "Dead" || event.key === "Process" || event.key === "Unidentified" || event.getModifierState("AltGraph") || event.altKey || event.metaKey || (event.ctrlKey && event.altKey);
+}
+function promptKeyAction(event: KeyboardEvent): PromptKeyAction | undefined {
+  if (isNativePromptInput(event) || event.ctrlKey || (event.key === "Escape" && event.shiftKey)) return undefined;
+  if (event.key === "Escape") return "close";
+  if (event.key === "Enter") return event.shiftKey ? "searchReverse" : "search";
+  return undefined;
+}
 export interface SearchPromptSession {
   invalidateSearch(): void;
   submitSearch(query: string, reverse: boolean): void;
@@ -19,8 +27,8 @@ export function bindSearchPrompt(
   const onInput = (): void => getSession().invalidateSearch();
   const onSubmit = (event: SubmitEvent): void => event.preventDefault();
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (isNativeKeyboardCompositionOrModifierEvent(event)) return;
-    const action = getPromptKeyAction(event);
+    if (isNativePromptInput(event)) return;
+    const action = promptKeyAction(event);
     if (action === "close") {
       event.preventDefault();
       getSession().invalidateSearch();

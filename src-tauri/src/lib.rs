@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
 use theme_state::{ThemeId, ThemeStateError, ThemeStateManager};
 use workspace::{WorkspaceError, WorkspaceManager};
@@ -354,6 +355,61 @@ impl AppWindowRegistry {
     }
 }
 
+#[derive(Clone, Default)]
+struct WindowCloseCoordinator {
+    inner: Arc<Mutex<WindowCloseState>>,
+}
+#[derive(Default)]
+struct WindowCloseState {
+    ready: HashSet<String>,
+    pending: HashMap<String, u64>,
+    next_request_id: u64,
+}
+impl WindowCloseCoordinator {
+    fn ready(&self, label: &str) -> Option<u64> {
+        let mut state = self.inner.lock().expect("window close state poisoned");
+        state.ready.insert(label.to_owned());
+        state.pending.get(label).copied()
+    }
+    fn request(&self, label: &str) -> (u64, bool) {
+        let mut state = self.inner.lock().expect("window close state poisoned");
+        if let Some(request_id) = state.pending.get(label).copied() {
+            return (request_id, state.ready.contains(label));
+        }
+        state.next_request_id = state.next_request_id.wrapping_add(1).max(1);
+        let request_id = state.next_request_id;
+        state.pending.insert(label.to_owned(), request_id);
+        (request_id, state.ready.contains(label))
+    }
+    fn acknowledge(&self, label: &str, request_id: Option<u64>) -> bool {
+        let mut state = self.inner.lock().expect("window close state poisoned");
+        match request_id {
+            Some(expected) if state.pending.get(label).copied() != Some(expected) => false,
+            _ => {
+                state.pending.remove(label);
+                true
+            }
+        }
+    }
+    fn claim_timeout(&self, label: &str, request_id: u64) -> bool {
+        let mut state = self.inner.lock().expect("window close state poisoned");
+        if state.pending.get(label).copied() != Some(request_id) {
+            return false;
+        }
+        state.pending.remove(label);
+        true
+    }
+    fn remove(&self, label: &str) {
+        let mut state = self.inner.lock().expect("window close state poisoned");
+        state.ready.remove(label);
+        state.pending.remove(label);
+    }
+}
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowCloseRequest {
+    request_id: u64,
+}
 pub fn generate_reader_window_label() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
@@ -409,6 +465,42 @@ async fn create_app_window(
     Ok(())
 }
 
+#[tauri::command]
+fn window_close_ready(
+    window: tauri::WebviewWindow,
+    coordinator: State<'_, WindowCloseCoordinator>,
+) -> Result<(), &'static str> {
+    if let Some(request_id) = coordinator.ready(window.label()) {
+        window
+            .emit_to(
+                window.label(),
+                "window-close-requested",
+                WindowCloseRequest { request_id },
+            )
+            .map_err(|_| "WINDOW_CLOSE_DELIVERY_FAILED")?;
+    }
+    Ok(())
+}
+#[tauri::command]
+fn close_current_window(
+    window: tauri::WebviewWindow,
+    coordinator: State<'_, WindowCloseCoordinator>,
+    request_id: Option<u64>,
+    renderer_drained: bool,
+) -> Result<(), &'static str> {
+    if !renderer_drained {
+        record_native_diagnostic(
+            window.app_handle(),
+            diagnostics::DiagnosticEventName::Quit,
+            diagnostics::DiagnosticOutcome::Failure,
+            diagnostics::DiagnosticTag::Timeout,
+        );
+    }
+    if !coordinator.acknowledge(window.label(), request_id) {
+        return Err("WINDOW_CLOSE_STALE");
+    }
+    window.destroy().map_err(|_| "WINDOW_CLOSE_FAILED")
+}
 #[derive(Clone, Default)]
 pub struct SecondInstanceIngress {
     pending: Arc<Mutex<PendingSecondInstanceIngress>>,
@@ -938,6 +1030,7 @@ pub fn run() {
         .manage(second_instance_ingress)
         .manage(QuitCoordinator::default())
         .manage(AppWindowRegistry::default())
+        .manage(WindowCloseCoordinator::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             if app.state::<QuitCoordinator>().is_shutting_down() {
                 return;
@@ -1019,23 +1112,48 @@ pub fn run() {
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                if window.label() == "main" {
-                    begin_quit_application(window.app_handle());
-                } else {
-                    let workspace = window.state::<WorkspaceManager>();
-                    if let Some(owner) = workspace.active_owner(window.label()) {
-                        drain_owner_for_lifecycle(
-                            &window.state::<OpenRequestCoordinator>(),
-                            &workspace,
-                            &window.state::<PdfSessionManager>(),
-                            &owner,
-                        );
-                    }
-                    let _ = window.destroy();
+                let label = window.label().to_owned();
+                let coordinator = window.state::<WindowCloseCoordinator>();
+                let (request_id, ready) = coordinator.request(&label);
+                if ready {
+                    let _ = window.emit_to(
+                        &label,
+                        "window-close-requested",
+                        WindowCloseRequest { request_id },
+                    );
                 }
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    std::thread::sleep(Duration::from_secs(5));
+                    if !app
+                        .state::<WindowCloseCoordinator>()
+                        .claim_timeout(&label, request_id)
+                    {
+                        return;
+                    }
+                    record_native_diagnostic(
+                        &app,
+                        diagnostics::DiagnosticEventName::Quit,
+                        diagnostics::DiagnosticOutcome::Failure,
+                        diagnostics::DiagnosticTag::Timeout,
+                    );
+                    if let Some(target) = app.get_webview_window(&label) {
+                        let workspace = app.state::<WorkspaceManager>();
+                        if let Some(owner) = workspace.active_owner(&label) {
+                            drain_owner_for_lifecycle(
+                                &app.state::<OpenRequestCoordinator>(),
+                                &workspace,
+                                &app.state::<PdfSessionManager>(),
+                                &owner,
+                            );
+                        }
+                        let _ = target.destroy();
+                    }
+                });
             }
             tauri::WindowEvent::Destroyed => {
                 let label = window.label().to_owned();
+                window.state::<WindowCloseCoordinator>().remove(&label);
                 window.state::<AppWindowRegistry>().remove(&label);
                 let workspace = window.state::<WorkspaceManager>();
                 if let Some(owner) = workspace.active_owner(&label) {
@@ -1067,6 +1185,8 @@ pub fn run() {
             commit_theme_state,
             record_diagnostic,
             create_app_window,
+            window_close_ready,
+            close_current_window,
             open_pdf_dialog,
             record_recent,
             list_recents,
@@ -1094,4 +1214,34 @@ pub fn run() {
                 shutdown_external_link_dispatcher();
             }
         });
+}
+#[cfg(test)]
+mod window_close_tests {
+    use super::WindowCloseCoordinator;
+
+    #[test]
+    fn close_requests_are_replayed_and_acknowledged_per_window() {
+        let coordinator = WindowCloseCoordinator::default();
+        let (left_request, left_ready) = coordinator.request("left");
+        let (right_request, right_ready) = coordinator.request("right");
+        assert_eq!(coordinator.request("left"), (left_request, false));
+        assert!(!left_ready);
+        assert!(!right_ready);
+        assert_eq!(coordinator.ready("left"), Some(left_request));
+        assert!(coordinator.acknowledge("left", Some(left_request)));
+        assert!(!coordinator.claim_timeout("left", left_request));
+        assert!(coordinator.claim_timeout("right", right_request));
+    }
+
+    #[test]
+    fn stale_close_acknowledgement_cannot_claim_a_peer_window() {
+        let coordinator = WindowCloseCoordinator::default();
+        coordinator.ready("left");
+        coordinator.ready("right");
+        let (left_request, _) = coordinator.request("left");
+        let (right_request, _) = coordinator.request("right");
+        assert!(!coordinator.acknowledge("right", Some(left_request)));
+        assert!(coordinator.acknowledge("right", Some(right_request)));
+        assert!(coordinator.claim_timeout("left", left_request));
+    }
 }

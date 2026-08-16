@@ -104,7 +104,7 @@ describe("W01 secure shell contract", () => {
     expect(command).toMatch(/\.visible\(false\)/);
     expect(source).toMatch(/\.manage\(AppWindowRegistry::default\(\)\)/);
     expect(source).toMatch(/WindowEvent::Destroyed[\s\S]*?AppWindowRegistry/);
-    expect(source).toMatch(/CloseRequested[\s\S]*?window\.label\(\) == "main"[\s\S]*?else[\s\S]*?window\.destroy/);
+    expect(source).toMatch(/CloseRequested[\s\S]*?window\.emit_to\([\s\S]*?&label,[\s\S]*?"window-close-requested"[\s\S]*?WindowEvent::Destroyed[\s\S]*?drain_owner_for_lifecycle/);
     expect(source).toMatch(/sync_channel\(1\)[\s\S]*?with_webview[\s\S]*?recv_timeout/);
     expect(mainHardening).toBeGreaterThanOrEqual(0);
     expect(mainShow).toBeGreaterThan(mainHardening);
