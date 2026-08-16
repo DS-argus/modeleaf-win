@@ -77,6 +77,29 @@ pub struct ExternalLinkRegistration {
 pub struct CancelBarrier {
     pub barrier_id: u64,
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalLinkActivationOperation<'a> {
+    pub registry_revision: u64,
+    pub annotation_id: &'a str,
+    pub operation_id: &'a str,
+    pub operation_sequence: u64,
+}
+
+impl<'a> ExternalLinkActivationOperation<'a> {
+    pub fn new(
+        registry_revision: u64,
+        annotation_id: &'a str,
+        operation_id: &'a str,
+        operation_sequence: u64,
+    ) -> Self {
+        Self {
+            registry_revision,
+            annotation_id,
+            operation_id,
+            operation_sequence,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "tag", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -817,7 +840,6 @@ impl PdfSessionManager {
         Ok(target)
     }
     #[cfg(any(test, debug_assertions))]
-
     /// Test hook retaining the historical launcher injection surface.
     pub fn activate_external_link_with<F, E>(
         &self,
@@ -849,40 +871,42 @@ impl PdfSessionManager {
             owner,
             id,
             generation,
-            registry_revision,
-            annotation_id,
-            &format!("test-{:032x}", rand::random::<u128>()),
-            operation_sequence,
+            ExternalLinkActivationOperation::new(
+                registry_revision,
+                annotation_id,
+                &format!("test-{:032x}", rand::random::<u128>()),
+                operation_sequence,
+            ),
             launcher,
         )
     }
+
     /// Atomically resolves, deduplicates, and admits an activation. Duplicate pending operations return immediately.
     pub fn activate_external_link_with_operation<F, E>(
         &self,
         owner: &PdfOwner,
         id: &SessionId,
         generation: u64,
-        registry_revision: u64,
-        annotation_id: &str,
-        operation_id: &str,
-        operation_sequence: u64,
+        operation: ExternalLinkActivationOperation<'_>,
         launcher: F,
     ) -> Result<(), ExternalLinkError>
     where
         F: FnOnce(&str) -> Result<(), E>,
         E: 'static,
     {
-        if registry_revision == 0 {
+        if operation.registry_revision == 0 {
             return Err(ExternalLinkError::StaleRegistration);
         }
-        if !valid_annotation_id(annotation_id) || !valid_operation_id(operation_id) {
+        if !valid_annotation_id(operation.annotation_id)
+            || !valid_operation_id(operation.operation_id)
+        {
             return Err(ExternalLinkError::LinkRejected);
         }
-        let (target, operation, sequence) = {
+        let (target, activation_operation, sequence) = {
             let mut sessions = self.sessions.lock().expect("session state poisoned");
             let process_full =
                 sessions.external_link_process_in_flight >= MAX_EXTERNAL_LINK_PROCESS_IN_FLIGHT;
-            let (target, operation, sequence, is_new) = {
+            let (target, activation_operation, sequence, is_new) = {
                 let session = sessions
                     .entries
                     .get_mut(id)
@@ -894,12 +918,12 @@ impl PdfSessionManager {
                 {
                     return Err(ExternalLinkError::GenerationMismatch);
                 }
-                let sequence = operation_sequence;
-                if let Some(operation) = session.activation_operations.get(&sequence) {
-                    if operation.id != operation_id {
+                let sequence = operation.operation_sequence;
+                if let Some(existing) = session.activation_operations.get(&sequence) {
+                    if existing.id != operation.operation_id {
                         return Err(ExternalLinkError::LinkOperationMismatch);
                     }
-                    return match &*operation
+                    return match &*existing
                         .state
                         .lock()
                         .expect("external-link operation poisoned")
@@ -921,24 +945,27 @@ impl PdfSessionManager {
                 {
                     return Err(ExternalLinkError::LinkCapacity);
                 }
-                let target =
-                    Self::external_link_target(session, annotation_id, Some(registry_revision))?;
+                let target = Self::external_link_target(
+                    session,
+                    operation.annotation_id,
+                    Some(operation.registry_revision),
+                )?;
                 validate_external_link(&target)?;
-                let operation = Arc::new(ActivationOperation {
-                    id: operation_id.to_owned(),
+                let activation_operation = Arc::new(ActivationOperation {
+                    id: operation.operation_id.to_owned(),
                     state: Mutex::new(ActivationOperationState::Pending),
                 });
                 session.highest_operation_sequence = sequence;
                 session
                     .activation_operations
-                    .insert(sequence, Arc::clone(&operation));
+                    .insert(sequence, Arc::clone(&activation_operation));
                 session.external_link_in_flight += 1;
-                (target, operation, sequence, true)
+                (target, activation_operation, sequence, true)
             };
             if is_new {
                 sessions.external_link_process_in_flight += 1;
             }
-            (target, operation, sequence)
+            (target, activation_operation, sequence)
         };
         let mut admission = ExternalLinkAdmission {
             sessions: Arc::clone(&self.sessions),
@@ -951,7 +978,7 @@ impl PdfSessionManager {
                 Ok(result) => (result.map_err(preserve_launch_outcome), None),
                 Err(payload) => (Err(ExternalLinkError::LinkLaunchFailed), Some(payload)),
             };
-        admission.settle(&operation, sequence, result.clone());
+        admission.settle(&activation_operation, sequence, result.clone());
         drop(admission);
         if let Some(payload) = panic_payload {
             std::panic::resume_unwind(payload);

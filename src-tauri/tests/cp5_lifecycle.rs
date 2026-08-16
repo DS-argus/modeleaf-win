@@ -31,14 +31,14 @@ fn native_quit_is_idempotent_and_drains_open_request_and_pdf_ownership() {
     assert_eq!(workspace.budget().sessions, 1);
 
     let quit = QuitCoordinator::default();
-    assert!(quit.begin());
+    assert!(quit.begin(["reader".to_owned()]));
     drain_owner_for_lifecycle(&requests, &workspace, &sessions, &owner);
     assert_eq!(workspace.budget().windows, 0);
     assert_eq!(workspace.budget().sessions, 0);
     assert!(sessions.assert_empty());
 
     assert!(requests.pending_ingress("reader").is_err());
-    assert!(!quit.begin());
+    assert!(!quit.begin(["reader".to_owned()]));
     drain_owner_for_lifecycle(&requests, &workspace, &sessions, &owner);
     assert_eq!(workspace.budget().windows, 0);
     assert_eq!(workspace.budget().sessions, 0);
@@ -82,4 +82,18 @@ fn native_state_commands_have_finite_stale_and_diagnostic_rejections() {
         .exists());
 
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn native_quit_waits_for_every_window_and_aggregates_renderer_failures() {
+    let quit = QuitCoordinator::default();
+    assert!(quit.begin(["main".to_owned(), "reader-1".to_owned()]));
+    assert_eq!(quit.acknowledge("main", true), None);
+    assert_eq!(quit.acknowledge("reader-1", true), Some(true));
+    assert_eq!(quit.acknowledge("reader-1", true), None);
+
+    let failed = QuitCoordinator::default();
+    assert!(failed.begin(["main".to_owned(), "reader-1".to_owned()]));
+    assert_eq!(failed.acknowledge("main", false), None);
+    assert_eq!(failed.acknowledge("reader-1", true), Some(false));
 }

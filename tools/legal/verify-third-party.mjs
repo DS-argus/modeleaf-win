@@ -4,7 +4,7 @@ import { resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
-const assetRoot = resolve(root, "public/assets/pdfjs-5.7.284");
+const assetRoot = resolve(root, "public/assets/pdfjs-6.2.108");
 const errors = [];
 const fail = (message) => errors.push(message);
 
@@ -96,7 +96,7 @@ function verifyDependencies(review) {
 }
 
 function verifyAssets(review) {
-  const manifest = json(resolve(assetRoot, "pdfjs-assets-5.7.284.json"));
+  const manifest = json(resolve(assetRoot, "pdfjs-assets-6.2.108.json"));
   const lock = json(resolve(root, "package-lock.json"));
   if (!manifest || !lock) return;
   const pdfjs = lock.packages?.["node_modules/pdfjs-dist"];
@@ -104,7 +104,7 @@ function verifyAssets(review) {
   const covered = new Set();
   for (const asset of manifest.assets ?? []) {
     if (typeof asset.path !== "string" || typeof asset.sha256 !== "string" || !Number.isInteger(asset.byteLength)) { fail("PDF.js asset manifest contains incomplete metadata"); continue; }
-    const path = asset.path.replace(/^\.\/assets\/pdfjs-5\.7\.284\//u, "");
+    const path = asset.path.replace(/^\.\/assets\/pdfjs-6\.2\.108\//u, "");
     const absolute = resolve(assetRoot, path);
     if (!absolute.startsWith(`${assetRoot}${sep}`)) { fail(`PDF.js asset path escapes root: ${asset.path}`); continue; }
     if (!existsSync(absolute) || !statSync(absolute).isFile()) { fail(`missing copied PDF.js asset: ${asset.path}`); continue; }

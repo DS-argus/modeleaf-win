@@ -39,14 +39,14 @@ describe("PDF.js policy", () => {
       {
         "assets": {
           "cMapPacked": true,
-          "cMapUrl": "./assets/pdfjs-5.7.284/cmaps/",
-          "coreSrc": "./assets/pdfjs-5.7.284/build/pdf.mjs",
-          "iccUrl": "./assets/pdfjs-5.7.284/iccs/",
-          "standardFontDataUrl": "./assets/pdfjs-5.7.284/standard_fonts/",
-          "viewerCssSrc": "./assets/pdfjs-5.7.284/web/pdf_viewer.css",
-          "viewerSrc": "./assets/pdfjs-5.7.284/web/pdf_viewer.mjs",
-          "wasmUrl": "./assets/pdfjs-5.7.284/wasm/",
-          "workerSrc": "./assets/pdfjs-5.7.284/build/pdf.worker.min.mjs",
+          "cMapUrl": "./assets/pdfjs-6.2.108/cmaps/",
+          "coreSrc": "./assets/pdfjs-6.2.108/build/pdf.mjs",
+          "iccUrl": "./assets/pdfjs-6.2.108/iccs/",
+          "standardFontDataUrl": "./assets/pdfjs-6.2.108/standard_fonts/",
+          "viewerCssSrc": "./assets/pdfjs-6.2.108/web/pdf_viewer.css",
+          "viewerSrc": "./assets/pdfjs-6.2.108/web/pdf_viewer.mjs",
+          "wasmUrl": "./assets/pdfjs-6.2.108/wasm/",
+          "workerSrc": "./assets/pdfjs-6.2.108/build/pdf.worker.min.mjs",
         },
         "getDocument": {
           "canvasMaxAreaInBytes": 268435456,
@@ -65,7 +65,7 @@ describe("PDF.js policy", () => {
           "useWorkerFetch": false,
           "withCredentials": false,
         },
-        "pdfjsVersion": "5.7.284",
+        "pdfjsVersion": "6.2.108",
         "viewer": {
           "annotationMode": "disabled",
           "autoLinking": "disabled",
@@ -94,7 +94,7 @@ describe("PDF.js policy", () => {
   });
 
   it("rejects invalid manifests and every unlisted runtime file", () => {
-    expect(() => validatePdfJsAssetManifest({ ...manifest, pdfjsVersion: "5.7.283" as unknown as typeof PDFJS_VERSION })).toThrow("version mismatch");
+    expect(() => validatePdfJsAssetManifest({ ...manifest, pdfjsVersion: "6.2.107" as unknown as typeof PDFJS_VERSION })).toThrow("version mismatch");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: manifest.assets.filter((entry) => entry.kind !== "wasm") })).toThrow("missing");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: [...manifest.assets, { ...manifest.assets[0]! }] })).toThrow("duplicate");
     expect(() => validatePdfJsAssetManifest({ ...manifest, assets: [{ ...manifest.assets[0]!, path: "https://cdn.invalid/worker.mjs" }, ...manifest.assets.slice(1)] })).toThrow("invalid");

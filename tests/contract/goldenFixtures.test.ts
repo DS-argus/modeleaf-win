@@ -119,7 +119,7 @@ async function inspectPdf(pdf: Uint8Array, password?: string) {
     ((await document.getOutline()) ?? []) as OutlineNode[],
   );
   const pages = document.numPages;
-  await document.destroy();
+  await task.destroy();
   return { pages, text: text.join("\n"), annotations, outline, pageViews };
 }
 

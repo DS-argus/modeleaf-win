@@ -11,7 +11,7 @@ const valid: DiagnosticEvent = {
   storageClass: "LOCAL",
   epochMs: 1_700_000_000_000,
   appVersion: "0.1.0",
-  runtimeVersion: "5.7.284",
+  runtimeVersion: "6.2.108",
   traceId: "0123456789abcdef0123456789abcdef",
   requestId: "11111111111111111111111111111111",
   sessionId: "22222222222222222222222222222222",

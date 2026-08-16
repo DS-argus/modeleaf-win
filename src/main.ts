@@ -391,7 +391,7 @@ function createTab(): TabPayload {
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       abortExternalLinks: (registryRevision) => invoke<void>("abort_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
-      openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<void>("open_external_link", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, annotationId, registryRevision, operationId, operationSequence }),
+      openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<void>("open_external_link", { request: { operationId, operationSequence, sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, annotationId } }),
     }),
     onStatus: () => {
       render();
@@ -489,7 +489,6 @@ function render(): void {
 function activateCurrentTab(focus = false): void { const current = active(); current.session.activate(); render(); if (focus) current.host.focus(); }
 function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(async () => { if (id === workspace.activeTabId) return; await active().session.deactivate().catch(() => undefined); if (!workspace.activate(id)) { activateCurrentTab(); return; } activateCurrentTab(true); }); }
 function closeTab(id: TabId): void { void queueWorkspaceTransition(() => { const wasActive = id === workspace.activeTabId; if (!workspace.close(id)) return; if (wasActive) activateCurrentTab(); else render(); }); }
-function appendTab(): void { void queueWorkspaceTransition(async () => { if (workspace.snapshot.tabs.length >= 8) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } await active().session.deactivate().catch(() => undefined); const payload = createTab(); const id = workspace.appendAndActivate(payload, { dispose: disposeWorkspaceTab }); if (id === null) { disposeWorkspaceTab(payload); activateCurrentTab(); return; } activateCurrentTab(); }); }
 async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
   let adoptedSession: PdfTabSession | undefined;
   await queueWorkspaceOwnership(async () => {
@@ -713,7 +712,7 @@ function dispatch(action: Action): void {
   if (type === "document.open") { if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } openFileOpener(); return; }
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
-  if (type === "tab.new") { appendTab(); return; }
+  if (type === "application.new") { void invoke<void>("create_app_window").catch(() => { active().session.reader.setStatus("WINDOW_CREATE_FAILED"); render(); }); return; }
   if (type === "palette.toggle") { openPalette(); return; }
   if (type === "tab.next") { void switchTab(workspace.adjacentId(1)); return; }
   if (type === "tab.previous") { void switchTab(workspace.adjacentId(-1)); return; }

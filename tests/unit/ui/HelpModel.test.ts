@@ -42,7 +42,7 @@ describe("HelpModel", () => {
     expect(rows.map((row) => row.enabled)).toEqual(
       visibleBindings.map((binding) => isCommandEnabled(binding, unavailableContext)),
     );
-    expect(rows.find((row) => row.id === "tab.new")?.enabled).toBe(false);
+    expect(rows.find((row) => row.id === "app.new")?.enabled).toBe(false);
     expect(rows.find((row) => row.id === "document.open")?.enabled).toBe(false);
   });
 });

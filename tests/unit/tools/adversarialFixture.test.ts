@@ -76,7 +76,7 @@ describe("adversarial PDF fixtures", () => {
       const protectedDocument = await loadingTask.promise;
       expect(protectedDocument.numPages).toBe(1);
       expect(passwordAttempt).toBe(2);
-      await protectedDocument.destroy();
+      await loadingTask.destroy();
     } finally { await rm(first, { recursive: true, force: true }); await rm(second, { recursive: true, force: true }); }
   });
 });

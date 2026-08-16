@@ -31,8 +31,8 @@ const OPEN_DOCUMENT_AVAILABILITY: CommandAvailability = {
   allowWhenModalOpen: false,
 };
 
-const NEW_SESSION_AVAILABILITY: CommandAvailability = {
-  requiresSessionCapacity: true,
+const NEW_WINDOW_AVAILABILITY: CommandAvailability = {
+  requiresSessionCapacity: false,
   requiresOpenDocument: false,
   allowWhenModalOpen: false,
 };
@@ -93,18 +93,18 @@ export const DEFAULT_BINDINGS: readonly BindingDescriptor[] = [
     availability: OPEN_DOCUMENT_AVAILABILITY,
   },
   {
-    id: "tab.new",
+    id: "app.new",
     keys: ["Ctrl+N"],
-    label: "New tab",
-    command: "tab.new",
-    action: { type: "tab.new" },
+    label: "New window",
+    command: "application.new",
+    action: { type: "application.new" },
     repeatable: false,
     contexts: ["global"],
     kind: "exact",
     directToken: token("n", { ctrl: true }),
     showInHelp: true,
     showInPalette: true,
-    availability: NEW_SESSION_AVAILABILITY,
+    availability: NEW_WINDOW_AVAILABILITY,
   },
   {
     id: "tab.close",
