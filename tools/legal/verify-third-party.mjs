@@ -121,7 +121,7 @@ function verifyAssets(review) {
 }
 
 function verifyThemes(review) {
-  const source = text(resolve(root, "src/core/Theme.ts"));
+  const source = text(resolve(root, "src/domain/theme/Theme.ts"));
   const ids = [...source.matchAll(/theme\("([a-z0-9-]+)"/gu)].map((match) => match[1]);
   const revision = "d809e2e4d6aa5f257c91ff38b2cd4503e17405f0";
   const seen = new Set();
@@ -131,7 +131,7 @@ function verifyThemes(review) {
     if (record.revision !== revision || !record.source.includes(revision)) fail(`theme:${id}: stale upstream revision or source`);
     seen.add(id);
   }
-  if (ids.length !== 6 || new Set(ids).size !== 6) fail("src/core/Theme.ts must define exactly six unique copied themes");
+  if (ids.length !== 7 || new Set(ids).size !== 7) fail("src/domain/theme/Theme.ts must define exactly seven unique copied themes");
   for (const record of review.themes) {
     if (!required(record, "theme review", ["id", "revision", "license", "source", "requiredNotice"])) continue;
     if (!seen.has(record.id)) fail(`theme:${record.id}: stale or unreviewed attribution`);

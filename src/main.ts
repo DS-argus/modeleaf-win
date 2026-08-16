@@ -9,12 +9,13 @@ import type { Action } from "./core/Action";
 import { createKeyboardAdapter, isNativeKeyboardCompositionOrModifierEvent, isNativeOwnedTarget, type KeyboardAdapter } from "./platform/keyboardAdapter";
 import { wheelPageDirection } from "./platform/readerInput";
 import { type OpenFailureNotice, type OpenRequestAdoption } from "./platform/OpenRequestClient";
+import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry, type RecentPaletteRecord } from "./ui/CommandPaletteModel";
 import { bindSearchPrompt } from "./ui/SearchPromptController";
 import { buildHelpRows } from "./ui/HelpModel";
 import { createRemovedTabTeardownSupervisor, createShellOpenCoordinator, createWorkspaceTransitionQueue } from "./platform/ShellOpenCoordinator";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
-import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./core/Theme";
+import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
 import { CLOSED_THEME_PICKER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
 import { AccessibilityController, focusRestoreTarget, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
@@ -35,7 +36,6 @@ root.innerHTML = `
   <section id="prompt" class="prompt" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">Arrow keys or Control J and K preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
-  <dialog id="password-dialog" aria-labelledby="password-title"><form method="dialog" autocomplete="off"><h2 id="password-title">PDF password required</h2><label>Password <input id="password-input" type="password" autocomplete="off" data-form-type="other" spellcheck="false"></label><menu><button id="password-cancel" type="button" value="cancel">Cancel</button><button type="submit" value="submit">Open</button></menu></form></dialog>
   <dialog id="search-dialog" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><h2 id="search-title">Search PDF text</h2><label>Literal text <input id="search-input" type="search" spellcheck="false"></label><p class="dialog-hint">Press <kbd>Enter</kbd> or <kbd>Shift</kbd>+<kbd>Enter</kbd> to cycle matches.</p></form></dialog>
   <dialog id="file-opener-dialog" class="mac-overlay list-overlay" aria-label="Open PDF"><form id="file-opener-form"><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type to search..." aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list"></ul><p class="overlay-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
@@ -50,9 +50,6 @@ const status = required<HTMLElement>("#status");
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
 const helpRows = required<HTMLElement>("#help-rows");
-const passwordDialog = required<HTMLDialogElement>("#password-dialog");
-const passwordInput = required<HTMLInputElement>("#password-input");
-const passwordCancel = required<HTMLButtonElement>("#password-cancel");
 const searchDialog = required<HTMLDialogElement>("#search-dialog");
 const searchForm = required<HTMLFormElement>("#search-form");
 const searchInput = required<HTMLInputElement>("#search-input");
@@ -213,15 +210,6 @@ const native = {
   cancelSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, sessionOwnerGeneration: number) => invoke<{ readonly barrierId: number }>("cancel_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration }),
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
 };
-function requestPassword(reason: "need" | "incorrect"): Promise<string | null> {
-  passwordInput.value = ""; passwordInput.placeholder = reason === "incorrect" ? "Incorrect password" : ""; passwordDialog.returnValue = "cancel"; passwordDialog.showModal(); passwordInput.focus();
-  return new Promise((resolve) => passwordDialog.addEventListener("close", () => {
-    const password = passwordDialog.returnValue === "submit" ? passwordInput.value : null;
-    passwordInput.value = "";
-    resolve(password);
-  }, { once: true }));
-}
-passwordCancel.addEventListener("click", () => passwordDialog.close("cancel"));
 
 type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; };
 let workspace!: TabWorkspace<TabPayload>;
@@ -236,6 +224,7 @@ let keyboard!: KeyboardAdapter;
 let dialogOpenPending = false;
 const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = {
   DOCUMENT_TOO_LARGE: "This PDF exceeds reader resource limits.",
+  MISSING_FILE: "This PDF no longer exists.",
   REMOTE_PATH: "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
   PATH_REJECTED: "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
   PDF_INVALID: "Could not read this PDF.",
@@ -245,12 +234,15 @@ const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = 
 function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !("tag" in value)) return undefined;
   const tag = value.tag;
-  return tag === "DOCUMENT_TOO_LARGE" || tag === "REMOTE_PATH" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
+  return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "REMOTE_PATH" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
 function reportOpenInvokeFailure(error?: unknown): void {
   const tag = openFailureTag(error);
   active().session.reader.setStatus(tag === undefined ? "The PDF could not be opened." : OPEN_FAILURE_STATUS[tag]);
-  const accessibleError = tag === "REMOTE_PATH" || tag === "PATH_REJECTED" ? "document-locality-denied" : tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" ? "document-invalid" : "document-unavailable";
+  const openError = tag === undefined ? undefined : nativeOpenError(tag);
+  const accessibleError = openError === "unsupportedLocation" ? "document-locality-denied"
+    : openError === "malformedDocument" || openError === "unreadableFile" || openError === "missingFile" ? "document-invalid"
+    : "document-unavailable";
   accessibility.announce({ kind: "error", error: accessibleError });
   render();
 }
@@ -298,7 +290,7 @@ function commandAvailabilityContext(): CommandAvailabilityContext {
     canCreateSession: workspace.snapshot.tabs.length < 8,
     tabCount: workspace.snapshot.tabs.length,
     canOpenDocument: workspace.snapshot.tabs.some((tab) => !tab.payload.session.snapshot.reader.hasDocument) || workspace.snapshot.tabs.length < 8,
-    modalOpen: dialogOpenPending || passwordDialog.open || searchDialog.open || helpDialog.open || themeDialog.open,
+    modalOpen: dialogOpenPending || searchDialog.open || helpDialog.open || themeDialog.open,
     pagePromptActive: engine.state.kind === "pagePrompt",
   };
 }
@@ -379,7 +371,6 @@ function createTab(): TabPayload {
     pdf: { getDocument: (options) => getDocument(options as never) as unknown as PdfLoadingTask, annotationMode: AnnotationMode.DISABLE },
     resources,
     canvasHost: host,
-    requestPassword,
     createContentOptions: (opened, generation) => ({
       navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page); } },
       navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination); },
@@ -671,8 +662,6 @@ function requestApplicationQuit(beginNative = true): Promise<void> {
       if (fileOpenerDialog.open) closeFileOpener();
       if (helpDialog.open) helpDialog.close();
       if (searchDialog.open) searchDialog.close();
-      if (passwordDialog.open) passwordDialog.close();
-      passwordInput.value = "";
       shellDisposing = true;
       themeUnlisten?.();
       quitUnlisten?.();
@@ -848,7 +837,6 @@ window.addEventListener("beforeunload", () => {
   shellOpen.dispose();
   removedTabTeardown.dispose();
   keyboard.dispose();
-  passwordInput.value = "";
   for (const tab of workspace.snapshot.tabs) workspace.close(tab.id);
   disposeDprChange();
 });

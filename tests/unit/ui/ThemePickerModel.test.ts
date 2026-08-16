@@ -10,7 +10,7 @@ import {
 } from "../../../src/ui/ThemePickerModel";
 
 describe("ThemePickerModel", () => {
-  it("has exactly six unique rows in the frozen built-in order", () => {
+  it("has exactly seven unique rows in the frozen built-in order", () => {
     expect(THEME_PICKER_ROWS.map((row) => row.id)).toMatchInlineSnapshot(`
       [
         "tokyo-night",
@@ -18,13 +18,14 @@ describe("ThemePickerModel", () => {
         "solarized-dark",
         "dracula",
         "everforest",
+        "nord",
         "catppuccin-latte",
       ]
     `);
     expect(THEME_PICKER_ROWS.map((row) => row.displayName)).toEqual([
-      "Tokyo Night", "Gruvbox Dark", "Solarized Dark", "Dracula", "Everforest", "Catppuccin Latte",
+      "Tokyo Night", "Gruvbox Dark", "Solarized Dark", "Dracula", "Everforest", "Nord", "Catppuccin Latte",
     ]);
-    expect(new Set(THEME_PICKER_ROWS.map((row) => row.id)).size).toBe(6);
+    expect(new Set(THEME_PICKER_ROWS.map((row) => row.id)).size).toBe(7);
     expect(Object.isFrozen(THEME_PICKER_ROWS)).toBe(true);
   });
 

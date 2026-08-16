@@ -106,6 +106,7 @@ impl<'a> ExternalLinkActivationOperation<'a> {
 pub enum PdfSessionError {
     PathRejected,
     RemotePath,
+    MissingFile,
     FileUnreadable,
     PdfInvalid,
     DocumentTooLarge,
@@ -131,6 +132,7 @@ impl PdfSessionError {
         match self {
             Self::PathRejected => "PATH_REJECTED",
             Self::RemotePath => "REMOTE_PATH",
+            Self::MissingFile => "MISSING_FILE",
             Self::FileUnreadable => "FILE_UNREADABLE",
             Self::PdfInvalid => "PDF_INVALID",
             Self::DocumentTooLarge => "DOCUMENT_TOO_LARGE",
@@ -388,12 +390,6 @@ impl PdfSessionManager {
             crate::local_path::PathPolicyError::RemotePath => PdfSessionError::RemotePath,
             crate::local_path::PathPolicyError::PathRejected => PdfSessionError::PathRejected,
         })?;
-        if !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-        {
-            return Err(PdfSessionError::PdfInvalid);
-        }
         let session_capacity_reached = {
             let sessions = self.sessions.lock().expect("session state poisoned");
             sessions.entries.len() >= MAX_SESSIONS
@@ -401,7 +397,13 @@ impl PdfSessionManager {
         if session_capacity_reached {
             return Err(PdfSessionError::SessionCapacity);
         }
-        let mut file = opener(path).map_err(|_| PdfSessionError::FileUnreadable)?;
+        let mut file = opener(path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                PdfSessionError::MissingFile
+            } else {
+                PdfSessionError::FileUnreadable
+            }
+        })?;
         match final_policy.classify_final(&file) {
             Ok(crate::local_path::DriveKind::Fixed | crate::local_path::DriveKind::Removable) => {}
             Ok(crate::local_path::DriveKind::Remote)

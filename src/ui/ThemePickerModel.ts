@@ -1,4 +1,4 @@
-import { THEMES, isThemeId, type ThemeId } from "../core/Theme";
+import { THEMES, isThemeId, type ThemeId } from "../domain/theme/Theme";
 
 export interface ThemeTransaction {
   readonly baselineId: ThemeId;
