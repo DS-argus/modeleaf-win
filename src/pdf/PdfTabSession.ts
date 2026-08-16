@@ -161,6 +161,9 @@ export class PdfTabSession {
     if (this.closed) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
   }
+  public async printCurrent(): Promise<boolean> {
+    return this.closed || !this.active ? false : this.pdfReader.printCurrent();
+  }
   public async activate(): Promise<void> {
     if (this.closed || this.active) return;
     this.active = true;

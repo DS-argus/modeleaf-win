@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "modeleaf.w02.geometry.v1",
+  "recordedOn": "reference-workstation-2026-08-16",
+  "fixtureRefs": [
+    { "id": "links.pdf", "sha256": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4", "bytes": 2019, "beforeSha256": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4", "afterSha256": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4" }
+  ],
+  "fixture": "links.pdf",
+  "method": "WebView2 CDP deviceScaleFactor emulation with trusted quarter-turn key input",
+  "deviceScaleFactors": [1, 1.25, 1.5, 2],
+  "rotationsDegrees": [0, 90, 180, 270],
+  "cases": [
+    { "dpr": 1, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.25, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.25, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.25, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.25, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.5, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.5, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.5, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 1.5, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 2, "rotation": 0, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 2, "rotation": 90, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 2, "rotation": 180, "maxLayerEdgeDeltaCssPx": 0 },
+    { "dpr": 2, "rotation": 270, "maxLayerEdgeDeltaCssPx": 0 }
+  ],
+  "textSpanCountPerCase": 1,
+  "allTextSpansInsideFrame": true,
+  "linkOverlayCountPerCase": 4,
+  "allLinkOverlaysInsideFrame": true,
+  "maximumDeltaCssPx": 0,
+  "thresholdCssPx": 1,
+  "result": "pass"
+}

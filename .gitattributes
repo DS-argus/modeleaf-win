@@ -1,5 +1,6 @@
 .gitattributes text eol=lf
 * text=auto
+public/assets/pdfjs-*/**/LICENSE* text eol=lf
 
 *.css text eol=lf
 *.html text eol=lf

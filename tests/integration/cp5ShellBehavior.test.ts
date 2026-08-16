@@ -42,6 +42,11 @@ describe("CP5 shell integration", () => {
     expect(styles).toContain("place-content: center");
   });
 
+  it("keeps PDF.js raw TextLayer geometry aligned at quarter turns", () => {
+    expect(styles).toContain('.textLayer[data-main-rotation="90"] { transform: rotate(90deg) translateY(-100%); }');
+    expect(styles).toContain('.textLayer[data-main-rotation="180"] { transform: rotate(180deg) translate(-100%, -100%); }');
+    expect(styles).toContain('.textLayer[data-main-rotation="270"] { transform: rotate(270deg) translateX(-100%); }');
+  });
   it("keeps palette geometry stable across short and ordinary viewports", () => {
     expect(styles).toContain("max-height: min(58vh, 540px)");
     expect(styles).not.toContain("height: clamp(220px, 40vh, 420px)");

@@ -1,0 +1,47 @@
+{
+  "schemaVersion": "modeleaf.w02.resources.v1",
+  "recordedOn": "reference-workstation-2026-08-16",
+  "fixtureRefs": [
+    { "id": "fixture-S-text-10.pdf", "sha256": "c8f5e6331212d02864333a7d58b7dee804f1c8a1f51b32451d16a50cd84ffdfa", "bytes": 4403, "beforeSha256": "c8f5e6331212d02864333a7d58b7dee804f1c8a1f51b32451d16a50cd84ffdfa", "afterSha256": "c8f5e6331212d02864333a7d58b7dee804f1c8a1f51b32451d16a50cd84ffdfa" },
+    { "id": "fixture-L-text-300.pdf", "sha256": "91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab", "bytes": 110595, "beforeSha256": "91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab", "afterSha256": "91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab" }
+  ],
+  "coldFirstVisible": {
+    "fixture-S-text-10.pdf": { "coldMilliseconds": 274.2669, "warmMilliseconds": 276.8193, "thresholdMs": 1500 },
+    "fixture-L-text-300.pdf": { "coldMilliseconds": 319.3479, "warmMilliseconds": 263.0734, "thresholdMs": 2500 }
+  },
+  "longNavigation": {
+    "observedDurationMs": 74813.8623,
+    "fromPage": 1,
+    "toPage": 300,
+    "maximumMountedCanvases": 5,
+    "maximumActiveRenderTasks": 1,
+    "mountedAtEnd": [298, 299, 300],
+    "visibleTextLayersAtEnd": 1,
+    "longTasksOver100Ms": 0
+  },
+  "monitoredRun": {
+    "navigationDurationMs": 59544.9056,
+    "fromPage": 1,
+    "toPage": 300,
+    "idleDurationMs": 15000,
+    "processCount": 8,
+    "workingSetStartBytes": 586665984,
+    "workingSetPeakBytes": 681803776,
+    "workingSetPeakTimestamp": "2026-08-16T14:18:22.7408222Z",
+    "workingSetMonitorEndBytes": 611065856,
+    "workingSetMonitorEndTimestamp": "2026-08-16T14:18:31.4116358Z",
+    "postPeakWorkingSetBytes": 611889152,
+    "postPeakTimestamp": "2026-08-16T14:19:33.4693617Z",
+    "declinedFromPeak": true
+  },
+  "automatedContracts": {
+    "maximumResidentDistanceFromActivePage": 2,
+    "residentWindowInvariantCovered": true,
+    "unmountedRenderCancelled": true,
+    "cancelledRenderSlotHeldUntilSettlement": true,
+    "cancelledBackingReleased": true,
+    "transformMismatchedResidentsReleased": true,
+    "staleMaterializationRejected": true
+  },
+  "result": "pass"
+}

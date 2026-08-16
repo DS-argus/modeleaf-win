@@ -93,17 +93,6 @@ pub fn validate_external_link(target: &str) -> Result<(), ExternalLinkError> {
             Ok(())
         }
 
-        "mailto" => {
-            let recipient = target
-                .split_once(':')
-                .map(|(_, remainder)| remainder.split('?').next().unwrap_or(remainder))
-                .ok_or(ExternalLinkError::LinkRejected)?;
-            if valid_mailto_recipient(recipient) && !has_encoded_cr_or_lf(target) {
-                Ok(())
-            } else {
-                Err(ExternalLinkError::LinkRejected)
-            }
-        }
         _ => Err(ExternalLinkError::LinkRejected),
     }
 }
@@ -131,56 +120,6 @@ fn has_raw_userinfo(target: &str) -> bool {
         .next()
         .unwrap_or(authority)
         .contains('@')
-}
-fn valid_mailto_recipient(path: &str) -> bool {
-    let Some(path) = percent_decode_once(path) else {
-        return false;
-    };
-    !path.is_empty()
-        && !path.starts_with('/')
-        && !path.contains('/')
-        && path.split(',').all(|recipient| {
-            let Some((local, domain)) = recipient.split_once('@') else {
-                return false;
-            };
-            !local.is_empty()
-                && !domain.is_empty()
-                && !domain.contains('@')
-                && local
-                    .chars()
-                    .chain(domain.chars())
-                    .all(|c| !c.is_whitespace() && !c.is_control())
-        })
-}
-fn percent_decode_once(value: &str) -> Option<String> {
-    fn hex_value(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            b'A'..=b'F' => Some(byte - b'A' + 10),
-            _ => None,
-        }
-    }
-    let bytes = value.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            decoded
-                .push(hex_value(*bytes.get(index + 1)?)? << 4 | hex_value(*bytes.get(index + 2)?)?);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-fn has_encoded_cr_or_lf(target: &str) -> bool {
-    target
-        .as_bytes()
-        .windows(3)
-        .any(|b| b[0] == b'%' && b[1] == b'0' && matches!(b[2], b'a' | b'A' | b'd' | b'D'))
 }
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

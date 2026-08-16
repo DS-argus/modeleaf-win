@@ -19,7 +19,7 @@ TOML configuration and pane splitting are not implemented in the retained protot
 
 ## Development
 
-Prerequisites: Node.js, Rust MSVC toolchain, Visual Studio Build Tools with the C++ workload, and WebView2.
+Build prerequisites: Node.js, the Rust MSVC toolchain, Visual Studio Build Tools with the C++ workload, and WebView2. These are developer/CI dependencies only; end users must not install Node.js, Rust, or MSVC to run Modeleaf. W13 owns the NSIS installer, WebView2 bootstrap, and clean-machine runtime dependency verification.
 
 ```powershell
 npm install

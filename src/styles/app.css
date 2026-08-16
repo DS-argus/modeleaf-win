@@ -87,6 +87,10 @@ body { overflow: hidden; }
   forced-color-adjust: none;
 }
 
+.textLayer[data-main-rotation="90"] { transform: rotate(90deg) translateY(-100%); }
+.textLayer[data-main-rotation="180"] { transform: rotate(180deg) translate(-100%, -100%); }
+.textLayer[data-main-rotation="270"] { transform: rotate(270deg) translateX(-100%); }
+
 .textLayer :is(span, br) {
   position: absolute;
   color: transparent;
@@ -378,4 +382,24 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .app-shell { min-width: 0; }
   .tab-strip { min-height: 40px; }
   .reader-surface { padding: clamp(16px, 2vw, 28px); }
+}
+
+.pdf-print-surface {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  background: white;
+  color: black;
+}
+
+.pdf-print-page {
+  display: block;
+  max-width: none;
+}
+
+@media print {
+  body > :not(.pdf-print-surface) { display: none !important; }
+  .pdf-print-surface { position: static; }
+  .pdf-print-page { break-after: page; page-break-after: always; }
+  .pdf-print-page:last-child { break-after: auto; page-break-after: auto; }
 }

@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "modeleaf.w02.transport-trace.v1",
+  "recordedOn": "reference-workstation-2026-08-16",
+  "fixtureRefs": [
+    { "id": "text-3-page.pdf", "sha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd", "bytes": 1539, "beforeSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd", "afterSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd" },
+    { "id": "fixture-F-raster-12.pdf", "sha256": "53cfe725923b584062ecd1082611b4c38105f7c58c0251966af47ad7718682dc", "bytes": 33665980, "beforeSha256": "53cfe725923b584062ecd1082611b4c38105f7c58c0251966af47ad7718682dc", "afterSha256": "53cfe725923b584062ecd1082611b4c38105f7c58c0251966af47ad7718682dc" }
+  ],
+  "smallFullGet": {
+    "fixture": "text-3-page.pdf",
+    "bytes": 1539,
+    "requestMethod": "GET",
+    "responseStatus": 200,
+    "contentLength": 1539,
+    "renderedPage": 1,
+    "pageCount": 3
+  },
+  "largeRange": {
+    "fixture": "fixture-F-raster-12.pdf",
+    "bytes": 33665980,
+    "preflightStatus": 204,
+    "probe": {
+      "requestRange": "bytes=0-1048575",
+      "responseStatus": 206,
+      "contentRange": "bytes 0-1048575/33665980",
+      "boundedBodyBytes": 1048576,
+      "contentLength": 1048576
+    },
+    "explicitRangeExamples": [
+      "bytes=0-1048575",
+      "bytes=33554432-33665979",
+      "bytes=30408704-31457279",
+      "bytes=3145728-5242879"
+    ],
+    "resourceStatuses": [206],
+    "pdfResourceRequestCount": 16,
+    "pdfResourceResponseCount": 16,
+    "rangeBeforeComplete": true,
+    "pageOneRendered": true,
+    "residentCanvasPages": [1, 2, 3],
+    "saw416": false
+  },
+  "automatedContracts": {
+    "headStatus": 200,
+    "invalidRangeStatus": 416,
+    "multiRangeStatus": 416,
+    "eofRangeStatus": 416,
+    "overflowRangeStatus": 416,
+    "maxAcceptedRangeBytes": 4194304,
+    "firstRejectedRangeBytes": 4194305,
+    "overLimitRangeStatus": 416,
+    "wrongOwnerStatus": 404,
+    "staleGenerationStatus": 404,
+    "closingStatus": 404,
+    "capacityStatus": 503,
+    "ioFailureStatus": 500,
+    "cancellationCovered": true,
+    "sourceUnchanged": true
+  },
+  "security": {
+    "filesystemPathInRequest": false,
+    "jsonOrBase64DocumentPayload": false,
+    "ownerDerivedFromTrustedWebview": true,
+    "corsOrigin": "http://tauri.localhost"
+  }
+}
