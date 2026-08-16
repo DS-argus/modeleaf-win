@@ -17,6 +17,6 @@ describe("CP4 workspace workflow", () => {
     const workspace = new TabWorkspace(() => "empty"); const original = workspace.activeTabId;
     const staged = workspace.stageAdoption("candidate"); workspace.rollbackAdoption(staged!);
     expect(workspace.activeTabId).toBe(original); expect(workspace.snapshot.tabs).toHaveLength(1);
-    expect(buildCommandPaletteEntries(undefined, [{ recentId: "opaque-id", displayName: "report.pdf" }])).toContainEqual(expect.objectContaining({ kind: "recent", recentId: "opaque-id" }));
+    expect(buildCommandPaletteEntries(undefined, [{ recentId: "opaque-id", displayName: "report.pdf" }], "report.pdf")).toContainEqual(expect.objectContaining({ kind: "recent", recentId: "opaque-id" }));
   });
 });

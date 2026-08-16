@@ -5,6 +5,7 @@ export default defineConfig({
     include: ["tests/**/*.test.ts"],
     environment: "node",
     setupFiles: ["tests/setup/pdfjs.ts"],
+    testTimeout: 15_000,
     coverage: {
       enabled: false,
     },

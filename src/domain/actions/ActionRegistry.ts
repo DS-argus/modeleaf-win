@@ -163,6 +163,7 @@ export interface ActionRuntimeContext {
   readonly canHistoryBack: boolean;
   readonly canHistoryForward: boolean;
   readonly linkCount: number;
+  readonly implementedActionIds?: ReadonlySet<ActionId>;
 }
 
 export type ActionRuntimeAvailability =
@@ -185,6 +186,9 @@ export function getActionRuntimeAvailability(id: ActionId, state: ActionRuntimeC
   if (state.modalOpen && id !== "prompt.commit" && id !== "prompt.cancel" && id !== "app.quit") {
     return { enabled: false, reason: "Close the current dialog" };
   }
+  if (state.implementedActionIds !== undefined && !state.implementedActionIds.has(id)) {
+    return { enabled: false, reason: "Not available in this workstream" };
+  }
   if (id === "document.open" && (!state.canOpenDocument || !state.canCreateSession)) {
     return { enabled: false, reason: "Document capacity unavailable" };
   }
@@ -197,7 +201,7 @@ export function getActionRuntimeAvailability(id: ActionId, state: ActionRuntimeC
   if ((id.startsWith("pane.focus") || id === "pane.unsplit") && state.paneCount < 2) return { enabled: false, reason: "Only one pane open" };
   if (id === "config.writeDefault" && state.configExists) return { enabled: false, reason: "Config already exists" };
   if (id === "config.resetDefault" && !state.configExists) return { enabled: false, reason: "No config to reset" };
-  if (id === "search.cancel" && !state.searchActive) return { enabled: false, reason: "No active search" };
+  if ((id === "search.next" || id === "search.previous" || id === "search.cancel") && !state.searchActive) return { enabled: false, reason: "No active search" };
   if (id === "history.back" && !state.canHistoryBack) return { enabled: false, reason: "No back history" };
   if (id === "history.forward" && !state.canHistoryForward) return { enabled: false, reason: "No forward history" };
   if (id === "link.hint" && state.linkCount === 0) return { enabled: false, reason: "No links on page" };
