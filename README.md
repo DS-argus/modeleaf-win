@@ -1,8 +1,9 @@
 # Modeleaf for Windows
 
-Keyboard-first, read-only PDF viewer for Windows 11 x64. The current checkpoint adds bounded text search, native pointer copy, and safe keyboard link activation to the Rust-owned local file/session boundary.
+Keyboard-first, read-only PDF viewer for Windows 11 x64. The current code is a retained Windows prototype being re-baselined against the immutable Modeleaf v0.10.0 contract at `0f7ff0b54c3674c48f6b555261f939397cfbfb88`.
 
 ## Current scope
+The bullets below describe the retained implementation baseline, not verified v0.10.0 parity. Track contract status in [`docs/parity-matrix.md`](docs/parity-matrix.md).
 
 - Rust-owned single-file chooser for local fixed/removable volumes, with reparse and final-handle locality validation
 - Exact-pinned, fully bundled PDF.js 5.7.284 renderer using opaque bounded range requests
@@ -14,7 +15,7 @@ Keyboard-first, read-only PDF viewer for Windows 11 x64. The current checkpoint 
 - Rust-validated external `http`, `https`, and `mailto` activation without shell parsing; unsupported and unsafe PDF actions are rejected
 - Keyboard range selection, reading-order remediation, OCR, and scanned-content remediation remain explicitly unavailable
 
-TOML configuration and pane splitting are intentionally deferred. See [`.internal/docs/windows-port.md`](.internal/docs/windows-port.md) for the evidence, decisions, phase order, and acceptance gates.
+TOML configuration and pane splitting are not implemented in the retained prototype. The immutable v0.10.0 contract, Windows deltas, phase order, and acceptance gates live in [`docs/windows-porting/`](docs/windows-porting/). Files under `.internal/docs/` describe historical v0.5.0 checkpoint evidence and are not parity authority.
 
 ## Development
 

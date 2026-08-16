@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "baseline": {
+    "repository": "DS-argus/modeleaf",
+    "sha": "0f7ff0b54c3674c48f6b555261f939397cfbfb88",
+    "sources": [
+      "PDFReaderCore/Config/BuiltInDefaults.swift",
+      "PDFReaderCore/Actions/ActionRegistry.swift",
+      "PDFReaderCore/Reader/LinkDestinationIndicatorSettings.swift",
+      "docs/windows-porting/feature-spec.md",
+      "docs/windows-porting/architecture.md"
+    ]
+  },
+  "config": {
+    "bounds": {
+      "smallScrollPoints": { "minimum": 1.0, "maximum": 512.0 },
+      "largeScrollViewportFraction": { "minimum": 0.1, "maximum": 2.0 },
+      "zoomFactor": { "minimum": 1.01, "maximum": 2.0 },
+      "prefixTimeoutMilliseconds": { "minimum": 100, "maximum": 2000 }
+    },
+    "defaults": {
+      "navigation": {
+        "smallScrollPoints": 32.0,
+        "largeScrollViewportFraction": 0.8,
+        "zoomFactor": 1.1
+      },
+      "input": { "prefixTimeoutMilliseconds": 400, "prefix": "<C-b>" }
+    }
+  },
+  "keyGrammar": {
+    "chordSyntax": "<modifier[-modifier]-key>",
+    "modifiers": { "C": "Ctrl", "A": "Alt", "S": "Shift" },
+    "unsupportedModifier": { "token": "D", "result": "migration-error" },
+    "winModifier": "not-exposed",
+    "barePrintableCharacters": "literal",
+    "namedKeyExample": "<Enter>",
+    "sequenceExample": "gg",
+    "prefixTemplate": "<prefix>"
+  },
+  "configurableKeyTemplates": {
+    "document.open": ["<C-o>"],
+    "document.close": ["<C-w>"],
+    "document.print": ["<C-p>"],
+    "app.quit": ["<A-F4>"],
+    "app.new": ["<C-n>"],
+    "palette.open": [":", "<C-S-p>"],
+    "help.show": ["?"],
+    "tab.next": ["N"],
+    "tab.previous": ["P"],
+    "tab.select.1": ["<C-1>"],
+    "tab.select.2": ["<C-2>"],
+    "tab.select.3": ["<C-3>"],
+    "tab.select.4": ["<C-4>"],
+    "tab.select.5": ["<C-5>"],
+    "tab.select.6": ["<C-6>"],
+    "tab.select.7": ["<C-7>"],
+    "tab.select.8": ["<C-8>"],
+    "tab.select.9": ["<C-9>"],
+    "scroll.left": ["h", "<Left>"],
+    "scroll.down": ["j", "<Down>"],
+    "scroll.up": ["k", "<Up>"],
+    "scroll.right": ["l", "<Right>"],
+    "scroll.largeDown": ["d"],
+    "scroll.largeUp": ["u"],
+    "toc.toggle": ["t"],
+    "toc.scrollDown": ["J"],
+    "toc.scrollUp": ["K"],
+    "page.next": ["n"],
+    "page.previous": ["p"],
+    "page.first": ["gg"],
+    "page.last": ["G"],
+    "page.prompt": ["g"],
+    "history.back": ["<A-Left>"],
+    "history.forward": ["<A-Right>"],
+    "search.prompt": ["/"],
+    "search.cancel": ["<Esc>"],
+    "view.zoomIn": ["="],
+    "view.zoomOut": ["-"],
+    "view.zoomReset": [],
+    "view.fitWidth": ["w"],
+    "view.fitPage": ["F"],
+    "view.rotateLeft": ["["],
+    "view.rotateRight": ["]"],
+    "link.hint": ["f"],
+    "config.reload": ["<prefix>r"],
+    "config.writeDefault": [],
+    "config.resetDefault": [],
+    "theme.picker": ["T"],
+    "indicator.picker": ["I"],
+    "update.show": ["U"],
+    "pane.splitRight": ["<prefix>|"],
+    "pane.splitDown": ["<prefix>-"],
+    "pane.focusLeft": ["<C-h>"],
+    "pane.focusDown": ["<C-j>"],
+    "pane.focusUp": ["<C-k>"],
+    "pane.focusRight": ["<C-l>"],
+    "pane.unsplit": ["<prefix>o"]
+  },
+  "fixedBindings": {
+    "prompt.commit": ["<Enter>"],
+    "prompt.cancel": ["<Esc>"],
+    "search.next": ["<Enter>"],
+    "search.previous": ["<S-Enter>"],
+    "reason": "These four prompt/search bindings are not configurable."
+  },
+  "defaultReader": {
+    "viewMode": "vertical-continuous",
+    "zoomMode": "fit-width",
+    "initialPage": 1
+  },
+  "caps": { "recentFiles": 15, "panes": 4, "navigationHistoryPositions": 100 },
+  "themeIds": [
+    "tokyo-night",
+    "gruvbox-dark",
+    "solarized-dark",
+    "dracula",
+    "everforest",
+    "nord",
+    "catppuccin-latte"
+  ],
+  "linkDestinationIndicator": {
+    "styles": [
+      "pulse-ring",
+      "target",
+      "beacon",
+      "static-ring",
+      "diamond-pulse"
+    ],
+    "colors": [
+      "red",
+      "amber",
+      "cyan",
+      "green",
+      "purple",
+      "accent",
+      "auto-contrast",
+      "high-contrast"
+    ],
+    "customColor": { "format": "#RRGGBB", "normalization": "lowercase" },
+    "ranges": {
+      "size": { "minimum": 16.0, "maximum": 48.0 },
+      "durationMilliseconds": { "minimum": 500, "maximum": 3000 }
+    },
+    "default": {
+      "style": "pulse-ring",
+      "color": "red",
+      "size": 28.0,
+      "durationMilliseconds": 1500
+    }
+  },
+  "persistence": {
+    "stateOwnedFields": [
+      "selected_theme",
+      "recent_files",
+      "link_destination_indicator"
+    ],
+    "notPersisted": [
+      "session",
+      "windows",
+      "tabs",
+      "page",
+      "zoom",
+      "rotation",
+      "history",
+      "toc.visibility",
+      "toc.selectorBuffer",
+      "toc.scroll",
+      "toc.selection"
+    ],
+    "configPath": "appConfigDir()/config.toml",
+    "statePath": "appLocalDataDir()/state.json"
+  }
+}

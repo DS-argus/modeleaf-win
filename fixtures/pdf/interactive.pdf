@@ -1,0 +1,49 @@
+%PDF-1.7
+%ÄÅÇÉ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [6 0 R] >> /Names << /JavaScript << /Names [(suppressed-script) 8 0 R] >> >> >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 1 /Kids [4 0 R] >>
+endobj
+3 0 obj
+<< /Title (Modeleaf deterministic golden fixtures) /Creator (Modeleaf) /Producer (Modeleaf) /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 5 0 R /Annots [6 0 R 7 0 R 8 0 R 9 0 R] >>
+endobj
+5 0 obj
+<< /Length 64 >>
+stream
+BT /F1 14 Tf 48 740 Td (interactive suppression sentinels) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Widget /FT /Tx /T (suppressed-field) /V (sentinel-widget-value) /Rect [48 700 220 724] >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Text /Contents (sentinel-note-contents) /Rect [48 660 70 682] >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 620 220 642] /A << /S /JavaScript /JS (app.alert\(\"suppressed\"\)) >> >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Screen /Rect [48 580 220 602] /A << /S /Rendition /OP 0 >> >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000162 00000 n 
+0000000219 00000 n 
+0000000392 00000 n 
+0000000601 00000 n 
+0000000715 00000 n 
+0000000846 00000 n 
+0000000952 00000 n 
+0000001082 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R /Info 3 0 R /ID [<4d4f44454c454146474f4c44454e3031> <4d4f44454c454146474f4c44454e3031>] >>
+startxref
+1185
+%%EOF
