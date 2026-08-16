@@ -6,6 +6,8 @@
   "scripts": {
     "assets:sync": "node tools/pdfjs/sync-assets.mjs",
     "fixtures:generate-adversarial": "node tools/fixtures/generate-adversarial-pdfs.mjs",
+    "fixtures:generate-golden": "node tools/fixtures/generate-golden-pdfs.mjs",
+    "fixtures:verify-golden": "vitest run tests/contract/goldenFixtures.test.ts tests/contract/goldenSnapshots.test.ts",
     "legal:verify": "node tools/legal/verify-third-party.mjs",
     "fixtures:verify-korean": "node tools/fixtures/verify-korean-pdfs.mjs",
     "predev": "npm run assets:sync",

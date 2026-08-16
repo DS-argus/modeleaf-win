@@ -1,0 +1,70 @@
+%PDF-1.7
+%ÄÅÇÉ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [4 0 R 12 0 R] >>
+endobj
+3 0 obj
+<< /Title (Modeleaf deterministic golden fixtures) /Creator (Modeleaf) /Producer (Modeleaf) /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 5 0 R /Annots [6 0 R 7 0 R 8 0 R 9 0 R 10 0 R 11 0 R] >>
+endobj
+5 0 obj
+<< /Length 69 >>
+stream
+BT /F1 12 Tf 48 740 Td (https://example.invalid/text-only-url) Tj ET
+
+endstream
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 700 170 720] /A << /S /URI /URI (https://example.invalid/allowed) >> >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 670 170 690] /A << /S /URI /URI (file:///C:/forbidden) >> >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 640 170 660] /A << /S /GoTo /D [12 0 R /XYZ 42 600 null] >> >>
+endobj
+9 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 610 170 630] /A << /S /GoTo /D [12 0 R /Fit] >> >>
+endobj
+10 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 580 170 600] /A << /S /GoTo /D (unresolved-destination) >> >>
+endobj
+11 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 550 170 570] /A << /S /GoToR /F (foreign.pdf) /D [0 /Fit] >> >>
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
+<< /Length 4 >>
+stream
+q Q
+
+endstream
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000128 00000 n 
+0000000301 00000 n 
+0000000524 00000 n 
+0000000643 00000 n 
+0000000771 00000 n 
+0000000888 00000 n 
+0000001007 00000 n 
+0000001114 00000 n 
+0000001233 00000 n 
+0000001354 00000 n 
+0000001531 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R /Info 3 0 R /ID [<4d4f44454c454146474f4c44454e3031> <4d4f44454c454146474f4c44454e3031>] >>
+startxref
+1585
+%%EOF
