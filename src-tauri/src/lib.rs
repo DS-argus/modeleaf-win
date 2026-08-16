@@ -15,43 +15,81 @@ use open_request::{
     OpenRequestId,
 };
 use pdf_session::{
-    CancelBarrier, ExternalLinkRegistration, PdfOwner, PdfSessionError, PdfSessionManager,
-    SessionId,
+    CancelBarrier, ExternalLinkActivationOperation, ExternalLinkRegistration, PdfOwner,
+    PdfSessionError, PdfSessionManager, SessionId,
 };
+use rand::RngCore;
 use recent::{RecentDocument, RecentStore, RecentStoreError};
-use serde::Serialize;
-use std::collections::VecDeque;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
-use tauri::{ipc::Response, Emitter, Manager, State, Window};
+use std::sync::{Arc, Mutex};
+use tauri::{ipc::Response, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
 use theme_state::{ThemeId, ThemeStateError, ThemeStateManager};
 use workspace::{WorkspaceError, WorkspaceManager};
 
 #[derive(Clone, Default)]
 pub struct QuitCoordinator {
-    shutting_down: Arc<AtomicBool>,
-    finished: Arc<AtomicBool>,
+    state: Arc<Mutex<QuitState>>,
+}
+
+#[derive(Default)]
+struct QuitState {
+    shutting_down: bool,
+    finished: bool,
+    failed: bool,
+    cleanup_claimed: bool,
+    pending_windows: HashSet<String>,
 }
 
 impl QuitCoordinator {
-    pub fn begin(&self) -> bool {
-        self.shutting_down
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
+    pub fn begin(&self, labels: impl IntoIterator<Item = String>) -> bool {
+        let mut state = self.state.lock().expect("quit coordinator poisoned");
+        if state.shutting_down {
+            return false;
+        }
+        state.shutting_down = true;
+        state.pending_windows.extend(labels);
+        true
     }
 
     pub fn is_shutting_down(&self) -> bool {
-        self.shutting_down.load(Ordering::Acquire)
+        self.state
+            .lock()
+            .expect("quit coordinator poisoned")
+            .shutting_down
     }
-    fn claim_finish(&self) -> bool {
-        self.is_shutting_down()
-            && self
-                .finished
-                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
+
+    pub fn acknowledge(&self, label: &str, renderer_drained: bool) -> Option<bool> {
+        let mut state = self.state.lock().expect("quit coordinator poisoned");
+        if !state.shutting_down || state.finished || !state.pending_windows.remove(label) {
+            return None;
+        }
+        state.failed |= !renderer_drained;
+        if !state.pending_windows.is_empty() {
+            return None;
+        }
+        state.finished = true;
+        Some(!state.failed)
+    }
+
+    fn timeout(&self) -> Option<bool> {
+        let mut state = self.state.lock().expect("quit coordinator poisoned");
+        if !state.shutting_down || state.finished {
+            return None;
+        }
+        state.failed = true;
+        state.finished = true;
+        Some(false)
+    }
+
+    fn claim_cleanup(&self) -> bool {
+        let mut state = self.state.lock().expect("quit coordinator poisoned");
+        if state.cleanup_claimed {
+            return false;
+        }
+        state.cleanup_claimed = true;
+        true
     }
 }
 
@@ -110,23 +148,11 @@ fn record_native_diagnostic<R: tauri::Runtime>(
     let _ = log.record(&event);
 }
 
-fn begin_quit_application<R: tauri::Runtime + 'static>(app: &tauri::AppHandle<R>) {
-    if app.state::<QuitCoordinator>().begin() {
-        let _ = app.emit("quit-requested", ());
-        let fallback = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(3));
-            finish_quit_application(&fallback, false);
-        });
+fn complete_quit_application<R: tauri::Runtime>(app: &tauri::AppHandle<R>, renderer_drained: bool) {
+    if app.state::<QuitCoordinator>().claim_cleanup() {
+        drain_app_owners(app);
+        shutdown_external_link_dispatcher();
     }
-}
-
-fn finish_quit_application<R: tauri::Runtime>(app: &tauri::AppHandle<R>, renderer_drained: bool) {
-    if !app.state::<QuitCoordinator>().claim_finish() {
-        return;
-    }
-    drain_app_owners(app);
-    shutdown_external_link_dispatcher();
     record_native_diagnostic(
         app,
         diagnostics::DiagnosticEventName::Quit,
@@ -144,23 +170,54 @@ fn finish_quit_application<R: tauri::Runtime>(app: &tauri::AppHandle<R>, rendere
     app.exit(0);
 }
 
+fn timeout_quit_application<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(renderer_drained) = app.state::<QuitCoordinator>().timeout() {
+        complete_quit_application(app, renderer_drained);
+    }
+}
+
+fn acknowledge_quit_application<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    label: &str,
+    renderer_drained: bool,
+) {
+    if let Some(all_renderers_drained) = app
+        .state::<QuitCoordinator>()
+        .acknowledge(label, renderer_drained)
+    {
+        complete_quit_application(app, all_renderers_drained);
+    }
+}
+
+fn begin_quit_application<R: tauri::Runtime + 'static>(app: &tauri::AppHandle<R>) {
+    let labels = app.webview_windows().keys().cloned().collect::<Vec<_>>();
+    if app.state::<QuitCoordinator>().begin(labels) {
+        let _ = app.emit("quit-requested", ());
+        let fallback = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            timeout_quit_application(&fallback);
+        });
+    }
+}
+
 #[tauri::command]
 fn begin_quit(app: tauri::AppHandle) {
     begin_quit_application(&app);
 }
 
 #[tauri::command]
-fn renderer_ready(app: tauri::AppHandle) {
-    if app.state::<QuitCoordinator>().is_shutting_down() {
-        let _ = app.emit("quit-requested", ());
+fn renderer_ready(window: Window) {
+    if window.state::<QuitCoordinator>().is_shutting_down() {
+        let _ = window.emit_to(window.label(), "quit-requested", ());
     }
 }
 
 #[tauri::command]
-fn finish_quit(app: tauri::AppHandle, renderer_drained: bool) {
-    finish_quit_application(&app, renderer_drained);
+fn finish_quit(window: Window, renderer_drained: bool) {
+    let label = window.label().to_owned();
+    acknowledge_quit_application(window.app_handle(), &label, renderer_drained);
 }
-
 #[tauri::command]
 fn read_theme_state(state: State<'_, ThemeStateManager>) -> theme_state::ThemeState {
     state.current()
@@ -210,6 +267,107 @@ fn record_diagnostic(
 }
 
 const MAX_PENDING_SECOND_INSTANCE_PATHS: usize = 8;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExternalLinkActivationRequest {
+    operation_id: String,
+    operation_sequence: u64,
+    session_id: String,
+    document_generation: u64,
+    owner_generation: u64,
+    registry_revision: u64,
+    annotation_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "tag", rename_all = "SCREAMING_SNAKE_CASE")]
+enum CreateAppWindowError {
+    #[serde(rename = "WINDOW_CAPACITY")]
+    Capacity,
+    #[serde(rename = "WINDOW_CREATION_FAILED")]
+    CreationFailed,
+    #[serde(rename = "WINDOW_SETUP_FAILED")]
+    SetupFailed,
+    #[serde(rename = "WINDOW_SHUTTING_DOWN")]
+    ShuttingDown,
+}
+
+#[derive(Clone, Default)]
+struct AppWindowRegistry {
+    windows: Arc<Mutex<HashMap<String, tauri::WebviewWindow>>>,
+}
+
+impl AppWindowRegistry {
+    fn retain(&self, window: tauri::WebviewWindow) {
+        self.windows
+            .lock()
+            .expect("app window registry poisoned")
+            .insert(window.label().to_owned(), window);
+    }
+
+    fn remove(&self, label: &str) {
+        self.windows
+            .lock()
+            .expect("app window registry poisoned")
+            .remove(label);
+    }
+}
+
+pub fn generate_reader_window_label() -> String {
+    let mut bytes = [0_u8; 16];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("reader-{:032x}", u128::from_be_bytes(bytes))
+}
+
+#[tauri::command]
+async fn create_app_window(
+    app: tauri::AppHandle,
+    workspace: State<'_, WorkspaceManager>,
+    windows: State<'_, AppWindowRegistry>,
+) -> Result<(), CreateAppWindowError> {
+    if app.state::<QuitCoordinator>().is_shutting_down() {
+        return Err(CreateAppWindowError::ShuttingDown);
+    }
+    let label = generate_reader_window_label();
+    let owner = workspace
+        .claim_window(&label)
+        .map_err(|_| CreateAppWindowError::Capacity)?;
+    let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
+        .title("Modeleaf")
+        .additional_browser_args("--force-renderer-accessibility")
+        .visible(false)
+        .decorations(true)
+        .resizable(true)
+        .fullscreen(false)
+        .inner_size(1040.0, 760.0)
+        .min_inner_size(480.0, 360.0)
+        .build()
+    {
+        Ok(window) => window,
+        Err(_) => {
+            let _ = workspace.destroy_window(&owner);
+            return Err(CreateAppWindowError::CreationFailed);
+        }
+    };
+    if disable_browser_accelerators(&window).is_err() {
+        let _ = window.destroy();
+        let _ = workspace.destroy_window(&owner);
+        return Err(CreateAppWindowError::SetupFailed);
+    }
+    if app.state::<QuitCoordinator>().is_shutting_down() {
+        let _ = window.destroy();
+        let _ = workspace.destroy_window(&owner);
+        return Err(CreateAppWindowError::ShuttingDown);
+    }
+    if window.show().is_err() {
+        let _ = window.destroy();
+        let _ = workspace.destroy_window(&owner);
+        return Err(CreateAppWindowError::SetupFailed);
+    }
+    windows.retain(window);
+    Ok(())
+}
 
 #[derive(Clone, Default)]
 pub struct SecondInstanceIngress {
@@ -607,34 +765,31 @@ fn abort_external_links(
 #[tauri::command]
 async fn open_external_link(
     window: Window,
-    operation_id: String,
-    operation_sequence: u64,
     state: State<'_, PdfSessionManager>,
-    session_id: String,
-    document_generation: u64,
-    owner_generation: u64,
-    registry_revision: u64,
-    annotation_id: String,
+    request: ExternalLinkActivationRequest,
 ) -> Result<(), ExternalLinkError> {
-    let session_id =
-        SessionId::from_opaque(session_id).map_err(|_| ExternalLinkError::SessionNotFound)?;
-    let owner = command_owner(&window, owner_generation);
+    let session_id = SessionId::from_opaque(request.session_id)
+        .map_err(|_| ExternalLinkError::SessionNotFound)?;
+    let owner = command_owner(&window, request.owner_generation);
     let manager = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         manager.activate_external_link_with_operation(
             &owner,
             &session_id,
-            document_generation,
-            registry_revision,
-            &annotation_id,
-            &operation_id,
-            operation_sequence,
+            request.document_generation,
+            ExternalLinkActivationOperation::new(
+                request.registry_revision,
+                &request.annotation_id,
+                &request.operation_id,
+                request.operation_sequence,
+            ),
             launch_external_link,
         )
     })
     .await
     .map_err(|_| ExternalLinkError::LinkLaunchFailed)?
 }
+
 #[tauri::command]
 async fn read_pdf_range(
     window: Window,
@@ -688,6 +843,7 @@ async fn close_pdf_session(
         .release_session(&owner, &session_id)
         .map_err(workspace_error)
 }
+
 #[cfg(windows)]
 fn disable_browser_accelerators<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
@@ -695,29 +851,36 @@ fn disable_browser_accelerators<R: tauri::Runtime>(
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
     use windows::core::Interface;
 
-    window.with_webview(|webview| unsafe {
-        let core = webview
-            .controller()
-            .CoreWebView2()
-            .expect("main WebView2 controller is unavailable");
-        let settings = core
-            .Settings()
-            .expect("main WebView2 settings are unavailable");
-        let settings3 = settings
-            .cast::<ICoreWebView2Settings3>()
-            .expect("WebView2 browser accelerator settings are unavailable");
-        settings3
-            .SetAreBrowserAcceleratorKeysEnabled(false)
-            .expect("could not disable WebView2 browser accelerator keys");
-    })
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    window.with_webview(move |webview| {
+        let result = unsafe {
+            (|| -> windows::core::Result<()> {
+                let core = webview.controller().CoreWebView2()?;
+                let settings = core.Settings()?;
+                let settings3 = settings.cast::<ICoreWebView2Settings3>()?;
+                settings3.SetAreBrowserAcceleratorKeysEnabled(false)?;
+                Ok(())
+            })()
+        }
+        .map_err(|error| error.to_string());
+        let _ = sender.send(result);
+    })?;
+    match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(std::io::Error::other(error).into()),
+        Err(error) => Err(std::io::Error::other(format!(
+            "WebView2 accelerator setup did not complete: {error}"
+        ))
+        .into()),
+    }
 }
-
 #[cfg(not(windows))]
 fn disable_browser_accelerators<R: tauri::Runtime>(
     _window: &tauri::WebviewWindow<R>,
 ) -> tauri::Result<()> {
     Ok(())
 }
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let sessions = PdfSessionManager::new();
@@ -728,6 +891,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(second_instance_ingress)
         .manage(QuitCoordinator::default())
+        .manage(AppWindowRegistry::default())
         .plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             if app.state::<QuitCoordinator>().is_shutting_down() {
                 return;
@@ -752,6 +916,7 @@ pub fn run() {
             let app_data_directory = app.path().app_data_dir()?;
             let window = app.get_webview_window("main").expect("main window missing");
             disable_browser_accelerators(&window)?;
+            window.show()?;
             let mut recents = RecentStore::load(
                 app_data_directory.join("recent.json"),
                 &SystemLocalPathPolicy,
@@ -807,17 +972,37 @@ pub fn run() {
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
-                begin_quit_application(&window.app_handle());
+                if window.label() == "main" {
+                    begin_quit_application(window.app_handle());
+                } else {
+                    let workspace = window.state::<WorkspaceManager>();
+                    if let Some(owner) = workspace.active_owner(window.label()) {
+                        drain_owner_for_lifecycle(
+                            &window.state::<OpenRequestCoordinator>(),
+                            &workspace,
+                            &window.state::<PdfSessionManager>(),
+                            &owner,
+                        );
+                    }
+                    let _ = window.destroy();
+                }
             }
             tauri::WindowEvent::Destroyed => {
+                let label = window.label().to_owned();
+                window.state::<AppWindowRegistry>().remove(&label);
                 let workspace = window.state::<WorkspaceManager>();
-                if let Some(owner) = workspace.active_owner(window.label()) {
+                if let Some(owner) = workspace.active_owner(&label) {
                     drain_owner_for_lifecycle(
                         &window.state::<OpenRequestCoordinator>(),
                         &workspace,
                         &window.state::<PdfSessionManager>(),
                         &owner,
                     );
+                }
+                if let Some(all_renderers_drained) =
+                    window.state::<QuitCoordinator>().acknowledge(&label, false)
+                {
+                    complete_quit_application(window.app_handle(), all_renderers_drained);
                 }
             }
             _ => {}
@@ -829,6 +1014,7 @@ pub fn run() {
             read_theme_state,
             commit_theme_state,
             record_diagnostic,
+            create_app_window,
             open_pdf_dialog,
             record_recent,
             list_recents,
@@ -850,7 +1036,9 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to build Modeleaf")
         .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) && app.state::<QuitCoordinator>().begin() {
+            if matches!(event, tauri::RunEvent::Exit)
+                && app.state::<QuitCoordinator>().claim_cleanup()
+            {
                 drain_app_owners(app);
                 shutdown_external_link_dispatcher();
             }

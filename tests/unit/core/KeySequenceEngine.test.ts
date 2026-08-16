@@ -33,26 +33,22 @@ describe("KeySequenceEngine", () => {
       dispatches: [],
     });
   });
-  it("dispatches Ctrl+N once only when tab creation is available", () => {
+  it("dispatches Ctrl+N once for a new window regardless of session capacity", () => {
     const engine = new KeySequenceEngine();
     const available = {
       ...emptyContext,
-      commandAvailability: { hasDocument: false, canCreateSession: true, canOpenDocument: true, modalOpen: false },
+      commandAvailability: { hasDocument: false, canCreateSession: false, canOpenDocument: false, modalOpen: false },
     };
 
     expect(engine.handle(token("n", { ctrl: true }), 0, available)).toMatchObject({
       claimed: true,
-      dispatches: [{ action: { type: "tab.new" }, source: "binding" }],
+      dispatches: [{ action: { type: "application.new" }, source: "binding" }],
     });
     expect(engine.handle(token("n", { ctrl: true, repeat: true }), 1, available)).toMatchObject({
       claimed: false,
       dispatches: [],
     });
     expect(engine.handle(token("n", { ctrl: true }), 2, {
-      ...emptyContext,
-      commandAvailability: { hasDocument: false, canCreateSession: false, canOpenDocument: false, modalOpen: false },
-    })).toMatchObject({ claimed: false, dispatches: [] });
-    expect(engine.handle(token("n", { ctrl: true }), 3, {
       ...emptyContext,
       commandAvailability: { hasDocument: false, canCreateSession: true, canOpenDocument: true, modalOpen: true },
     })).toMatchObject({ claimed: false, dispatches: [] });

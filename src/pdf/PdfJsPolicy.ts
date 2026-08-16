@@ -1,4 +1,4 @@
-export const PDFJS_VERSION = "5.7.284" as const;
+export const PDFJS_VERSION = "6.2.108" as const;
 
 export type PdfJsAssetKind =
   | "worker"
@@ -33,7 +33,7 @@ export class PdfJsPolicyError extends Error {
 
 const assetUrl = (name: string): string => `./assets/pdfjs-${PDFJS_VERSION}/${name}`;
 
-/** Frozen inputs for PDF.js 5.7.284. Only a range transport may supply document bytes. */
+/** Frozen inputs for PDF.js 6.2.108. Only a range transport may supply document bytes. */
 export const PDFJS_POLICY = Object.freeze({
   pdfjsVersion: PDFJS_VERSION,
   getDocument: Object.freeze({

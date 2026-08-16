@@ -228,10 +228,7 @@ impl OpenRequestCoordinator {
         let next_order = current_order
             .checked_add(1)
             .ok_or(OpenRequestError::Capacity)?;
-        let metadata = match self.sessions.open_local_file(owner.clone(), path) {
-            Ok(metadata) => metadata,
-            Err(error) => return Err(error.into()),
-        };
+        let metadata = self.sessions.open_local_file(owner.clone(), path)?;
         if let Err(error) = self
             .workspace
             .admit_session(&owner, metadata.session_id.clone())
@@ -491,7 +488,8 @@ impl OpenRequestCoordinator {
             let ids: Vec<_> = failures
                 .live
                 .iter()
-                .filter_map(|(id, failure)| (failure.owner == *owner).then(|| id.clone()))
+                .filter(|(_, failure)| failure.owner == *owner)
+                .map(|(id, _)| id.clone())
                 .collect();
             for id in ids {
                 failures.live.remove(&id);
@@ -502,7 +500,8 @@ impl OpenRequestCoordinator {
         let ids: Vec<_> = state
             .live
             .iter()
-            .filter_map(|(id, request)| (request.owner == *owner).then(|| id.clone()))
+            .filter(|(_, request)| request.owner == *owner)
+            .map(|(id, _)| id.clone())
             .collect();
         for id in ids {
             state.live.remove(&id);
@@ -518,7 +517,8 @@ impl OpenRequestCoordinator {
             let ids: Vec<_> = failures
                 .live
                 .iter()
-                .filter_map(|(id, failure)| (failure.owner == *owner).then(|| id.clone()))
+                .filter(|(_, failure)| failure.owner == *owner)
+                .map(|(id, _)| id.clone())
                 .collect();
             for id in ids {
                 failures.live.remove(&id);
@@ -530,7 +530,8 @@ impl OpenRequestCoordinator {
             let ids: Vec<_> = state
                 .live
                 .iter()
-                .filter_map(|(id, request)| (request.owner == *owner).then(|| id.clone()))
+                .filter(|(_, request)| request.owner == *owner)
+                .map(|(id, _)| id.clone())
                 .collect();
             ids.into_iter()
                 .filter_map(|id| {

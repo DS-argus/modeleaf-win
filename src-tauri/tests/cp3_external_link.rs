@@ -1,7 +1,9 @@
 use modeleaf_lib::external_link::{
     open_external_link_with, validate_external_link, ExternalLinkError,
 };
-use modeleaf_lib::pdf_session::{ExternalLinkRegistration, PdfOwner, PdfSessionManager};
+use modeleaf_lib::pdf_session::{
+    ExternalLinkActivationOperation, ExternalLinkRegistration, PdfOwner, PdfSessionManager,
+};
 use std::io::Write;
 
 #[test]
@@ -671,10 +673,7 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
                 &owner,
                 &session.session_id,
                 session.document_generation,
-                1,
-                "link",
-                "unique-operation",
-                1,
+                ExternalLinkActivationOperation::new(1, "link", "unique-operation", 1),
                 |_| {
                     launches += 1;
                     Ok::<(), ()>(())
@@ -690,14 +689,11 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "timeout-operation",
-            2,
+            ExternalLinkActivationOperation::new(1, "link", "timeout-operation", 2),
             |_| {
                 timeout_launches += 1;
                 Err::<(), _>(ExternalLinkError::LinkLaunchTimeout)
-            },
+            }
         ),
         Err(ExternalLinkError::LinkLaunchTimeout)
     );
@@ -706,14 +702,11 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "timeout-operation",
-            2,
+            ExternalLinkActivationOperation::new(1, "link", "timeout-operation", 2),
             |_| {
                 timeout_launches += 1;
                 Ok::<(), ()>(())
-            },
+            }
         ),
         Err(ExternalLinkError::LinkLaunchTimeout)
     );
@@ -725,14 +718,11 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "dispatch-expired",
-            3,
+            ExternalLinkActivationOperation::new(1, "link", "dispatch-expired", 3),
             |_| {
                 expired_launches += 1;
                 Err::<(), _>(ExternalLinkError::LinkDispatchExpired)
-            },
+            }
         ),
         Err(ExternalLinkError::LinkDispatchExpired)
     );
@@ -741,14 +731,11 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "dispatch-expired",
-            3,
+            ExternalLinkActivationOperation::new(1, "link", "dispatch-expired", 3),
             |_| {
                 expired_launches += 1;
                 Ok::<(), ()>(())
-            },
+            }
         ),
         Err(ExternalLinkError::LinkDispatchExpired)
     );
@@ -759,10 +746,7 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "panic-operation",
-            4,
+            ExternalLinkActivationOperation::new(1, "link", "panic-operation", 4),
             |_| -> Result<(), ()> { panic!("injected launcher panic") },
         )
     }));
@@ -779,10 +763,7 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &held_owner,
             &held_session,
             held_generation,
-            1,
-            "link",
-            "held-operation",
-            5,
+            ExternalLinkActivationOperation::new(1, "link", "held-operation", 5),
             |_| {
                 entered_sender.send(()).unwrap();
                 release_receiver.recv().unwrap();
@@ -796,11 +777,8 @@ fn activation_operation_ids_deduplicate_and_panic_does_not_hold_the_session() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "held-operation",
-            5,
-            |_| Ok::<(), ()>(()),
+            ExternalLinkActivationOperation::new(1, "link", "held-operation", 5),
+            |_| Ok::<(), ()>(())
         ),
         Err(ExternalLinkError::LinkOperationInProgress)
     );
@@ -866,10 +844,7 @@ fn lifecycle_drain_timeout_defers_cleanup_until_external_admissions_release() {
                 &held_owner,
                 &held_session,
                 generation,
-                1,
-                "link",
-                "gated-lifecycle-drain",
-                1,
+                ExternalLinkActivationOperation::new(1, "link", "gated-lifecycle-drain", 1),
                 |_| {
                     entered_sender.send(()).unwrap();
                     release_receiver.recv().unwrap();
@@ -889,11 +864,8 @@ fn lifecycle_drain_timeout_defers_cleanup_until_external_admissions_release() {
                 &owner,
                 &session.session_id,
                 session.document_generation,
-                1,
-                "link",
-                "after-lifecycle-timeout",
-                2,
-                |_| Ok::<(), ()>(()),
+                ExternalLinkActivationOperation::new(1, "link", "after-lifecycle-timeout", 2),
+                |_| Ok::<(), ()>(())
             ),
             Err(ExternalLinkError::SessionClosing)
         );
@@ -978,10 +950,12 @@ fn activation_operation_ids_roll_forward_without_relaunching_recent_retries() {
                 &owner,
                 &session.session_id,
                 session.document_generation,
-                1,
-                "link",
-                &format!("operation-{index}"),
-                index + 1,
+                ExternalLinkActivationOperation::new(
+                    1,
+                    "link",
+                    &format!("operation-{index}"),
+                    index + 1,
+                ),
                 |_| {
                     launches += 1;
                     Ok::<(), ()>(())
@@ -994,10 +968,7 @@ fn activation_operation_ids_roll_forward_without_relaunching_recent_retries() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "operation-256",
-            257,
+            ExternalLinkActivationOperation::new(1, "link", "operation-256", 257),
             |_| {
                 launches += 1;
                 Ok::<(), ()>(())
@@ -1011,14 +982,11 @@ fn activation_operation_ids_roll_forward_without_relaunching_recent_retries() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "operation-0",
-            1,
+            ExternalLinkActivationOperation::new(1, "link", "operation-0", 1),
             |_| {
                 launches += 1;
                 Ok::<(), ()>(())
-            },
+            }
         ),
         Err(ExternalLinkError::LinkOperationExpired)
     );
@@ -1027,14 +995,11 @@ fn activation_operation_ids_roll_forward_without_relaunching_recent_retries() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "different",
-            257,
+            ExternalLinkActivationOperation::new(1, "link", "different", 257),
             |_| {
                 launches += 1;
                 Ok::<(), ()>(())
-            },
+            }
         ),
         Err(ExternalLinkError::LinkOperationMismatch)
     );
@@ -1080,10 +1045,12 @@ fn external_link_permits_recover_after_all_terminal_outcomes() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            &format!("terminal-{sequence}"),
-            sequence,
+            ExternalLinkActivationOperation::new(
+                1,
+                "link",
+                &format!("terminal-{sequence}"),
+                sequence,
+            ),
             |_| match outcome {
                 0 => Ok::<(), ExternalLinkError>(()),
                 1 => Err(ExternalLinkError::LinkLaunchFailed),
@@ -1109,11 +1076,13 @@ fn external_link_permits_recover_after_all_terminal_outcomes() {
                 &owner,
                 &session.session_id,
                 session.document_generation,
-                1,
-                "link",
-                &format!("terminal-{sequence}"),
-                sequence,
-                |_| -> Result<(), ()> { panic!("terminal replay relaunched") },
+                ExternalLinkActivationOperation::new(
+                    1,
+                    "link",
+                    &format!("terminal-{sequence}"),
+                    sequence
+                ),
+                |_| -> Result<(), ()> { panic!("terminal replay relaunched") }
             ),
             expected,
         );
@@ -1123,11 +1092,8 @@ fn external_link_permits_recover_after_all_terminal_outcomes() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "dispatch-terminal",
-            4,
-            |_| Err::<(), _>(ExternalLinkError::LinkDispatchExpired),
+            ExternalLinkActivationOperation::new(1, "link", "dispatch-terminal", 4),
+            |_| Err::<(), _>(ExternalLinkError::LinkDispatchExpired)
         ),
         Err(ExternalLinkError::LinkDispatchExpired),
     );
@@ -1136,11 +1102,8 @@ fn external_link_permits_recover_after_all_terminal_outcomes() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "dispatch-terminal",
-            4,
-            |_| -> Result<(), ()> { panic!("dispatch replay relaunched") },
+            ExternalLinkActivationOperation::new(1, "link", "dispatch-terminal", 4),
+            |_| -> Result<(), ()> { panic!("dispatch replay relaunched") }
         ),
         Err(ExternalLinkError::LinkDispatchExpired),
     );
@@ -1149,10 +1112,7 @@ fn external_link_permits_recover_after_all_terminal_outcomes() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "terminal-panic",
-            5,
+            ExternalLinkActivationOperation::new(1, "link", "terminal-panic", 5),
             |_| -> Result<(), ()> { panic!("injected launcher panic") },
         )
     }));
@@ -1162,10 +1122,7 @@ fn external_link_permits_recover_after_all_terminal_outcomes() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "after-terminal-outcomes",
-            6,
+            ExternalLinkActivationOperation::new(1, "link", "after-terminal-outcomes", 6),
             |_| Ok::<(), ()>(())
         ),
         Ok(())
@@ -1228,10 +1185,12 @@ fn external_link_capacity_is_bounded_per_session_and_process() {
                 &owner,
                 &id,
                 session.document_generation,
-                1,
-                "link",
-                &format!("session-{sequence}"),
-                sequence,
+                ExternalLinkActivationOperation::new(
+                    1,
+                    "link",
+                    &format!("session-{sequence}"),
+                    sequence,
+                ),
                 |_| {
                     ready.send(()).unwrap();
                     entered.wait();
@@ -1250,10 +1209,7 @@ fn external_link_capacity_is_bounded_per_session_and_process() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "session-excess",
-            3,
+            ExternalLinkActivationOperation::new(1, "link", "session-excess", 3),
             |_| Ok::<(), ()>(())
         ),
         Err(ExternalLinkError::LinkCapacity)
@@ -1267,10 +1223,7 @@ fn external_link_capacity_is_bounded_per_session_and_process() {
             &owner,
             &session.session_id,
             session.document_generation,
-            1,
-            "link",
-            "session-recovered",
-            4,
+            ExternalLinkActivationOperation::new(1, "link", "session-recovered", 4),
             |_| Ok::<(), ()>(())
         ),
         Ok(())
@@ -1295,10 +1248,7 @@ fn external_link_capacity_is_bounded_per_session_and_process() {
                 &owner,
                 &session.session_id,
                 session.document_generation,
-                1,
-                "link",
-                "held",
-                1,
+                ExternalLinkActivationOperation::new(1, "link", "held", 1),
                 |_| {
                     ready.send(()).unwrap();
                     entered.wait();
@@ -1324,10 +1274,7 @@ fn external_link_capacity_is_bounded_per_session_and_process() {
             &excess_owner,
             &excess.session_id,
             excess.document_generation,
-            1,
-            "link",
-            "process-excess",
-            1,
+            ExternalLinkActivationOperation::new(1, "link", "process-excess", 1),
             |_| Ok::<(), ()>(())
         ),
         Err(ExternalLinkError::LinkCapacity)
@@ -1341,10 +1288,7 @@ fn external_link_capacity_is_bounded_per_session_and_process() {
             &excess_owner,
             &excess.session_id,
             excess.document_generation,
-            1,
-            "link",
-            "process-recovered",
-            2,
+            ExternalLinkActivationOperation::new(1, "link", "process-recovered", 2),
             |_| Ok::<(), ()>(())
         ),
         Ok(())

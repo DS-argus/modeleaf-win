@@ -13,12 +13,14 @@
     "windows": [
       {
         "title": "Modeleaf",
-        "width": 1100,
+        "width": 1040,
         "height": 760,
-        "minWidth": 720,
-        "minHeight": 480,
+        "minWidth": 480,
+        "minHeight": 360,
         "resizable": true,
         "fullscreen": false,
+        "decorations": true,
+        "visible": false,
         "dragDropEnabled": true,
         "additionalBrowserArgs": "--force-renderer-accessibility"
       }

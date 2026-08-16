@@ -3,7 +3,7 @@ import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/prom
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PDFJS_VERSION = "5.7.284";
+const PDFJS_VERSION = "6.2.108";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const sourceRoot = resolve(repositoryRoot, "node_modules/pdfjs-dist");
 const destinationRoot = resolve(repositoryRoot, "public/assets", `pdfjs-${PDFJS_VERSION}`);

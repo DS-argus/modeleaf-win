@@ -53,7 +53,7 @@ describe("CommandPaletteModel", () => {
     expect(commands.map((entry) => entry.enabled)).toEqual(
       visibleBindings.map((binding) => isCommandEnabled(binding, unavailableContext)),
     );
-    expect(commands.find((entry) => entry.id === "tab.new")?.enabled).toBe(false);
+    expect(commands.find((entry) => entry.id === "app.new")?.enabled).toBe(false);
   });
 
   it("disables document commands without a document while retaining global commands", () => {
@@ -64,10 +64,10 @@ describe("CommandPaletteModel", () => {
     expect(commandEnabled("scroll.down", noDocumentContext)).toBe(false);
     expect(commandEnabled("document.open", noDocumentContext)).toBe(true);
     expect(commandEnabled("help.toggle", noDocumentContext)).toBe(true);
-    expect(commandEnabled("tab.new", noDocumentContext)).toBe(true);
+    expect(commandEnabled("app.new", noDocumentContext)).toBe(true);
   });
 
-  it("enables document commands with a document and gates new tabs by capacity and modals", () => {
+  it("enables document commands with a document and gates new windows only while modals are open", () => {
     expect(commandEnabled("page.next", documentContext)).toBe(true);
     expect(commandEnabled("search.open", documentContext)).toBe(true);
     expect(commandEnabled("linkHints.toggle", documentContext)).toBe(true);
@@ -75,8 +75,8 @@ describe("CommandPaletteModel", () => {
     expect(commandEnabled("view.fitWidth", documentContext)).toBe(true);
     expect(commandEnabled("document.open", { ...documentContext, modalOpen: true })).toBe(false);
     expect(commandEnabled("scroll.down", documentContext)).toBe(true);
-    expect(commandEnabled("tab.new", { ...documentContext, canCreateSession: false })).toBe(false);
-    expect(commandEnabled("tab.new", { ...documentContext, modalOpen: true })).toBe(false);
+    expect(commandEnabled("app.new", { ...documentContext, canCreateSession: false })).toBe(true);
+    expect(commandEnabled("app.new", { ...documentContext, modalOpen: true })).toBe(false);
   });
 
   it("normalizes Korean composed and decomposed text before ranking", () => {
