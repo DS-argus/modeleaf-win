@@ -16,8 +16,8 @@
   "app": {
     "name": "Modeleaf",
     "version": "0.1.0",
-    "commit": "f306207e3ceab329c9f496a79c74142fc441222f",
-    "dirty": true,
+    "commit": "d119104090e18141924e44dd55063d63f070a499",
+    "dirty": false,
     "buildProfile": "debug",
     "sourceTreeSha256": "e6867ef09514b607d72b8e9dd87f89523b37a52cfff0f458481792c397dbb10e",
     "binarySha256": "b5e674fc902fc038f44bc13568228c79531ee1d7f3db812c4cf1c21ae6bf1e73",
