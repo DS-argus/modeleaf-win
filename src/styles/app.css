@@ -206,16 +206,15 @@ dialog {
 dialog::backdrop { background: rgb(7 8 14 / 44%); }
 dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .dialog-hint { margin: 14px 0 0; color: var(--theme-muted-text); font-size: 12px; }
-#password-dialog form, #search-dialog form { display: grid; gap: 14px; }
-#password-dialog label, #search-dialog label { display: grid; gap: 6px; }
-#password-dialog input, #search-dialog input {
+#search-dialog form { display: grid; gap: 14px; }
+#search-dialog label { display: grid; gap: 6px; }
+#search-dialog input {
   min-width: 280px;
   padding: 7px;
   color: var(--theme-foreground);
   background: var(--theme-inactive-tab);
   border: 1px solid var(--theme-border);
 }
-#password-dialog menu { display: flex; justify-content: end; gap: 8px; margin: 0; padding: 0; }
 
 .mac-overlay {
   padding: 14px;

@@ -123,7 +123,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -147,7 +146,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (status) => statuses.push(status),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -172,7 +170,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (status) => statuses.push(status),
-      requestPassword: vi.fn(),
     });
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("range failed"));
 
@@ -210,7 +207,6 @@ describe("PdfReaderController", () => {
       },
       onPage: vi.fn(),
       onStatus: (status) => statuses.push(status),
-      requestPassword: vi.fn(),
     });
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("range failed"));
 
@@ -251,7 +247,6 @@ describe("PdfReaderController", () => {
         }),
       onPage,
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
     await controller.open(10);
     const canvas = host.firstElementChild;
@@ -278,7 +273,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     const opening = controller.open(42);
@@ -305,7 +299,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(),
     });
 
     const opening = controller.open(43);
@@ -337,7 +330,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(9);
@@ -373,7 +365,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -407,7 +398,6 @@ describe("PdfReaderController", () => {
         ? releaseContent.promise
         : Promise.resolve(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -453,7 +443,6 @@ describe("PdfReaderController", () => {
         : Promise.resolve(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -485,7 +474,6 @@ describe("PdfReaderController", () => {
         onCommitted: vi.fn(),
         onPage: vi.fn(),
         onStatus: vi.fn(),
-        requestPassword: vi.fn(),
       });
 
       await controller.open(1);
@@ -522,7 +510,7 @@ describe("PdfReaderController", () => {
         resources: new ResourceReservationManager(),
         pdf: { getDocument: vi.fn(() => task(pdf)), annotationMode: 0 },
         canvasHost: document.createElement("div"),
-        onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), requestPassword: vi.fn(),
+        onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
       });
 
       await controller.open(1);
@@ -563,7 +551,7 @@ describe("PdfReaderController", () => {
         resources: new ResourceReservationManager(),
         pdf: { getDocument: vi.fn(() => task(documents.shift()!)), annotationMode: 0 },
         canvasHost: document.createElement("div"),
-        onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (message) => statuses.push(message), requestPassword: vi.fn(),
+        onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (message) => statuses.push(message),
       });
 
       await controller.open(1);
@@ -609,7 +597,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: (value) => visited.push(value),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(3);
@@ -641,7 +628,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -693,7 +679,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
     await controller.open(1);
     const printGate = deferred<void>();
@@ -740,7 +725,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
     await controller.open(1);
     const printing = controller.printCurrent(vi.fn());
@@ -781,7 +765,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -802,7 +785,26 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
-  it("cancels a password prompt without replacing the healthy document", async () => {
+  it("rejects a zero-page PDF as empty and closes its native session", async () => {
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("empty", 1)));
+    const statuses: string[] = [];
+    const committed = vi.fn();
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => task(documentWith(0))), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: committed,
+      onPage: vi.fn(),
+      onStatus: (message) => statuses.push(message),
+    });
+    await controller.open(1);
+    expect(statuses.at(-1)).toBe("PDF contains no pages.");
+    expect(committed).not.toHaveBeenCalled();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+    await controller.dispose();
+  });
+  it("rejects a locked PDF without replacing the healthy document", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const healthy = task(documentWith(1));
     const pending = deferred<PdfDocument>();
@@ -824,7 +826,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(async () => null),
     });
 
     await controller.open(1);
@@ -835,12 +836,12 @@ describe("PdfReaderController", () => {
     await replacement;
 
     expect(host.firstElementChild).toBe(healthyCanvas);
-    expect(statuses.at(-1)).toBe("Opening PDF cancelled.");
+    expect(statuses.at(-1)).toBe("Password-protected PDFs are not supported.");
     expect(protectedTask.destroy).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
     await controller.dispose();
   });
-  it("cancels immediately when the password UI rejects", async () => {
+  it("rejects a locked candidate and releases all resources", async () => {
     const pending = deferred<PdfDocument>();
     const protectedTask: PdfLoadingTask = {
       promise: pending.promise,
@@ -857,7 +858,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(async () => { throw new Error("dialog failed"); }),
     });
 
     const opening = controller.open(1);
@@ -865,13 +865,13 @@ describe("PdfReaderController", () => {
     protectedTask.onPassword!(() => undefined, 1);
     await opening;
 
-    expect(statuses.at(-1)).toBe("Opening PDF cancelled.");
+    expect(statuses.at(-1)).toBe("Password-protected PDFs are not supported.");
     expect(protectedTask.destroy).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
     await controller.dispose();
     resources.assertEmpty();
   });
-  it("caps incorrect password attempts, destroys the candidate, and releases its native session", async () => {
+  it("keeps repeated locked callbacks idempotent while releasing the native session", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const pending = deferred<PdfDocument>();
     const loadingTask: PdfLoadingTask = {
@@ -881,7 +881,6 @@ describe("PdfReaderController", () => {
       }),
     };
     const native = nativeBoundary(vi.fn().mockResolvedValue(session("protected", 1)));
-    const requestPassword = vi.fn(async () => "wrong");
     const statuses: string[] = [];
     const controller = new PdfReaderController({
       native,
@@ -891,7 +890,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword,
     });
 
     const opening = controller.open(5);
@@ -904,7 +902,6 @@ describe("PdfReaderController", () => {
     }
     await opening;
 
-    expect(requestPassword).toHaveBeenCalledTimes(5);
     expect(loadingTask.destroy).toHaveBeenCalledOnce();
     expect(statuses.at(-1)).toMatch(/password/i);
     expect(native.closeSession).toHaveBeenCalledOnce();
@@ -926,7 +923,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -966,7 +962,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: (message) => statuses.push(message),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -994,7 +989,6 @@ describe("PdfReaderController", () => {
         onCommitted: vi.fn(),
         onPage: vi.fn(),
         onStatus: (message) => statuses.push(message),
-        requestPassword: vi.fn(),
       });
 
       const opening = controller.open(9);
@@ -1035,7 +1029,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1103,7 +1096,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1141,7 +1133,6 @@ describe("PdfReaderController", () => {
       },
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1196,7 +1187,6 @@ describe("PdfReaderController", () => {
       },
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1232,7 +1222,6 @@ describe("PdfReaderController", () => {
       },
       onPage: (pageNumber) => pages.push(pageNumber),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1276,7 +1265,6 @@ describe("PdfReaderController", () => {
       onBeforeCommit: beforeCommit,
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1317,7 +1305,6 @@ describe("PdfReaderController", () => {
       },
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1347,7 +1334,6 @@ describe("PdfReaderController", () => {
       },
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1386,7 +1372,6 @@ describe("PdfReaderController", () => {
       },
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     const firstOpen = controller.open(1);
@@ -1417,7 +1402,7 @@ describe("PdfReaderController", () => {
         staged = true;
         await overlay.promise;
       },
-      onPage: vi.fn(), onStatus: vi.fn(), requestPassword: vi.fn(),
+      onPage: vi.fn(), onStatus: vi.fn(),
     });
 
     const opening = controller.open(1);
@@ -1449,7 +1434,7 @@ describe("PdfReaderController", () => {
           staged = true;
           await overlay.promise;
         },
-        onPage: vi.fn(), onStatus: vi.fn(), requestPassword: vi.fn(),
+        onPage: vi.fn(), onStatus: vi.fn(),
       });
 
       const opening = controller.open(1);
@@ -1497,7 +1482,7 @@ describe("PdfReaderController", () => {
         }
         commitCanvas();
       },
-      onPage: vi.fn(), onStatus: vi.fn(), requestPassword: vi.fn(),
+      onPage: vi.fn(), onStatus: vi.fn(),
     });
 
     await controller.open(1);
@@ -1522,7 +1507,7 @@ describe("PdfReaderController", () => {
         resources: new ResourceReservationManager(),
         pdf: { getDocument: vi.fn(() => task(pdf)), annotationMode: 0 },
         canvasHost: document.createElement("div"),
-        onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), requestPassword: vi.fn(),
+        onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
       });
       await controller.open(1);
       const naturalSize = controller.getPageNaturalSize(2, 0);
@@ -1565,7 +1550,6 @@ describe("PdfReaderController", () => {
         commitCanvas();
       },
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1590,7 +1574,6 @@ describe("PdfReaderController", () => {
       onPage: vi.fn(),
       onBeforeDispose: async () => { throw new Error("content teardown failed"); },
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1611,7 +1594,6 @@ describe("PdfReaderController", () => {
       onCommitted: committed,
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.adopt(session("opaque-adopted", 71), 14);
@@ -1635,7 +1617,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);
@@ -1661,7 +1642,6 @@ describe("PdfReaderController", () => {
       onCommitted: vi.fn(),
       onPage: vi.fn(),
       onStatus: vi.fn(),
-      requestPassword: vi.fn(),
     });
 
     await controller.open(1);

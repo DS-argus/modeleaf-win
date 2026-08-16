@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod diagnostics;
 pub mod external_link;
 pub mod local_path;
@@ -5,9 +6,14 @@ pub mod open_dialog;
 pub mod open_request;
 pub mod pdf_protocol;
 pub mod pdf_session;
+pub mod persistence;
 pub mod recent;
 pub mod theme_state;
 pub mod workspace;
+use crate::commands::config::{
+    ConfigReadOutcome, ConfigResetOutcome, ConfigStore, ConfigWriteOutcome,
+};
+use crate::commands::state::{LinkDestinationIndicator, StateFileError, StateFileStore};
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
 use open_dialog::choose_pdf_file;
@@ -28,6 +34,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Window};
 use theme_state::{ThemeId, ThemeStateError, ThemeStateManager};
 use workspace::{WorkspaceError, WorkspaceManager};
+const CANONICAL_DEFAULT_CONFIG: &str = include_str!("../../src/domain/config/default-config.toml");
 
 #[derive(Clone, Default)]
 pub struct QuitCoordinator {
@@ -220,6 +227,35 @@ fn finish_quit(window: Window, renderer_drained: bool) {
     acknowledge_quit_application(window.app_handle(), &label, renderer_drained);
 }
 #[tauri::command]
+fn read_config(state: State<'_, ConfigStore>) -> ConfigReadOutcome {
+    state.read()
+}
+
+#[tauri::command]
+fn write_default_config(state: State<'_, ConfigStore>) -> ConfigWriteOutcome {
+    state.write_default(CANONICAL_DEFAULT_CONFIG)
+}
+
+#[tauri::command]
+fn reset_config(state: State<'_, ConfigStore>) -> ConfigResetOutcome {
+    state.reset(CANONICAL_DEFAULT_CONFIG)
+}
+
+#[tauri::command]
+fn read_indicator_state(
+    state: State<'_, StateFileStore>,
+) -> Result<Option<LinkDestinationIndicator>, StateFileError> {
+    state.read_indicator()
+}
+
+#[tauri::command]
+fn commit_indicator_state(
+    state: State<'_, StateFileStore>,
+    value: LinkDestinationIndicator,
+) -> Result<(), StateFileError> {
+    state.set_link_destination_indicator(value)
+}
+#[tauri::command]
 fn read_theme_state(state: State<'_, ThemeStateManager>) -> theme_state::ThemeState {
     state.current()
 }
@@ -243,6 +279,9 @@ fn commit_theme_state(
             Ok(committed)
         }
         Err(error) => {
+            if error == ThemeStateError::Storage {
+                let _ = app.emit("theme-state-committed", state.current());
+            }
             let tag = if error == ThemeStateError::Conflict {
                 diagnostics::DiagnosticTag::Conflict
             } else {
@@ -490,7 +529,7 @@ fn recent_store_error(error: RecentStoreError) -> RecentCommandError {
         RecentStoreError::PathRejected => RecentCommandError::PathRejected,
         RecentStoreError::NotPdf => RecentCommandError::PdfInvalid,
         RecentStoreError::MissingRecentId => RecentCommandError::NotFound,
-        RecentStoreError::Io(_) | RecentStoreError::OrdinalExhausted => RecentCommandError::Storage,
+        RecentStoreError::Io(_) => RecentCommandError::Storage,
     }
 }
 
@@ -501,8 +540,7 @@ fn recent_open_failure(error: RecentStoreError) -> OpenRequestError {
         // A recent path is never trusted as route provenance; collapse it at the coordinator.
         RecentStoreError::RemotePath
         | RecentStoreError::PathRejected
-        | RecentStoreError::MissingRecentId
-        | RecentStoreError::OrdinalExhausted => {
+        | RecentStoreError::MissingRecentId => {
             OpenRequestError::Session(PdfSessionError::PathRejected)
         }
     }
@@ -656,13 +694,21 @@ fn open_recent(
     recents: State<'_, Mutex<RecentStore>>,
     recent_id: String,
 ) -> Result<(), RecentCommandError> {
-    let path = match recents
+    let resolution = recents
         .lock()
         .expect("recent store state poisoned")
-        .resolve_for_open(&recent_id, &SystemLocalPathPolicy)
-    {
+        .resolve_for_open(&recent_id, &SystemLocalPathPolicy);
+    let path = match resolution {
         Ok(path) => path,
         Err(error) => {
+            if matches!(&error, RecentStoreError::Io(source) if source.kind() == std::io::ErrorKind::NotFound)
+            {
+                recents
+                    .lock()
+                    .expect("recent store state poisoned")
+                    .prune_missing_id(&recent_id)
+                    .map_err(recent_store_error)?;
+            }
             publish_open_failure(
                 &window,
                 window.label(),
@@ -913,21 +959,22 @@ pub fn run() {
         .manage(workspace)
         .manage(coordinator)
         .setup(|app| {
-            let app_data_directory = app.path().app_data_dir()?;
+            let app_local_data_directory = app.path().app_local_data_dir()?;
+            let app_config_directory = app.path().app_config_dir()?;
+            let state_path = app_local_data_directory.join("state.json");
+            app.manage(ConfigStore::new(app_config_directory.join("config.toml")));
+            app.manage(StateFileStore::new(state_path.clone()));
             let window = app.get_webview_window("main").expect("main window missing");
             disable_browser_accelerators(&window)?;
             window.show()?;
-            let mut recents = RecentStore::load(
-                app_data_directory.join("recent.json"),
-                &SystemLocalPathPolicy,
-            )?;
+            let mut recents = RecentStore::load(state_path.clone(), &SystemLocalPathPolicy)?;
             let recent_recovery_needed = recents.take_startup_recovery_needed();
             app.manage(Mutex::new(recents));
-            let themes = ThemeStateManager::load(app_data_directory.join("theme-state.json"));
+            let themes = ThemeStateManager::load(state_path);
             let theme_recovery_needed = themes.take_startup_recovery_needed();
             app.manage(themes);
             app.manage(diagnostics::DiagnosticLog::open(
-                app_data_directory.join("diagnostics"),
+                app_local_data_directory.join("diagnostics"),
             )?);
             if theme_recovery_needed {
                 record_native_diagnostic(
@@ -1011,6 +1058,11 @@ pub fn run() {
             begin_quit,
             renderer_ready,
             finish_quit,
+            read_config,
+            write_default_config,
+            reset_config,
+            read_indicator_state,
+            commit_indicator_state,
             read_theme_state,
             commit_theme_state,
             record_diagnostic,

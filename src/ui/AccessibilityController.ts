@@ -1,14 +1,9 @@
+import type { ThemeId } from "../domain/theme/Theme";
 const MAX_COUNT = 1_000_000;
 const MIN_ZOOM_PERCENT = 10;
 const MAX_ZOOM_PERCENT = 1_000;
 
-export type ThemeAnnouncementId =
-  | "tokyo-night"
-  | "gruvbox-dark"
-  | "solarized-dark"
-  | "dracula"
-  | "everforest"
-  | "catppuccin-latte";
+export type ThemeAnnouncementId = ThemeId;
 
 export type SafeStatus = "ready" | "document-closed" | "render-complete" | "search-cleared";
 export type SafeError =
@@ -88,6 +83,7 @@ const THEME_TEXT: Readonly<Record<ThemeAnnouncementId, string>> = {
   "solarized-dark": "Theme changed to Solarized Dark.",
   dracula: "Theme changed to Dracula.",
   everforest: "Theme changed to Everforest.",
+  nord: "Theme changed to Nord.",
   "catppuccin-latte": "Theme changed to Catppuccin Latte.",
 };
 

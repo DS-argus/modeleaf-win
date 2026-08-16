@@ -30,7 +30,6 @@ export interface PdfTabSessionOptions {
   readonly pdf: PdfBoundary;
   readonly resources: ResourceReservationManager;
   readonly canvasHost: HTMLElement;
-  readonly requestPassword: PdfReaderControllerOptions["requestPassword"];
   readonly createContentOptions: (
     session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">,
     ownerGeneration: number,
@@ -109,7 +108,6 @@ export class PdfTabSession {
       pdf: options.pdf,
       resources: options.resources,
       canvasHost: options.canvasHost,
-      requestPassword: options.requestPassword,
       onStatus: (status) => this.setReaderStatus(status),
       onPage: (page, transform) => this.onPage(page, transform),
       onCommitted: (pageCount, displayName) => {

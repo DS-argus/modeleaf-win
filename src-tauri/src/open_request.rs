@@ -60,6 +60,7 @@ impl OpenFailureId {
 pub enum OpenFailureTag {
     PathRejected,
     PdfInvalid,
+    MissingFile,
     FileUnreadable,
     SessionCapacity,
     DocumentTooLarge,
@@ -694,6 +695,7 @@ fn failure_tag(error: OpenRequestError) -> Result<OpenFailureTag, OpenRequestErr
         | OpenRequestError::Session(PdfSessionError::SessionCapacity) => {
             OpenFailureTag::SessionCapacity
         }
+        OpenRequestError::Session(PdfSessionError::MissingFile) => OpenFailureTag::MissingFile,
         OpenRequestError::Session(PdfSessionError::FileUnreadable) => {
             OpenFailureTag::FileUnreadable
         }
