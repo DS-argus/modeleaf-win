@@ -3,7 +3,7 @@ import { OPEN_FAILURE_EVENT, OPEN_REQUEST_EVENT, createOpenRequestClient, type O
 
 const opaque = (character: string) => character.repeat(64);
 const request = (requestId: string) => ({ tag: "OPEN_REQUEST", requestId });
-const failure = (failureId: string, failureTag: "PDF_INVALID" | "REMOTE_PATH" = "PDF_INVALID") => ({ tag: "OPEN_FAILURE", failureId, failureTag });
+const failure = (failureId: string, failureTag: "PDF_INVALID" | "REMOTE_PATH" | "MISSING_FILE" = "PDF_INVALID") => ({ tag: "OPEN_FAILURE", failureId, failureTag });
 const claim = () => ({ sessionId: opaque("b"), documentGeneration: 1, ownerGeneration: 7, length: 42, displayName: "Safe document.pdf" });
 const settle = async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); };
 async function waitFor(predicate: () => boolean): Promise<void> { for (let attempt = 0; attempt < 128; attempt += 1) { if (predicate()) return; await settle(); } throw new Error("Timed out waiting for open ingress."); }
@@ -21,11 +21,11 @@ describe("OpenRequestClient", () => {
     const first = opaque("1");
     const second = opaque("2");
     const order: string[] = [];
-    const invoke = vi.fn(async (command: string) => command === "list_pending_open_ingress" ? [failure(first), request(second)] : command === "claim_open_request" ? claim() : undefined);
+    const invoke = vi.fn(async (command: string) => command === "list_pending_open_ingress" ? [failure(first, "MISSING_FILE"), request(second)] : command === "claim_open_request" ? claim() : undefined);
     const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: vi.fn(async (entry: OpenRequestAdoption) => { order.push(`request:${entry.requestId}`); }), onFailure: (tag) => order.push(`failure:${tag}`) });
     await client.ready;
     await waitFor(() => order.length === 2);
-    expect(order).toEqual(["failure:PDF_INVALID", `request:${second}`]);
+    expect(order).toEqual(["failure:MISSING_FILE", `request:${second}`]);
     expect(invoke.mock.calls.map(([command]) => command)).toEqual(["list_pending_open_ingress", "ack_open_failure", "claim_open_request", "ack_open_request"]);
     client.dispose();
   });

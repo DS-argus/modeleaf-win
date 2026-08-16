@@ -182,7 +182,6 @@ export interface PdfReaderControllerOptions {
     ownerGeneration: number,
   ) => Promise<void>;
   readonly onStatus: (message: string) => void;
-  readonly requestPassword: (reason: "need" | "incorrect") => Promise<string | null>;
 }
 interface RenderedCanvas extends PdfRenderedPage {
   readonly transform: PdfViewTransform;
@@ -210,8 +209,6 @@ interface Candidate {
   readonly rangeTransport?: PdfProtocolRangeTransport;
   transportDestroyHandedOff?: boolean;
   readonly ownerGeneration: number;
-  passwordFailures: number;
-  passwordPromptSequence: number;
   transportFailure?: Error;
   closed: boolean;
   cleanup?: Promise<void>;
@@ -277,6 +274,7 @@ const isRenderCancellation = (error: unknown): boolean =>
 
 const safeMessage = (error: unknown): string => {
   const tag = errorTag(error);
+  if (/LOCKED_DOCUMENT/i.test(tag)) return "Password-protected PDFs are not supported.";
   if (/PASSWORD_CANCELLED/i.test(tag)) return "Opening PDF cancelled.";
   if (/PASSWORD/i.test(tag)) return "The PDF password was not accepted.";
   if (/CANCEL|ABORT/i.test(tag)) return "Opening PDF cancelled.";
@@ -285,6 +283,7 @@ const safeMessage = (error: unknown): string => {
   if (/REMOTE_PATH/i.test(tag)) return "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.";
   if (/PATH_REJECTED/i.test(tag)) return "This PDF path cannot be opened safely.";
   if (/DOCUMENT_TOO_LARGE|_LIMIT|_CAPACITY|large|resource|canvas|memory/i.test(tag)) return "This PDF exceeds reader resource limits.";
+  if (/EMPTY_DOCUMENT|PDF_EMPTY/i.test(tag)) return "PDF contains no pages.";
   if (/FILE_UNREADABLE|PDF_INVALID|PDF_EMPTY|RANGE|read|malformed|invalid|corrupt/i.test(tag)) return "Could not read this PDF.";
   return "The PDF could not be opened.";
 };
@@ -404,8 +403,6 @@ export class PdfReaderController {
       task,
       ...(rangeTransport === undefined ? {} : { rangeTransport }),
       ownerGeneration,
-      passwordFailures: 0,
-      passwordPromptSequence: 0,
       closed: false,
       ownedPagePromises: new Set(),
       ownedRenderSettlements: new Set(),
@@ -413,52 +410,24 @@ export class PdfReaderController {
       residentRasters: new Map(),
     };
     candidateRef = candidate;
-    let rejectPasswordCancellation!: (error: Error) => void;
-    const passwordCancellation = new Promise<never>((_resolve, reject) => {
-      rejectPasswordCancellation = reject;
+    let rejectDocumentPolicy!: (error: Error) => void;
+    const documentPolicyFailure = new Promise<never>((_resolve, reject) => {
+      rejectDocumentPolicy = reject;
     });
     this.opening = candidate;
-    task.onPassword = (updatePassword, reason) => {
-      if (this.disposed || this.opening !== candidate || candidate.closed) {
-        rejectPasswordCancellation(new Error("PASSWORD_CANCELLED"));
-        void this.disposeCandidate(candidate);
-        return;
-      }
-      if (reason === 2) candidate.passwordFailures += 1;
-      if (candidate.passwordFailures >= 5) {
-        candidate.passwordPromptSequence += 1;
-        this.options.onStatus("The PDF password was not accepted after five attempts.");
-        rejectPasswordCancellation(new Error("PASSWORD_REJECTED"));
-        void this.disposeCandidate(candidate);
-        return;
-      }
-      const promptSequence = ++candidate.passwordPromptSequence;
-      void Promise.resolve()
-        .then(() => this.options.requestPassword(reason === 2 ? "incorrect" : "need"))
-        .then((password) => {
-          if (promptSequence !== candidate.passwordPromptSequence) return;
-          if (password === null || this.disposed || this.opening !== candidate || candidate.closed) {
-            rejectPasswordCancellation(new Error("PASSWORD_CANCELLED"));
-            void this.disposeCandidate(candidate);
-            return;
-          }
-          updatePassword(password);
-        })
-        .catch(() => {
-          if (promptSequence !== candidate.passwordPromptSequence) return;
-          rejectPasswordCancellation(new Error("PASSWORD_CANCELLED"));
-          void this.disposeCandidate(candidate);
-        });
+    task.onPassword = () => {
+      rejectDocumentPolicy(new Error("LOCKED_DOCUMENT"));
+      void this.disposeCandidate(candidate);
     };
     this.options.onStatus(`Opening ${session.displayName}`);
     try {
       const document = await withDeadline(
-        Promise.race([task.promise, passwordCancellation, rangeFailure]),
+        Promise.race([task.promise, documentPolicyFailure, rangeFailure]),
         METADATA_DEADLINE_MS,
         "PDF_TIMEOUT",
       );
       candidate.document = document;
-      if (document.numPages < 1) throw new Error("Malformed PDF");
+      if (document.numPages < 1) throw new Error("EMPTY_DOCUMENT");
       const openingTransform = this.normalizeViewTransform({
         scale: 1.25,
         rotation: 0,
@@ -509,9 +478,7 @@ export class PdfReaderController {
       if (this.opening === candidate) this.opening = undefined;
       await this.disposeCandidate(candidate);
       if (!this.disposed) {
-        this.options.onStatus(candidate.passwordFailures >= 5
-          ? "The PDF password was not accepted after five attempts."
-          : safeMessage(candidate.transportFailure ?? error));
+        this.options.onStatus(safeMessage(candidate.transportFailure ?? error));
       }
     }
   }

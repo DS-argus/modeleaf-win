@@ -10,10 +10,10 @@ import { bindSearchPrompt } from "../../src/ui/SearchPromptController";
 import { THEME_PICKER_ROWS, commitThemePicker, openThemePicker, previewThemePickerRow, revertThemePicker, themePickerDialogKeyAction } from "../../src/ui/ThemePickerModel";
 
 describe("CP5 theme accessibility contract", () => {
-  it("keeps all six theme choices keyboard-addressable and makes preview reversible", () => {
+  it("keeps all seven theme choices keyboard-addressable and makes preview reversible", () => {
     const opened = openThemePicker("tokyo-night", 4);
-    const preview = previewThemePickerRow(opened, 5);
-    expect(THEME_PICKER_ROWS).toHaveLength(6);
+    const preview = previewThemePickerRow(opened, 6);
+    expect(THEME_PICKER_ROWS).toHaveLength(7);
     expect(preview.effect).toEqual({ kind: "preview", themeId: "catppuccin-latte" });
     expect(commitThemePicker(preview.model).intent).toEqual({ kind: "commit", themeId: "catppuccin-latte", baseRevision: 4 });
     expect(revertThemePicker(preview.model).effect).toEqual({ kind: "revert", themeId: "tokyo-night" });

@@ -10,7 +10,6 @@ function createSession(onStatus?: (status: string) => void): PdfTabSession {
     resources: new ResourceReservationManager(),
     canvasHost: { clientWidth: 200, clientHeight: 100 } as HTMLElement,
     ...(onStatus === undefined ? {} : { onStatus }),
-    requestPassword: async () => null,
     createContentOptions: () => ({}) as never,
   });
 }

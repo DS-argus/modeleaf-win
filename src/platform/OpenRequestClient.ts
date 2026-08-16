@@ -1,7 +1,7 @@
 export const OPEN_REQUEST_EVENT = "modeleaf://open-request" as const;
 export const OPEN_FAILURE_EVENT = "modeleaf://open-failure" as const;
 const ID = /^[0-9a-f]{64}$/i;
-const TAGS = new Set(["DOCUMENT_TOO_LARGE", "REMOTE_PATH", "PATH_REJECTED", "PDF_INVALID", "FILE_UNREADABLE", "SESSION_CAPACITY"]);
+const TAGS = new Set(["DOCUMENT_TOO_LARGE", "MISSING_FILE", "REMOTE_PATH", "PATH_REJECTED", "PDF_INVALID", "FILE_UNREADABLE", "SESSION_CAPACITY"]);
 const HISTORY_LIMIT = 64;
 const INGRESS_LIMIT = 16;
 const RETRY_INITIAL = 50;
@@ -9,7 +9,7 @@ const RETRY_MAX = 1_000;
 const RECONCILE_INTERVAL = 1_000;
 
 export interface OpenRequestNotice { readonly requestId: string; }
-export interface OpenFailureNotice { readonly failureId: string; readonly tag: "DOCUMENT_TOO_LARGE" | "REMOTE_PATH" | "PATH_REJECTED" | "PDF_INVALID" | "FILE_UNREADABLE" | "SESSION_CAPACITY"; }
+export interface OpenFailureNotice { readonly failureId: string; readonly tag: "DOCUMENT_TOO_LARGE" | "MISSING_FILE" | "REMOTE_PATH" | "PATH_REJECTED" | "PDF_INVALID" | "FILE_UNREADABLE" | "SESSION_CAPACITY"; }
 export interface ClaimedOpenRequest { readonly sessionId: string; readonly documentGeneration: number; readonly ownerGeneration: number; readonly length: number; readonly displayName: string; }
 export interface OpenRequestAdoption extends ClaimedOpenRequest { readonly requestId: string; }
 export type OpenRequestTerminal = (requestId: string) => void;
