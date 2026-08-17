@@ -681,6 +681,7 @@ describe("PdfReaderController", () => {
     await expect(controller.synchronizeViewport(0, 0)).rejects.toThrow("registry unavailable");
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(committedPages);
     expect(publishedCanvas(host).dataset.page).toBe("3");
+    expect(publishResidents).toHaveBeenLastCalledWith([1, 2, 3, 4, 5]);
     await controller.dispose();
     resources.assertEmpty();
   });

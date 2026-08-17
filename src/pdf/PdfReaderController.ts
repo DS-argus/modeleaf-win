@@ -732,6 +732,11 @@ export class PdfReaderController {
           }
           const restoredResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
           this.applyWindowSpacers(current, window.restore(checkpoint, restoredResidents));
+          try {
+            await this.options.onBeforeResidentCommit?.([...originalResidents].sort((a, b) => a - b));
+          } catch (error) {
+            this.options.onStatus(`PDF resident authority rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
           const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
             ? priorActivePage
             : [...originalResidents].find((page) => current.residentRasters.has(page));
