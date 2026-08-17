@@ -80,7 +80,7 @@ export class PdfTabSession {
   private presentationEvicted = false;
   private presentationDirty = false;
   private activityQuarantined = false;
-  private activationCompensating = false;
+  private activitySettling = false;
   private openingFitRenderPending = false;
   private openingFitRenderInFlight = false;
   private activityGeneration = 0;
@@ -133,15 +133,13 @@ export class PdfTabSession {
           const key = this.contentKey(context.session);
           this.contentBySession.set(key, content);
           content.mount(context.document, this.reader.snapshot.documentGeneration + 1, context.session.sessionId);
+          content.suspend();
           context.registerStagedTeardown(async () => { await this.disposeContent(context.session, content); });
           const commit = (accessory?: HTMLElement): boolean => {
             const previous = this.content;
             this.content = content;
             const committed = commitCanvas(accessory);
             if (!committed) this.content = previous;
-            if (committed) {
-              if (this.isForegroundActive()) content.resumeInteractions(); else content.suspend();
-            }
             return committed;
           };
           await content.renderPage({ ...rendered, retainedPages: context.retainedPages, commitCanvas: commit });
@@ -203,14 +201,14 @@ export class PdfTabSession {
       this.content?.resumeInteractions();
     } catch (error) {
       if (!this.closed && this.activityGeneration === activityGeneration) {
-        this.activationCompensating = true;
+        this.activitySettling = true;
         this.activityGeneration += 1;
         this.presentationDirty = true;
         this.content?.suspend();
         const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
         const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
         const outcomes = await Promise.allSettled([suspend, revokeAuthority]);
-        this.activationCompensating = false;
+        this.activitySettling = false;
         this.active = false;
         if (outcomes.some((outcome) => outcome.status === "rejected")) {
           this.activityQuarantined = true;
@@ -224,24 +222,21 @@ export class PdfTabSession {
   }
   public async deactivate(): Promise<void> {
     if (this.closed) return;
-    const wasActive = this.active;
     if (this.pendingPresentationRenders > 0) this.presentationDirty = true;
-    this.active = false;
+    this.activitySettling = true;
     this.foregroundSuspended = false;
     this.activityGeneration += 1;
     this.content?.suspend();
-    try {
-      await this.pdfReader.suspend();
-      await this.content?.synchronizeResidentPages([]);
-      this.foregroundSuspended = true;
-    } catch (error) {
-      if (!this.closed) {
-        this.active = wasActive;
-        this.activityGeneration += 1;
-        if (wasActive) this.content?.activateResidentPage(this.reader.snapshot.page);
-      }
-      throw error;
+    const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
+    const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
+    const outcomes = await Promise.allSettled([suspend, revokeAuthority]);
+    this.activitySettling = false;
+    this.active = false;
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      this.activityQuarantined = true;
+      throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
     }
+    this.foregroundSuspended = true;
   }
   public evictInactiveHeavyResources(): void {
     if (this.closed || this.active || !this.foregroundSuspended) return;
@@ -501,7 +496,7 @@ export class PdfTabSession {
   }
 
   private isForegroundActive(): boolean {
-    return this.active && !this.activationCompensating && !this.activityQuarantined;
+    return this.active && !this.activitySettling && !this.activityQuarantined;
   }
   private availableContentSize(): { readonly width: number; readonly height: number } {
     const host = this.options.canvasHost;
@@ -554,6 +549,7 @@ export class PdfTabSession {
     this.reader.apply({ type: "page.goTo", page });
     this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: transform.scale, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
     this.content?.activateResidentPage(page);
+    if (this.isForegroundActive()) this.content?.resumeInteractions();
     const committed = this.reader.snapshot;
     this.lastCommittedRender = {
       documentGeneration: committed.documentGeneration,

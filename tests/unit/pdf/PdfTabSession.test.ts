@@ -174,8 +174,9 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.activate();
     expect(session.snapshot.active).toBe(true);
     content.synchronizeResidentPages.mockRejectedValueOnce(new Error("deactivate registry failed"));
-    await expect(session.deactivate()).rejects.toThrow("deactivate registry failed");
-    expect(session.snapshot.active).toBe(true);
+    await expect(session.deactivate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.active).toBe(false);
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
   });
 
 
@@ -346,6 +347,9 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     internals.recoverFailedPresentation(0, 1);
     expect(content.suspend).toHaveBeenCalledOnce();
     expect(internals.presentationDirty).toBe(true);
+    (session as unknown as { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void })
+      .onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    expect(content.resumeInteractions).toHaveBeenCalled();
   });
   it("cancels a queued destination when its presentation rejects", async () => {
     const session = createSession();
