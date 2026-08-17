@@ -7,7 +7,13 @@ import type {
 } from "./PdfContentController";
 import { PDFJS_POLICY } from "./PdfJsPolicy";
 import { ContinuousPageWindow, type PageWindowPlan } from "./ContinuousPageWindow";
-import { capturePdfViewportAnchor, restorePdfViewportAnchor, type PdfViewportAnchor } from "./PdfViewportAnchor";
+import {
+  capturePdfViewportAnchor,
+  restorePdfViewportAnchor,
+  samePdfViewportLanding,
+  type PdfViewportAnchor,
+  type PdfViewportLanding,
+} from "./PdfViewportAnchor";
 import { printPdfPrototype } from "./PdfPrintPrototype";
 import { probePdfOutline, type PdfOutlineDocument, type PdfOutlineItem, type PdfOutlineProbeRow } from "./PdfOutlineProbe";
 import {
@@ -205,12 +211,18 @@ export interface PdfViewTransform {
   readonly rotation: number;
   readonly devicePixelRatio: number;
 }
+export type PdfViewportRestoreOutcome =
+  | { readonly kind: "verified"; readonly landing: PdfViewportLanding }
+  | { readonly kind: "constrainedEdgeVerified"; readonly landing: PdfViewportLanding; readonly expected: PdfViewportLanding }
+  | { readonly kind: "preflightRejected" }
+  | { readonly kind: "staleOrCancelled" }
+  | { readonly kind: "failed"; readonly landing?: PdfViewportLanding };
 export type PdfScrollAnchor = PdfViewportAnchor;
 
 interface Candidate {
   readonly session: OpenPdfResult;
-  readonly transport: { destroy(): Promise<void> };
   readonly task: PdfLoadingTask;
+  readonly transport: { destroy(): Promise<void> };
   readonly rangeTransport?: PdfProtocolRangeTransport;
   window?: ContinuousPageWindow;
   topSpacer?: HTMLElement;
@@ -569,6 +581,25 @@ export class PdfReaderController {
   public cancelPrint(): void {
     this.activePrint?.abort.abort();
   }
+  /** Returns the canonical PDF-space point at the visual top-left of the target page. */
+  public async getPageTopLanding(
+    pageNumber: number,
+    transform: PdfViewTransform,
+    requestCommitGuard?: PdfRequestCommitGuard,
+  ): Promise<PdfViewportLanding | undefined> {
+    const current = this.current;
+    if (current === undefined || current.document === undefined || this.disposed || !Number.isSafeInteger(pageNumber) || pageNumber < 1 || pageNumber > current.document.numPages) return undefined;
+    if (requestCommitGuard !== undefined && !requestCommitGuard()) return undefined;
+    try {
+      const page = await this.getOwnedPage(current, pageNumber);
+      if (this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) return undefined;
+      const viewport = page.getViewport(transform);
+      const [x, y] = viewport.convertToPdfPoint(viewport.width / 2, 0);
+      return Number.isFinite(x) && Number.isFinite(y) ? { pageIndex: pageNumber - 1, x, y } : undefined;
+    } catch {
+      return undefined;
+    }
+  }
   /** Returns the target page's CSS size at unit scale and the requested rotation. */
   public async getPageNaturalSize(
     pageNumber: number,
@@ -835,6 +866,109 @@ export class PdfReaderController {
     });
     host.scrollLeft = restored.scrollLeft;
     host.scrollTop = restored.scrollTop;
+  }
+
+  private resolveReachableViewportLanding(anchor: PdfViewportAnchor): PdfViewportLanding | undefined {
+    const raster = this.current?.residentRasters.get(anchor.pageNumber);
+    const frame = this.options.canvasHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${anchor.pageNumber}']`);
+    if (raster === undefined || frame === null) return undefined;
+    const host = this.options.canvasHost;
+    const pageFrameOffset = { x: frame.offsetLeft + raster.canvas.offsetLeft, y: frame.offsetTop + raster.canvas.offsetTop };
+    const restored = restorePdfViewportAnchor(anchor, {
+      viewport: raster.viewport,
+      pageFrameOffset,
+      host: {
+        scrollLeft: host.scrollLeft,
+        scrollTop: host.scrollTop,
+        clientWidth: host.clientWidth,
+        clientHeight: host.clientHeight,
+        scrollWidth: Math.max(host.clientWidth, host.scrollWidth),
+        scrollHeight: Math.max(host.clientHeight, host.scrollHeight),
+      },
+    });
+    const reachable = capturePdfViewportAnchor({
+      pageNumber: anchor.pageNumber,
+      viewport: raster.viewport,
+      pageFrameOffset,
+      host: { ...restored, clientWidth: host.clientWidth, clientHeight: host.clientHeight },
+      viewportOffset: anchor.viewportOffset,
+    });
+    return Object.freeze({ pageIndex: reachable.pageNumber - 1, x: reachable.pagePoint.x, y: reachable.pagePoint.y });
+  }
+  /** Captures the active page centre in W07 canonical zero-based page space. */
+  public captureViewportLanding(): PdfViewportLanding | undefined {
+    const anchor = this.captureScrollAnchor();
+    return anchor === undefined ? undefined : Object.freeze({
+      pageIndex: anchor.pageNumber - 1,
+      x: anchor.pagePoint.x,
+      y: anchor.pagePoint.y,
+    });
+  }
+
+  private captureViewportLandingAtOffset(pageNumber: number, viewportOffset: { readonly x: number; readonly y: number }): PdfViewportLanding | undefined {
+    const raster = this.current?.residentRasters.get(pageNumber);
+    const frame = this.options.canvasHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${pageNumber}']`);
+    if (raster === undefined || frame === null) return undefined;
+    const host = this.options.canvasHost;
+    const anchor = capturePdfViewportAnchor({
+      pageNumber,
+      viewport: raster.viewport,
+      pageFrameOffset: { x: frame.offsetLeft + raster.canvas.offsetLeft, y: frame.offsetTop + raster.canvas.offsetTop },
+      host: { scrollLeft: host.scrollLeft, scrollTop: host.scrollTop, clientWidth: host.clientWidth, clientHeight: host.clientHeight },
+      viewportOffset,
+    });
+    return Object.freeze({ pageIndex: anchor.pageNumber - 1, x: anchor.pagePoint.x, y: anchor.pagePoint.y });
+  }
+  /** Restores a canonical landing through the existing W06 materialization and viewport authority. */
+  public async restoreViewportLanding(
+    target: PdfViewportLanding,
+    requestCommitGuard?: PdfRequestCommitGuard,
+    targetTransform: PdfViewTransform = this.viewTransform,
+    placement: "center" | "page-top" = "center",
+  ): Promise<PdfViewportRestoreOutcome> {
+    const current = this.current;
+    if (current === undefined || current.document === undefined || this.disposed
+      || !Number.isSafeInteger(target.pageIndex) || target.pageIndex < 0
+      || target.pageIndex >= current.document.numPages || !Number.isFinite(target.x) || !Number.isFinite(target.y)) {
+      return { kind: "preflightRejected" };
+    }
+    if (!(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+    try {
+      await this.getOwnedPage(current, target.pageIndex + 1);
+    } catch {
+      return { kind: "preflightRejected" };
+    }
+    if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+    const pageNumber = target.pageIndex + 1;
+    try {
+      const committed = await this.renderPage(pageNumber, targetTransform, requestCommitGuard);
+      if (!committed) return !(requestCommitGuard?.() ?? true) ? { kind: "staleOrCancelled" } : { kind: "failed" };
+      if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+      const anchor: PdfViewportAnchor = Object.freeze({
+        pageNumber,
+        pagePoint: Object.freeze({ x: target.x, y: target.y }),
+        viewportOffset: Object.freeze({
+          x: this.options.canvasHost.clientWidth / 2,
+          y: placement === "page-top" ? 0 : this.options.canvasHost.clientHeight / 2,
+        }),
+      });
+      const expected = this.resolveReachableViewportLanding(anchor);
+      if (expected === undefined) return { kind: "failed" };
+      this.restoreScrollAnchor(anchor);
+      await Promise.resolve();
+      if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+      const landing = placement === "page-top"
+        ? this.captureViewportLandingAtOffset(pageNumber, anchor.viewportOffset)
+        : this.captureViewportLanding();
+      if (landing === undefined) return { kind: "failed" };
+      if (samePdfViewportLanding(target, landing)) return { kind: "verified", landing };
+      return samePdfViewportLanding(expected, landing)
+        ? { kind: "constrainedEdgeVerified", landing, expected }
+        : { kind: "failed", landing };
+    } catch (error) {
+      this.options.onStatus(`PDF viewport landing failed: ${error instanceof Error ? error.message : String(error)}`);
+      return !(requestCommitGuard?.() ?? true) ? { kind: "staleOrCancelled" } : { kind: "failed" };
+    }
   }
 
   private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor): Promise<boolean> {

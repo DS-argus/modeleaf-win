@@ -3,6 +3,11 @@ export interface PdfPagePoint {
   readonly y: number;
 }
 
+export interface PdfViewportLanding {
+  readonly pageIndex: number;
+  readonly x: number;
+  readonly y: number;
+}
 /** The small PDF.js viewport surface needed to convert canonical page points. */
 export interface PdfViewportTransform {
   convertToPdfPoint(x: number, y: number): readonly [number, number];
@@ -176,4 +181,16 @@ export function isPdfPagePointWithinTolerance(
 ): boolean {
   if (!finite(tolerance) || tolerance < 0) throw new Error("tolerance must be a non-negative finite number");
   return pdfPagePointError(expected, actual) <= tolerance;
+}
+
+export function isValidPdfViewportLanding(landing: PdfViewportLanding): boolean {
+  return Number.isSafeInteger(landing.pageIndex) && landing.pageIndex >= 0
+    && Number.isFinite(landing.x) && Number.isFinite(landing.y);
+}
+
+/** W07 landing verification uses independent axes, never Euclidean distance. */
+export function samePdfViewportLanding(left: PdfViewportLanding, right: PdfViewportLanding): boolean {
+  return left.pageIndex === right.pageIndex
+    && Math.abs(left.x - right.x) <= 0.5 + 1e-9
+    && Math.abs(left.y - right.y) <= 0.5 + 1e-9;
 }

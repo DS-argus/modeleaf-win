@@ -73,12 +73,7 @@ describe("RootKeyboardRouter", () => {
   });
   it("claims unbound decimal and backspace input only for page-prompt ownership", () => {
     const accepted: string[] = [];
-    const router = createRootKeyboardRouter({
-      config,
-      getContext: () => ({ windowId: "window-a", routeRevision: "route-a", generation: 1, inputContext: "pagePrompt", runtime }),
-      onDispatch: () => undefined,
-      onUnboundToken: (value) => { accepted.push(value); return value === "7" || value === "<BS>"; },
-    });
+    const router = createRootKeyboardRouter({ config, getContext: () => ({ windowId: "window-a", routeRevision: "route-a", generation: 1, inputContext: "pagePrompt", runtime }), onDispatch: () => undefined, onUnboundToken: (value) => { accepted.push(value); return value === "7" || value === "<BS>"; } });
     const digit = keyboard("7"); router.handleKeyDown(digit.event);
     const backspace = keyboard("Backspace"); router.handleKeyDown(backspace.event);
     expect(digit.prevented()).toBe(true); expect(backspace.prevented()).toBe(true);
@@ -88,5 +83,50 @@ describe("RootKeyboardRouter", () => {
   it("suppresses repeated non-repeatable bindings", () => {
     const h = harness(); const help = keyboard("?", { repeat: true }); h.router.handleKeyDown(help.event);
     expect(h.dispatched).toEqual([]);
+  });
+  it("dispatches each enabled default Alt-arrow history action exactly once", () => {
+    const h = harness({ runtime: { ...runtime, canHistoryBack: true, canHistoryForward: true } });
+    const back = keyboard("ArrowLeft", { altKey: true }); const forward = keyboard("ArrowRight", { altKey: true });
+    expect(h.router.handleKeyDown(back.event)).toBe(true); expect(h.router.handleKeyDown(forward.event)).toBe(true);
+    expect(back.prevented()).toBe(true); expect(forward.prevented()).toBe(true);
+    expect(h.dispatched).toEqual(["history.back", "history.forward"]);
+  });
+  it("consumes physical Alt arrows outside plain enabled navigation without WebView escape", () => {
+    for (const inputContext of ["pagePrompt", "searchPrompt", "searchResults"] as const) {
+      const h = harness({ inputContext, runtime: { ...runtime, canHistoryBack: true } }); const event = keyboard("ArrowLeft", { altKey: true });
+      expect(h.router.handleKeyDown(event.event)).toBe(true); expect(event.prevented()).toBe(true); expect(h.dispatched).toEqual([]);
+    }
+    const modal = harness({ runtime: { ...runtime, modalOpen: true, canHistoryBack: true } }); const event = keyboard("ArrowLeft", { altKey: true }); modal.router.handleKeyDown(event.event);
+    expect(event.prevented()).toBe(true); expect(modal.dispatched).toEqual([]); expect(modal.disabled).toEqual(["history.back:Close the current dialog"]);
+  });
+  it("consumes repeats and unavailable Alt arrows without duplicate traversal", () => {
+    const h = harness({ runtime: { ...runtime, canHistoryBack: true } }); const first = keyboard("ArrowLeft", { altKey: true }); const repeat = keyboard("ArrowLeft", { altKey: true, repeat: true });
+    h.router.handleKeyDown(first.event); h.router.handleKeyDown(repeat.event);
+    expect(first.prevented()).toBe(true); expect(repeat.prevented()).toBe(true); expect(h.dispatched).toEqual(["history.back"]);
+    const disabled = harness(); const unavailable = keyboard("ArrowLeft", { altKey: true }); disabled.router.handleKeyDown(unavailable.event);
+    expect(unavailable.prevented()).toBe(true); expect(disabled.dispatched).toEqual([]); expect(disabled.disabled).toEqual(["history.back:No back history"]);
+  });
+  it("keeps remapped history navigation-only while reserving physical Alt arrows", () => {
+    const custom = validateProductConfig({ keymap: { "history.back": ["x"] } });
+    if (!custom.ok) throw new Error("custom config invalid");
+    let context: RootKeyboardContext = { windowId: "window-a", routeRevision: "route-a", generation: 1, inputContext: "navigation", runtime: { ...runtime, canHistoryBack: true } };
+    const dispatched: string[] = [];
+    const router = createRootKeyboardRouter({ config: custom.value, getContext: () => context, onDispatch: (id) => dispatched.push(id) });
+    const physical = keyboard("ArrowLeft", { altKey: true }); router.handleKeyDown(physical.event);
+    const remapped = keyboard("x"); router.handleKeyDown(remapped.event); context = { ...context, inputContext: "searchResults" };
+    const outsideNavigation = keyboard("x"); router.handleKeyDown(outsideNavigation.event);
+    expect(physical.prevented()).toBe(true); expect(remapped.prevented()).toBe(true); expect(outsideNavigation.prevented()).toBe(false); expect(dispatched).toEqual(["history.back"]); router.dispose();
+  });
+  it("leaves AltGraph-owned arrows native", () => {
+    const h = harness({ runtime: { ...runtime, canHistoryBack: true } });
+    const event = keyboard("ArrowLeft", { altKey: true, altGraph: true });
+    h.router.handleKeyDown(event.event);
+    expect(event.prevented()).toBe(false); expect(h.dispatched).toEqual([]);
+  });
+  it.each([{ isComposing: true }, { keyCode: 229 }])("consumes physical Alt arrows during IME ownership without dispatch: %o", (overrides) => {
+    const h = harness({ runtime: { ...runtime, canHistoryBack: true } });
+    const event = keyboard("ArrowLeft", { altKey: true, ...overrides });
+    h.router.handleKeyDown(event.event);
+    expect(event.prevented()).toBe(true); expect(h.dispatched).toEqual([]);
   });
 });

@@ -5,106 +5,22 @@ import {
   ResourceReservationManager,
 } from "./ResourceBudget";
 import { isValidPdfDestination } from "./PdfDestination";
-
-export interface PdfContentTextItem {
-  readonly str?: string;
-  readonly hasEOL?: boolean;
-  readonly fontName?: string;
-  readonly [key: string]: unknown;
-}
-
-export interface PdfContentTextContent {
-  readonly items: readonly PdfContentTextItem[];
-  readonly styles?: Readonly<Record<string, unknown>>;
-  readonly lang?: string;
-}
-
-export interface PdfContentAnnotation {
-  readonly subtype?: string;
-  readonly rect?: readonly number[];
-  readonly url?: string;
-  readonly id?: string;
-  readonly dest?: unknown;
-  readonly action?: string;
-  readonly color?: readonly number[] | Uint8ClampedArray;
-  readonly borderStyle?: {
-    readonly width?: number;
-    readonly style?: number;
-  };
-}
-
-export interface PdfContentPage {
-  getTextContent(): Promise<PdfContentTextContent>;
-  streamTextContent?(): ReadableStream<PdfContentTextContent>;
-  getAnnotations(): Promise<readonly PdfContentAnnotation[]>;
-}
-
-export interface PdfContentDocument {
-  readonly numPages: number;
-  getPage(pageNumber: number): Promise<PdfContentPage>;
-  getDestination?(name: string): Promise<unknown>;
-  getPageIndex?(reference: unknown): Promise<number>;
-}
-
-export interface PdfContentViewport {
-  readonly width: number;
-  readonly scale: number;
-  readonly height: number;
-  readonly rotation: number;
-  readonly rawDims: {
-    readonly pageWidth: number;
-    readonly pageHeight: number;
-  };
-  convertToViewportPoint(x: number, y: number): readonly [number, number];
-  convertToPdfPoint(x: number, y: number): readonly [number, number];
-}
-
-export interface PdfContentRenderRequest {
-  readonly pageNumber: number;
-  readonly page: PdfContentPage;
-  readonly viewport: PdfContentViewport;
-  readonly canvas: HTMLCanvasElement;
-  readonly retainedPages?: readonly number[];
-  readonly commitCanvas?: (accessory?: HTMLElement) => boolean;
-}
-
-export interface PdfExternalLinkRegistration {
-  readonly annotationId: string;
-  readonly target: string;
-}
-
-export interface PdfContentControllerOptions {
-  readonly host: HTMLElement;
-  readonly resources: ResourceReservationManager;
-  readonly onStatus: (message: string) => void;
-  readonly navigateToPage: (pageNumber: number) => void;
-  readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[]) => void;
-  readonly prepareExternalLinks: (
-    entries: readonly PdfExternalLinkRegistration[],
-    registryRevision: number,
-  ) => Promise<void>;
-  readonly commitExternalLinks: (registryRevision: number) => Promise<void>;
-  readonly finalizeExternalLinks: (registryRevision: number) => Promise<void>;
-  readonly abortExternalLinks: (registryRevision: number) => Promise<void>;
-  readonly openExternal: (annotationId: string, registryRevision: number, activationOperationId: string, operationSequence: number) => Promise<void>;
-}
-
-export interface PdfSearchResult {
-  readonly pageNumber: number;
-  readonly index: number;
-  readonly length: number;
-}
-
-export interface PdfContentSnapshot {
-  readonly generation: number | null;
-  readonly pageNumber: number | null;
-  readonly query: string;
-  readonly results: readonly PdfSearchResult[];
-  readonly currentResult: number;
-  readonly searchPending: boolean;
-  readonly searchIncomplete: boolean;
-  readonly hintsVisible: boolean;
-}
+export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: boolean; readonly fontName?: string; readonly dir?: string; readonly transform?: readonly number[]; readonly width?: number; readonly height?: number; readonly [key: string]: unknown; }
+export interface PdfContentTextContent { readonly items: readonly PdfContentTextItem[]; readonly styles?: Readonly<Record<string, unknown>>; readonly lang?: string; }
+export interface PdfContentAnnotation { readonly subtype?: string; readonly rect?: readonly number[]; readonly url?: string; readonly id?: string; readonly dest?: unknown; readonly action?: string; readonly color?: readonly number[] | Uint8ClampedArray; readonly borderStyle?: { readonly width?: number; readonly style?: number }; }
+export interface PdfContentPage { getTextContent(): Promise<PdfContentTextContent>; streamTextContent?(): ReadableStream<PdfContentTextContent>; getAnnotations(): Promise<readonly PdfContentAnnotation[]>; }
+export interface PdfContentDocument { readonly numPages: number; getPage(pageNumber: number): Promise<PdfContentPage>; getDestination?(name: string): Promise<unknown>; getPageIndex?(reference: unknown): Promise<number>; }
+export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
+export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
+export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
+export interface PdfSearchGeometry { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
+interface PdfSearchGeometryRange { readonly start: number; readonly end: number; readonly originX: number; readonly originY: number; readonly advanceX: number; readonly advanceY: number; readonly thicknessX: number; readonly thicknessY: number; readonly width: number; readonly height: number; readonly reverse: boolean; }
+export interface PdfSearchResult { readonly pageNumber: number; readonly index: number; readonly length: number; readonly geometry?: PdfSearchGeometry; }
+export type PdfSearchLandingOutcome = "displayedDistinct" | "displayedSame" | "failedWithoutMovement" | "displayedAfterUnverifiedMovement" | "stale";
+export interface PdfSearchLandingRequest { readonly searchGeneration: number; readonly selectionSequence: number; readonly resultIndex: number; readonly result: PdfSearchResult; readonly provenance: "initial" | "next" | "previous" | "restore"; }
+export interface PdfSearchResultsUpdate { readonly searchGeneration: number; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly hasSearchableText: boolean; }
+export interface PdfContentControllerOptions { readonly host: HTMLElement; readonly resources: ResourceReservationManager; readonly onStatus: (message: string) => void; readonly navigateToPage: (pageNumber: number) => void; readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[]) => void; readonly onSearchResults: (update: PdfSearchResultsUpdate) => void; readonly requestSearchLanding: (request: PdfSearchLandingRequest) => Promise<PdfSearchLandingOutcome>; readonly scheduleSearchWork?: () => Promise<void>; readonly prepareExternalLinks: (entries: readonly PdfExternalLinkRegistration[], registryRevision: number) => Promise<void>; readonly commitExternalLinks: (registryRevision: number) => Promise<void>; readonly finalizeExternalLinks: (registryRevision: number) => Promise<void>; readonly abortExternalLinks: (registryRevision: number) => Promise<void>; readonly openExternal: (annotationId: string, registryRevision: number, activationOperationId: string, operationSequence: number) => Promise<void>; }
+export interface PdfContentSnapshot { readonly generation: number | null; readonly pageNumber: number | null; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly currentResult: number; readonly searchPending: boolean; readonly searchIncomplete: boolean; readonly hintsVisible: boolean; }
 
 interface ResidentContentEntry {
   readonly pageNumber: number;
@@ -157,6 +73,7 @@ type HighlightRegistry = {
   set(name: string, highlight: unknown): void;
   delete(name: string): boolean;
 };
+const highlightOwners = new WeakMap<object, object>();
 type IndexedTextNode = {
   readonly node: Text | HTMLBRElement;
   readonly start: number;
@@ -164,7 +81,6 @@ type IndexedTextNode = {
 };
 type ExactSearchRange = {
   readonly range: Range;
-  readonly anchor: HTMLElement | null;
 };
 const SEARCH_TIMEOUT_MS = 30_000;
 const LINK_ACTIVATION_TIMEOUT_MS = 10_000;
@@ -205,6 +121,8 @@ const appendBoundedText = (
   documentBytes: { value: number },
   itemCount: { value: number },
   deadline?: number,
+  geometryRanges?: PdfSearchGeometryRange[],
+  pageCharacters?: { value: number },
 ): void => {
   for (const item of content.items) {
     if (deadline !== undefined) assertDeadline(deadline);
@@ -212,6 +130,28 @@ const appendBoundedText = (
     itemCount.value += 1;
     if (typeof item.str !== "string") continue;
     const value = item.hasEOL ? `${item.str}\n` : item.str;
+    const start = pageCharacters?.value ?? 0;
+    if (pageCharacters !== undefined) pageCharacters.value += value.length;
+    if (geometryRanges !== undefined && item.str.length > 0 && item.transform !== undefined && item.transform.length >= 6) {
+      const [a, b, c, d, x, y] = item.transform;
+      const style = item.fontName === undefined ? undefined : content.styles?.[item.fontName] as { readonly vertical?: boolean } | undefined;
+      const vertical = style?.vertical === true;
+      const advanceLength = Math.hypot(a ?? 0, b ?? 0);
+      const thicknessLength = Math.hypot(c ?? 0, d ?? 0);
+      const primaryX = advanceLength > 0 ? a! / advanceLength : 1;
+      const primaryY = advanceLength > 0 ? b! / advanceLength : 0;
+      const secondaryX = thicknessLength > 0 ? c! / thicknessLength : -primaryY;
+      const secondaryY = thicknessLength > 0 ? d! / thicknessLength : primaryX;
+      const advanceX = vertical ? secondaryX : primaryX;
+      const advanceY = vertical ? secondaryY : primaryY;
+      const thicknessX = vertical ? primaryX : secondaryX;
+      const thicknessY = vertical ? primaryY : secondaryY;
+      const width = Math.abs((vertical ? item.height : item.width) ?? advanceLength);
+      const height = Math.abs((vertical ? item.width : item.height) ?? thicknessLength);
+      if ([x, y, advanceX, advanceY, thicknessX, thicknessY, width, height].every(Number.isFinite) && width > 0 && height > 0) {
+        geometryRanges.push({ start, end: start + item.str.length, originX: x!, originY: y!, advanceX, advanceY, thicknessX, thicknessY, width, height, reverse: item.dir === "rtl" });
+      }
+    }
     const nextPageBytes = addPdfTextUtf8Bytes(pageBytes.value, value);
     const nextDocumentBytes = addPdfTextUtf8Bytes(documentBytes.value, value, RESOURCE_LIMITS.maxTextDocumentBytes);
     if (nextPageBytes === undefined || nextDocumentBytes === undefined) throw new Error("TEXT_LIMIT");
@@ -221,6 +161,38 @@ const appendBoundedText = (
   }
 };
 
+const geometryForTextRange = (ranges: readonly PdfSearchGeometryRange[], start: number, end: number): PdfSearchGeometry | undefined => {
+  let left = Number.POSITIVE_INFINITY;
+  let top = Number.POSITIVE_INFINITY;
+  let right = Number.NEGATIVE_INFINITY;
+  let bottom = Number.NEGATIVE_INFINITY;
+  for (const range of ranges) {
+    const overlapStart = Math.max(start, range.start);
+    const overlapEnd = Math.min(end, range.end);
+    if (overlapStart >= overlapEnd || range.end <= range.start) continue;
+    const startRatio = (overlapStart - range.start) / (range.end - range.start);
+    const endRatio = (overlapEnd - range.start) / (range.end - range.start);
+    const startDistance = range.width * (range.reverse ? 1 - endRatio : startRatio);
+    const endDistance = range.width * (range.reverse ? 1 - startRatio : endRatio);
+    const startX = range.originX + range.advanceX * startDistance;
+    const startY = range.originY + range.advanceY * startDistance;
+    const endX = range.originX + range.advanceX * endDistance;
+    const endY = range.originY + range.advanceY * endDistance;
+    const corners = [
+      [startX, startY],
+      [endX, endY],
+      [startX + range.thicknessX * range.height, startY + range.thicknessY * range.height],
+      [endX + range.thicknessX * range.height, endY + range.thicknessY * range.height],
+    ] as const;
+    for (const [x, y] of corners) {
+      left = Math.min(left, x); right = Math.max(right, x);
+      top = Math.min(top, y); bottom = Math.max(bottom, y);
+    }
+  }
+  return [left, top, right, bottom].every(Number.isFinite) && right > left && bottom > top
+    ? { x: left, y: top, width: right - left, height: bottom - top }
+    : undefined;
+};
 export const normalizePdfSearchQuery = (source: string): string => {
   const values: string[] = [];
   const trimmed = source.trim();
@@ -318,6 +290,9 @@ export class PdfContentController {
   private results: PdfSearchResult[] = [];
   private resultReservations: ResourceReservation[] = [];
   private currentResult = -1;
+  private pendingResultIndex: number | undefined;
+  private selectionSequence = 0;
+  private extractedPageGeometries: PdfSearchGeometryRange[] = [];
   private evictedPage: number | undefined;
   private evictedCurrentResult: number | undefined;
   private searchIncomplete = false;
@@ -372,9 +347,13 @@ export class PdfContentController {
     this.results = [];
     this.searchPending = false;
     this.currentResult = -1;
+    this.pendingResultIndex = undefined;
     this.pendingDestination = undefined;
     this.searchCleanupFailure = undefined;
     this.partialSearchReason = undefined;
+    this.searchIncomplete = false;
+    this.evictedPage = undefined;
+    this.evictedCurrentResult = undefined;
     this.evictedPage = undefined;
     this.evictedCurrentResult = undefined;
   }
@@ -386,6 +365,7 @@ export class PdfContentController {
     this.internalDestinationActivation = undefined;
     this.renderSequence += 1;
     this.searchSequence += 1;
+    this.pendingResultIndex = undefined;
     if (this.activeSearchSettlement !== undefined && this.query.length > 0) {
       this.releaseResultReservations();
       this.results = [];
@@ -415,6 +395,7 @@ export class PdfContentController {
       this.releaseResultReservations();
       this.results = [];
       this.currentResult = -1;
+      this.pendingResultIndex = undefined;
       evicted = true;
     }
     return evicted;
@@ -478,6 +459,7 @@ export class PdfContentController {
       this.query = "";
       this.results = [];
       this.currentResult = -1;
+      this.pendingResultIndex = undefined;
       this.searchCleanupFailure = undefined;
       this.partialSearchReason = undefined;
       this.clearRenderedContent();
@@ -774,7 +756,11 @@ export class PdfContentController {
     this.query = "";
     this.results = [];
     this.currentResult = -1;
+    this.pendingResultIndex = undefined;
     this.searchPending = false;
+    this.searchIncomplete = false;
+    this.evictedPage = undefined;
+    this.evictedCurrentResult = undefined;
     this.partialSearchReason = undefined;
     this.applyHighlights();
   }
@@ -900,6 +886,7 @@ export class PdfContentController {
     this.query = "";
     this.results = [];
     this.currentResult = -1;
+    this.pendingResultIndex = undefined;
     this.searchPending = false;
     this.searchIncomplete = false;
     if (!restoreEvictedResult) this.evictedCurrentResult = undefined;
@@ -911,6 +898,8 @@ export class PdfContentController {
     }
     const normalized = normalizePdfSearchQuery(query);
     if (normalized.length === 0) return;
+    this.query = normalized;
+    this.options.onStatus(`Searching “${normalized}”…`);
     const previous = this.activeSearchSettlement;
     if (previous !== undefined) {
       try {
@@ -930,7 +919,6 @@ export class PdfContentController {
     const document = this.document;
     const sessionId = this.sessionId;
     assertDeadline(deadline);
-    this.query = normalized;
     this.applyHighlights(deadline);
     if (generation === undefined || document === undefined || sessionId === undefined) return;
     const extractor = this.options.resources.reserve({ kind: "search-extractor", amount: 1, sessionId });
@@ -971,7 +959,7 @@ export class PdfContentController {
         if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
         const text = await awaitPageOwned(this.extractPageText(page, deadline, generation, document, sequence, documentBytes));
         if (text === null) return;
-        if (text.length > 0) hasExtractedText = true;
+        if (text.trim().length > 0) hasExtractedText = true;
         const folded = foldLiteral(text, deadline);
         let index = folded.value.indexOf(normalized);
         while (index !== -1) {
@@ -979,24 +967,28 @@ export class PdfContentController {
           if (this.results.length >= MAX_RESULTS || !this.reserveResultSlot(sessionId)) throw new Error("Search reached the result limit.");
           const originalStart = folded.starts[index]!;
           const originalEnd = folded.ends[index + normalized.length - 1]!;
-          this.results.push({ pageNumber, index: originalStart, length: originalEnd - originalStart });
+          const geometry = geometryForTextRange(this.extractedPageGeometries, originalStart, originalEnd);
+          this.results.push({ pageNumber, index: originalStart, length: originalEnd - originalStart, ...(geometry === undefined ? {} : { geometry }) });
           index = folded.value.indexOf(normalized, index + Math.max(1, normalized.length));
         }
+        await (this.options.scheduleSearchWork?.() ?? new Promise<void>((resolve) => setTimeout(resolve, 0)));
+        if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
       }
       assertDeadline(deadline);
       if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+      this.options.onSearchResults({ searchGeneration: sequence, query: this.query, results: [...this.results], hasSearchableText: hasExtractedText });
       if (this.results.length === 0) {
-        this.options.onStatus(hasExtractedText ? "No text matches found in this PDF." : "This PDF has no searchable text. OCR is unavailable.");
+        this.options.onStatus(hasExtractedText ? `No matches · “${this.query}”` : `No searchable text · “${this.query}”`);
       } else {
-        this.currentResult = restoreEvictedResult && this.evictedCurrentResult !== undefined && this.evictedCurrentResult >= 0
-          ? Math.min(this.evictedCurrentResult, this.results.length - 1)
-          : 0;
-        this.evictedCurrentResult = undefined;
-        assertDeadline(deadline);
-        this.options.navigateToPage(this.results[this.currentResult]!.pageNumber);
-        this.reportCurrentMatch("");
+        if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+        this.applyHighlights(deadline);
+        const preferredIndex = restoreEvictedResult && this.evictedCurrentResult !== undefined ? Math.min(this.evictedCurrentResult, this.results.length - 1) : 0;
+        const index = this.results[preferredIndex]?.geometry !== undefined ? preferredIndex : this.results.findIndex((result) => result.geometry !== undefined);
+        if (index < 0) { this.options.onStatus("Search result location unavailable."); return; }
+        const selected = await this.selectMatch(index, restoreEvictedResult ? "restore" : "initial", generation, document, sequence);
+        if (restoreEvictedResult && selected !== null) this.evictedCurrentResult = undefined;
+        else if (restoreEvictedResult) { this.evictedCurrentResult = preferredIndex; this.searchIncomplete = true; }
       }
-      this.applyHighlights(deadline);
     } catch (error) {
       let cause = error instanceof Error ? error.message : "Search could not be completed.";
       if (deferredSearchCleanup !== undefined && !cause.startsWith("Search cleanup failed:")) cause = `Search cleanup failed: ${cause}`;
@@ -1005,12 +997,12 @@ export class PdfContentController {
         deferredSearchCleanup = this.unsettledSearchCleanup;
       }
       if (this.isCurrent(generation, document) && sequence === this.searchSequence) {
-        if (Date.now() < deadline && this.results.length > 0) {
-          this.currentResult = 0;
-          this.options.navigateToPage(this.results[0]!.pageNumber);
+        if (this.results.length > 0) {
+          this.options.onSearchResults({ searchGeneration: sequence, query: this.query, results: [...this.results], hasSearchableText: hasExtractedText });
           this.partialSearchReason = cause;
-          this.reportCurrentMatch("");
-          this.applyHighlights(deadline);
+          this.searchIncomplete = true;
+          if (Date.now() < deadline) this.applyHighlights(deadline);
+          this.options.onStatus(`Search results are partial: ${cause}`);
         } else {
           this.options.onStatus(cause);
         }
@@ -1029,15 +1021,34 @@ export class PdfContentController {
       else void deferredSearchCleanup.then(finishSearchOwnership, finishSearchOwnership);
     }
   }
+  public async nextMatch(reverse = false): Promise<PdfSearchResult | null> {
+    const generation = this.generation; const document = this.document; const sequence = this.searchSequence;
+    if (this.results.length === 0 || generation === undefined || document === undefined || this.searchPending || this.searchIncomplete) return null;
+    const baseIndex = this.pendingResultIndex ?? this.currentResult;
+    let index = baseIndex;
+    for (let offset = 0; offset < this.results.length; offset += 1) {
+      index = (index + (reverse ? -1 : 1) + this.results.length) % this.results.length;
+      if (this.results[index]?.geometry !== undefined) return this.selectMatch(index, reverse ? "previous" : "next", generation, document, sequence);
+    }
+    this.options.onStatus("Search result location unavailable.");
+    return null;
+  }
 
-  public nextMatch(reverse = false): PdfSearchResult | null {
-    if (this.results.length === 0) return null;
-    this.currentResult = (this.currentResult + (reverse ? -1 : 1) + this.results.length) % this.results.length;
-    const result = this.results[this.currentResult]!;
-    this.options.navigateToPage(result.pageNumber);
-    this.reportCurrentMatch("");
-    this.applyHighlights();
-    return result;
+  private async selectMatch(index: number, provenance: PdfSearchLandingRequest["provenance"], generation: number, document: PdfContentDocument, sequence: number): Promise<PdfSearchResult | null> {
+    const result = this.results[index];
+    if (result === undefined || !this.isCurrent(generation, document) || sequence !== this.searchSequence) return null;
+    if (result.geometry === undefined) {
+      this.options.onStatus("Search result location unavailable.");
+      return null;
+    }
+    this.pendingResultIndex = index;
+    const selectionSequence = ++this.selectionSequence;
+    let outcome: PdfSearchLandingOutcome;
+    try { outcome = await this.options.requestSearchLanding({ searchGeneration: sequence, selectionSequence, resultIndex: index, result, provenance }); } catch { outcome = "failedWithoutMovement"; }
+    if (!this.isCurrent(generation, document) || sequence !== this.searchSequence || selectionSequence !== this.selectionSequence) return null;
+    if (outcome === "stale") { this.pendingResultIndex = undefined; return null; }
+    if (outcome !== "displayedDistinct" && outcome !== "displayedSame") { this.pendingResultIndex = undefined; return null; }
+    this.currentResult = index; this.pendingResultIndex = undefined; this.reportCurrentMatch(""); this.applyHighlights(); return result;
   }
 
   public toggleHints(): void {
@@ -1507,32 +1518,42 @@ export class PdfContentController {
   private reportCurrentMatch(suffix: string): void {
     const disclosure = suffix || (this.partialSearchReason === undefined ? "" : ` Search results are partial: ${this.partialSearchReason}`);
     this.options.onStatus(
-      `Match ${this.currentResult + 1} of ${this.results.length}.${disclosure}`,
+      `${this.currentResult + 1} / ${this.results.length} · “${this.query}”${disclosure}`,
     );
   }
   private clearHighlights(): void {
     const registry = (globalThis.CSS as (typeof CSS & { highlights?: HighlightRegistry }) | undefined)?.highlights;
-    registry?.delete(SEARCH_HIGHLIGHT_NAME);
-    registry?.delete(CURRENT_SEARCH_HIGHLIGHT_NAME);
-    this.layer?.querySelectorAll<HTMLElement>("[data-search-fallback]").forEach((rectangle) => rectangle.remove());
+    if (registry !== undefined && highlightOwners.get(registry as object) === this) {
+      registry.delete(SEARCH_HIGHLIGHT_NAME);
+      registry.delete(CURRENT_SEARCH_HIGHLIGHT_NAME);
+      highlightOwners.delete(registry as object);
+    }
+    const layers = new Set<HTMLElement>([...this.residentEntries.values()].map((entry) => entry.layer));
+    if (this.layer !== undefined) layers.add(this.layer);
+    for (const layer of layers) layer.querySelectorAll<HTMLElement>("[data-search-fallback]").forEach((rectangle) => rectangle.remove());
   }
-
   private applyHighlights(deadline = Date.now() + SEARCH_TIMEOUT_MS): void {
     this.clearHighlights();
-    if (this.renderedPage === undefined || this.textLayer === undefined || this.layer === undefined) return;
-    const layer = this.layer;
-    const ranges = this.exactSearchRanges(deadline);
+    const residents = [...this.residentEntries.values()];
+    if (residents.length === 0 && this.renderedPage !== undefined && this.textLayer !== undefined && this.layer !== undefined) {
+      residents.push({ pageNumber: this.renderedPage, textLayer: this.textLayer, layer: this.layer } as ResidentContentEntry);
+    }
+    const residentRanges = residents.map((entry) => ({ entry, ranges: this.exactSearchRanges(entry.pageNumber, entry.textLayer, deadline) }));
+    const ranges = residentRanges.flatMap(({ ranges: pageRanges }) => pageRanges);
     const current = ranges.find(({ resultIndex }) => resultIndex === this.currentResult);
     const registry = (globalThis.CSS as (typeof CSS & { highlights?: HighlightRegistry }) | undefined)?.highlights;
     const HighlightConstructor = (globalThis as typeof globalThis & {
       Highlight?: new (...ranges: Range[]) => unknown;
     }).Highlight;
-    if (registry !== undefined && HighlightConstructor !== undefined) {
+    if (registry !== undefined && HighlightConstructor !== undefined && ranges.length > 0) {
+      highlightOwners.set(registry as object, this);
       registry.set(SEARCH_HIGHLIGHT_NAME, new HighlightConstructor(...ranges.map(({ exact }) => exact.range)));
       if (current !== undefined) registry.set(CURRENT_SEARCH_HIGHLIGHT_NAME, new HighlightConstructor(current.exact.range));
-    } else {
-      const layerBounds = layer.getBoundingClientRect();
-      for (const { exact, resultIndex } of ranges) {
+      return;
+    }
+    for (const { entry, ranges: pageRanges } of residentRanges) {
+      const layerBounds = entry.layer.getBoundingClientRect();
+      for (const { exact, resultIndex } of pageRanges) {
         assertDeadline(deadline);
         const getClientRects = (exact.range as Range & { getClientRects?: () => DOMRectList }).getClientRects;
         if (typeof getClientRects !== "function") continue;
@@ -1547,16 +1568,13 @@ export class PdfContentController {
           fallback.style.top = `${rectangle.top - layerBounds.top}px`;
           fallback.style.width = `${rectangle.width}px`;
           fallback.style.height = `${rectangle.height}px`;
-          layer.append(fallback);
+          entry.layer.append(fallback);
         }
       }
     }
-    current?.exact.anchor?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
 
-  private exactSearchRanges(deadline: number): { readonly exact: ExactSearchRange; readonly resultIndex: number }[] {
-    const layer = this.textLayer;
-    if (layer === undefined || this.renderedPage === undefined) return [];
+  private exactSearchRanges(pageNumber: number, layer: HTMLElement, deadline: number): { readonly exact: ExactSearchRange; readonly resultIndex: number }[] {
     const nodes: IndexedTextNode[] = [];
     const walker = document.createTreeWalker(layer, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
     let offset = 0;
@@ -1588,7 +1606,7 @@ export class PdfContentController {
     for (let resultIndex = 0; resultIndex < this.results.length; resultIndex += 1) {
       assertDeadline(deadline);
       const result = this.results[resultIndex]!;
-      if (result.pageNumber !== this.renderedPage || result.length <= 0) continue;
+      if (result.pageNumber !== pageNumber || result.length <= 0) continue;
       const end = result.index + result.length;
       while (cursor < nodes.length && nodes[cursor]!.end <= result.index) cursor += 1;
       if (cursor >= nodes.length || nodes[cursor]!.start > result.index) continue;
@@ -1600,12 +1618,11 @@ export class PdfContentController {
       const [endNode, endOffset] = pointAt(nodes[endCursor]!, end);
       range.setStart(startNode, startOffset);
       range.setEnd(endNode, endOffset);
-      matches.push({ exact: { range, anchor: startNode.parentElement?.closest<HTMLElement>("span") ?? null }, resultIndex });
+      matches.push({ exact: { range }, resultIndex });
       cursor = endCursor;
     }
     return matches;
   }
-
   private isCurrent(generation: number, document: PdfContentDocument): boolean {
     return this.generation === generation && this.document === document;
   }
@@ -1800,6 +1817,9 @@ export class PdfContentController {
     if (stream === undefined) throw new Error("Search streaming is unavailable.");
     const reader = stream.getReader();
     this.activeTextReader = reader;
+    this.extractedPageGeometries = [];
+    const pageCharacters = { value: 0 };
+    const mergedStyles: Record<string, unknown> = {};
     let readSettlement: Promise<void> = Promise.resolve();
     try {
       while (true) {
@@ -1811,7 +1831,8 @@ export class PdfContentController {
         assertDeadline(deadline);
         if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return null;
         if (next.done) break;
-        appendBoundedText(chunks, next.value, pageBytes, documentBytes, itemCount, deadline);
+        Object.assign(mergedStyles, next.value.styles);
+        appendBoundedText(chunks, { ...next.value, styles: mergedStyles }, pageBytes, documentBytes, itemCount, deadline, this.extractedPageGeometries, pageCharacters);
       }
       assertDeadline(deadline);
       return chunks.join("");

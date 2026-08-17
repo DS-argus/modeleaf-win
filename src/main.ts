@@ -37,6 +37,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
   "config.writeDefault", "config.resetDefault", "theme.picker",
+  "history.back", "history.forward",
 ]);
 function isNativeCompositionEvent(event: KeyboardEvent): boolean {
   return event.isComposing || event.keyCode === 229 || event.key === "Dead" || event.key === "Process" || event.key === "Unidentified" || event.getModifierState("AltGraph") || (event.ctrlKey && event.altKey);
@@ -64,7 +65,7 @@ root.innerHTML = `
   <section id="prompt" class="prompt" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">Arrow keys or Control J and K preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
-  <dialog id="search-dialog" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><h2 id="search-title">Search PDF text</h2><label>Literal text <input id="search-input" type="search" spellcheck="false"></label><p class="dialog-hint">Press <kbd>Enter</kbd> or <kbd>Shift</kbd>+<kbd>Enter</kbd> to cycle matches.</p></form></dialog>
+  <dialog id="search-dialog" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><h2 id="search-title">Search PDF text</h2><label>Literal text <input id="search-input" type="search" spellcheck="false"></label><p class="dialog-hint">Press <kbd>Enter</kbd> to start or restart the search. Close the prompt to use configured next and previous shortcuts.</p></form></dialog>
   <dialog id="file-opener-dialog" class="mac-overlay list-overlay" aria-label="Open PDF"><form id="file-opener-form"><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type to search..." aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list"></ul><p class="overlay-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
   <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
@@ -383,8 +384,8 @@ function commandAvailabilityContext(): ActionRuntimeContext {
     updateAvailable: false,
     configExists,
     searchActive: active().session.query.length > 0,
-    canHistoryBack: false,
-    canHistoryForward: false,
+    canHistoryBack: active().session.canHistoryBack,
+    canHistoryForward: active().session.canHistoryForward,
     linkCount: 0,
     implementedActionIds: IMPLEMENTED_ACTION_IDS,
   };
@@ -478,6 +479,16 @@ function createTab(): TabPayload {
     resources,
     canvasHost: host,
     createContentOptions: (opened, generation) => ({
+      onSearchResults: () => undefined,
+      requestSearchLanding: async (request) => {
+        if (active().session !== session) return "stale";
+        const decision = await session.navigateSearchLanding(request);
+        if (decision.kind === "verifiedLanding") return "displayedDistinct";
+        if (decision.kind === "noOp" || decision.kind === "search-epoch-recorded") return "displayedSame";
+        if (decision.kind === "stale") return "stale";
+        if (decision.kind === "uncompensatedInvariantFailure") return "displayedAfterUnverifiedMovement";
+        return "failedWithoutMovement";
+      },
       navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch((error: unknown) => reportPresentationFailure(session, error)); } },
       navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination).catch((error: unknown) => reportPresentationFailure(session, error)); },
       prepareExternalLinks: (entries, registryRevision) => invoke<void>("prepare_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, entries: entries.map((entry) => ({ annotation_id: entry.annotationId, target: entry.target })) }),
@@ -877,6 +888,8 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
   () => undefined,
 );
 function dispatchActionId(id: ActionId): void {
+  if (id === "history.back") { void active().session.navigateHistoryBack().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
+  if (id === "history.forward") { void active().session.navigateHistoryForward().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   const tabSelection = /^tab\.select\.(\d)$/u.exec(id);
   if (tabSelection !== null) { dispatch({ type: "tab.activate", index: Number(tabSelection[1]) - 1 }); return; }
   const direct: Partial<Record<ActionId, Action>> = {
@@ -910,12 +923,12 @@ function dispatchActionId(id: ActionId): void {
     else if (!Number.isSafeInteger(page)) active().session.reader.setStatus("Page number is too large.");
     else if (page < 1) active().session.reader.setStatus("Page numbers start at 1.");
     else if (page > active().session.snapshot.reader.pageCount) active().session.reader.setStatus(`Page ${page} is outside 1–${active().session.snapshot.reader.pageCount}.`);
-    else { pagePromptDigits = undefined; dispatch({ type: "page.goTo", page }); }
+    else { pagePromptDigits = undefined; void active().session.navigatePagePrompt(page).then(render, (error: unknown) => reportPresentationFailure(active().session, error)); }
     render();
     return;
   }
   if (id === "search.next" || id === "search.previous") {
-    active().session.submitSearch(active().session.query, id === "search.previous");
+    active().session.cycleSearch(id === "search.previous");
     render();
     return;
   }
@@ -954,6 +967,8 @@ function dispatch(action: Action): void {
   if (type === "palette.toggle") { openPalette(); return; }
   if (type === "tab.next") { void switchTab(workspace.adjacentId(1)); return; }
   if (type === "tab.previous") { void switchTab(workspace.adjacentId(-1)); return; }
+  if (type === "page.first") { void active().session.navigateFirstPage().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
+  if (type === "page.last") { void active().session.navigateLastPage().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
