@@ -245,6 +245,7 @@ interface ActivePrint {
 interface ActiveRender {
   readonly task: PdfRenderTask;
   readonly settled: Promise<void>;
+  cancelRequested: boolean;
 }
 interface PendingCleanup {
   readonly session: OpenPdfResult;
@@ -307,6 +308,7 @@ export class PdfReaderController {
   private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan } | undefined;
   private viewportEpoch = 0;
   private viewportSettlement: Promise<void> | undefined;
+  private viewportRequestSequence = 0;
   private viewportRollback = false;
   private viewTransform: PdfViewTransform = {
     scale: 1.25,
@@ -633,10 +635,11 @@ export class PdfReaderController {
   }
 
   private async awaitViewportIdle(): Promise<void> {
-    const settlement = this.viewportSettlement;
-    if (settlement === undefined) return;
-    this.invalidateViewportSynchronization();
-    await settlement;
+    while (this.viewportSettlement !== undefined) {
+      const settlement = this.viewportSettlement;
+      this.invalidateViewportSynchronization();
+      await settlement;
+    }
   }
   public invalidateViewportSynchronization(): void {
     if (this.activeViewportPlan === undefined || this.viewportRollback) return;
@@ -649,7 +652,9 @@ export class PdfReaderController {
   /** Synchronizes the bounded continuous resident window to finite host geometry. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     if (!Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    const requestSequence = ++this.viewportRequestSequence;
     await this.awaitViewportIdle();
+    if (requestSequence !== this.viewportRequestSequence) return false;
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const window = current.window;
@@ -1061,7 +1066,7 @@ export class PdfReaderController {
         candidate.ownedRenderSettlements.delete(settled);
         this.retryQuarantinedCandidate(candidate);
       });
-      operation = { task, settled };
+      operation = { task, settled, cancelRequested: false };
       this.activeRender = operation;
       candidate.ownedRenderSettlements.add(settled);
       try {
@@ -1462,7 +1467,10 @@ export class PdfReaderController {
   private async cancelActiveRender(): Promise<void> {
     const operation = this.activeRender;
     if (operation === undefined) return;
-    operation.task.cancel();
+    if (!operation.cancelRequested) {
+      operation.cancelRequested = true;
+      operation.task.cancel();
+    }
     await withDeadline(operation.settled, RENDER_DEADLINE_MS, "RENDER_CANCEL_TIMEOUT");
   }
 }

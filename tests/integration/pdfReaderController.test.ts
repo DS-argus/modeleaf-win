@@ -719,12 +719,13 @@ describe("PdfReaderController", () => {
     const stale = controller.synchronizeViewport(0, 30, () => current);
     await vi.waitFor(() => expect(resources.snapshot().totals.render).toBe(1));
     current = false;
+    const middle = controller.synchronizeViewport(42, 30, () => true);
     const latest = controller.synchronizeViewport(84, 30, () => true);
     expect(cancel).toHaveBeenCalledOnce();
     delayed.resolve();
     expect(await stale).toBe(false);
-    expect(await latest).toBe(true);
-    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(await middle).toBe(false);
+    expect({ result: await latest, pages: [...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page) }).toEqual({ result: true, pages: ["1", "2", "3", "4", "5"] });
     await controller.dispose();
     resources.assertEmpty();
   });
