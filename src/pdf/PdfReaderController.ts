@@ -724,38 +724,55 @@ export class PdfReaderController {
       for (const page of plan.materializePages) window.fail(page, plan.generation);
       if (!succeeded && this.current === current && !this.disposed) {
         this.viewportRollback = true;
+        let physicalRestored = false;
         try {
-          for (const page of [...current.residentRasters.keys()]) {
-            if (!originalResidents.has(page)) this.evictResidentPage(current, page);
+          if (residentAuthority !== undefined) {
+            try {
+              await residentAuthority.rollback();
+              residentAuthority = undefined;
+            } catch (error) {
+              rollbackAuthorityError = error;
+              this.options.onStatus(`PDF resident authority rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
           }
-          const physicallyResident = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
-          const rollbackPlan = window.restore(checkpoint, physicallyResident);
-          this.activeViewportPlan = { candidate: current, plan: rollbackPlan };
-          for (const page of rollbackPlan.materializePages) {
-            window.begin(page, rollbackPlan.generation);
-            const restored = await this.renderPageInternal(page, this.viewTransform);
-            if (!restored) this.options.onStatus("PDF viewport rollback could not restore a page.");
-            window.fail(page, rollbackPlan.generation);
+          if (rollbackAuthorityError === undefined) {
+            try {
+              for (const page of [...current.residentRasters.keys()]) {
+                if (!originalResidents.has(page)) this.evictResidentPage(current, page);
+              }
+              const physicallyResident = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
+              const rollbackPlan = window.restore(checkpoint, physicallyResident);
+              this.activeViewportPlan = { candidate: current, plan: rollbackPlan };
+              for (const page of rollbackPlan.materializePages) {
+                window.begin(page, rollbackPlan.generation);
+                const restored = await this.renderPageInternal(page, this.viewTransform);
+                if (!restored) throw new Error("PDF_VIEWPORT_ROLLBACK_RENDER_FAILED");
+                window.fail(page, rollbackPlan.generation);
+              }
+              const restoredResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
+              this.applyWindowSpacers(current, window.restore(checkpoint, restoredResidents));
+              const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
+                ? priorActivePage
+                : [...originalResidents].find((page) => current.residentRasters.has(page));
+              if (restoredActive !== undefined) current.activePageNumber = restoredActive;
+              for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+                frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+              }
+              physicalRestored = restoredResidents.length === originalResidents.size;
+            } catch (error) {
+              this.options.onStatus(`PDF viewport rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
           }
-          const restoredResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
-          this.applyWindowSpacers(current, window.restore(checkpoint, restoredResidents));
-          const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
-            ? priorActivePage
-            : [...originalResidents].find((page) => current.residentRasters.has(page));
-          if (restoredActive !== undefined) current.activePageNumber = restoredActive;
-          for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
-            frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+          if (physicalRestored && this.options.onBeforeResidentCommit !== undefined) {
+            try {
+              const compensation = await this.options.onBeforeResidentCommit([...originalResidents].sort((a, b) => a - b));
+              compensation?.finalize();
+            } catch (error) {
+              rollbackAuthorityError = error;
+              this.options.onStatus(`PDF resident authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
           }
-        } catch (error) {
-          this.options.onStatus(`PDF viewport rollback failed: ${error instanceof Error ? error.message : String(error)}`);
         } finally {
-          try {
-            if (residentAuthority !== undefined) await residentAuthority.rollback();
-            else await this.options.onBeforeResidentCommit?.([...originalResidents].sort((a, b) => a - b));
-          } catch (error) {
-            rollbackAuthorityError = error;
-            this.options.onStatus(`PDF resident authority rollback failed: ${error instanceof Error ? error.message : String(error)}`);
-          }
           this.viewportRollback = false;
         }
       }
@@ -805,12 +822,12 @@ export class PdfReaderController {
     host.scrollTop = restored.scrollTop;
   }
 
-  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const cssTransformChanged = transform.scale !== this.viewTransform.scale || transform.rotation !== this.viewTransform.rotation;
     const retainedAnchor = this.evictedScrollAnchor?.pageNumber === page ? this.evictedScrollAnchor.anchor : undefined;
-    const anchor = retainedAnchor ?? (cssTransformChanged || current.activePageNumber === page ? this.captureScrollAnchor() : undefined);
+    const anchor = preEvictionAnchor ?? retainedAnchor ?? (cssTransformChanged || current.activePageNumber === page ? this.captureScrollAnchor() : undefined);
     const activePlan = !cssTransformChanged && this.activeViewportPlan?.candidate === current ? this.activeViewportPlan.plan : undefined;
     const directPreview = !cssTransformChanged && activePlan === undefined ? current.window?.previewPlan(page) : undefined;
     let directPlan: PageWindowPlan | undefined;
@@ -898,17 +915,18 @@ export class PdfReaderController {
     const checkpoint = window.checkpoint();
     const priorActivePage = current.activePageNumber;
     const priorTransform = this.viewTransform;
+    const preEvictionAnchor = page === priorActivePage ? this.captureScrollAnchor() : undefined;
     const previewEvictions = transform.scale === priorTransform.scale && transform.rotation === priorTransform.rotation
       ? window.previewPlan(page).evictPages
       : checkpoint.residentPages;
-    const victim = current.residentRasters.has(page)
+    const victim = current.residentRasters.has(page) && page !== priorActivePage
       ? page
       : previewEvictions.find((candidate) => candidate !== priorActivePage && current.residentRasters.has(candidate))
         ?? [...current.residentRasters.keys()].find((candidate) => candidate !== priorActivePage)
         ?? [...current.residentRasters.keys()][0];
     if (victim === undefined) return this.renderPageInternal(page, transform, guard);
     this.evictResidentPage(current, victim);
-    const committed = await this.renderPageInternal(page, transform, guard);
+    const committed = await this.renderPageInternal(page, transform, guard, preEvictionAnchor);
     if (committed) return true;
     this.viewportRollback = true;
     try {

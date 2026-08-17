@@ -25,6 +25,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 public static class W06Native {
+ public static bool UnconfirmedProcessCleanup { get; private set; }
  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left,Top,Right,Bottom; }
  [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_LIMIT_INFORMATION { public long PerProcessUserTimeLimit,PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinimumWorkingSetSize,MaximumWorkingSetSize; public uint ActiveProcessLimit; public IntPtr Affinity; public uint PriorityClass,SchedulingClass; }
  [StructLayout(LayoutKind.Sequential)] struct IO_COUNTERS { public ulong ReadOperationCount,WriteOperationCount,OtherOperationCount,ReadTransferCount,WriteTransferCount,OtherTransferCount; }
@@ -49,7 +50,7 @@ public static class W06Native {
  [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread,ref GUITHREADINFO info);
  [DllImport("user32.dll")] static extern void keybd_event(byte key,byte scan,uint flags,UIntPtr extra);
  public static IntPtr CreateKillOnCloseJob() { IntPtr j=CreateJobObject(IntPtr.Zero,null); if(j==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error()); var x=new JOBOBJECT_EXTENDED_LIMIT_INFORMATION(); x.BasicLimitInformation.LimitFlags=0x2000; IntPtr p=Marshal.AllocHGlobal(Marshal.SizeOf(x)); try { Marshal.StructureToPtr(x,p,false); if(!SetInformationJobObject(j,9,p,Marshal.SizeOf(x))) throw new Win32Exception(Marshal.GetLastWin32Error()); return j; } catch { CloseHandle(j); throw; } finally { Marshal.FreeHGlobal(p); } }
- static Process StartOwnedCommand(IntPtr job,string exe,string commandLine) { var startup=new STARTUPINFO();startup.cb=Marshal.SizeOf(startup);PROCESS_INFORMATION created;var command=new StringBuilder(commandLine);if(!CreateProcess(exe,command,IntPtr.Zero,IntPtr.Zero,false,0x4,IntPtr.Zero,Path.GetDirectoryName(exe),ref startup,out created))throw new Win32Exception(Marshal.GetLastWin32Error());try{if(!AssignProcessToJobObject(job,created.hProcess))throw new Win32Exception(Marshal.GetLastWin32Error());if(ResumeThread(created.hThread)==UInt32.MaxValue)throw new Win32Exception(Marshal.GetLastWin32Error());return Process.GetProcessById(created.dwProcessId);}catch{if(!TerminateProcess(created.hProcess,1))throw new Win32Exception(Marshal.GetLastWin32Error());if(WaitForSingleObject(created.hProcess,5000)!=0)throw new TimeoutException("Owned process termination was not confirmed");throw;}finally{CloseHandle(created.hThread);CloseHandle(created.hProcess);} }
+ static Process StartOwnedCommand(IntPtr job,string exe,string commandLine) { var startup=new STARTUPINFO();startup.cb=Marshal.SizeOf(startup);PROCESS_INFORMATION created;var command=new StringBuilder(commandLine);if(!CreateProcess(exe,command,IntPtr.Zero,IntPtr.Zero,false,0x4,IntPtr.Zero,Path.GetDirectoryName(exe),ref startup,out created))throw new Win32Exception(Marshal.GetLastWin32Error());try{if(!AssignProcessToJobObject(job,created.hProcess))throw new Win32Exception(Marshal.GetLastWin32Error());if(ResumeThread(created.hThread)==UInt32.MaxValue)throw new Win32Exception(Marshal.GetLastWin32Error());return Process.GetProcessById(created.dwProcessId);}catch{bool terminated=TerminateProcess(created.hProcess,1);int terminationError=terminated?0:Marshal.GetLastWin32Error();uint wait=WaitForSingleObject(created.hProcess,5000);if(wait!=0){UnconfirmedProcessCleanup=true;if(!terminated)throw new Win32Exception(terminationError);throw new TimeoutException("Owned process termination was not confirmed");}throw;}finally{CloseHandle(created.hThread);CloseHandle(created.hProcess);} }
  public static Process StartOwned(IntPtr job,string exe,string argument) { return StartOwnedCommand(job,exe,"\""+exe+"\" \""+argument+"\""); }
  public static Process StartOwnedArguments(IntPtr job,string exe,string arguments) { return StartOwnedCommand(job,exe,"\""+exe+"\" "+arguments); }
  static IntPtr FocusedWindow(IntPtr topLevel) { uint thread=GetWindowThreadProcessId(topLevel,IntPtr.Zero);var info=new GUITHREADINFO();info.cbSize=Marshal.SizeOf(info);return thread!=0&&GetGUIThreadInfo(thread,ref info)&&info.hwndFocus!=IntPtr.Zero?info.hwndFocus:topLevel; }
@@ -106,7 +107,12 @@ try {
   Assert-FixtureUnchanged 'terminal';$success=$true
 } catch { $failure=$_.Exception.Message;Add-Event 'failure' 'invariant-failed' }
 finally {
-  try { if($job -ne [IntPtr]::Zero){[void][W06Native]::TerminateJobObject($job,1)};if($null -ne $process -and -not $process.HasExited){Wait-Until {$process.HasExited} $ExitTimeoutMs 'Owned product survived cleanup'};$cleanup=$true } catch { $success=$false;$failure=if($null -eq $failure){$_.Exception.Message}else{$failure} }
+  try {
+    if($job -ne [IntPtr]::Zero){[void][W06Native]::TerminateJobObject($job,1)}
+    if($null -ne $process -and -not $process.HasExited){Wait-Until {$process.HasExited} $ExitTimeoutMs 'Owned product survived cleanup'}
+    if([W06Native]::UnconfirmedProcessCleanup){throw 'Helper process cleanup was not confirmed'}
+    $cleanup=$true
+  } catch { $success=$false;$cleanup=$false;$failure=if($null -eq $failure){$_.Exception.Message}else{$failure} }
   if($job -ne [IntPtr]::Zero){try{[void][W06Native]::CloseHandle($job)}catch{$success=$false;$cleanup=$false}}
   $status=if($success -and $cleanup){'passed'}else{'failed'};$safeFailure=if($null -eq $failure){$null}else{'invariant-failed'}
   Write-AtomicTerminal $terminal ([ordered]@{schemaVersion=1;kind='w06-packaged-windows-smoke';status=$status;dryRun=(-not $Run);bindings=[ordered]@{exeSha256=$exeHash;scriptSha256=$scriptHash;fixtureSha256Before=$fixtureHash;fixtureSha256After=(Get-Sha256 $pdf)};limits=[ordered]@{launchTimeoutMs=$LaunchTimeoutMs;actionTimeoutMs=$ActionTimeoutMs;exitTimeoutMs=$ExitTimeoutMs;maxWorkingSetMiB=$MaxWorkingSetMiB;maxCpuMilliseconds=$MaxCpuMilliseconds};visualHashes=$visualHashes;events=$events;cleanupGuaranteed=$cleanup;failure=$safeFailure})

@@ -667,7 +667,11 @@ describe("PdfReaderController", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
-    const publishResidents = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("registry unavailable"));
+    const compensationFinalize = vi.fn();
+    const publishResidents = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("registry unavailable"))
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("resident-authority", 1))), resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(5))), annotationMode: 0 }, canvasHost: host,
@@ -682,6 +686,7 @@ describe("PdfReaderController", () => {
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(committedPages);
     expect(publishedCanvas(host).dataset.page).toBe("3");
     expect(publishResidents).toHaveBeenLastCalledWith([1, 2, 3, 4, 5]);
+    expect(compensationFinalize).toHaveBeenCalledOnce();
     await controller.dispose();
     resources.assertEmpty();
   });
@@ -708,6 +713,41 @@ describe("PdfReaderController", () => {
     await expect(controller.synchronizeViewport(0, 0, () => guardCurrent)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     expect(rollback).toHaveBeenCalledOnce();
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1", "2", "3", "4", "5"]);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("releases forward resident authority before disjoint rollback renders", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const events: string[] = [];
+    let guardCurrent = true;
+    let rollbackStarted = false;
+    const compensationFinalize = vi.fn(() => { events.push("authority-restored"); });
+    const publishResidents = vi.fn()
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: vi.fn() })
+      .mockImplementationOnce(async () => {
+        guardCurrent = false;
+        return { rollback: vi.fn(async () => { rollbackStarted = true; events.push("authority-rolled-back"); }), finalize: vi.fn() };
+      })
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      if (rollbackStarted && pageNumber <= 5) events.push(`rollback-render-${pageNumber}`);
+      return page(pageNumber);
+    });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("authority-order", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(10, getPage))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+
+    expect(await controller.synchronizeViewport(300, 120, () => guardCurrent)).toBe(false);
+    expect(events[0]).toBe("authority-rolled-back");
+    expect(events.some((event) => event.startsWith("rollback-render-"))).toBe(true);
+    expect(events.at(-1)).toBe("authority-restored");
+    expect(compensationFinalize).toHaveBeenCalledOnce();
     await controller.dispose();
     resources.assertEmpty();
   });
@@ -976,11 +1016,14 @@ describe("PdfReaderController", () => {
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
     let peakCanvasBytes = 0;
+    let trackActiveFrame = false;
+    let activeFramePreserved = true;
     const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
       const source = page(pageNumber);
       return { ...source, render: (options) => {
         const operation = source.render(options);
         peakCanvasBytes = Math.max(peakCanvasBytes, resources.snapshot().totals["canvas-bytes"] ?? 0);
+        if (trackActiveFrame) activeFramePreserved &&= host.querySelector(":scope > .pdf-page-frame[data-active-page='true']") !== null;
         return operation;
       } };
     });
@@ -997,8 +1040,10 @@ describe("PdfReaderController", () => {
 
     expect(await controller.synchronizeViewport(84, 30)).toBe(true);
     peakCanvasBytes = 0;
+    trackActiveFrame = true;
     expect(await controller.setViewTransform({ scale: 2, rotation: 90, devicePixelRatio: 1 })).toBe(true);
     expect(peakCanvasBytes).toBeLessThanOrEqual(5 * 40 * 60 * 4);
+    expect(activeFramePreserved).toBe(true);
     await controller.dispose();
     resources.assertEmpty();
   });

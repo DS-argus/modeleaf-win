@@ -627,7 +627,16 @@ function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(a
     render();
   }
 }); }
-function closeTab(id: TabId): void { void queueWorkspaceTransition(async () => { const wasActive = id === workspace.activeTabId; if (!workspace.close(id)) return; if (wasActive) await activateCurrentTab(); else render(); }); }
+function closeTab(id: TabId): void {
+  void queueWorkspaceTransition(async () => {
+    const wasActive = id === workspace.activeTabId;
+    if (!workspace.close(id)) return;
+    if (wasActive) await activateCurrentTab(); else render();
+  }).catch(() => {
+    active().session.reader.setStatus("Could not activate the tab after closing.");
+    render();
+  });
+}
 async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
   let adoptedSession: PdfTabSession | undefined;
   await queueWorkspaceOwnership(async () => {

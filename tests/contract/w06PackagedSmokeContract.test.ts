@@ -38,6 +38,11 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).not.toMatch(/\$helper=Start-Process/);
     expect(script).toMatch(/0x4/);
     expect(script).toMatch(/WaitForSingleObject/);
+    expect(script).toMatch(/terminationError/);
+    expect(script).toMatch(/UnconfirmedProcessCleanup=true/);
+    expect(script).toMatch(/Helper process cleanup was not confirmed/);
+    expect(script).toMatch(/\$cleanup=\$false/);
+    expect(script).toMatch(/uint wait=WaitForSingleObject/);
     expect(script).toMatch(/Owned process termination was not confirmed/);
     expect(script).toMatch(/TerminateJobObject/);
     expect(script).toMatch(/LaunchTimeoutMs=20000/);
@@ -77,6 +82,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(main).toMatch(/await prior\.session\.deactivate\(\)/);
     expect(main).toMatch(/await activateCurrentTab\(true\)/);
     expect(main).not.toMatch(/deactivate\(\)\.catch\(\(\) => undefined\)/);
+    expect(main).toMatch(/Could not activate the tab after closing/);
+    expect(main).toMatch(/queueWorkspaceTransition[\s\S]*?\.catch/);
   });
   it("emits a single path-free atomic terminal receipt and refuses stale evidence", async () => {
     const script = await source();
