@@ -216,14 +216,54 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.activate();
     internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
     Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => 1 });
-    internals.pdfReader.renderPageWithTransform = vi.fn(async () => { throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"); });
+    const onReaderStatus = (internals.pdfReader as unknown as { options: { onStatus: (status: string) => void } }).options.onStatus;
+    internals.pdfReader.renderPageWithTransform = vi.fn(async () => {
+      onReaderStatus("PDF direct rollback was incomplete.");
+      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    });
     session.apply({ type: "page.next" });
 
     await expect(session.renderPage(2)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     expect(session.snapshot.reader.page).toBe(1);
     expect(content.activateResidentPage).toHaveBeenLastCalledWith(1);
+    expect(session.snapshot.status).toBe("PDF direct rollback was incomplete.");
   });
 
+  it("preserves a precise viewport recovery diagnostic while observing rejection", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader as unknown as {
+      activePageNumber?: number;
+      options: { onStatus: (status: string) => void };
+      synchronizeViewport: (scrollTop: number, clientHeight: number, guard: () => boolean) => Promise<boolean>;
+    };
+    session.reader.mountDocument(3);
+    session.reader.restoreView({ zoomMode: "custom", customScale: 1, rotationQuarterTurns: 0 });
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    Object.defineProperty(reader, "activePageNumber", { configurable: true, get: () => 1 });
+    reader.synchronizeViewport = vi.fn(async () => {
+      reader.options.onStatus("PDF viewport rollback was incomplete.");
+      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    });
+
+    await expect(session.synchronizeViewport(0, 100)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.status).toBe("PDF viewport rollback was incomplete.");
+    expect(content.activateResidentPage).toHaveBeenLastCalledWith(1);
+  });
+  it("suspends content when recovery has no physical active page", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { recoverFailedPresentation: (intent: number, activityGeneration: number) => void; presentationDirty: boolean };
+    session.reader.mountDocument(1);
+    await session.activate();
+    Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => undefined });
+
+    internals.recoverFailedPresentation(0, 1);
+    expect(content.suspend).toHaveBeenCalledOnce();
+    expect(internals.presentationDirty).toBe(true);
+  });
   it("cancels a queued destination when its presentation rejects", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });

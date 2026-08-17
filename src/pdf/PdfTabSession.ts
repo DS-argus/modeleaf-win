@@ -44,6 +44,7 @@ export type PdfTabSearchDecision =
   | { readonly kind: "cycle"; readonly reverse: boolean }
   | { readonly kind: "search"; readonly query: string };
 
+const isAuthorityIncomplete = (error: unknown): boolean => error instanceof Error && error.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE";
 export function decidePdfTabSearch(
   snapshot: Pick<PdfContentSnapshot, "query" | "results" | "searchPending" | "searchIncomplete">,
   source: string,
@@ -294,6 +295,7 @@ export class PdfTabSession {
   /** Production scroll entry point: materializes the bounded continuous window. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
     if (this.closed || !this.active || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
     const navigationIntent = this.navigationIntent;
@@ -325,7 +327,8 @@ export class PdfTabSession {
       return committed;
     } catch (error) {
       if (guard() && this.reader.snapshot.documentGeneration === documentGeneration) {
-        this.recoverFailedPresentation(renderIntent, activityGeneration);
+        const failureStatus = this.readerStatusVersion === statusVersion ? undefined : this.reader.snapshot.status;
+        this.recoverFailedPresentation(renderIntent, activityGeneration, failureStatus);
       } else {
         this.presentationDirty = true;
       }
@@ -500,6 +503,7 @@ export class PdfTabSession {
     const activePage = this.pdfReader.activePageNumber;
     if (activePage === undefined) {
       this.presentationDirty = true;
+      this.content?.suspend();
     } else {
       if (this.reader.snapshot.page !== activePage) this.reader.apply({ type: "page.goTo", page: activePage });
       if (this.content?.activateResidentPage(activePage) === false) this.presentationDirty = true;
@@ -538,7 +542,7 @@ export class PdfTabSession {
       const intent = ++this.renderIntent;
       this.pendingRenderRollback = { intent, activityGeneration: this.activityGeneration, ...this.lastCommittedRender };
       const documentGeneration = committed.documentGeneration;
-      void this.renderOpeningFitPage().catch(() => this.setStatus("PDF presentation could not be updated.")).finally(() => {
+      void this.renderOpeningFitPage().catch((error: unknown) => { if (!isAuthorityIncomplete(error)) this.setStatus("PDF presentation could not be updated."); }).finally(() => {
         if (this.reader.snapshot.documentGeneration === documentGeneration) this.openingFitRenderInFlight = false;
       });
     }

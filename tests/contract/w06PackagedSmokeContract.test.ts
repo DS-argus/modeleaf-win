@@ -85,6 +85,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(main).toMatch(/await activateCurrentTab\(true\)/);
     expect(main).not.toMatch(/deactivate\(\)\.catch\(\(\) => undefined\)/);
     expect(main).toMatch(/function reportPresentationFailure/);
+    expect(main).toMatch(/error\.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE"/);
+    expect(main).toMatch(/viewportSynchronization\.catch\(\(error: unknown\)/);
     expect(main).toMatch(/renderPage\(reader\.page\)\.catch/);
     expect(main).toMatch(/renderCurrentView\(\)\.catch/);
     expect(main).toMatch(/navigateToDestination\(page, destination\)\.catch/);

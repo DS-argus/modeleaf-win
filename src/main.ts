@@ -427,8 +427,10 @@ function renderHelpRows(): void {
     return section;
   }));
 }
-function reportPresentationFailure(session: PdfTabSession): void {
-  session.reader.setStatus("PDF presentation could not be updated.");
+function reportPresentationFailure(session: PdfTabSession, error: unknown): void {
+  if (!(error instanceof Error && error.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE")) {
+    session.reader.setStatus("PDF presentation could not be updated.");
+  }
   render();
 }
 const boundaryPageTurns = new WeakSet<HTMLElement>();
@@ -445,7 +447,7 @@ function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direc
     if (committed && direction < 0) {
       payload.host.scrollTop = Math.max(0, payload.host.scrollHeight - payload.host.clientHeight);
     }
-  }).catch(() => reportPresentationFailure(payload.session)).finally(() => {
+  }).catch((error: unknown) => reportPresentationFailure(payload.session, error)).finally(() => {
     boundaryPageTurns.delete(payload.host);
     rootKeyboard.syncContext();
     render();
@@ -476,8 +478,8 @@ function createTab(): TabPayload {
     resources,
     canvasHost: host,
     createContentOptions: (opened, generation) => ({
-      navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch(() => reportPresentationFailure(session)); } },
-      navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination).catch(() => reportPresentationFailure(session)); },
+      navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch((error: unknown) => reportPresentationFailure(session, error)); } },
+      navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination).catch((error: unknown) => reportPresentationFailure(session, error)); },
       prepareExternalLinks: (entries, registryRevision) => invoke<void>("prepare_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, entries: entries.map((entry) => ({ annotation_id: entry.annotationId, target: entry.target })) }),
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
@@ -532,8 +534,8 @@ function createTab(): TabPayload {
     viewportResyncRequested = false;
     if (viewportDisposed || active().session !== session || viewportSynchronization !== undefined) return;
     viewportSynchronization = session.synchronizeViewport(host.scrollTop, host.clientHeight);
-    const viewportSettlement = viewportSynchronization.catch(() => {
-      session.reader.setStatus("PDF viewport could not be updated.");
+    const viewportSettlement = viewportSynchronization.catch((error: unknown) => {
+      reportPresentationFailure(session, error);
       return false;
     });
     void viewportSettlement.finally(() => {
@@ -951,7 +953,7 @@ function dispatch(action: Action): void {
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
-  if (type.startsWith("page.")) void session.renderPage(reader.page).catch(() => reportPresentationFailure(session)); if (type.startsWith("view.")) void session.renderCurrentView().catch(() => reportPresentationFailure(session));
+  if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchDialog.showModal(); searchInput.focus(); }
   if (type === "linkHints.toggle") session.toggleHints(); if (type === "prompt.cancel") session.cancelHints();
   if (type.startsWith("scroll.")) {
@@ -1037,7 +1039,7 @@ const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
-  void session.renderCurrentView().catch(() => reportPresentationFailure(session));
+  void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 };
 function bindDprChange(): void {
   dprMediaQuery?.removeEventListener?.("change", onDprChange);
@@ -1066,7 +1068,7 @@ const disposeSearchPrompt = bindSearchPrompt(
   () => active().session,
   render,
 );
-window.addEventListener("resize", () => { scheduleDprPollFallback(); const session = active().session; void session.renderCurrentView().catch(() => reportPresentationFailure(session)); });
+window.addEventListener("resize", () => { scheduleDprPollFallback(); const session = active().session; void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error)); });
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);
 window.addEventListener("focusin", (event) => { if (isEditableTarget(event.target)) rootKeyboard.cancelPending(); });

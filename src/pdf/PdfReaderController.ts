@@ -762,7 +762,7 @@ export class PdfReaderController {
               const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
                 ? priorActivePage
                 : authorityResidents[0];
-              if (restoredActive !== undefined) current.activePageNumber = restoredActive;
+              if (restoredActive === undefined) delete current.activePageNumber; else current.activePageNumber = restoredActive;
               for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
                 frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
               }
@@ -963,7 +963,7 @@ export class PdfReaderController {
       const authorityResidents = [...current.residentRasters.keys()].filter((resident) => checkpoint.residentPages.includes(resident)).sort((a, b) => a - b);
       this.applyWindowSpacers(current, window.restore(checkpoint, authorityResidents));
       const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage) ? priorActivePage : authorityResidents[0];
-      if (restoredActive !== undefined) current.activePageNumber = restoredActive;
+      if (restoredActive === undefined) delete current.activePageNumber; else current.activePageNumber = restoredActive;
       for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
         frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
       }
@@ -996,6 +996,13 @@ export class PdfReaderController {
     const activePage = current.activePageNumber;
     const checkpoint = window.checkpoint();
     const basePlan = window.restore(checkpoint, checkpoint.residentPages);
+    const restoreResidentActivity = (): number | undefined => {
+      const restoredActive = activePage !== undefined && current.residentRasters.has(activePage)
+        ? activePage
+        : [...current.residentRasters.keys()].sort((a, b) => a - b)[0];
+      if (restoredActive === undefined) delete current.activePageNumber; else current.activePageNumber = restoredActive;
+      return restoredActive;
+    };
     const replaceAll = async (target: PdfViewTransform, guard?: PdfRequestCommitGuard): Promise<boolean> => {
       for (const page of pages) {
         if (guard !== undefined && !guard()) return false;
@@ -1013,20 +1020,20 @@ export class PdfReaderController {
     try {
       succeeded = await replaceAll(transform, requestCommitGuard);
       if (!succeeded) return false;
-      if (activePage !== undefined) current.activePageNumber = activePage;
+      const restoredActive = restoreResidentActivity();
       for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
-        frame.dataset.activePage = String(activePage !== undefined && Number(frame.dataset.page) === activePage);
+        frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
       }
-      if (activePage !== undefined) this.notifyObserver(() => this.options.onPage(activePage, transform));
+      if (restoredActive !== undefined) this.notifyObserver(() => this.options.onPage(restoredActive, transform));
       return true;
     } finally {
       if (!succeeded && this.current === current && !this.disposed) {
         this.viewportRollback = true;
         try {
           if (!await replaceAll(priorTransform)) this.options.onStatus("PDF DPR rollback could not restore every page.");
-          if (activePage !== undefined) current.activePageNumber = activePage;
+          const restoredActive = restoreResidentActivity();
           for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
-            frame.dataset.activePage = String(activePage !== undefined && Number(frame.dataset.page) === activePage);
+            frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
           }
         } finally {
           this.viewportRollback = false;

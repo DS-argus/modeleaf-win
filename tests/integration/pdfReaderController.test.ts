@@ -767,7 +767,7 @@ describe("PdfReaderController", () => {
       .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
     const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => page(
       pageNumber,
-      rollbackStarted && pageNumber === 1 ? Promise.reject(new Error("rollback page failed")) : Promise.resolve(),
+      rollbackStarted && pageNumber <= 5 ? Promise.reject(new Error("rollback page failed")) : Promise.resolve(),
     ));
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("authority-subset", 1))), resources,
@@ -778,9 +778,10 @@ describe("PdfReaderController", () => {
     expect(await controller.synchronizeViewport(84, 30)).toBe(true);
 
     await expect(controller.synchronizeViewport(300, 120, () => guardCurrent)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
-    expect(publishResidents).toHaveBeenLastCalledWith([2, 3, 4, 5]);
+    expect(publishResidents).toHaveBeenLastCalledWith([]);
     expect(compensationFinalize).toHaveBeenCalledOnce();
-    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["2", "3", "4", "5"]);
+    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")]).toHaveLength(0);
+    expect(controller.activePageNumber).toBeUndefined();
     await controller.dispose();
     resources.assertEmpty();
   });
