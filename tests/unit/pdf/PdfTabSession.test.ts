@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { PdfTabSession, decidePdfTabSearch } from "../../../src/pdf/PdfTabSession";
+import { PdfTabSession } from "../../../src/pdf/PdfTabSession";
 import type { PdfSearchResult } from "../../../src/pdf/PdfContentController";
 import { ResourceReservationManager } from "../../../src/pdf/ResourceBudget";
-
 function createSession(onStatus?: (status: string) => void): PdfTabSession {
-  return new PdfTabSession({
+  const session = new PdfTabSession({
     native: {} as never,
     pdf: {} as never,
     resources: new ResourceReservationManager(),
@@ -12,6 +11,9 @@ function createSession(onStatus?: (status: string) => void): PdfTabSession {
     ...(onStatus === undefined ? {} : { onStatus }),
     createContentOptions: () => ({}) as never,
   });
+  const reader = (session as unknown as SessionInternals).pdfReader;
+  vi.spyOn(reader, "getPageTopLanding").mockImplementation(async (page) => ({ pageIndex: page - 1, x: 0, y: 0 }));
+  return session;
 }
 
 type SearchSnapshot = {
@@ -37,12 +39,24 @@ type SessionInternals = {
   pdfReader: {
     evictInactiveCanvas: () => boolean;
     adopt: () => Promise<true>;
+    getPageTopLanding: (page: number, transform: unknown, guard: () => boolean) => Promise<{ pageIndex: number; x: number; y: number } | undefined>;
     getPageNaturalSize: (page: number, rotation: number, guard: () => boolean) => Promise<{ width: number; height: number } | undefined>;
     suspend: () => Promise<void>;
+    captureViewportLanding: () => { pageIndex: number; x: number; y: number } | undefined;
+    restoreViewportLanding: (target: { pageIndex: number; x: number; y: number }, guard: () => boolean, transform?: unknown, placement?: "center" | "page-top") => Promise<
+      | { kind: "verified" | "constrainedEdgeVerified"; landing: { pageIndex: number; x: number; y: number } }
+      | { kind: "preflightRejected" | "staleOrCancelled" }
+      | { kind: "failed"; landing?: { pageIndex: number; x: number; y: number } }
+    >;
     renderPageWithTransform: (page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
   };
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
 const SEARCH_RESULT: PdfSearchResult = { pageNumber: 1, index: 0, length: 1 };
 
 function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
@@ -64,6 +78,178 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
 }
 
 describe("PdfTabSession CP4 pressure and search ownership", () => {
+  it("derives page jumps from the target viewport visual top", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    vi.mocked(reader.getPageTopLanding).mockResolvedValue({ pageIndex: 1, x: 10, y: 90 });
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue({ pageIndex: 0, x: 0, y: 100 });
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockResolvedValue({ kind: "verified", landing: { pageIndex: 1, x: 10, y: 90 } });
+
+    await expect(session.navigatePagePrompt(2)).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(reader.getPageTopLanding).toHaveBeenCalledWith(2, expect.objectContaining({ rotation: 0 }), expect.any(Function));
+    expect(restore.mock.calls[0]?.[0]).toEqual({ pageIndex: 1, x: 10, y: 90 });
+    expect(restore.mock.calls[0]?.[3]).toBe("page-top");
+  });
+  it("commits verified history, traverses directionally, and preserves stacks on compensated failure", async () => {
+    const session = createSession();
+    session.reader.mountDocument(3);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const origin = { pageIndex: 0, x: 10, y: 20 };
+    const pageTwo = { pageIndex: 1, x: 0, y: 0 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    const restore = vi.spyOn(reader, "restoreViewportLanding");
+    restore.mockResolvedValueOnce({ kind: "verified", landing: pageTwo });
+
+    await expect(session.navigatePagePrompt(2)).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(restore.mock.calls[0]?.[2]).toMatchObject({ scale: 2, rotation: 0 });
+    expect(session.canHistoryBack).toBe(true);
+    expect(session.canHistoryForward).toBe(false);
+
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(pageTwo);
+    restore.mockResolvedValueOnce({ kind: "verified", landing: origin });
+    await expect(session.navigateHistoryBack()).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(session.canHistoryBack).toBe(false);
+    expect(session.canHistoryForward).toBe(true);
+
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(origin);
+    restore.mockResolvedValueOnce({ kind: "failed", landing: pageTwo }).mockResolvedValueOnce({ kind: "verified", landing: origin });
+    await expect(session.navigateLastPage()).resolves.toEqual({ kind: "compensatedFailure" });
+    expect(session.canHistoryForward).toBe(true);
+  });
+
+  it("coalesces query replacements into one history boundary while displaying every verified result", async () => {
+    const session = createSession();
+    session.reader.mountDocument(3);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const pageOne = { pageIndex: 0, x: 4, y: 5 };
+    const pageTwo = { pageIndex: 1, x: 6, y: 7 };
+    const pageThree = { pageIndex: 2, x: 8, y: 9 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(pageOne);
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockResolvedValueOnce({ kind: "verified", landing: pageTwo })
+      .mockResolvedValueOnce({ kind: "verified", landing: pageThree })
+      .mockResolvedValueOnce({ kind: "verified", landing: { pageIndex: 0, x: 0, y: 0 } });
+
+    const epoch = session.beginSearchLandingEpoch();
+    expect(session.beginSearchLandingEpoch()).toBe(epoch);
+    await expect(session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 1, resultIndex: 0, result: { pageNumber: 2, index: 0, length: 1, geometry: { x: 6, y: 7, width: 1, height: 1 } }, provenance: "initial" })).resolves.toEqual({ kind: "verifiedLanding" });
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(pageTwo);
+    await expect(session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 2, resultIndex: 1, result: { pageNumber: 3, index: 0, length: 1, geometry: { x: 8, y: 9, width: 1, height: 1 } }, provenance: "next" })).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(restore).toHaveBeenCalledTimes(2);
+
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(pageThree);
+    await expect(session.navigateFirstPage()).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(session.beginSearchLandingEpoch()).toBeGreaterThan(epoch);
+  });
+  it("keeps search display-only when no origin was available at arming", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const capture = vi.spyOn(reader, "captureViewportLanding").mockReturnValueOnce(undefined).mockReturnValue({ pageIndex: 0, x: 1, y: 1 });
+    vi.spyOn(reader, "restoreViewportLanding").mockResolvedValue({ kind: "verified", landing: { pageIndex: 1, x: 2, y: 3 } });
+
+    session.beginSearchLandingEpoch();
+    await expect(session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 1, resultIndex: 0, result: { pageNumber: 2, index: 0, length: 1, geometry: { x: 2, y: 3, width: 1, height: 1 } }, provenance: "initial" })).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(capture).toHaveBeenCalled();
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("physically verifies a later result at the armed origin without another history mutation", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const armed = { pageIndex: 0, x: 2, y: 3 };
+    const match = { pageIndex: 1, x: 4, y: 5 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(armed);
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockResolvedValueOnce({ kind: "verified", landing: match })
+      .mockResolvedValueOnce({ kind: "verified", landing: armed });
+
+    session.beginSearchLandingEpoch();
+    await expect(session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 1, resultIndex: 0, result: { pageNumber: 2, index: 0, length: 1, geometry: { x: 4, y: 5, width: 1, height: 1 } }, provenance: "initial" })).resolves.toEqual({ kind: "verifiedLanding" });
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(match);
+    await expect(session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 2, resultIndex: 1, result: { pageNumber: 1, index: 0, length: 1, geometry: { x: 2, y: 3, width: 1, height: 1 } }, provenance: "next" })).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(session.canHistoryBack).toBe(true);
+  });
+  it("records the armed pre-search origin rather than a later live scroll", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const armed = { pageIndex: 0, x: 2, y: 3 };
+    const scrolled = { pageIndex: 0, x: 20, y: 30 };
+    const match = { pageIndex: 1, x: 4, y: 5 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(armed);
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockResolvedValueOnce({ kind: "verified", landing: match })
+      .mockResolvedValueOnce({ kind: "verified", landing: armed });
+
+    session.beginSearchLandingEpoch();
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(scrolled);
+    await expect(session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 1, resultIndex: 0, result: { pageNumber: 2, index: 0, length: 1, geometry: { x: 4, y: 5, width: 1, height: 1 } }, provenance: "initial" })).resolves.toEqual({ kind: "verifiedLanding" });
+    vi.mocked(reader.captureViewportLanding).mockReturnValue(match);
+    await expect(session.navigateHistoryBack()).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(restore.mock.calls[1]?.[0]).toEqual(armed);
+  });
+  it("rejects a landing invalidated by query replacement without committing history", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue({ pageIndex: 0, x: 1, y: 1 });
+    const landing = deferred<{ kind: "verified"; landing: { pageIndex: number; x: number; y: number } }>();
+    vi.spyOn(reader, "restoreViewportLanding").mockReturnValue(landing.promise);
+
+    session.startSearch("alpha");
+    const pending = session.navigateSearchLanding({ searchGeneration: 1, selectionSequence: 1, resultIndex: 0, result: { pageNumber: 2, index: 0, length: 1, geometry: { x: 0, y: 0, width: 1, height: 1 } }, provenance: "initial" });
+    session.startSearch("beta");
+    landing.resolve({ kind: "verified", landing: { pageIndex: 1, x: 0, y: 0 } });
+    await expect(pending).resolves.toEqual({ kind: "stale" });
+    expect(session.canHistoryBack).toBe(false);
+  });
+
+  it("does not compensate a preflight rejection that cannot have moved presentation", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue({ pageIndex: 0, x: 1, y: 1 });
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockResolvedValue({ kind: "preflightRejected" });
+
+    await expect(session.navigateLastPage()).resolves.toEqual({ kind: "preflightRejected" });
+    expect(restore).toHaveBeenCalledOnce();
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("fails history closed when landing compensation cannot restore authority", async () => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue({ pageIndex: 0, x: 5, y: 5 });
+    vi.spyOn(reader, "restoreViewportLanding")
+      .mockResolvedValueOnce({ kind: "failed", landing: { pageIndex: 1, x: 0, y: 0 } })
+      .mockResolvedValueOnce({ kind: "failed", landing: { pageIndex: 1, x: 0, y: 0 } });
+
+    await expect(session.navigateLastPage()).resolves.toEqual({ kind: "uncompensatedInvariantFailure" });
+    expect(session.canHistoryBack).toBe(false);
+    await expect(session.navigatePagePrompt(2)).resolves.toEqual({ kind: "unavailable" });
+  });
   it("never evicts an active tab and offers eviction after an inactive tab is suspended", async () => {
     const active = createSession();
     const inactive = createSession();
@@ -79,24 +265,27 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(inactiveEviction).toHaveBeenCalledOnce();
   });
 
-  it("cycles a completed same-query result set, but searches normalized new queries from their first result", () => {
+  it("cycles completed results but restarts every prompt query including the same query", async () => {
     const session = createSession();
-    session.activate();
+    await session.activate();
     const content = installContent(session, { query: "match", results: [SEARCH_RESULT], searchPending: false, searchIncomplete: false });
 
-    expect(session.submitSearch("  MATCH  ", true)).toEqual({ kind: "cycle", reverse: true });
+    expect(session.cycleSearch(true)).toEqual({ kind: "cycle", reverse: true });
     expect(content.nextMatch).toHaveBeenCalledWith(true);
     expect(content.search).not.toHaveBeenCalled();
 
-    expect(session.submitSearch("Different")).toEqual({ kind: "search", query: "different" });
+    expect(session.startSearch("  MATCH  ")).toEqual({ kind: "search", query: "match" });
+    expect(content.search).toHaveBeenCalledWith("match");
+    expect(session.startSearch("Different")).toEqual({ kind: "search", query: "different" });
     expect(content.search).toHaveBeenCalledWith("different");
   });
 
-  it("does not cycle partial results while an interrupted search is waiting to restore", () => {
-    expect(decidePdfTabSearch({ query: "match", results: [SEARCH_RESULT], searchPending: false, searchIncomplete: true }, "MATCH"))
-      .toEqual({ kind: "ignore" });
+  it("does not cycle partial results while an interrupted search is waiting to restore", async () => {
+    const session = createSession();
+    installContent(session, { query: "match", results: [SEARCH_RESULT], searchPending: false, searchIncomplete: true });
+    await session.activate();
+    expect(session.cycleSearch()).toEqual({ kind: "ignore" });
   });
-
   it("activates the page nearest the scrolling viewport", async () => {
     const session = createSession();
     const internals = session as unknown as SessionInternals;
@@ -326,7 +515,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     const retry = session.activate().then(() => { retrySettled = true; });
     await Promise.resolve();
     expect(retrySettled).toBe(false);
-    expect(session.submitSearch("blocked")).toEqual({ kind: "ignore" });
+    expect(session.startSearch("blocked")).toEqual({ kind: "ignore" });
     releaseSuspend();
     releaseRevoke();
     await expect(activation).rejects.toThrow("restore failed");

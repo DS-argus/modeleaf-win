@@ -72,9 +72,21 @@ export function createRootKeyboardRouter(options: RootKeyboardRouterOptions): Ro
   };
   const handleKeyDown = (event: RootKeyboardEvent): boolean => {
     syncContext();
+    const context = options.getContext();
+    if (isPhysicalHistoryAccelerator(event)) {
+      cancelPending();
+      event.preventDefault();
+      if (!isHistoryDispatchEligible(event)) return true;
+      const token = event.key === "ArrowLeft" ? "<A-Left>" : "<A-Right>";
+      const historyAction = directHistoryAction(options.config, token, context.inputContext);
+      if (historyAction === undefined) return true;
+      const availability = getActionRuntimeAvailability(historyAction, context.runtime);
+      if (!event.repeat && availability.enabled) options.onDispatch(historyAction, { actionId: historyAction });
+      else if (!availability.enabled) options.onDisabled?.(historyAction, availability.reason);
+      return true;
+    }
     const token = keyboardToken(event);
     if (token === undefined) { cancelPending(); return false; }
-    const context = options.getContext();
     const result = engine.advance(token, context.inputContext, now(), event.repeat);
     const deferred = result.kind === "dispatch" && options.deferAction?.(result.dispatch.actionId) === true;
     const unboundHandled = result.kind === "invalid" && result.reason === "no-binding" && options.onUnboundToken?.(token, context) === true;
@@ -108,6 +120,23 @@ function keyboardToken(event: RootKeyboardEvent): string | undefined {
   const source = modifiers.length === 0 ? key : `<${[...modifiers, chordBase(key)].join("-")}>`;
   const parsed = parseKeySequence(source);
   return parsed.ok && parsed.tokens.length === 1 ? parsed.canonical : undefined;
+}
+function isPhysicalHistoryAccelerator(event: RootKeyboardEvent): boolean {
+  return event.altKey && !event.ctrlKey && !event.metaKey && !event.altGraph
+    && (event.key === "ArrowLeft" || event.key === "ArrowRight");
+}
+function isHistoryDispatchEligible(event: RootKeyboardEvent): boolean {
+  return !event.shiftKey && !event.nativeOwnedTarget && !event.isComposing && event.keyCode !== 229;
+}
+function directHistoryAction(config: ProductConfig, token: string, context: InputContext): ActionId | undefined {
+  if (context !== "navigation") return undefined;
+  for (const actionId of ["history.back", "history.forward"] as const) {
+    for (const sequence of config.keymap[actionId] ?? []) {
+      const parsed = parseKeySequence(sequence);
+      if (parsed.ok && parsed.tokens.length === 1 && parsed.canonical === token) return actionId;
+    }
+  }
+  return undefined;
 }
 function normalizeBrowserKey(key: string): string | undefined {
   const named: Readonly<Record<string, string>> = Object.freeze({

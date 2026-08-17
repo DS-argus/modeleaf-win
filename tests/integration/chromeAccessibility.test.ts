@@ -154,19 +154,18 @@ describe("chrome accessibility contract", () => {
   });
 });
 describe("search prompt production binding", () => {
-  it("clears and cancels on Escape without submitting or moving the reader", () => {
+  it("cancels the prompt on Escape without clearing active search or moving the reader", () => {
     const dialog = document.createElement("dialog");
     const form = document.createElement("form");
     const input = document.createElement("input");
     form.append(input);
     dialog.append(form);
     document.body.append(dialog);
-    const invalidateSearch = vi.fn();
-    const submitSearch = vi.fn();
+    const startSearch = vi.fn(() => ({ kind: "search" as const }));
     const render = vi.fn();
     const dispose = bindSearchPrompt(
       { dialog, form, input },
-      () => ({ invalidateSearch, submitSearch }),
+      () => ({ startSearch }),
       render,
     );
 
@@ -178,9 +177,8 @@ describe("search prompt production binding", () => {
     input.dispatchEvent(event);
 
     expect(event.defaultPrevented).toBe(true);
-    expect(invalidateSearch).toHaveBeenCalledOnce();
-    expect(submitSearch).not.toHaveBeenCalled();
-    expect(input.value).toBe("");
+    expect(startSearch).not.toHaveBeenCalled();
+    expect(input.value).toBe("retained query");
     expect(dialog.open).toBe(false);
     expect(render).toHaveBeenCalledOnce();
 

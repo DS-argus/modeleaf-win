@@ -1186,6 +1186,24 @@ describe("PdfReaderController", () => {
     controller.restoreScrollAnchor(anchor);
     const restored = controller.captureScrollAnchor()!;
     expect(Math.hypot(restored.pagePoint.x - anchor.pagePoint.x, restored.pagePoint.y - anchor.pagePoint.y)).toBeLessThanOrEqual(0.5);
+    expect(controller.captureViewportLanding()).toMatchObject({ pageIndex: 0 });
+    const landingOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 });
+    const negativeOriginOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: -5, y: -5 });
+    const restoreAnchor = vi.spyOn(controller, "restoreScrollAnchor");
+    const pageTopOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 }, undefined, undefined, "page-top");
+    expect(restoreAnchor.mock.calls.at(-1)?.[0].viewportOffset).toEqual({ x: 50, y: 0 });
+    expect(["verified", "constrainedEdgeVerified"]).toContain(pageTopOutcome.kind);
+    restoreAnchor.mockRestore();
+    expect(negativeOriginOutcome.kind).not.toBe("preflightRejected");
+    expect(["verified", "constrainedEdgeVerified"]).toContain(landingOutcome.kind);
+    await expect(controller.restoreViewportLanding({ pageIndex: 1, x: 0, y: 0 })).resolves.toEqual({ kind: "preflightRejected" });
+    await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 }, () => false)).resolves.toEqual({ kind: "staleOrCancelled" });
+    const rejectedRender = vi.spyOn(controller, "renderPage").mockRejectedValueOnce(new Error("render failed"));
+    await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 })).resolves.toEqual({ kind: "failed" });
+    rejectedRender.mockRestore();
+    const rejectedGeometry = vi.spyOn(controller, "restoreScrollAnchor").mockImplementationOnce(() => { throw new Error("geometry failed"); });
+    await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 })).resolves.toEqual({ kind: "failed" });
+    rejectedGeometry.mockRestore();
     await controller.dispose();
   });
   it("admits one print job and releases its hidden surface after completion", async () => {
