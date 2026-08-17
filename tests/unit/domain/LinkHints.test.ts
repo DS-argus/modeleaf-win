@@ -17,6 +17,7 @@ const link = (x: number, y: number, url = "https://example.invalid/"): RawLink =
 describe("LinkHints", () => {
   it("uses fixed-length prefix-free lowercase labels and rolls over deterministically", () => {
     expect(generateHintLabels(3, "ab")).toEqual(["aa", "ab", "ba"]);
+    expect(generateHintLabels(3)).toEqual(["f", "j", "d"]);
     expect(generateHintLabels(0)).toEqual([]);
     expect(() => generateHintLabels(2, "aa")).toThrow();
   });
@@ -39,20 +40,25 @@ describe("LinkHints", () => {
     expect(mergeLinks([link(0, 10), link(20, 10), link(0, 9)])).toHaveLength(3);
   });
 
-  it("filters by lowercase prefix and selects exact unique labels", () => {
-    const hints = buildLinkHints([link(0, 10), link(20, 10)]);
-    expect(filterLinkHints(hints, hints[0]!.label).selected).toBe(hints[0]);
-    expect(filterLinkHints(hints, "A").matches).toEqual([]);
+  it("filters case-insensitively and commits the sole prefix candidate", () => {
+    const hints = buildLinkHints(Array.from({ length: 27 }, (_, index) => link(index * 20, 10)));
+    expect(filterLinkHints(hints, "J").selected).toBe(hints[26]);
+    expect(filterLinkHints(hints, "1").matches).toEqual([]);
   });
 
-  it("rejects modified, composing, uppercase, dead, and non-letter input", () => {
+  it("accepts Shift and Caps letters while rejecting owned or invalid input", () => {
     expect(appendHintInput("a", { key: "b" })).toBe("ab");
+    expect(appendHintInput("a", { key: "B", shiftKey: true })).toBe("ab");
+    expect(appendHintInput("A", { key: "B" })).toBe("ab");
     for (const input of [
       { key: "b", ctrlKey: true },
-      { key: "b", shiftKey: true },
-      { key: "B" },
+      { key: "b", altGraph: true },
+      { key: "b", keyCode: 229 },
       { key: "Dead" },
+      { key: "Process" },
+      { key: "Unidentified" },
       { key: "b", isComposing: true },
+      { key: "1" },
     ]) expect(appendHintInput("a", input)).toBeNull();
   });
 });

@@ -89,7 +89,7 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(main).toMatch(/viewportSynchronization\.catch\(\(error: unknown\)/);
     expect(main).toMatch(/renderPage\(reader\.page\)\.catch/);
     expect(main).toMatch(/renderCurrentView\(\)\.catch/);
-    expect(main).toMatch(/navigateToDestination\(page, destination\)\.catch/);
+    expect(main).toMatch(/await session\.navigateToDestination\(page, destination, cause, isActivationCurrent\)/);
     expect(main).toMatch(/active\(\)\.session\.snapshot\.active/);
     expect(main).toMatch(/Could not activate this tab/);
     expect(main).toMatch(/Could not activate the tab after closing/);

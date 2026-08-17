@@ -70,6 +70,7 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     restoreEvictedSearch: vi.fn(async () => undefined),
     queueDestination: vi.fn(() => 1),
     cancelDestination: vi.fn(),
+    takeDestinationLanding: vi.fn<(intentId: number) => { pageIndex: number; x: number; y: number } | undefined>(() => undefined),
     synchronizeResidentPages: vi.fn(async () => undefined),
     activateResidentPage: vi.fn(() => true),
   };
@@ -628,7 +629,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       .onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
     expect(content.resumeInteractions).toHaveBeenCalled();
   });
-  it("cancels a queued destination when its presentation rejects", async () => {
+  it("commits one verified point destination and records its origin for Back", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
@@ -636,11 +637,74 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.activate();
     internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
     internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    vi.spyOn(internals.pdfReader, "captureViewportLanding")
+      .mockReturnValueOnce({ pageIndex: 0, x: 5, y: 6 })
+      .mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
+    vi.spyOn(session, "renderPage").mockResolvedValue(true);
+    content.takeDestinationLanding.mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
+
+    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "link-hint")).resolves.toEqual({
+      kind: "verified", point: { pageNumber: 2, x: 20, y: 30 },
+    });
+    expect(content.queueDestination).toHaveBeenCalledOnce();
+    expect(session.canHistoryBack).toBe(true);
+    expect(session.canHistoryForward).toBe(false);
+  });
+  it("compensates an in-render link activation superseded outside session navigation", async () => {
+    const session = createSession();
+    installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    vi.spyOn(internals.pdfReader, "captureViewportLanding").mockReturnValue(origin);
+    const restore = vi.spyOn(internals.pdfReader, "restoreViewportLanding").mockResolvedValue({ kind: "verified", landing: origin });
+    const rendering = deferred<boolean>();
+    const render = vi.spyOn(session, "renderPage").mockReturnValue(rendering.promise);
+    let activationCurrent = true;
+    const navigation = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "internal-link", () => activationCurrent);
+    await vi.waitFor(() => expect(render).toHaveBeenCalled());
+    activationCurrent = false;
+    rendering.resolve(true);
+
+    await expect(navigation).resolves.toEqual({ kind: "stale" });
+    expect(restore).toHaveBeenCalledWith(origin, expect.any(Function), expect.any(Object), "center");
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("compensates a committed destination when its independent target is unavailable", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    vi.spyOn(internals.pdfReader, "captureViewportLanding").mockReturnValueOnce(origin).mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
+    const restore = vi.spyOn(internals.pdfReader, "restoreViewportLanding").mockResolvedValue({ kind: "verified", landing: origin });
+    vi.spyOn(session, "renderPage").mockResolvedValue(true);
+    content.takeDestinationLanding.mockReturnValue(undefined);
+
+    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null])).resolves.toEqual({ kind: "failed" });
+    expect(restore).toHaveBeenCalledWith(origin, expect.any(Function), expect.any(Object), "center");
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("rejects a destination before queuing when history preflight is unavailable", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    internals.pdfReader.getPageTopLanding = vi.fn(async () => ({ pageIndex: 1, x: 0, y: 100 }));
     internals.pdfReader.renderPageWithTransform = vi.fn(async () => { throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"); });
     Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => 1 });
 
-    await expect(session.navigateToDestination(2, [null, { name: "Fit" }])).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
-    expect(content.cancelDestination).toHaveBeenCalledWith(1);
+    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 0, 100, null])).resolves.toEqual({ kind: "rejected" });
+    expect(content.cancelDestination).not.toHaveBeenCalled();
     expect(session.snapshot.reader.page).toBe(1);
   });
   it("marks an interrupted render dirty and restores the current intent on reactivation", async () => {

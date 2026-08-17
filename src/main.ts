@@ -26,10 +26,14 @@ import { AccessibilityController, readerAccessibilityName, tabAccessibilitySeman
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
+import { DEFAULT_INDICATOR_SETTINGS, type IndicatorSettings } from "./domain/links/IndicatorSettings";
+import { readIndicatorState } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
 const shellConfig = shellConfigResult.value;
+let indicatorSettings: IndicatorSettings = DEFAULT_INDICATOR_SETTINGS;
+void readIndicatorState(invoke).then((value) => { if (value !== undefined) indicatorSettings = value; }, () => undefined);
 const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
@@ -138,6 +142,7 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
   }
 }
 function claimOverlay(id: OverlayId): void {
+  active().session.dismissLinkDecorations();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
   const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const suspendedPrompt = pagePromptDigits === undefined ? undefined : { kind: "page" as const, text: pagePromptDigits, selectionStart: pagePromptDigits.length, selectionEnd: pagePromptDigits.length };
@@ -386,7 +391,7 @@ function commandAvailabilityContext(): ActionRuntimeContext {
     searchActive: active().session.query.length > 0,
     canHistoryBack: active().session.canHistoryBack,
     canHistoryForward: active().session.canHistoryForward,
-    linkCount: 0,
+    linkCount: active().session.visibleLinkCount,
     implementedActionIds: IMPLEMENTED_ACTION_IDS,
   };
 }
@@ -490,11 +495,16 @@ function createTab(): TabPayload {
         return "failedWithoutMovement";
       },
       navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch((error: unknown) => reportPresentationFailure(session, error)); } },
-      navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination).catch((error: unknown) => reportPresentationFailure(session, error)); },
+      navigateToDestination: async (page, destination, cause, isActivationCurrent) => {
+        if (active().session !== session) return { kind: "stale" };
+        try { return await session.navigateToDestination(page, destination, cause, isActivationCurrent); }
+        catch (error: unknown) { reportPresentationFailure(session, error); return { kind: "failed" }; }
+      },
       prepareExternalLinks: (entries, registryRevision) => invoke<void>("prepare_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, entries: entries.map((entry) => ({ annotation_id: entry.annotationId, target: entry.target })) }),
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       abortExternalLinks: (registryRevision) => invoke<void>("abort_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
+      indicatorSettings: () => indicatorSettings,
       openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<void>("open_external_link", { request: { operationId, operationSequence, sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, annotationId } }),
     }),
     onStatus: () => {
@@ -562,6 +572,8 @@ function createTab(): TabPayload {
     viewportFrameRequest = window.requestAnimationFrame(synchronizeContinuousViewport);
   };
   const onReaderScroll = (): void => {
+    if (!session.indicatorPublicationPending) session.dismissLinkDecorations();
+    session.clearVisibleLinkAuthority();
     session.invalidateViewportSynchronization();
     scheduleViewportSync();
   }
@@ -1042,14 +1054,22 @@ window.addEventListener("keydown", (event) => {
 }, { capture: true });
 window.addEventListener("keydown", (event) => {
   const session = active().session;
-  if (!session.hintsVisible || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || isNativeCompositionEvent(event) || isEditableTarget(event.target)) return;
-  if (event.key !== "Escape" && event.key.length !== 1) return;
+  if (!session.hintsVisible && !(event.key === "Escape" && session.linkDecorationsVisible)) return;
+  const consumed = session.handleHintKey({
+    key: event.key,
+    ctrlKey: event.ctrlKey,
+    altKey: event.altKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    isComposing: event.isComposing || isNativeCompositionEvent(event),
+    keyCode: event.keyCode,
+    altGraph: event.getModifierState("AltGraph"),
+  });
+  if (!consumed) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  session.handleHintKey(event.key);
   render();
 }, { capture: true });
-
 const DPR_POLL_DELAY_MS = 250;
 let dprMediaQuery: MediaQueryList | undefined;
 let dprPollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1058,6 +1078,7 @@ const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
+  session.dismissLinkDecorations();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 };
 function bindDprChange(): void {
@@ -1087,7 +1108,12 @@ const disposeSearchPrompt = bindSearchPrompt(
   () => active().session,
   render,
 );
-window.addEventListener("resize", () => { scheduleDprPollFallback(); const session = active().session; void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error)); });
+window.addEventListener("resize", () => {
+  scheduleDprPollFallback();
+  const session = active().session;
+  session.dismissLinkDecorations();
+  void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
+});
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);
 window.addEventListener("focusin", (event) => { if (isEditableTarget(event.target)) rootKeyboard.cancelPending(); });
@@ -1127,6 +1153,7 @@ paletteDialog.addEventListener("keydown", (event) => {
   if (count > 0) renderPalette();
 }, { capture: true });
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); helpDialog.close(); releaseOverlay("help"); render(); });
+window.addEventListener("blur", () => active().session.dismissLinkDecorations());
 window.addEventListener("beforeunload", () => {
   disposeSearchPrompt();
   themeUnlisten?.();

@@ -38,6 +38,8 @@ export interface HintKeyInput {
   readonly metaKey?: boolean;
   readonly shiftKey?: boolean;
   readonly isComposing?: boolean;
+  readonly altGraph?: boolean;
+  readonly keyCode?: number;
 }
 
 export interface HintFilterResult {
@@ -99,28 +101,24 @@ export function buildLinkHints(rawLinks: readonly RawLink[]): readonly LinkHint[
   return Object.freeze(links.map((link, index) => Object.freeze({ ...link, label: labels[index]! })));
 }
 
-/** Filters immutable hint records by a lowercase label prefix. Invalid input has no matches. */
+/** Filters immutable hint records by an ASCII case-insensitive label prefix. */
 export function filterLinkHints(hints: readonly LinkHint[], query: string): HintFilterResult {
-  if (!/^[a-z]*$/.test(query)) {
+  const normalized = query.toLowerCase();
+  if (!/^[a-z]*$/.test(normalized)) {
     return Object.freeze({ query, matches: Object.freeze([]), selected: null });
   }
-  const matches = Object.freeze(hints.filter((hint) => hint.label.startsWith(query)));
-  return Object.freeze({
-    query,
-    matches,
-    selected: matches.length === 1 && matches[0]!.label === query ? matches[0]! : null,
-  });
+  const matches = Object.freeze(hints.filter((hint) => hint.label.startsWith(normalized)));
+  return Object.freeze({ query: normalized, matches, selected: matches.length === 1 ? matches[0]! : null });
 }
 
-/** Rejects IME, modifier, uppercase, dead-key, and non-letter input before changing the filter. */
+/** Accepts Shift/Caps ASCII letters while rejecting modified, IME-owned, dead, and non-letter input. */
 export function appendHintInput(query: string, input: HintKeyInput): string | null {
   if (
-    input.altKey || input.ctrlKey || input.metaKey || input.shiftKey || input.isComposing ||
-    !/^[a-z]$/.test(input.key) || !/^[a-z]*$/.test(query)
-  ) {
-    return null;
-  }
-  return query + input.key;
+    input.altKey || input.ctrlKey || input.metaKey || input.altGraph || input.isComposing || input.keyCode === 229 ||
+    input.key === "Dead" || input.key === "Process" || input.key === "Unidentified" ||
+    !/^[a-z]$/i.test(input.key) || !/^[a-z]*$/i.test(query)
+  ) return null;
+  return query.toLowerCase() + input.key.toLowerCase();
 }
 
 function compareRawLinks(left: RawLink, right: RawLink): number {
