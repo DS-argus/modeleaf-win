@@ -64,6 +64,7 @@ export interface PdfContentRenderRequest {
   readonly page: PdfContentPage;
   readonly viewport: PdfContentViewport;
   readonly canvas: HTMLCanvasElement;
+  readonly retainedPages?: readonly number[];
   readonly commitCanvas?: (accessory?: HTMLElement) => boolean;
 }
 
@@ -105,6 +106,18 @@ export interface PdfContentSnapshot {
   readonly hintsVisible: boolean;
 }
 
+interface ResidentContentEntry {
+  readonly pageNumber: number;
+  readonly layer: HTMLElement;
+  readonly textLayer: HTMLElement;
+  readonly annotationLayer: HTMLElement;
+  readonly viewport: PdfContentViewport;
+  readonly canvas: HTMLCanvasElement;
+  readonly reservation: ResourceReservation;
+  readonly hintGroups: LinkGroup[];
+  readonly renderSequence: number;
+}
+
 interface LinkGroup {
   readonly key: string;
   readonly annotation: PdfContentAnnotation;
@@ -121,6 +134,10 @@ interface RegistryPublication {
   finalize(): Promise<void>;
   readonly settlement: Promise<void>;
   rollback(): Promise<void>;
+}
+export interface PdfResidentAuthorityTransaction {
+  rollback(): Promise<void>;
+  finalize(): void;
 }
 interface DeferredRegistryCleanup {
   readonly revision: number;
@@ -269,6 +286,8 @@ const isExternalUrl = (value: string): boolean => {
 export class PdfContentController {
   private document: PdfContentDocument | undefined;
   private generation: number | undefined;
+  private readonly residentEntries = new Map<number, ResidentContentEntry>();
+  private externalEntriesByPage = new Map<number, readonly PdfExternalLinkRegistration[]>();
   private layer: HTMLElement | undefined;
   private textLayer: HTMLElement | undefined;
   private renderedPage: number | undefined;
@@ -314,6 +333,8 @@ export class PdfContentController {
   } | undefined;
   private partialSearchReason: string | undefined;
   private hintsVisible = false;
+  private interactionsEnabled = true;
+  private interactionEpoch = 0;
   private registryQuarantined: { readonly revision: number; readonly reason: unknown } | undefined;
   private readonly publishedRegistryFinalizers = new Map<number, PublishedRegistryFinalizer>();
   private unsettledVisibleTextCleanup: Promise<void> | undefined;
@@ -343,6 +364,7 @@ export class PdfContentController {
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
+    this.interactionsEnabled = true;
     this.document = document;
     this.generation = generation;
     this.sessionId = sessionId;
@@ -359,6 +381,9 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
+    this.interactionsEnabled = false;
+    this.interactionEpoch += 1;
+    this.internalDestinationActivation = undefined;
     this.renderSequence += 1;
     this.searchSequence += 1;
     if (this.activeSearchSettlement !== undefined && this.query.length > 0) {
@@ -374,6 +399,9 @@ export class PdfContentController {
     if (typeof this.pendingTextRenderer?.cancel === "function") this.pendingTextRenderer.cancel();
   }
 
+  public resumeInteractions(): void {
+    if (!this.isClosing() && this.document !== undefined) this.interactionsEnabled = true;
+  }
   /** Releases published inactive-tab content only after its foreground work has settled. */
   public evictInactiveHeavyResources(): boolean {
     let evicted = false;
@@ -539,6 +567,10 @@ export class PdfContentController {
       layer.style.pointerEvents = "none";
       layer.dataset.page = String(request.pageNumber);
       const textLayer = documentCreate("div", "textLayer");
+      const annotationLayer = documentCreate("div", "annotationLayer");
+      annotationLayer.style.position = "absolute";
+      annotationLayer.style.inset = "0";
+      annotationLayer.style.pointerEvents = "none";
       textLayer.style.position = "absolute";
       textLayer.style.inset = "0";
       textLayer.style.pointerEvents = "auto";
@@ -559,17 +591,26 @@ export class PdfContentController {
       if (!Number.isFinite(rawWidth) || rawWidth <= 0 || !Number.isFinite(rawHeight) || rawHeight <= 0) {
         throw new Error("PDF_GEOMETRY_INVALID");
       }
-      textLayer.style.width = `${rawWidth}px`;
-      textLayer.style.height = `${rawHeight}px`;
+      textLayer.style.width = `${request.viewport.width}px`;
+      textLayer.style.height = `${request.viewport.height}px`;
+      annotationLayer.style.width = `${request.viewport.width}px`;
+      annotationLayer.style.height = `${request.viewport.height}px`;
       if (!this.isCurrent(generation, document) || sequence !== this.renderSequence) return;
-      layer.append(textLayer);
+      layer.append(textLayer, annotationLayer);
       const hintGroups = await awaitOwned(
-        this.appendLinkGroups(layer, annotations, request.viewport, request.pageNumber, sequence, generation, document),
+        this.appendLinkGroups(annotationLayer, annotations, request.viewport, request.pageNumber, sequence, generation, document),
         Math.max(1, deadline - Date.now()),
       );
       if (!this.isCurrent(generation, document) || sequence !== this.renderSequence) return;
 
-      registryPublication = this.stageExternalLinks(externalEntries, deadline);
+      const nextExternalEntries = new Map(this.externalEntriesByPage);
+      const retainedPages = new Set(request.retainedPages ?? [...nextExternalEntries.keys(), request.pageNumber]);
+      if (!retainedPages.has(request.pageNumber)) throw new Error("PDF_RESIDENT_PAGE_INVALID");
+      nextExternalEntries.set(request.pageNumber, externalEntries);
+      registryPublication = this.stageExternalLinks(
+        [...nextExternalEntries].filter(([page]) => retainedPages.has(page)).flatMap(([, entries]) => entries),
+        deadline,
+      );
       await this.withDeadline(registryPublication.staged, Math.max(1, deadline - Date.now()));
       if (!this.isCurrent(generation, document) || sequence !== this.renderSequence) {
         await registryPublication.rollback();
@@ -580,7 +621,6 @@ export class PdfContentController {
         await registryPublication.rollback();
         return;
       }
-      hintGroups.forEach((group) => { group.registryRevision = registryPublication!.revision; });
       if (request.commitCanvas !== undefined) {
         if (!request.commitCanvas(layer)) {
           await registryPublication.rollback();
@@ -589,15 +629,26 @@ export class PdfContentController {
       } else {
         this.options.host.replaceChildren(request.canvas, layer);
       }
-      this.clearRenderedContent();
-      this.layer = layer;
+      const presentationRoot = textLayer.closest<HTMLElement>(".pdf-page-frame") ?? layer;
+      for (const [residentPage, entry] of this.residentEntries) {
+        if (retainedPages.has(residentPage)) for (const group of entry.hintGroups) group.registryRevision = registryPublication.revision;
+      }
+      hintGroups.forEach((group) => { group.registryRevision = registryPublication!.revision; });
+      const previousEntry = this.residentEntries.get(request.pageNumber);
+      if (previousEntry !== undefined) this.evictPage(request.pageNumber);
+      this.externalEntriesByPage = nextExternalEntries;
+      this.layer = presentationRoot;
       this.textLayer = textLayer;
       this.renderedViewport = request.viewport;
       this.renderedCanvas = request.canvas;
       this.hintGroups = hintGroups;
       this.updateHintVisibility();
       this.pendingTextReservation = undefined;
-      this.visibleTextReservation = reserved.reservation;
+      this.visibleTextReservation = undefined;
+      this.residentEntries.set(request.pageNumber, {
+        pageNumber: request.pageNumber, layer: presentationRoot, textLayer, annotationLayer, viewport: request.viewport,
+        canvas: request.canvas, reservation: reserved.reservation, hintGroups, renderSequence: sequence,
+      });
       ownsReservation = false;
       this.renderedPage = request.pageNumber;
       this.renderedSequence = sequence;
@@ -632,6 +683,90 @@ export class PdfContentController {
     }
   }
 
+  public activateResidentPage(pageNumber: number): boolean {
+    const entry = this.residentEntries.get(pageNumber);
+    if (entry === undefined) return false;
+    this.layer = entry.layer;
+    this.textLayer = entry.textLayer;
+    this.renderedViewport = entry.viewport;
+    this.renderedCanvas = entry.canvas;
+    this.renderedPage = entry.pageNumber;
+    this.renderedSequence = entry.renderSequence;
+    this.hintGroups = entry.hintGroups;
+    try {
+      this.updateHintVisibility();
+      this.applyHighlights();
+    } catch (error) {
+      this.options.onStatus(`PDF resident decoration limited: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return true;
+  }
+
+  /** Releases one resident page's overlays and reservation without disturbing siblings. */
+  public evictPage(pageNumber: number): boolean {
+    const entry = this.residentEntries.get(pageNumber);
+    if (entry === undefined) return false;
+    this.residentEntries.delete(pageNumber);
+    this.externalEntriesByPage.delete(pageNumber);
+    entry.layer.remove();
+    entry.textLayer.remove();
+    entry.annotationLayer.remove();
+    this.options.resources.release(entry.reservation);
+    if (this.renderedPage === pageNumber) {
+      this.layer = undefined;
+      this.textLayer = undefined;
+      this.renderedViewport = undefined;
+      this.renderedCanvas = undefined;
+      this.renderedPage = undefined;
+      this.renderedSequence = undefined;
+      this.hintGroups = [];
+      this.hintsVisible = false;
+      this.hintInput = "";
+    }
+    return true;
+  }
+  /** Prepares and commits native resident authority while retaining rollback ownership. */
+  public async beginResidentPageAuthority(pageNumbers: readonly number[]): Promise<PdfResidentAuthorityTransaction> {
+    const pages = new Set(pageNumbers);
+    if ([...pages].some((page) => !Number.isSafeInteger(page) || page < 1)) throw new Error("PDF_RESIDENT_PAGE_INVALID");
+    const priorRevisions = new Map<LinkGroup, number | undefined>();
+    for (const entry of this.residentEntries.values()) for (const group of entry.hintGroups) priorRevisions.set(group, group.registryRevision);
+    const publication = this.stageExternalLinks(
+      [...this.externalEntriesByPage].filter(([page]) => pages.has(page)).flatMap(([, entries]) => entries),
+      Date.now() + SEARCH_TIMEOUT_MS,
+    );
+    try {
+      await publication.staged;
+      await publication.commit();
+    } catch (error) {
+      await publication.rollback();
+      throw error;
+    }
+    for (const [page, entry] of this.residentEntries) {
+      if (pages.has(page)) for (const group of entry.hintGroups) group.registryRevision = publication.revision;
+    }
+    let finalized = false;
+    return {
+      rollback: async () => {
+        if (finalized) return;
+        await publication.rollback();
+        for (const [group, revision] of priorRevisions) group.registryRevision = revision;
+        finalized = true;
+      },
+      finalize: () => {
+        if (finalized) return;
+        finalized = true;
+        void publication.finalize().catch((error: unknown) => {
+          this.options.onStatus(`PDF link registry cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      },
+    };
+  }
+  /** Reconciles the native link registry after one resident-set transaction commits. */
+  public async synchronizeResidentPages(pageNumbers: readonly number[]): Promise<void> {
+    const transaction = await this.beginResidentPageAuthority(pageNumbers);
+    transaction.finalize();
+  }
   public invalidateSearch(): void {
     this.searchSequence += 1;
     this.cancelActiveSearch();
@@ -920,7 +1055,6 @@ export class PdfContentController {
     this.hintInput = "";
     this.updateHintVisibility();
   }
-
   public handleHintKey(key: string): boolean {
     if (key === "Escape" && this.hintsVisible) {
       this.cancelHints();
@@ -1000,7 +1134,7 @@ export class PdfContentController {
         }
         if (group.annotation.borderStyle?.style === 2) target.style.borderStyle = "dashed";
         target.addEventListener("click", () => {
-          if (this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group);
+          if (this.interactionsEnabled && this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group);
         });
         layer.append(target);
       });
@@ -1021,7 +1155,8 @@ export class PdfContentController {
   private async activateLink(group: LinkGroup): Promise<void> {
     const document = this.document;
     const generation = this.generation;
-    if (document === undefined || generation === undefined || this.isClosing()) return;
+    if (!this.interactionsEnabled || document === undefined || generation === undefined || this.isClosing()) return;
+    const interactionEpoch = this.interactionEpoch;
     const { annotation } = group;
     if (annotation.url !== undefined) {
       const activation = ++this.linkActivationSequence;
@@ -1051,6 +1186,8 @@ export class PdfContentController {
     const activation = ++this.linkActivationSequence;
     const deadline = Date.now() + LINK_ACTIVATION_TIMEOUT_MS;
     const isActive = (): boolean => activation === this.linkActivationSequence
+      && interactionEpoch === this.interactionEpoch
+      && this.interactionsEnabled
       && group.renderSequence === this.renderedSequence
       && this.hintGroups.includes(group)
       && this.isCurrent(generation, document);
@@ -1506,16 +1643,21 @@ export class PdfContentController {
     await this.withDeadline(cancellation, Math.max(1, deadline - Date.now()));
   }
   private clearRenderedContent(): void {
+    for (const entry of this.residentEntries.values()) {
+      entry.layer.remove();
+      entry.textLayer.remove();
+      entry.annotationLayer.remove();
+      this.options.resources.release(entry.reservation);
+    }
+    this.residentEntries.clear();
+    this.externalEntriesByPage.clear();
     this.layer?.remove();
     this.clearHighlights();
     this.layer = undefined;
     this.textLayer = undefined;
     this.renderedViewport = undefined;
     this.renderedCanvas = undefined;
-    if (this.visibleTextReservation !== undefined) {
-      this.options.resources.release(this.visibleTextReservation);
-      this.visibleTextReservation = undefined;
-    }
+    this.visibleTextReservation = undefined;
     this.renderedPage = undefined;
     this.renderedSequence = undefined;
     this.hintGroups = [];
