@@ -37,6 +37,7 @@ type SessionInternals = {
     evictInactiveCanvas: () => boolean;
     adopt: () => Promise<true>;
     getPageNaturalSize: (page: number, rotation: number, guard: () => boolean) => Promise<{ width: number; height: number } | undefined>;
+    suspend: () => Promise<void>;
     renderPageWithTransform: (page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
   };
 };
@@ -175,6 +176,34 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
   });
 
 
+  it("revokes resident authority when a later activation restore stage fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockResolvedValue();
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+
+    await expect(session.activate()).rejects.toThrow("restore failed");
+    expect(session.snapshot.active).toBe(false);
+    expect(content.suspend).toHaveBeenCalledOnce();
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+  });
+
+  it("quarantines activation when compensating authority revocation fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockResolvedValue();
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+    content.synchronizeResidentPages.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("revoke failed"));
+
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.active).toBe(false);
+    expect(content.suspend).toHaveBeenCalledOnce();
+  });
   it("rolls back a failed page render only for its owning active generation", () => {
     const session = createSession();
     session.reader.mountDocument(3);

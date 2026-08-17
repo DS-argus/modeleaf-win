@@ -1120,6 +1120,7 @@ export class PdfReaderController {
     const anchor = this.captureScrollAnchor();
     this.evictedScrollAnchor = anchor === undefined ? undefined : { pageNumber: anchor.pageNumber, anchor };
     for (const page of [...current.residentRasters.keys()]) this.evictResidentPage(current, page);
+    delete current.activePageNumber;
     this.options.canvasHost.replaceChildren();
     return true;
   }

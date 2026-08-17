@@ -79,6 +79,7 @@ export class PdfTabSession {
   private foregroundSuspended = false;
   private presentationEvicted = false;
   private presentationDirty = false;
+  private activityQuarantined = false;
   private openingFitRenderPending = false;
   private openingFitRenderInFlight = false;
   private activityGeneration = 0;
@@ -163,7 +164,7 @@ export class PdfTabSession {
   }
 
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
-    if (this.closed) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
+    if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
   }
   public async readOutlineDestinations(): Promise<readonly PdfOutlineProbeRow[]> {
@@ -174,6 +175,7 @@ export class PdfTabSession {
   }
   public async activate(): Promise<void> {
     if (this.closed || this.active) return;
+    if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
     this.active = true;
     this.foregroundSuspended = false;
     const activityGeneration = ++this.activityGeneration;
@@ -195,6 +197,17 @@ export class PdfTabSession {
       if (!this.closed && this.activityGeneration === activityGeneration) {
         this.active = false;
         this.activityGeneration += 1;
+        this.presentationDirty = true;
+        this.content?.suspend();
+        try {
+          await this.pdfReader.suspend();
+          await this.content?.synchronizeResidentPages([]);
+          this.foregroundSuspended = true;
+        } catch {
+          this.activityQuarantined = true;
+          this.foregroundSuspended = false;
+          throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+        }
       }
       throw error;
     }

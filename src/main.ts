@@ -616,7 +616,11 @@ function render(): void {
 }
 async function activateCurrentTab(focus = false): Promise<void> { const current = active(); await current.session.activate(); render(); if (focus) current.host.focus(); }
 function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(async () => {
-  if (id === workspace.activeTabId) return;
+  if (id === workspace.activeTabId) {
+    if (active().session.snapshot.active) return;
+    try { await activateCurrentTab(true); } catch { active().session.reader.setStatus("Could not activate this tab."); render(); }
+    return;
+  }
   const priorId = workspace.activeTabId;
   const prior = active();
   try {

@@ -2157,6 +2157,27 @@ describe("PdfReaderController", () => {
     await controller.dispose();
   });
 
+  it("clears physical activity when inactive eviction releases every resident", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("inactive-eviction", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+    expect(controller.activePageNumber).toBe(3);
+
+    expect(controller.evictInactiveCanvas()).toBe(true);
+    expect(controller.activePageNumber).toBeUndefined();
+    expect(host.querySelectorAll(":scope > .pdf-page-frame")).toHaveLength(0);
+    expect(await controller.renderPage(3)).toBe(true);
+    expect(controller.activePageNumber).toBe(3);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("makes duplicate disposal close a native session exactly once", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const native = nativeBoundary(vi.fn().mockResolvedValue(session("duplicate-close", 1)));
