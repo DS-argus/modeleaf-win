@@ -3,6 +3,8 @@ import {
   capturePdfViewportAnchor,
   isPdfPagePointWithinTolerance,
   pdfPagePointError,
+  isValidPdfViewportLanding,
+  samePdfViewportLanding,
   restorePdfViewportAnchor,
   type PdfViewportTransform,
 } from "../../../src/pdf/PdfViewportAnchor";
@@ -148,6 +150,14 @@ describe("PdfViewportAnchor", () => {
     expect(isPdfPagePointWithinTolerance(expected, { x: 10.3001, y: 20.4 })).toBe(false);
   });
 
+  it("verifies canonical landings per axis at the inclusive boundary", () => {
+    const origin = { pageIndex: 2, x: 10, y: 20 };
+    expect(isValidPdfViewportLanding(origin)).toBe(true);
+    expect(samePdfViewportLanding(origin, { pageIndex: 2, x: 10.5, y: 20.5 })).toBe(true);
+    expect(samePdfViewportLanding(origin, { pageIndex: 2, x: 10.500_001, y: 20 })).toBe(false);
+    expect(samePdfViewportLanding(origin, { pageIndex: 3, x: 10, y: 20 })).toBe(false);
+    expect(isValidPdfViewportLanding({ pageIndex: -1, x: 0, y: 0 })).toBe(false);
+  });
   it("rejects invalid identities, geometry, conversions, and tolerance", () => {
     const identity: PdfViewportTransform = {
       convertToPdfPoint: (x, y) => [x, y],
