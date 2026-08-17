@@ -592,6 +592,25 @@ describe("PdfContentController", () => {
     expect(subject.openExternal).toHaveBeenCalledWith("page-2-render-3-annotation-0", 3, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
+  it("retains rollback ownership until resident authority is finalized", async () => {
+    const subject = setup([
+      page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
+      page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
+    ]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    await subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
+
+    const transaction = await subject.controller.beginResidentPageAuthority([2]);
+    expect(subject.commitExternalLinks).toHaveBeenLastCalledWith(3);
+    await transaction.rollback();
+    expect(subject.abortExternalLinks).toHaveBeenLastCalledWith(3);
+    expect(subject.controller.activateResidentPage(1)).toBe(true);
+    subject.openExternal.mockClear();
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
+    await subject.controller.unmount();
+  });
   it("preserves local residents and their prior native revision when reconciliation fails", async () => {
     const subject = setup([
       page("kept", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/kept" }]),

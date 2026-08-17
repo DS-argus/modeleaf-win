@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const source = async (): Promise<string> => readFile(resolve(root, "tools/windows/smoke-w06.ps1"), "utf8");
+const mainSource = async (): Promise<string> => readFile(resolve(root, "src/main.ts"), "utf8");
 
 describe("W06 packaged Windows smoke contract", () => {
   it("requires explicit run admission and leaves the default route product-free", async () => {
@@ -36,6 +37,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toMatch(/StartOwnedArguments/);
     expect(script).not.toMatch(/\$helper=Start-Process/);
     expect(script).toMatch(/0x4/);
+    expect(script).toMatch(/WaitForSingleObject/);
+    expect(script).toMatch(/Owned process termination was not confirmed/);
     expect(script).toMatch(/TerminateJobObject/);
     expect(script).toMatch(/LaunchTimeoutMs=20000/);
     expect(script).toMatch(/ActionTimeoutMs=8000/);
@@ -68,6 +71,13 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toMatch(/GetGUIThreadInfo/);
   });
 
+  it("awaits tab activity publication and never swallows revocation failure", async () => {
+    const main = await mainSource();
+    expect(main).toMatch(/async function activateCurrentTab/);
+    expect(main).toMatch(/await prior\.session\.deactivate\(\)/);
+    expect(main).toMatch(/await activateCurrentTab\(true\)/);
+    expect(main).not.toMatch(/deactivate\(\)\.catch\(\(\) => undefined\)/);
+  });
   it("emits a single path-free atomic terminal receipt and refuses stale evidence", async () => {
     const script = await source();
     expect(script).toMatch(/EvidenceDirectory already exists; refusing stale evidence overwrite/);

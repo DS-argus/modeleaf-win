@@ -135,6 +135,10 @@ interface RegistryPublication {
   readonly settlement: Promise<void>;
   rollback(): Promise<void>;
 }
+export interface PdfResidentAuthorityTransaction {
+  rollback(): Promise<void>;
+  finalize(): void;
+}
 interface DeferredRegistryCleanup {
   readonly revision: number;
   readonly operation: Promise<void>;
@@ -712,11 +716,12 @@ export class PdfContentController {
     }
     return true;
   }
-
-  /** Reconciles the native link registry after one resident-set transaction commits. */
-  public async synchronizeResidentPages(pageNumbers: readonly number[]): Promise<void> {
+  /** Prepares and commits native resident authority while retaining rollback ownership. */
+  public async beginResidentPageAuthority(pageNumbers: readonly number[]): Promise<PdfResidentAuthorityTransaction> {
     const pages = new Set(pageNumbers);
     if ([...pages].some((page) => !Number.isSafeInteger(page) || page < 1)) throw new Error("PDF_RESIDENT_PAGE_INVALID");
+    const priorRevisions = new Map<LinkGroup, number | undefined>();
+    for (const entry of this.residentEntries.values()) for (const group of entry.hintGroups) priorRevisions.set(group, group.registryRevision);
     const publication = this.stageExternalLinks(
       [...this.externalEntriesByPage].filter(([page]) => pages.has(page)).flatMap(([, entries]) => entries),
       Date.now() + SEARCH_TIMEOUT_MS,
@@ -731,10 +736,27 @@ export class PdfContentController {
     for (const [page, entry] of this.residentEntries) {
       if (pages.has(page)) for (const group of entry.hintGroups) group.registryRevision = publication.revision;
     }
-    const finalization = publication.finalize();
-    void finalization.catch((error: unknown) => {
-      this.options.onStatus(`PDF link registry cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    let finalized = false;
+    return {
+      rollback: async () => {
+        if (finalized) return;
+        await publication.rollback();
+        for (const [group, revision] of priorRevisions) group.registryRevision = revision;
+        finalized = true;
+      },
+      finalize: () => {
+        if (finalized) return;
+        finalized = true;
+        void publication.finalize().catch((error: unknown) => {
+          this.options.onStatus(`PDF link registry cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      },
+    };
+  }
+  /** Reconciles the native link registry after one resident-set transaction commits. */
+  public async synchronizeResidentPages(pageNumbers: readonly number[]): Promise<void> {
+    const transaction = await this.beginResidentPageAuthority(pageNumbers);
+    transaction.finalize();
   }
   public invalidateSearch(): void {
     this.searchSequence += 1;

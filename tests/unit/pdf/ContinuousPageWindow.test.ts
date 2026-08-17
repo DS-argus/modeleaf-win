@@ -24,6 +24,16 @@ describe("ContinuousPageWindow", () => {
     });
   });
 
+  it("previews a direct window without mutating committed generation or ownership", () => {
+    const model = windowModel();
+    const initial = model.plan(1);
+    for (const page of initial.plannedPages) { model.begin(page, initial.generation); model.publish(page, initial.generation); }
+    const checkpoint = model.checkpoint();
+
+    expect(model.previewPlan(10)).toMatchObject({ plannedPages: [8, 9, 10, 11, 12], residentPages: [1, 2, 3], evictPages: [1, 2, 3] });
+    expect(model.checkpoint()).toEqual(checkpoint);
+  });
+
   it("retries only explicitly begun failed or cancelled materializations", () => {
     const model = windowModel();
     const initial = model.plan(10);

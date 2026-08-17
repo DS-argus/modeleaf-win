@@ -173,6 +173,35 @@ export class ContinuousPageWindow {
     this.resident.delete(pageNumber);
   }
 
+  /** Describes a prospective window without changing generation, ownership, or in-flight work. */
+  public previewPlan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
+    if (this.pageCount === 0) return { generation: this.generation, plannedPages: [], residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
+    this.assertPage(firstVisiblePage);
+    this.assertPage(lastVisiblePage);
+    const firstVisible = Math.min(firstVisiblePage, lastVisiblePage);
+    const lastVisible = Math.max(firstVisiblePage, lastVisiblePage);
+    const pages: number[] = [];
+    for (let page = firstVisible; page <= lastVisible; page += 1) pages.push(page);
+    for (let distance = 1; distance <= this.overscanPages; distance += 1) {
+      const before = firstVisible - distance;
+      const after = lastVisible + distance;
+      if (before >= 1) pages.unshift(before);
+      if (after <= this.pageCount) pages.push(after);
+    }
+    const next = new Set(pages);
+    const samePlan = setsEqual(next, this.planned);
+    const firstResident = pages[0]!;
+    const lastResident = pages.at(-1)!;
+    return {
+      generation: samePlan ? this.generation : this.generation + 1,
+      plannedPages: pages,
+      residentPages: [...this.resident].sort((a, b) => a - b),
+      materializePages: pages.filter((page) => !this.resident.has(page) && (!samePlan || !this.inFlight.has(page))),
+      evictPages: [...this.resident].filter((page) => !next.has(page)).sort((a, b) => a - b),
+      topSpacer: this.offsetForPage(firstResident),
+      bottomSpacer: Math.max(0, this.totalHeight() - this.offsetForPage(lastResident) - this.heightForPage(lastResident)),
+    };
+  }
   public plan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
     if (this.pageCount === 0) {
       this.planned.clear();

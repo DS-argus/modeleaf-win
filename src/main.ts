@@ -608,9 +608,26 @@ function render(): void {
     const item = document.createElement("div"); item.className = "workspace-tab-item"; item.append(button, close); item.dataset.index = String(index); return item;
   }));
 }
-function activateCurrentTab(focus = false): void { const current = active(); current.session.activate(); render(); if (focus) current.host.focus(); }
-function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(async () => { if (id === workspace.activeTabId) return; await active().session.deactivate().catch(() => undefined); if (!workspace.activate(id)) { activateCurrentTab(); return; } activateCurrentTab(true); }); }
-function closeTab(id: TabId): void { void queueWorkspaceTransition(() => { const wasActive = id === workspace.activeTabId; if (!workspace.close(id)) return; if (wasActive) activateCurrentTab(); else render(); }); }
+async function activateCurrentTab(focus = false): Promise<void> { const current = active(); await current.session.activate(); render(); if (focus) current.host.focus(); }
+function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(async () => {
+  if (id === workspace.activeTabId) return;
+  const priorId = workspace.activeTabId;
+  const prior = active();
+  try {
+    await prior.session.deactivate();
+    if (!workspace.activate(id)) { await prior.session.activate(); render(); return; }
+    try { await activateCurrentTab(true); } catch (error) {
+      workspace.activate(priorId);
+      await prior.session.activate();
+      render();
+      throw error;
+    }
+  } catch {
+    prior.session.reader.setStatus("Could not switch tabs.");
+    render();
+  }
+}); }
+function closeTab(id: TabId): void { void queueWorkspaceTransition(async () => { const wasActive = id === workspace.activeTabId; if (!workspace.close(id)) return; if (wasActive) await activateCurrentTab(); else render(); }); }
 async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
   let adoptedSession: PdfTabSession | undefined;
   await queueWorkspaceOwnership(async () => {
@@ -620,31 +637,31 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
     let staged = false;
     const emptyTab = workspace.snapshot.tabs.find((tab) => !tab.payload.session.snapshot.reader.hasDocument);
     if (emptyTab && emptyTab.id !== id) {
-      await payload.session.deactivate().catch(() => undefined);
-      if (!workspace.activate(emptyTab.id)) { activateCurrentTab(); throw new Error("EMPTY_TAB_MISSING"); }
+      await payload.session.deactivate();
+      if (!workspace.activate(emptyTab.id)) { await activateCurrentTab(); throw new Error("EMPTY_TAB_MISSING"); }
       id = emptyTab.id;
       payload = emptyTab.payload;
     } else if (payload.session.snapshot.reader.hasDocument) {
-      await payload.session.deactivate().catch(() => undefined);
+      await payload.session.deactivate();
       payload = createTab();
       const stagedId = workspace.stageAdoption(payload, { dispose: disposeWorkspaceTab });
-      if (stagedId === null) { disposeWorkspaceTab(payload); activateCurrentTab(); throw new Error("TAB_CAPACITY"); }
+      if (stagedId === null) { disposeWorkspaceTab(payload); await activateCurrentTab(); throw new Error("TAB_CAPACITY"); }
       id = stagedId;
       staged = true;
     }
     try {
       await publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration));
       if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
-      activateCurrentTab();
+      await activateCurrentTab();
       adoptedSession = payload.session;
     } catch (error) {
       const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status);
       if (staged) workspace.rollbackAdoption(id);
       else if (id !== priorActiveId) {
-        await payload.session.deactivate().catch(() => undefined);
+        await payload.session.deactivate();
         workspace.activate(priorActiveId);
       }
-      activateCurrentTab();
+      await activateCurrentTab();
       active().session.reader.setStatus(candidateStatus);
       render();
       throw error;

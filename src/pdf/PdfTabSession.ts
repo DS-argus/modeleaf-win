@@ -114,7 +114,7 @@ export class PdfTabSession {
       onStatus: (status) => this.setReaderStatus(status),
       onPage: (page, transform) => this.onPage(page, transform),
       onEvictPage: (page) => { this.content?.evictPage(page); },
-      onBeforeResidentCommit: async (pages) => { await this.content?.synchronizeResidentPages(pages); },
+      onBeforeResidentCommit: async (pages) => this.content?.beginResidentPageAuthority(pages),
       onCommitted: (pageCount, displayName) => {
         this.title = displayName;
         this.lastCommittedRender = undefined;
