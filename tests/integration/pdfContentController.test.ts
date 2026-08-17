@@ -359,6 +359,21 @@ describe("PdfContentController", () => {
     await Promise.resolve();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
+  it("blocks published link clicks while content interactions are suspended", async () => {
+    const subject = setup([page("link", [{ subtype: "Link", rect: [10, 20, 30, 40], url: "https://example.test" }])]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+
+    subject.controller.suspend();
+    overlay.click();
+    await Promise.resolve();
+    expect(subject.openExternal).not.toHaveBeenCalled();
+
+    subject.controller.resumeInteractions();
+    overlay.click();
+    await Promise.resolve();
+    expect(subject.openExternal).toHaveBeenCalledOnce();
+  });
   it("swallows rejected overlay work after its document generation becomes stale", async () => {
     let rejectText!: (error: Error) => void;
     const text = new Promise<{ items: readonly { str: string }[] }>((_resolve, reject) => { rejectText = reject; });

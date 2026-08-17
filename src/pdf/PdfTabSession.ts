@@ -139,6 +139,9 @@ export class PdfTabSession {
             this.content = content;
             const committed = commitCanvas(accessory);
             if (!committed) this.content = previous;
+            if (committed) {
+              if (this.isForegroundActive()) content.resumeInteractions(); else content.suspend();
+            }
             return committed;
           };
           await content.renderPage({ ...rendered, retainedPages: context.retainedPages, commitCanvas: commit });
@@ -185,6 +188,8 @@ export class PdfTabSession {
       if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       if (this.openingFitRenderPending) {
         await this.renderOpeningFitPage();
+        if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+        this.content?.resumeInteractions();
         return;
       }
       const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers();
@@ -193,7 +198,9 @@ export class PdfTabSession {
       } else {
         this.content?.activateResidentPage(this.reader.snapshot.page);
         await this.restoreInterruptedSearch(activityGeneration);
+        if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       }
+      this.content?.resumeInteractions();
     } catch (error) {
       if (!this.closed && this.activityGeneration === activityGeneration) {
         this.activationCompensating = true;
@@ -430,7 +437,8 @@ export class PdfTabSession {
 
   private async restorePresentation(activityGeneration: number): Promise<void> {
     const rendered = await this.renderCurrentView();
-    if (!rendered || this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+    if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+    if (!rendered) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
     if (this.presentationEvicted) await this.content?.restoreEvictedSearch();
     if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
     this.presentationEvicted = false;
@@ -514,7 +522,8 @@ export class PdfTabSession {
   }
 
   private async renderOpeningFitPage(): Promise<void> {
-    await this.renderCurrentView();
+    const rendered = await this.renderCurrentView();
+    if (!rendered && this.isForegroundActive()) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
   }
 
   private recoverFailedPresentation(intent: number, activityGeneration: number, failureStatus?: string): void {

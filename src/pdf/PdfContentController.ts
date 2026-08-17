@@ -333,6 +333,7 @@ export class PdfContentController {
   } | undefined;
   private partialSearchReason: string | undefined;
   private hintsVisible = false;
+  private interactionsEnabled = true;
   private registryQuarantined: { readonly revision: number; readonly reason: unknown } | undefined;
   private readonly publishedRegistryFinalizers = new Map<number, PublishedRegistryFinalizer>();
   private unsettledVisibleTextCleanup: Promise<void> | undefined;
@@ -362,6 +363,7 @@ export class PdfContentController {
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
+    this.interactionsEnabled = true;
     this.document = document;
     this.generation = generation;
     this.sessionId = sessionId;
@@ -378,6 +380,7 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
+    this.interactionsEnabled = false;
     this.renderSequence += 1;
     this.searchSequence += 1;
     if (this.activeSearchSettlement !== undefined && this.query.length > 0) {
@@ -393,6 +396,9 @@ export class PdfContentController {
     if (typeof this.pendingTextRenderer?.cancel === "function") this.pendingTextRenderer.cancel();
   }
 
+  public resumeInteractions(): void {
+    if (!this.isClosing() && this.document !== undefined) this.interactionsEnabled = true;
+  }
   /** Releases published inactive-tab content only after its foreground work has settled. */
   public evictInactiveHeavyResources(): boolean {
     let evicted = false;
@@ -1125,7 +1131,7 @@ export class PdfContentController {
         }
         if (group.annotation.borderStyle?.style === 2) target.style.borderStyle = "dashed";
         target.addEventListener("click", () => {
-          if (this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group);
+          if (this.interactionsEnabled && this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group);
         });
         layer.append(target);
       });
@@ -1146,7 +1152,7 @@ export class PdfContentController {
   private async activateLink(group: LinkGroup): Promise<void> {
     const document = this.document;
     const generation = this.generation;
-    if (document === undefined || generation === undefined || this.isClosing()) return;
+    if (!this.interactionsEnabled || document === undefined || generation === undefined || this.isClosing()) return;
     const { annotation } = group;
     if (annotation.url !== undefined) {
       const activation = ++this.linkActivationSequence;

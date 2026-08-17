@@ -27,6 +27,7 @@ type SessionInternals = {
     search: (query: string) => Promise<void>;
     handleHintKey: (key: string) => boolean;
     suspend: () => void;
+    resumeInteractions: () => void;
     restoreEvictedSearch: () => Promise<void>;
     queueDestination: (page: number, destination: readonly unknown[]) => number | undefined;
     cancelDestination: (intentId?: number) => void;
@@ -51,6 +52,7 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     search: vi.fn(async () => undefined),
     handleHintKey: vi.fn(() => false),
     suspend: vi.fn(),
+    resumeInteractions: vi.fn(),
     restoreEvictedSearch: vi.fn(async () => undefined),
     queueDestination: vi.fn(() => 1),
     cancelDestination: vi.fn(),
@@ -168,6 +170,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await expect(session.activate()).rejects.toThrow("activate registry failed");
     expect(session.snapshot.active).toBe(false);
 
+    vi.spyOn(session, "renderCurrentView").mockResolvedValue(true);
     await session.activate();
     expect(session.snapshot.active).toBe(true);
     content.synchronizeResidentPages.mockRejectedValueOnce(new Error("deactivate registry failed"));
@@ -190,6 +193,22 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
   });
 
+  it("compensates a false physical restore and permits a truthful retry", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockResolvedValue();
+    vi.spyOn(session, "renderCurrentView").mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    await expect(session.activate()).rejects.toThrow("PDF_PRESENTATION_RESTORE_FAILED");
+    expect(session.snapshot.active).toBe(false);
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+
+    await session.activate();
+    expect(session.snapshot.active).toBe(true);
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+  });
   it("quarantines activation when compensating authority revocation fails", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
