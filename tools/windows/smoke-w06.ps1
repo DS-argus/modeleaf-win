@@ -80,7 +80,7 @@ if(Test-Path -LiteralPath $EvidenceDirectory){throw 'EvidenceDirectory already e
 $terminal=Join-Path $evidence 'w06-packaged-smoke.json'
 $fixtureHash=Get-Sha256 $pdf;$exeHash=Get-Sha256 $exe;$scriptHash=Get-Sha256 $script
 $automationShell=New-Object -ComObject WScript.Shell
-$clock=[Diagnostics.Stopwatch]::StartNew();$events=[Collections.Generic.List[object]]::new();$visualHashes=[ordered]@{};$process=$null;$job=[IntPtr]::Zero;$success=$false;$failure=$null;$cleanup=$false
+$clock=[Diagnostics.Stopwatch]::StartNew();$events=[Collections.Generic.List[object]]::new();$visualHashes=[ordered]@{};$process=$null;$helper=$null;$job=[IntPtr]::Zero;$success=$false;$failure=$null;$cleanup=$false
 try {
   $job=[W06Native]::CreateKillOnCloseJob()
   if(-not $Run) {
@@ -110,6 +110,7 @@ finally {
   try {
     if($job -ne [IntPtr]::Zero){[void][W06Native]::TerminateJobObject($job,1)}
     if($null -ne $process -and -not $process.HasExited){Wait-Until {$process.HasExited} $ExitTimeoutMs 'Owned product survived cleanup'}
+    if($null -ne $helper -and -not $helper.HasExited){Wait-Until {$helper.HasExited} $ExitTimeoutMs 'Owned helper survived cleanup'}
     if([W06Native]::UnconfirmedProcessCleanup){throw 'Helper process cleanup was not confirmed'}
     $cleanup=$true
   } catch { $success=$false;$cleanup=$false;$failure=if($null -eq $failure){$_.Exception.Message}else{$failure} }

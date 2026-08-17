@@ -41,6 +41,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toMatch(/terminationError/);
     expect(script).toMatch(/UnconfirmedProcessCleanup=true/);
     expect(script).toMatch(/Helper process cleanup was not confirmed/);
+    expect(script).toMatch(/\$helper=\$null/);
+    expect(script).toMatch(/Owned helper survived cleanup/);
     expect(script).toMatch(/\$cleanup=\$false/);
     expect(script).toMatch(/uint wait=WaitForSingleObject/);
     expect(script).toMatch(/Owned process termination was not confirmed/);
