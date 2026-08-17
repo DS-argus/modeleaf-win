@@ -1075,6 +1075,46 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
+  it("reconciles and rejects a partial DPR rollback before a truthful retry", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    let failDpr = false;
+    let failedPageOneCalls = 0;
+    const compensationFinalize = vi.fn();
+    const publishResidents = vi.fn()
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: vi.fn() })
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      let rendering = Promise.resolve();
+      if (failDpr && pageNumber === 1) {
+        failedPageOneCalls += 1;
+        if (failedPageOneCalls === 2) rendering = Promise.reject(new Error("DPR rollback failed"));
+      }
+      if (failDpr && pageNumber === 2) rendering = Promise.reject(new Error("DPR forward failed"));
+      return page(pageNumber, rendering);
+    });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("dpr-subset", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+    failDpr = true;
+
+    await expect(controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 })).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(publishResidents).toHaveBeenLastCalledWith([3, 4, 5]);
+    expect(compensationFinalize).toHaveBeenCalledOnce();
+    expect(controller.activePageNumber).toBe(3);
+    expect([...host.querySelectorAll<HTMLCanvasElement>(":scope > .pdf-page-frame > .pdf-page-canvas-layer")].map((canvas) => canvas.dataset.devicePixelRatio)).toEqual(["1", "1", "1"]);
+
+    failDpr = false;
+    expect(await controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 })).toBe(true);
+    expect([...host.querySelectorAll<HTMLCanvasElement>(":scope > .pdf-page-frame > .pdf-page-canvas-layer")].every((canvas) => canvas.dataset.devicePixelRatio === "2")).toBe(true);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("keeps full-window direct and transform replacement within five backing stores", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");

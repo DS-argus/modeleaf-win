@@ -1027,20 +1027,48 @@ export class PdfReaderController {
       if (restoredActive !== undefined) this.notifyObserver(() => this.options.onPage(restoredActive, transform));
       return true;
     } finally {
-      if (!succeeded && this.current === current && !this.disposed) {
-        this.viewportRollback = true;
-        try {
-          if (!await replaceAll(priorTransform)) this.options.onStatus("PDF DPR rollback could not restore every page.");
-          const restoredActive = restoreResidentActivity();
-          for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
-            frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+      try {
+        if (!succeeded && this.current === current && !this.disposed) {
+          this.viewportRollback = true;
+          try {
+            const rollbackComplete = await replaceAll(priorTransform);
+            for (const [page, raster] of [...current.residentRasters]) {
+              if (raster.transform.scale !== priorTransform.scale
+                || raster.transform.rotation !== priorTransform.rotation
+                || raster.transform.devicePixelRatio !== priorTransform.devicePixelRatio) {
+                this.evictResidentPage(current, page);
+              }
+            }
+            const authorityResidents = [...current.residentRasters.keys()]
+              .filter((page) => checkpoint.residentPages.includes(page))
+              .sort((a, b) => a - b);
+            window.restore(checkpoint, authorityResidents);
+            const restoredActive = restoreResidentActivity();
+            for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+              frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+            }
+            this.viewTransform = priorTransform;
+            if (this.options.onBeforeResidentCommit !== undefined) {
+              try {
+                const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
+                compensation?.finalize();
+              } catch (error) {
+                this.options.onStatus(`PDF DPR authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+                throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+              }
+            }
+            if (!rollbackComplete || authorityResidents.length !== checkpoint.residentPages.length) {
+              this.options.onStatus("PDF DPR rollback was incomplete.");
+              throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+            }
+          } finally {
+            this.viewportRollback = false;
           }
-        } finally {
-          this.viewportRollback = false;
         }
+      } finally {
+        window.restore(checkpoint, [...current.residentRasters.keys()].filter((page) => checkpoint.residentPages.includes(page)));
+        if (this.activeViewportPlan?.candidate === current) this.activeViewportPlan = undefined;
       }
-      window.restore(checkpoint, [...current.residentRasters.keys()].filter((page) => checkpoint.residentPages.includes(page)));
-      if (this.activeViewportPlan?.candidate === current) this.activeViewportPlan = undefined;
     }
   }
   public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
