@@ -81,6 +81,7 @@ export class PdfTabSession {
   private presentationDirty = false;
   private activityQuarantined = false;
   private activitySettling = false;
+  private activationInProgress = false;
   private openingFitRenderPending = false;
   private openingFitRenderInFlight = false;
   private activityGeneration = 0;
@@ -178,6 +179,7 @@ export class PdfTabSession {
   public async activate(): Promise<void> {
     if (this.closed || this.active) return;
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    this.activationInProgress = true;
     this.active = true;
     this.foregroundSuspended = false;
     const activityGeneration = ++this.activityGeneration;
@@ -187,6 +189,7 @@ export class PdfTabSession {
       if (this.openingFitRenderPending) {
         await this.renderOpeningFitPage();
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+        this.activationInProgress = false;
         this.content?.resumeInteractions();
         return;
       }
@@ -198,8 +201,11 @@ export class PdfTabSession {
         await this.restoreInterruptedSearch(activityGeneration);
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       }
+      if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+      this.activationInProgress = false;
       this.content?.resumeInteractions();
     } catch (error) {
+      this.activationInProgress = false;
       if (!this.closed && this.activityGeneration === activityGeneration) {
         this.activitySettling = true;
         this.activityGeneration += 1;
@@ -549,7 +555,7 @@ export class PdfTabSession {
     this.reader.apply({ type: "page.goTo", page });
     this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: transform.scale, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
     this.content?.activateResidentPage(page);
-    if (this.isForegroundActive()) this.content?.resumeInteractions();
+    if (this.isForegroundActive() && !this.activationInProgress) this.content?.resumeInteractions();
     const committed = this.reader.snapshot;
     this.lastCommittedRender = {
       documentGeneration: committed.documentGeneration,

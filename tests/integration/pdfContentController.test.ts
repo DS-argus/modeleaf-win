@@ -392,12 +392,13 @@ describe("PdfContentController", () => {
 
     subject.controller.suspend();
     subject.controller.resumeInteractions();
+    overlay.click();
+    await vi.waitFor(() => expect(destinationCalls).toBe(3));
+    await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
+
     resolveOld([0, { name: "Fit" }]);
     await vi.waitFor(() => expect((subject.controller as unknown as { internalDestinationActivation?: Promise<void> }).internalDestinationActivation).toBeUndefined());
-    expect(subject.navigateToPage).not.toHaveBeenCalled();
-
-    overlay.click();
-    await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
+    expect(subject.navigateToPage).toHaveBeenCalledOnce();
   });
   it("swallows rejected overlay work after its document generation becomes stale", async () => {
     let rejectText!: (error: Error) => void;

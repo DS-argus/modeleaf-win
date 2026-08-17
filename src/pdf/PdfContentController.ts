@@ -383,6 +383,7 @@ export class PdfContentController {
   public suspend(): void {
     this.interactionsEnabled = false;
     this.interactionEpoch += 1;
+    this.internalDestinationActivation = undefined;
     this.renderSequence += 1;
     this.searchSequence += 1;
     if (this.activeSearchSettlement !== undefined && this.query.length > 0) {

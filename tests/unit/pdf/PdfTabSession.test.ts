@@ -210,6 +210,31 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.snapshot.active).toBe(true);
     expect(content.resumeInteractions).toHaveBeenCalledOnce();
   });
+  it("keeps links suspended until activation restoration fully settles", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & {
+      presentationDirty: boolean;
+      presentationEvicted: boolean;
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(1);
+    internals.presentationDirty = true;
+    internals.presentationEvicted = true;
+    let releaseRestore!: () => void;
+    content.restoreEvictedSearch.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRestore = () => resolve(undefined); }));
+    vi.spyOn(session, "renderCurrentView").mockImplementationOnce(async () => {
+      internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      return true;
+    });
+
+    const activation = session.activate();
+    await vi.waitFor(() => expect(content.restoreEvictedSearch).toHaveBeenCalledOnce());
+    expect(content.resumeInteractions).not.toHaveBeenCalled();
+    releaseRestore();
+    await activation;
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+  });
   it("quarantines activation when compensating authority revocation fails", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
