@@ -725,6 +725,8 @@ export class PdfReaderController {
       if (!succeeded && this.current === current && !this.disposed) {
         this.viewportRollback = true;
         let physicalRestored = false;
+        let authorityResidents: number[] = [];
+        let physicalRollbackError: unknown;
         try {
           if (residentAuthority !== undefined) {
             try {
@@ -745,32 +747,44 @@ export class PdfReaderController {
               this.activeViewportPlan = { candidate: current, plan: rollbackPlan };
               for (const page of rollbackPlan.materializePages) {
                 window.begin(page, rollbackPlan.generation);
-                const restored = await this.renderPageInternal(page, this.viewTransform);
-                if (!restored) throw new Error("PDF_VIEWPORT_ROLLBACK_RENDER_FAILED");
-                window.fail(page, rollbackPlan.generation);
+                try {
+                  if (!await this.renderPageInternal(page, this.viewTransform)) {
+                    physicalRollbackError ??= new Error("PDF_VIEWPORT_ROLLBACK_RENDER_FAILED");
+                  }
+                } catch (error) {
+                  physicalRollbackError ??= error;
+                } finally {
+                  window.fail(page, rollbackPlan.generation);
+                }
               }
-              const restoredResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
-              this.applyWindowSpacers(current, window.restore(checkpoint, restoredResidents));
+              authorityResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page)).sort((a, b) => a - b);
+              this.applyWindowSpacers(current, window.restore(checkpoint, authorityResidents));
               const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
                 ? priorActivePage
-                : [...originalResidents].find((page) => current.residentRasters.has(page));
+                : authorityResidents[0];
               if (restoredActive !== undefined) current.activePageNumber = restoredActive;
               for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
                 frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
               }
-              physicalRestored = restoredResidents.length === originalResidents.size;
+              physicalRestored = authorityResidents.length === originalResidents.size;
             } catch (error) {
+              physicalRollbackError ??= error;
+              authorityResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page)).sort((a, b) => a - b);
               this.options.onStatus(`PDF viewport rollback failed: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
-          if (physicalRestored && this.options.onBeforeResidentCommit !== undefined) {
+          if (rollbackAuthorityError === undefined && this.options.onBeforeResidentCommit !== undefined) {
             try {
-              const compensation = await this.options.onBeforeResidentCommit([...originalResidents].sort((a, b) => a - b));
+              const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
               compensation?.finalize();
             } catch (error) {
               rollbackAuthorityError = error;
               this.options.onStatus(`PDF resident authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
             }
+          }
+          if (!physicalRestored && rollbackAuthorityError === undefined) {
+            rollbackAuthorityError = physicalRollbackError ?? new Error("PDF_VIEWPORT_ROLLBACK_INCOMPLETE");
+            this.options.onStatus("PDF viewport rollback was incomplete.");
           }
         } finally {
           this.viewportRollback = false;
@@ -930,20 +944,40 @@ export class PdfReaderController {
     if (committed) return true;
     this.viewportRollback = true;
     try {
+      let rollbackIncomplete = false;
       for (const resident of [...current.residentRasters.keys()]) if (!checkpoint.residentPages.includes(resident)) this.evictResidentPage(current, resident);
       const physicallyResident = [...current.residentRasters.keys()].filter((resident) => checkpoint.residentPages.includes(resident));
       const rollbackPlan = window.restore(checkpoint, physicallyResident);
       this.activeViewportPlan = { candidate: current, plan: rollbackPlan };
       for (const resident of rollbackPlan.materializePages) {
         window.begin(resident, rollbackPlan.generation);
-        const restored = await this.renderPageInternal(resident, priorTransform);
-        if (!restored) this.options.onStatus("PDF direct rollback could not restore a page.");
-        window.fail(resident, rollbackPlan.generation);
+        try {
+          if (!await this.renderPageInternal(resident, priorTransform)) rollbackIncomplete = true;
+        } catch {
+          rollbackIncomplete = true;
+        } finally {
+          window.fail(resident, rollbackPlan.generation);
+        }
       }
-      this.applyWindowSpacers(current, window.restore(checkpoint, [...current.residentRasters.keys()].filter((resident) => checkpoint.residentPages.includes(resident))));
-      if (priorActivePage !== undefined && current.residentRasters.has(priorActivePage)) current.activePageNumber = priorActivePage;
+      const authorityResidents = [...current.residentRasters.keys()].filter((resident) => checkpoint.residentPages.includes(resident)).sort((a, b) => a - b);
+      this.applyWindowSpacers(current, window.restore(checkpoint, authorityResidents));
+      const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage) ? priorActivePage : authorityResidents[0];
+      if (restoredActive !== undefined) current.activePageNumber = restoredActive;
       for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
-        frame.dataset.activePage = String(priorActivePage !== undefined && Number(frame.dataset.page) === priorActivePage);
+        frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+      }
+      if (this.options.onBeforeResidentCommit !== undefined) {
+        try {
+          const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
+          compensation?.finalize();
+        } catch (error) {
+          this.options.onStatus(`PDF direct authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+        }
+      }
+      if (rollbackIncomplete || authorityResidents.length !== checkpoint.residentPages.length) {
+        this.options.onStatus("PDF direct rollback was incomplete.");
+        throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
       }
       return false;
     } finally {

@@ -751,6 +751,69 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
+  it("reconciles the exact physical subset when viewport rollback rendering fails", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    let guardCurrent = true;
+    let rollbackStarted = false;
+    const compensationFinalize = vi.fn();
+    const publishResidents = vi.fn()
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: vi.fn() })
+      .mockImplementationOnce(async () => {
+        guardCurrent = false;
+        return { rollback: vi.fn(async () => { rollbackStarted = true; }), finalize: vi.fn() };
+      })
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => page(
+      pageNumber,
+      rollbackStarted && pageNumber === 1 ? Promise.reject(new Error("rollback page failed")) : Promise.resolve(),
+    ));
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("authority-subset", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(10, getPage))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+
+    await expect(controller.synchronizeViewport(300, 120, () => guardCurrent)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(publishResidents).toHaveBeenLastCalledWith([2, 3, 4, 5]);
+    expect(compensationFinalize).toHaveBeenCalledOnce();
+    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["2", "3", "4", "5"]);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+
+  it("reconciles the exact physical subset when bounded direct recovery also fails", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    let failDirect = false;
+    const compensationFinalize = vi.fn();
+    const publishResidents = vi.fn()
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: vi.fn() })
+      .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => page(
+      pageNumber,
+      failDirect && (pageNumber === 10 || pageNumber === 1) ? Promise.reject(new Error("direct recovery failed")) : Promise.resolve(),
+    ));
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("direct-subset", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(10, getPage))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+    failDirect = true;
+
+    await expect(controller.renderPage(10)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(publishResidents).toHaveBeenLastCalledWith([2, 3, 4, 5]);
+    expect(compensationFinalize).toHaveBeenCalledOnce();
+    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["2", "3", "4", "5"]);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("rolls back newly published residents when a later viewport page fails", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const canvases = new Map<number, HTMLCanvasElement>();
@@ -1760,7 +1823,7 @@ describe("PdfReaderController", () => {
 
     await controller.open(1);
     rejectTransform = true;
-    expect(await controller.setViewTransform({ scale: 2, rotation: 90, devicePixelRatio: 1 })).toBe(false);
+    await expect(controller.setViewTransform({ scale: 2, rotation: 90, devicePixelRatio: 1 })).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     rejectTransform = false;
     expect(await controller.renderPage(1)).toBe(true);
 
