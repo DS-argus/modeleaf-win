@@ -5,6 +5,7 @@ import {
   type PdfContentControllerOptions,
   type PdfContentSnapshot,
 } from "./PdfContentController";
+import type { PdfOutlineProbeRow } from "./PdfOutlineProbe";
 import { resolvePdfDestinationView } from "./PdfDestination";
 import {
   PdfReaderController,
@@ -84,6 +85,7 @@ export class PdfTabSession {
   private pendingPresentationRenders = 0;
   private readerStatusVersion = 0;
   private navigationIntent = 0;
+  private viewportIntent = 0;
   private pendingRenderRollback: {
     readonly intent: number;
     readonly activityGeneration: number;
@@ -108,13 +110,16 @@ export class PdfTabSession {
       pdf: options.pdf,
       resources: options.resources,
       canvasHost: options.canvasHost,
+      availableContentSize: () => this.availableContentSize(),
       onStatus: (status) => this.setReaderStatus(status),
       onPage: (page, transform) => this.onPage(page, transform),
+      onEvictPage: (page) => { this.content?.evictPage(page); },
       onCommitted: (pageCount, displayName) => {
         this.title = displayName;
         this.lastCommittedRender = undefined;
         this.reader.mountDocument(pageCount);
-        this.openingFitRenderPending = true;
+        const available = this.availableContentSize();
+        this.openingFitRenderPending = !(available.width > 0 && available.height > 0);
         this.openingFitRenderInFlight = false;
         this.navigationIntent += 1;
       },
@@ -132,10 +137,10 @@ export class PdfTabSession {
             if (!committed) this.content = previous;
             return committed;
           };
-          await content.renderPage({ ...rendered, commitCanvas: commit });
+          await content.renderPage({ ...rendered, retainedPages: context.retainedPages, commitCanvas: commit });
           return;
         }
-        await this.content?.renderPage({ ...rendered, commitCanvas });
+        await this.content?.renderPage({ ...rendered, retainedPages: context.retainedPages, commitCanvas });
       },
       onBeforeDispose: async (session) => { await this.disposeContent(session); },
     });
@@ -158,6 +163,9 @@ export class PdfTabSession {
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
     if (this.closed) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
+  }
+  public async readOutlineDestinations(): Promise<readonly PdfOutlineProbeRow[]> {
+    return this.closed ? [] : this.pdfReader.readOutlineDestinations();
   }
   public async printCurrent(): Promise<boolean> {
     return this.closed || !this.active ? false : this.pdfReader.printCurrent();
@@ -243,9 +251,41 @@ export class PdfTabSession {
       return committed;
     } finally {
       this.pendingPresentationRenders -= 1;
-    }
   }
+  }
+  public invalidateViewportSynchronization(): void {
+    this.viewportIntent += 1;
+    this.pdfReader.invalidateViewportSynchronization();
+  }
+  /** Production scroll entry point: materializes the bounded continuous window. */
+  public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
+    if (this.closed || !this.active || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    const activityGeneration = this.activityGeneration;
+    const navigationIntent = this.navigationIntent;
+    const viewportIntent = ++this.viewportIntent;
+    const guard = (): boolean => !this.closed && this.active && this.activityGeneration === activityGeneration
+      && this.navigationIntent === navigationIntent && this.viewportIntent === viewportIntent;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(this.options.canvasHost) : undefined;
+    const padding = (value: string | undefined): number => {
+      const parsed = Number.parseFloat(value ?? "0");
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const paddingTop = padding(style?.paddingTop);
+    const contentScrollTop = Math.max(0, scrollTop - paddingTop);
+    const contentHeight = Math.max(0, clientHeight - paddingTop - padding(style?.paddingBottom));
+    let committed = await this.pdfReader.synchronizeViewport(contentScrollTop, contentHeight, guard);
+    const snapshot = this.reader.snapshot;
+    if (committed && guard() && snapshot.zoomMode !== "custom") {
+      const stableTransform = await this.viewTransformFor(snapshot.page, guard);
+      if (stableTransform !== undefined && Math.abs(stableTransform.scale - snapshot.customScale) > Number.EPSILON) {
+        committed = await this.pdfReader.renderPageWithTransform(snapshot.page, stableTransform, guard);
+      }
+    }
+    if (guard()) await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
+    if (!committed && !guard()) this.presentationDirty = true;
+    return committed;
 
+  }
   public async activateViewportPage(page: number): Promise<boolean> {
     if (this.closed || !this.active || !Number.isInteger(page)) return false;
     if (page === this.reader.snapshot.page) return true;
@@ -420,6 +460,7 @@ export class PdfTabSession {
     const snapshot = this.reader.snapshot;
     this.reader.apply({ type: "page.goTo", page });
     this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: transform.scale, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
+    this.content?.activateResidentPage(page);
     const committed = this.reader.snapshot;
     this.lastCommittedRender = {
       documentGeneration: committed.documentGeneration,

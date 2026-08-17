@@ -20,6 +20,7 @@ import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, them
 import { CLOSED_THEME_PICKER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
+import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
@@ -34,7 +35,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
-  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
+  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
   "config.writeDefault", "config.resetDefault", "theme.picker",
 ]);
 function isNativeCompositionEvent(event: KeyboardEvent): boolean {
@@ -296,7 +297,7 @@ const native = {
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
 };
 
-type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; };
+type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly disposeUi: () => void };
 let workspace!: TabWorkspace<TabPayload>;
 const resources = new ResourceReservationManager((needed) => {
   if (workspace === undefined || !["canvas-bytes", "canvas-cache-bytes", "text-page-bytes", "text-document-bytes", "text-process-bytes", "search-document-results", "search-process-results", "search-extractor"].includes(needed.kind)) return;
@@ -359,7 +360,7 @@ const workspaceTransitions = createWorkspaceTransitionQueue(() => {
   render();
 });
 const removedTabTeardown = createRemovedTabTeardownSupervisor<TabPayload>({
-  remove: (value) => value.host.remove(),
+  remove: (value) => { value.disposeUi(); value.host.remove(); },
   close: (value) => value.session.close(),
 });
 function queueWorkspaceTransition(work: () => Promise<void> | void): Promise<void> { return workspaceTransitions.enqueue(work); }
@@ -426,26 +427,8 @@ function renderHelpRows(): void {
     return section;
   }));
 }
-function pageNearestViewportCenter(host: HTMLElement): number | undefined {
-  const frames = [...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")];
-  if (frames.length === 0) return undefined;
-  const hostRect = host.getBoundingClientRect();
-  const viewportCenter = hostRect.top + host.clientHeight / 2;
-  let nearest: { readonly page: number; readonly distance: number } | undefined;
-  for (const frame of frames) {
-    const page = Number(frame.dataset.page);
-    if (!Number.isInteger(page)) continue;
-    const rect = frame.getBoundingClientRect();
-    if (viewportCenter >= rect.top && viewportCenter <= rect.bottom) return page;
-    const distance = Math.min(Math.abs(viewportCenter - rect.top), Math.abs(viewportCenter - rect.bottom));
-    if (nearest === undefined || distance < nearest.distance || (distance === nearest.distance && page < nearest.page)) {
-      nearest = { page, distance };
-    }
-  }
-  return nearest?.page;
-}
 const boundaryPageTurns = new WeakSet<HTMLElement>();
-function turnPageAtBoundary(payload: TabPayload, direction: -1 | 1): boolean {
+function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
   if (boundaryPageTurns.has(payload.host)) return true;
   const previousPage = payload.session.snapshot.reader.page;
   payload.session.apply({ type: direction > 0 ? "page.next" : "page.previous" });
@@ -474,6 +457,13 @@ function createTab(): TabPayload {
   host.addEventListener("dragover", (event) => event.preventDefault());
   host.addEventListener("drop", (event) => event.preventDefault());
   tabHosts.append(host);
+  const copyContextMenu = bindCopyContextMenu({
+    readerHost: host,
+    writeText: async (text) => {
+      if (navigator.clipboard?.writeText === undefined) throw new Error("CLIPBOARD_UNAVAILABLE");
+      await navigator.clipboard.writeText(text);
+    },
+  });
   let session!: PdfTabSession;
   let announcedGeneration = -1;
   session = new PdfTabSession({
@@ -495,6 +485,7 @@ function createTab(): TabPayload {
       if (workspace === undefined || active().session !== session) return;
       const snapshot = session.snapshot;
       const reader = snapshot.reader;
+      if (reader.hasDocument) queueMicrotask(scheduleViewportSync);
       accessibility.activateTab(String(workspace.activeTabId), reader.documentGeneration);
       if (reader.hasDocument && reader.pageCount > 0) {
         accessibility.announce({ kind: "page", generation: reader.documentGeneration, page: reader.page, pageCount: reader.pageCount });
@@ -529,25 +520,42 @@ function createTab(): TabPayload {
     turnPageAtBoundary({ host, session }, direction);
   }, { passive: false });
   let viewportFrameRequest: number | undefined;
-  let viewportActivation: Promise<boolean> | undefined;
-  const synchronizeViewportPage = (): void => {
+  let viewportSynchronization: Promise<boolean> | undefined;
+  let viewportDisposed = false;
+  let viewportResyncRequested = false;
+  const synchronizeContinuousViewport = (): void => {
     viewportFrameRequest = undefined;
-    if (active().session !== session || viewportActivation !== undefined) return;
-    const page = pageNearestViewportCenter(host);
-    if (page === undefined || page === session.snapshot.reader.page) return;
-    viewportActivation = session.activateViewportPage(page);
-    void viewportActivation.finally(() => {
-      viewportActivation = undefined;
+    viewportResyncRequested = false;
+    if (viewportDisposed || active().session !== session || viewportSynchronization !== undefined) return;
+    viewportSynchronization = session.synchronizeViewport(host.scrollTop, host.clientHeight);
+    const viewportSettlement = viewportSynchronization.catch(() => {
+      session.reader.setStatus("PDF viewport could not be updated.");
+      return false;
+    });
+    void viewportSettlement.finally(() => {
+      viewportSynchronization = undefined;
       rootKeyboard.syncContext();
       render();
-      if (active().session === session) synchronizeViewportPage();
+      if (viewportResyncRequested && !viewportDisposed && active().session === session) scheduleViewportSync();
     });
   };
-  host.addEventListener("scroll", () => {
-    if (viewportFrameRequest !== undefined) return;
-    viewportFrameRequest = window.requestAnimationFrame(synchronizeViewportPage);
-  }, { passive: true });
-  return { host, session };
+  const scheduleViewportSync = (): void => {
+    if (viewportDisposed || viewportFrameRequest !== undefined) return;
+    if (viewportSynchronization !== undefined) { viewportResyncRequested = true; return; }
+    viewportFrameRequest = window.requestAnimationFrame(synchronizeContinuousViewport);
+  };
+  const onReaderScroll = (): void => {
+    session.invalidateViewportSynchronization();
+    scheduleViewportSync();
+  }
+  host.addEventListener("scroll", onReaderScroll, { passive: true });
+  queueMicrotask(scheduleViewportSync);
+  return { host, session, disposeUi: () => {
+    viewportDisposed = true;
+    if (viewportFrameRequest !== undefined) window.cancelAnimationFrame(viewportFrameRequest);
+    host.removeEventListener("scroll", onReaderScroll);
+    copyContextMenu.dispose();
+  } };
 }
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
 active().session.activate();
@@ -844,7 +852,7 @@ function dispatchActionId(id: ActionId): void {
     "scroll.largeDown": { type: "scroll.byViewport", factor: 0.8 }, "scroll.largeUp": { type: "scroll.byViewport", factor: -0.8 },
     "page.next": { type: "page.next" }, "page.previous": { type: "page.previous" }, "page.first": { type: "page.first" }, "page.last": { type: "page.last" },
     "search.prompt": { type: "search.open" },
-    "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.zoom", factor: 1 },
+    "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.actualSize" },
     "view.fitWidth": { type: "view.fitWidth" }, "view.fitPage": { type: "view.fitPage" }, "view.rotateLeft": { type: "view.rotate", quarterTurns: -1 }, "view.rotateRight": { type: "view.rotate", quarterTurns: 1 },
     "link.hint": { type: "linkHints.toggle" }, "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
   };
@@ -919,6 +927,12 @@ function dispatch(action: Action): void {
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
     const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
+    const fitPageDirection = reader.zoomMode === "fit-page" && verticalCssPixels !== 0 ? (verticalCssPixels > 0 ? 1 : -1) : 0;
+    if (fitPageDirection !== 0) {
+      turnPageAtBoundary(payload, fitPageDirection);
+      rootKeyboard.syncContext(); render();
+      return;
+    }
     const direction = wheelPageDirection({
       deltaX: intent.horizontalCssPixels,
       deltaY: verticalCssPixels,

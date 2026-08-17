@@ -31,7 +31,7 @@ export class ReaderState {
     pageCount: 0,
     documentGeneration: 0,
     helpVisible: false,
-    zoomMode: "fit-page",
+    zoomMode: "fit-width",
     customScale: DEFAULT_SCALE,
     rotationQuarterTurns: 0,
     pendingScroll: {
@@ -56,11 +56,11 @@ export class ReaderState {
       page: 1,
       pageCount,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      zoomMode: "fit-page",
+      zoomMode: "fit-width",
       customScale: DEFAULT_SCALE,
       rotationQuarterTurns: 0,
       pendingScroll: this.emptyScrollIntent(),
-      status: this.pageStatus(1, pageCount, "fit-page", DEFAULT_SCALE, 0),
+      status: this.pageStatus(1, pageCount, "fit-width", DEFAULT_SCALE, 0),
     };
   }
 
@@ -71,7 +71,7 @@ export class ReaderState {
       page: 0,
       pageCount: 0,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      zoomMode: "fit-page",
+      zoomMode: "fit-width",
       customScale: DEFAULT_SCALE,
       rotationQuarterTurns: 0,
       pendingScroll: this.emptyScrollIntent(),
@@ -113,6 +113,9 @@ export class ReaderState {
         break;
       case "view.zoom":
         this.zoomBy(action.factor);
+        break;
+      case "view.actualSize":
+        this.setActualSize();
         break;
       case "view.rotate":
         this.rotateBy(action.quarterTurns);
@@ -226,6 +229,18 @@ export class ReaderState {
       ...this.snapshotValue,
       zoomMode: "custom",
       customScale,
+    };
+    this.refreshPageStatus();
+  }
+
+  private setActualSize(): void {
+    if (!this.snapshotValue.hasDocument) {
+      return;
+    }
+    this.snapshotValue = {
+      ...this.snapshotValue,
+      zoomMode: "custom",
+      customScale: 1,
     };
     this.refreshPageStatus();
   }
