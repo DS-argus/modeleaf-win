@@ -4,23 +4,54 @@ import {
   type ResourceReservation,
   ResourceReservationManager,
 } from "./ResourceBudget";
+import { appendHintInput, generateHintLabels, type HintKeyInput } from "../domain/links/LinkHints";
+import { DEFAULT_INDICATOR_SETTINGS, validateIndicatorSettings, type IndicatorSettings } from "../domain/links/IndicatorSettings";
 import { isValidPdfDestination } from "./PdfDestination";
 export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: boolean; readonly fontName?: string; readonly dir?: string; readonly transform?: readonly number[]; readonly width?: number; readonly height?: number; readonly [key: string]: unknown; }
 export interface PdfContentTextContent { readonly items: readonly PdfContentTextItem[]; readonly styles?: Readonly<Record<string, unknown>>; readonly lang?: string; }
 export interface PdfContentAnnotation { readonly subtype?: string; readonly rect?: readonly number[]; readonly url?: string; readonly id?: string; readonly dest?: unknown; readonly action?: string; readonly color?: readonly number[] | Uint8ClampedArray; readonly borderStyle?: { readonly width?: number; readonly style?: number }; }
-export interface PdfContentPage { getTextContent(): Promise<PdfContentTextContent>; streamTextContent?(): ReadableStream<PdfContentTextContent>; getAnnotations(): Promise<readonly PdfContentAnnotation[]>; }
+export interface PdfContentPage { getTextContent(): Promise<PdfContentTextContent>; streamTextContent?(): ReadableStream<PdfContentTextContent>; getAnnotations(options?: { readonly intent?: "display" }): Promise<readonly PdfContentAnnotation[]>; }
 export interface PdfContentDocument { readonly numPages: number; getPage(pageNumber: number): Promise<PdfContentPage>; getDestination?(name: string): Promise<unknown>; getPageIndex?(reference: unknown): Promise<number>; }
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
+export type PdfLinkActivationCause = "internal-link" | "link-hint";
+export type PdfDestinationNavigationOutcome =
+  | { readonly kind: "verified"; readonly point?: { readonly pageNumber: number; readonly x: number; readonly y: number } }
+  | { readonly kind: "rejected" | "same-location" | "stale" | "failed" };
 export interface PdfSearchGeometry { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 interface PdfSearchGeometryRange { readonly start: number; readonly end: number; readonly originX: number; readonly originY: number; readonly advanceX: number; readonly advanceY: number; readonly thicknessX: number; readonly thicknessY: number; readonly width: number; readonly height: number; readonly reverse: boolean; }
 export interface PdfSearchResult { readonly pageNumber: number; readonly index: number; readonly length: number; readonly geometry?: PdfSearchGeometry; }
 export type PdfSearchLandingOutcome = "displayedDistinct" | "displayedSame" | "failedWithoutMovement" | "displayedAfterUnverifiedMovement" | "stale";
 export interface PdfSearchLandingRequest { readonly searchGeneration: number; readonly selectionSequence: number; readonly resultIndex: number; readonly result: PdfSearchResult; readonly provenance: "initial" | "next" | "previous" | "restore"; }
 export interface PdfSearchResultsUpdate { readonly searchGeneration: number; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly hasSearchableText: boolean; }
-export interface PdfContentControllerOptions { readonly host: HTMLElement; readonly resources: ResourceReservationManager; readonly onStatus: (message: string) => void; readonly navigateToPage: (pageNumber: number) => void; readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[]) => void; readonly onSearchResults: (update: PdfSearchResultsUpdate) => void; readonly requestSearchLanding: (request: PdfSearchLandingRequest) => Promise<PdfSearchLandingOutcome>; readonly scheduleSearchWork?: () => Promise<void>; readonly prepareExternalLinks: (entries: readonly PdfExternalLinkRegistration[], registryRevision: number) => Promise<void>; readonly commitExternalLinks: (registryRevision: number) => Promise<void>; readonly finalizeExternalLinks: (registryRevision: number) => Promise<void>; readonly abortExternalLinks: (registryRevision: number) => Promise<void>; readonly openExternal: (annotationId: string, registryRevision: number, activationOperationId: string, operationSequence: number) => Promise<void>; }
-export interface PdfContentSnapshot { readonly generation: number | null; readonly pageNumber: number | null; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly currentResult: number; readonly searchPending: boolean; readonly searchIncomplete: boolean; readonly hintsVisible: boolean; }
+export interface PdfContentControllerOptions {
+  readonly host: HTMLElement;
+  readonly resources: ResourceReservationManager;
+  readonly onStatus: (message: string) => void;
+  readonly indicatorSettings?: () => IndicatorSettings;
+  readonly navigateToPage: (pageNumber: number) => void;
+  readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean) => Promise<PdfDestinationNavigationOutcome>;
+  readonly onSearchResults: (update: PdfSearchResultsUpdate) => void;
+  readonly requestSearchLanding: (request: PdfSearchLandingRequest) => Promise<PdfSearchLandingOutcome>;
+  readonly scheduleSearchWork?: () => Promise<void>;
+  readonly prepareExternalLinks: (entries: readonly PdfExternalLinkRegistration[], registryRevision: number) => Promise<void>;
+  readonly commitExternalLinks: (registryRevision: number) => Promise<void>;
+  readonly finalizeExternalLinks: (registryRevision: number) => Promise<void>;
+  readonly abortExternalLinks: (registryRevision: number) => Promise<void>;
+  readonly openExternal: (annotationId: string, registryRevision: number, activationOperationId: string, operationSequence: number) => Promise<void>;
+}
+export interface PdfContentSnapshot {
+  readonly generation: number | null;
+  readonly pageNumber: number | null;
+  readonly query: string;
+  readonly results: readonly PdfSearchResult[];
+  readonly currentResult: number;
+  readonly searchPending: boolean;
+  readonly searchIncomplete: boolean;
+  readonly hintsVisible: boolean;
+  readonly visibleLinkCount: number;
+}
 
 interface ResidentContentEntry {
   readonly pageNumber: number;
@@ -35,6 +66,7 @@ interface ResidentContentEntry {
 }
 
 interface LinkGroup {
+  readonly pageNumber: number;
   readonly key: string;
   readonly annotation: PdfContentAnnotation;
   readonly annotationId: string;
@@ -109,7 +141,6 @@ export const addPdfTextUtf8Bytes = (
     ? current + amount
     : undefined;
 };
-const hintAlphabet = "ASDFGHJKLQWERTYUIOPZXCVBNM";
 const assertDeadline = (deadline: number, message = "Search timed out."): void => {
   if (Date.now() >= deadline) throw new Error(message);
 };
@@ -265,6 +296,7 @@ export class PdfContentController {
   private renderedPage: number | undefined;
   private renderedViewport: PdfContentViewport | undefined;
   private renderedCanvas: HTMLCanvasElement | undefined;
+  private readonly appliedDestinationLandings = new Map<number, { readonly pageIndex: number; readonly x: number; readonly y: number }>();
   private pendingDestination: {
     readonly document: PdfContentDocument;
     readonly generation: number;
@@ -273,10 +305,13 @@ export class PdfContentController {
     readonly preservedPoint: readonly [number, number] | undefined;
     readonly destination: readonly unknown[];
   } | undefined;
+  private indicatorElement: HTMLElement | undefined;
+  private indicatorTimer: ReturnType<typeof setTimeout> | undefined;
+  private indicatorPublishTimer: ReturnType<typeof setTimeout> | undefined;
+  private indicatorGeneration = 0;
   private destinationSequence = 0;
   private linkActivationSequence = 0;
   private renderSequence = 0;
-  private internalDestinationActivation: Promise<void> | undefined;
   private renderedSequence: number | undefined;
   private sessionId: string | undefined;
   private visibleTextReservation: ResourceReservation | undefined;
@@ -314,6 +349,7 @@ export class PdfContentController {
   private readonly publishedRegistryFinalizers = new Map<number, PublishedRegistryFinalizer>();
   private unsettledVisibleTextCleanup: Promise<void> | undefined;
   private hintGroups: LinkGroup[] = [];
+  private readonly visiblePageNumbers = new Set<number>();
   private hintInput = "";
   private readonly linkActivationSettlements = new Set<Promise<void>>();
   private readonly deferredRegistryCleanups = new Map<number, DeferredRegistryCleanup>();
@@ -331,11 +367,12 @@ export class PdfContentController {
       currentResult: this.currentResult,
       searchPending: this.searchPending,
       searchIncomplete: this.searchIncomplete,
-      hintsVisible: this.hintsVisible,
+      hintsVisible: this.hintsVisible, visibleLinkCount: this.hintGroups.length,
     };
   }
 
   public mount(document: PdfContentDocument, generation: number, sessionId: string): void {
+    this.dismissLinkDecorations();
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
@@ -360,9 +397,9 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
+    this.dismissLinkDecorations();
     this.interactionsEnabled = false;
     this.interactionEpoch += 1;
-    this.internalDestinationActivation = undefined;
     this.renderSequence += 1;
     this.searchSequence += 1;
     this.pendingResultIndex = undefined;
@@ -408,6 +445,7 @@ export class PdfContentController {
   }
 
   public async unmount(): Promise<void> {
+    this.dismissLinkDecorations();
     this.closingEpoch = this.mountedEpoch;
     const document = this.document;
     const generation = this.generation;
@@ -423,7 +461,6 @@ export class PdfContentController {
       this.activeSearchSettlement,
       this.unsettledSearchCleanup,
       this.unsettledVisibleTextCleanup,
-      this.internalDestinationActivation,
       ...this.linkActivationSettlements,
       this.registryPublication,
       ...pendingFinalizers,
@@ -519,7 +556,7 @@ export class PdfContentController {
       const [contentResult, annotationsResult] = await awaitOwned(
         Promise.allSettled([
           request.page.streamTextContent === undefined ? request.page.getTextContent() : this.readVisibleText(request.page, deadline),
-          request.page.getAnnotations(),
+          request.page.getAnnotations({ intent: "display" }),
         ]),
         Math.max(1, deadline - Date.now()),
       );
@@ -623,14 +660,14 @@ export class PdfContentController {
       this.textLayer = textLayer;
       this.renderedViewport = request.viewport;
       this.renderedCanvas = request.canvas;
-      this.hintGroups = hintGroups;
-      this.updateHintVisibility();
       this.pendingTextReservation = undefined;
       this.visibleTextReservation = undefined;
       this.residentEntries.set(request.pageNumber, {
         pageNumber: request.pageNumber, layer: presentationRoot, textLayer, annotationLayer, viewport: request.viewport,
         canvas: request.canvas, reservation: reserved.reservation, hintGroups, renderSequence: sequence,
       });
+      if (this.visiblePageNumbers.size === 0 && this.residentEntries.size === 1) this.visiblePageNumbers.add(request.pageNumber);
+      this.updateHintVisibility();
       ownsReservation = false;
       this.renderedPage = request.pageNumber;
       this.renderedSequence = sequence;
@@ -674,7 +711,6 @@ export class PdfContentController {
     this.renderedCanvas = entry.canvas;
     this.renderedPage = entry.pageNumber;
     this.renderedSequence = entry.renderSequence;
-    this.hintGroups = entry.hintGroups;
     try {
       this.updateHintVisibility();
       this.applyHighlights();
@@ -684,11 +720,43 @@ export class PdfContentController {
     return true;
   }
 
+  public activateVisiblePages(pageNumbers: readonly number[]): number {
+    const visible = new Set(pageNumbers);
+    this.visiblePageNumbers.clear();
+    pageNumbers.forEach((page) => this.visiblePageNumbers.add(page));
+    const groups = [...this.residentEntries.values()]
+      .filter((entry) => visible.has(entry.pageNumber))
+      .flatMap((entry) => entry.hintGroups)
+      .sort((left, right) => left.pageNumber - right.pageNumber
+        || this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!)
+        || this.compareStrings(left.key, right.key)
+        || this.compareStrings(left.annotationId, right.annotationId));
+    this.hintGroups = groups;
+    const labels = generateHintLabels(groups.length);
+    const labelById = new Map(groups.map((group, index) => [group.annotationId, labels[index]!] as const));
+    for (const entry of this.residentEntries.values()) {
+      entry.annotationLayer.querySelectorAll<HTMLElement>("[data-annotation-id]").forEach((element) => {
+        const label = labelById.get(element.dataset.annotationId ?? "");
+        if (element.classList.contains("pdf-link-hint")) {
+          element.textContent = label ?? "";
+          element.dataset.hintLabel = label ?? "";
+          element.style.display = this.hintsVisible && label !== undefined ? "block" : "none";
+        } else if (label !== undefined) {
+          element.dataset.hintTarget = label;
+          element.setAttribute("aria-label", `PDF link ${label}`);
+        }
+      });
+      entry.layer.classList.toggle("pdf-link-hints-active", this.hintsVisible && entry.hintGroups.some((group) => labelById.has(group.annotationId)));
+    }
+    return groups.length;
+  }
   /** Releases one resident page's overlays and reservation without disturbing siblings. */
   public evictPage(pageNumber: number): boolean {
+    const remainingVisiblePages = [...new Set(this.hintGroups.filter((group) => group.pageNumber !== pageNumber).map((group) => group.pageNumber))];
     const entry = this.residentEntries.get(pageNumber);
     if (entry === undefined) return false;
     this.residentEntries.delete(pageNumber);
+    this.visiblePageNumbers.delete(pageNumber);
     this.externalEntriesByPage.delete(pageNumber);
     entry.layer.remove();
     entry.textLayer.remove();
@@ -705,6 +773,7 @@ export class PdfContentController {
       this.hintsVisible = false;
       this.hintInput = "";
     }
+    this.activateVisiblePages(remainingVisiblePages);
     return true;
   }
   /** Prepares and commits native resident authority while retaining rollback ownership. */
@@ -812,13 +881,20 @@ export class PdfContentController {
     return this.pendingDestination.intentId;
   }
 
+  public takeDestinationLanding(intentId: number): { readonly pageIndex: number; readonly x: number; readonly y: number } | undefined {
+    const landing = this.appliedDestinationLandings.get(intentId);
+    this.appliedDestinationLandings.delete(intentId);
+    return landing;
+  }
   public cancelDestination(intentId?: number): void {
     if (intentId === undefined) {
+      this.appliedDestinationLandings.clear();
       this.linkActivationSequence += 1;
       this.pendingDestination = undefined;
       return;
     }
     if (this.pendingDestination?.intentId === intentId) this.pendingDestination = undefined;
+    this.appliedDestinationLandings.delete(intentId);
   }
 
   private applyPendingDestination(request: PdfContentRenderRequest): void {
@@ -841,6 +917,13 @@ export class PdfContentController {
       if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
       this.options.host.scrollLeft = Math.max(0, canvasOrigin[0] + point[0]!);
       this.options.host.scrollTop = Math.max(0, canvasOrigin[1] + point[1]!);
+      const center = request.viewport.convertToPdfPoint(
+        this.options.host.scrollLeft - canvasOrigin[0] + this.options.host.clientWidth / 2,
+        this.options.host.scrollTop - canvasOrigin[1] + this.options.host.clientHeight / 2,
+      );
+      if (Number.isFinite(center[0]) && Number.isFinite(center[1])) {
+        this.appliedDestinationLandings.set(intent.intentId, { pageIndex: request.pageNumber - 1, x: center[0], y: center[1] });
+      }
     };
 
     if (name === "FitR"
@@ -1066,27 +1149,93 @@ export class PdfContentController {
     this.hintInput = "";
     this.updateHintVisibility();
   }
-  public handleHintKey(key: string): boolean {
-    if (key === "Escape" && this.hintsVisible) {
-      this.cancelHints();
-      return true;
-    }
-    if (!this.hintsVisible || key.length !== 1) return false;
-    const input = (this.hintInput + key).toUpperCase();
-    const exact = this.hintGroups.findIndex((_group, index) => this.hintLabel(index) === input);
-    if (exact >= 0) {
-      void this.activateLink(this.hintGroups[exact]!);
-      this.cancelHints();
-      return true;
-    }
-    if (this.hintGroups.some((_group, index) => this.hintLabel(index).startsWith(input))) {
-      this.hintInput = input;
-      return true;
-    }
+  public clearVisibleLinkAuthority(): void {
+    this.visiblePageNumbers.clear();
+    this.hintsVisible = false;
     this.hintInput = "";
-    return false;
+    this.hintGroups = [];
+    for (const entry of this.residentEntries.values()) {
+      entry.annotationLayer.querySelectorAll<HTMLElement>("[data-hint-label]").forEach((hint) => { hint.style.display = "none"; });
+      entry.layer.classList.remove("pdf-link-hints-active");
+    }
+  }
+  public get indicatorPublicationPending(): boolean { return this.indicatorPublishTimer !== undefined; }
+  public get linkDecorationsVisible(): boolean { return this.hintsVisible || this.indicatorElement !== undefined; }
+  public dismissLinkDecorations(): void {
+    this.cancelHints();
+    this.indicatorGeneration += 1;
+    if (this.indicatorPublishTimer !== undefined) clearTimeout(this.indicatorPublishTimer);
+    this.indicatorPublishTimer = undefined;
+    if (this.indicatorTimer !== undefined) clearTimeout(this.indicatorTimer);
+    this.indicatorTimer = undefined;
+    this.indicatorElement?.remove();
+    this.indicatorElement = undefined;
   }
 
+  private showDestinationIndicator(point: { readonly pageNumber: number; readonly x: number; readonly y: number }): void {
+    this.dismissLinkDecorations();
+    const entry = this.residentEntries.get(point.pageNumber);
+    if (entry === undefined) return;
+    const configured = this.options.indicatorSettings?.() ?? DEFAULT_INDICATOR_SETTINGS;
+    const validated = validateIndicatorSettings(configured);
+    if (!validated.ok) return;
+    const settings = validated.value;
+    const [x, y] = entry.viewport.convertToViewportPoint(point.x, point.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > entry.viewport.width || y > entry.viewport.height) return;
+    const indicator = documentCreate("div", "pdf-destination-indicator");
+    indicator.dataset.style = settings.style;
+    indicator.dataset.color = settings.color;
+    indicator.setAttribute("aria-hidden", "true");
+    indicator.style.position = "absolute";
+    indicator.style.pointerEvents = "none";
+    indicator.style.left = `${x - settings.size / 2}px`;
+    indicator.style.top = `${y - settings.size / 2}px`;
+    indicator.style.width = `${settings.size}px`;
+    indicator.style.height = `${settings.size}px`;
+    if (settings.color.startsWith("#")) indicator.style.setProperty("--indicator-color", settings.color);
+    else if (settings.color === "auto-contrast" && typeof getComputedStyle === "function") {
+      const values = getComputedStyle(entry.layer).backgroundColor.match(/[\d.]+/g)?.map(Number);
+      const alpha = values?.[3] ?? 1;
+      const channels = alpha === 0 ? [255, 255, 255] : values?.slice(0, 3);
+      if (channels?.length === 3 && channels.every(Number.isFinite)) {
+        const luminance = (0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!) / 255;
+        indicator.style.setProperty("--indicator-color", luminance > 0.5 ? "#000" : "#fff");
+      }
+    }
+    indicator.style.setProperty("--indicator-duration", `${settings.durationMilliseconds}ms`);
+    entry.annotationLayer.append(indicator);
+    this.indicatorElement = indicator;
+    const generation = ++this.indicatorGeneration;
+    this.indicatorTimer = setTimeout(() => {
+      if (generation !== this.indicatorGeneration) return;
+      indicator.remove();
+      if (this.indicatorElement === indicator) this.indicatorElement = undefined;
+      this.indicatorTimer = undefined;
+    }, settings.durationMilliseconds);
+  }
+  public handleHintKey(input: string | HintKeyInput): boolean {
+    const event = typeof input === "string" ? { key: input } : input;
+    if (event.ctrlKey || event.altKey || event.metaKey || event.altGraph || event.isComposing || event.keyCode === 229
+      || event.key === "Dead" || event.key === "Process" || event.key === "Unidentified") return false;
+    if (!this.hintsVisible && !(event.key === "Escape" && this.indicatorElement !== undefined)) return false;
+    if (event.key === "Escape") { this.dismissLinkDecorations(); return true; }
+    if (event.key === "Backspace") {
+      this.hintInput = this.hintInput.slice(0, -1);
+      return true;
+    }
+    const next = appendHintInput(this.hintInput, event);
+    if (next === null) return true;
+    const matches = this.hintGroups.map((_group, index) => ({ index, label: this.hintLabel(index) }))
+      .filter((candidate) => candidate.label.startsWith(next));
+    if (matches.length === 0) return true;
+    if (matches.length === 1) {
+      void this.activateLink(this.hintGroups[matches[0]!.index]!, "link-hint");
+      this.cancelHints();
+      return true;
+    }
+    this.hintInput = next;
+    return true;
+  }
   private async appendLinkGroups(
     layer: HTMLElement,
     annotations: readonly PdfContentAnnotation[],
@@ -1111,6 +1260,7 @@ export class PdfContentController {
       if (groups.some((group) =>
         this.sameDestination(group.key, candidate.key) && this.sameRectangle(group.rectangles[0]!, candidate.rect))) continue;
       groups.push({
+        pageNumber,
         key: candidate.key,
         annotation: candidate.annotation,
         annotationId: candidate.annotationId,
@@ -1131,6 +1281,7 @@ export class PdfContentController {
         target.style.height = `${rect.height}px`;
         target.style.pointerEvents = "auto";
         target.dataset.hintTarget = this.hintLabelFor(index, hintGroups.length);
+        target.dataset.annotationId = group.annotationId;
         target.setAttribute("aria-label", `PDF link ${this.hintLabelFor(index, hintGroups.length)}`);
         const annotationColor = group.annotation.color;
         if (annotationColor !== undefined && annotationColor.length >= 3) {
@@ -1145,7 +1296,7 @@ export class PdfContentController {
         }
         if (group.annotation.borderStyle?.style === 2) target.style.borderStyle = "dashed";
         target.addEventListener("click", () => {
-          if (this.interactionsEnabled && this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group);
+          if (this.interactionsEnabled && this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group, "internal-link");
         });
         layer.append(target);
       });
@@ -1154,6 +1305,7 @@ export class PdfContentController {
       const hint = documentCreate("span", "pdf-link-hint");
       hint.textContent = this.hintLabelFor(index, hintGroups.length);
       hint.dataset.hintLabel = this.hintLabelFor(index, hintGroups.length);
+      hint.dataset.annotationId = group.annotationId;
       hint.style.position = "absolute";
       hint.style.left = `${first.left}px`;
       hint.style.top = `${first.top}px`;
@@ -1163,20 +1315,28 @@ export class PdfContentController {
     return hintGroups;
   }
 
-  private async activateLink(group: LinkGroup): Promise<void> {
+  private async activateLink(group: LinkGroup, cause: PdfLinkActivationCause): Promise<void> {
     const document = this.document;
     const generation = this.generation;
     if (!this.interactionsEnabled || document === undefined || generation === undefined || this.isClosing()) return;
     const interactionEpoch = this.interactionEpoch;
     const { annotation } = group;
+    const activation = ++this.linkActivationSequence;
+    const isOwnerActive = (): boolean => activation === this.linkActivationSequence
+      && interactionEpoch === this.interactionEpoch
+      && this.interactionsEnabled
+      && this.isCurrent(generation, document);
+    const isActive = (): boolean => isOwnerActive()
+      && this.hintGroups.includes(group)
+      && this.residentEntries.get(group.pageNumber)?.hintGroups.includes(group) === true;
+
     if (annotation.url !== undefined) {
-      const activation = ++this.linkActivationSequence;
       if (!isExternalUrl(annotation.url)) this.options.onStatus("Unsupported PDF link destination.");
-      else if (activation === this.linkActivationSequence && group.registryRevision !== undefined) {
+      else if (isActive() && group.registryRevision !== undefined) {
         const operationId = `external-${this.sessionId ?? "unmounted"}-${group.registryRevision}-${group.annotationId}-${activation}`;
         let rawActivation: Promise<void>;
         try {
-          rawActivation = Promise.resolve(this.options.openExternal(group.annotationId, group.registryRevision!, operationId, activation));
+          rawActivation = Promise.resolve(this.options.openExternal(group.annotationId, group.registryRevision, operationId, activation));
         } catch (error) {
           rawActivation = Promise.reject(error);
         }
@@ -1189,19 +1349,9 @@ export class PdfContentController {
       if (this.hintGroups.includes(group)) this.options.onStatus("Unsupported PDF link action.");
       return;
     }
-    if (this.internalDestinationActivation !== undefined) return;
-    let releaseLease!: () => void;
-    const lease = new Promise<void>((resolve) => { releaseLease = resolve; });
-    this.internalDestinationActivation = lease;
+
     const rawSettlements: Promise<void>[] = [];
-    const activation = ++this.linkActivationSequence;
     const deadline = Date.now() + LINK_ACTIVATION_TIMEOUT_MS;
-    const isActive = (): boolean => activation === this.linkActivationSequence
-      && interactionEpoch === this.interactionEpoch
-      && this.interactionsEnabled
-      && group.renderSequence === this.renderedSequence
-      && this.hintGroups.includes(group)
-      && this.isCurrent(generation, document);
     const remaining = (): number => {
       const milliseconds = deadline - Date.now();
       if (milliseconds <= 0) throw new Error("Link activation timed out.");
@@ -1223,50 +1373,54 @@ export class PdfContentController {
         this.options.onStatus("Unsupported PDF link destination.");
         return;
       }
-      const reference = destination[0];
-      const pageNumber = typeof reference === "number"
-        ? (Number.isSafeInteger(reference) && reference >= 0 && reference < document.numPages ? reference + 1 : null)
-        : document.getPageIndex === undefined ? null : await awaitRaw(document.getPageIndex(reference)).then((index) =>
-          Number.isSafeInteger(index) && index >= 0 && index < document.numPages ? index + 1 : null);
+      const pageNumber = await this.destinationPage(destination, document, awaitRaw);
       if (!isActive()) return;
       if (pageNumber === null) this.options.onStatus("Unsupported PDF link destination.");
-      else this.options.navigateToDestination(pageNumber, destination);
+      else {
+        const outcome = await awaitRaw(this.options.navigateToDestination(pageNumber, destination, cause, isOwnerActive));
+        if (isOwnerActive() && outcome.kind === "verified" && outcome.point !== undefined) {
+          const point = outcome.point;
+          this.indicatorPublishTimer = setTimeout(() => {
+            this.indicatorPublishTimer = undefined;
+            if (isOwnerActive()) this.showDestinationIndicator(point);
+          }, 0);
+        }
+      }
     } catch (error) {
       if (isActive()) this.options.onStatus(error instanceof Error && error.message === "PDF link destination resolution timed out."
         ? error.message
         : "Unsupported PDF link destination.");
     } finally {
-      void Promise.allSettled(rawSettlements).then(() => {
-        if (this.internalDestinationActivation === lease) this.internalDestinationActivation = undefined;
-        releaseLease();
-      });
+      void Promise.allSettled(rawSettlements);
     }
-  }
-  private async destinationPage(destination: unknown, document: PdfContentDocument): Promise<number | null> {
-    if (!Array.isArray(destination) || destination.length === 0) return null;
-    const reference = destination[0];
-    if (typeof reference === "number") {
-      return Number.isSafeInteger(reference) && reference >= 0 && reference < document.numPages
-        ? reference + 1
-        : null;
-    }
-    if (document.getPageIndex === undefined) return null;
-    const index = await document.getPageIndex(reference);
-    return Number.isSafeInteger(index) && index >= 0 && index < document.numPages ? index + 1 : null;
   }
 
-  private async destinationKey(annotation: PdfContentAnnotation, index: number, document: PdfContentDocument): Promise<string | null> {
-    if (annotation.url !== undefined) return isExternalUrl(annotation.url) ? `url:${annotation.url}` : `unsupported-url:${index}`;
-    if (annotation.action !== undefined) return `unsupported-action:${index}`;
+  private async destinationPage(
+    destination: readonly unknown[],
+    document: PdfContentDocument,
+    wait: <T>(operation: Promise<T>) => Promise<T> = (operation) => operation,
+  ): Promise<number | null> {
+    if (destination.length === 0) return null;
+    const reference = destination[0];
+    if (typeof reference === "number") {
+      return Number.isSafeInteger(reference) && reference >= 0 && reference < document.numPages ? reference + 1 : null;
+    }
+    if (document.getPageIndex === undefined) return null;
+    const index = await wait(document.getPageIndex(reference));
+    return Number.isSafeInteger(index) && index >= 0 && index < document.numPages ? index + 1 : null;
+  }
+  private async destinationKey(annotation: PdfContentAnnotation, _index: number, document: PdfContentDocument): Promise<string | null> {
+    if (annotation.url !== undefined) return isExternalUrl(annotation.url) ? `url:${annotation.url}` : `unsupported-url:${annotation.url}`;
+    if (annotation.action !== undefined) return `unsupported-action:${annotation.action}`;
     if (annotation.dest === undefined) return null;
     try {
       const destination = typeof annotation.dest === "string" ? await document.getDestination?.(annotation.dest) : annotation.dest;
-      if (!Array.isArray(destination) || !isValidPdfDestination(destination)) return `unsupported-dest:${index}`;
+      if (!Array.isArray(destination) || !isValidPdfDestination(destination)) return `unsupported-dest:${JSON.stringify(this.destinationOperand(annotation.dest))}`;
       const page = await this.destinationPage(destination, document);
-      if (page === null) return `unsupported-dest:${index}`;
+      if (page === null) return `unsupported-dest:${JSON.stringify(this.destinationOperand(annotation.dest))}`;
       return `goto:${page}:${JSON.stringify(destination.slice(1).map((operand) => this.destinationOperand(operand)))}`;
     } catch {
-      return `unsupported-dest:${index}`;
+      return `unsupported-dest:${JSON.stringify(this.destinationOperand(annotation.dest))}`;
     }
   }
   private destinationOperand(value: unknown): unknown {
@@ -1317,27 +1471,13 @@ export class PdfContentController {
   }
 
   private hintLabelFor(index: number, total: number): string {
-    let width = 1;
-    let capacity = hintAlphabet.length;
-    while (capacity < total) {
-      width += 1;
-      capacity *= hintAlphabet.length;
-    }
-    let value = index;
-    let label = "";
-    for (let position = 0; position < width; position += 1) {
-      label = hintAlphabet[value % hintAlphabet.length]! + label;
-      value = Math.floor(value / hintAlphabet.length);
-    }
-    return label;
+    return generateHintLabels(total)[index] ?? "";
   }
 
 
   private updateHintVisibility(): void {
-    this.layer?.querySelectorAll<HTMLElement>("[data-hint-label]").forEach((hint) => {
-      hint.style.display = this.hintsVisible ? "block" : "none";
-    });
-    this.layer?.classList.toggle("pdf-link-hints-active", this.hintsVisible);
+    const pages = [...this.visiblePageNumbers];
+    this.activateVisiblePages(pages);
   }
 
   private stageExternalLinks(

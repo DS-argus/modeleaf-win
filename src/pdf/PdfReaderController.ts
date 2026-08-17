@@ -246,6 +246,7 @@ interface Candidate {
   document?: PdfDocument;
   readonly residentRasters: Map<number, RenderedCanvas>;
   activePageNumber?: number;
+  visiblePageNumbers?: readonly number[];
 
 }
 interface CleanupPhase {
@@ -481,6 +482,7 @@ export class PdfReaderController {
       candidate.window.begin(1, openingPlan.generation);
       candidate.window.publish(1, openingPlan.generation);
       candidate.activePageNumber = 1;
+      candidate.visiblePageNumbers = Object.freeze([1]);
       if (this.disposed || this.opening !== candidate) throw new Error("Opening PDF cancelled");
       let priorCleanup: Promise<void> | undefined;
       let canvasCommitted = false;
@@ -697,6 +699,10 @@ export class PdfReaderController {
     if (window === undefined) return false;
     const range = window.visibleRangeForViewport(scrollTop, clientHeight);
     if (range.firstVisiblePage === undefined || range.lastVisiblePage === undefined) return false;
+    current.visiblePageNumbers = Object.freeze(Array.from(
+      { length: range.lastVisiblePage - range.firstVisiblePage + 1 },
+      (_unused, index) => range.firstVisiblePage! + index,
+    ));
 
     const epoch = ++this.viewportEpoch;
     let releaseSettlement!: () => void;
@@ -828,6 +834,7 @@ export class PdfReaderController {
     }
   }
   public get activePageNumber(): number | undefined { return this.current?.activePageNumber; }
+  public get visiblePageNumbers(): readonly number[] { return this.current?.visiblePageNumbers ?? Object.freeze([]); }
   public captureScrollAnchor(): PdfScrollAnchor | undefined {
     const current = this.current;
     const pageNumber = current?.activePageNumber;
@@ -1026,6 +1033,7 @@ export class PdfReaderController {
         }
         current.residentRasters.set(page, rendered);
         current.activePageNumber = page;
+        if (this.activeViewportPlan === undefined) current.visiblePageNumbers = Object.freeze([page]);
         this.viewTransform = transform;
         if (prior !== undefined) this.releaseRaster(prior);
         this.canvasReplace(rendered.canvas, accessory);
