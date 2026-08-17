@@ -30,6 +30,8 @@ type SessionInternals = {
     restoreEvictedSearch: () => Promise<void>;
     queueDestination: (page: number, destination: readonly unknown[]) => number | undefined;
     cancelDestination: (intentId?: number) => void;
+    synchronizeResidentPages: (pages: readonly number[]) => Promise<void>;
+    activateResidentPage: (page: number) => boolean;
   };
   pdfReader: {
     evictInactiveCanvas: () => boolean;
@@ -51,6 +53,8 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     restoreEvictedSearch: vi.fn(async () => undefined),
     queueDestination: vi.fn(() => 1),
     cancelDestination: vi.fn(),
+    synchronizeResidentPages: vi.fn(async () => undefined),
+    activateResidentPage: vi.fn(() => true),
   };
   (session as unknown as SessionInternals).content = content;
   return content;
@@ -153,6 +157,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(content.handleHintKey).toHaveBeenCalledWith("A");
     await session.deactivate();
     expect(session.handleHintKey("S")).toBe(false);
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
   });
 
 

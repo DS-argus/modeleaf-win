@@ -180,8 +180,15 @@ export class PdfTabSession {
       return;
     }
     const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers();
-    if (needsPresentationRestore) await this.restorePresentation(activityGeneration);
-    else await this.restoreInterruptedSearch(activityGeneration);
+    if (needsPresentationRestore) {
+      await this.restorePresentation(activityGeneration);
+    } else {
+      if (this.content !== undefined) {
+        await this.content.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
+        this.content.activateResidentPage(this.reader.snapshot.page);
+      }
+      await this.restoreInterruptedSearch(activityGeneration);
+    }
   }
   public async deactivate(): Promise<void> {
     if (this.closed) return;
@@ -191,6 +198,7 @@ export class PdfTabSession {
     this.activityGeneration += 1;
     this.content?.suspend();
     await this.pdfReader.suspend();
+    await this.content?.synchronizeResidentPages([]);
     this.foregroundSuspended = true;
   }
   public evictInactiveHeavyResources(): void {
@@ -225,6 +233,7 @@ export class PdfTabSession {
     this.pendingPresentationRenders += 1;
     try {
       const activityGeneration = this.activityGeneration;
+    const documentGeneration = this.reader.snapshot.documentGeneration;
       const intent = this.renderIntent;
       const navigationIntent = this.navigationIntent;
       const guard = (): boolean => !this.closed && this.active && this.activityGeneration === activityGeneration
@@ -261,6 +270,7 @@ export class PdfTabSession {
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
     if (this.closed || !this.active || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
     const activityGeneration = this.activityGeneration;
+    const documentGeneration = this.reader.snapshot.documentGeneration;
     const navigationIntent = this.navigationIntent;
     const viewportIntent = ++this.viewportIntent;
     const guard = (): boolean => !this.closed && this.active && this.activityGeneration === activityGeneration
@@ -281,10 +291,12 @@ export class PdfTabSession {
         committed = await this.pdfReader.renderPageWithTransform(snapshot.page, stableTransform, guard);
       }
     }
-    if (guard()) await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
+    if (!this.closed && this.active && this.reader.snapshot.documentGeneration === documentGeneration) {
+      await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
+      this.content?.activateResidentPage(this.reader.snapshot.page);
+    }
     if (!committed && !guard()) this.presentationDirty = true;
     return committed;
-
   }
   public async activateViewportPage(page: number): Promise<boolean> {
     if (this.closed || !this.active || !Number.isInteger(page)) return false;

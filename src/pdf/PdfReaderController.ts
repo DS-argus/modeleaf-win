@@ -305,6 +305,9 @@ export class PdfReaderController {
   private readonly pendingCleanups = new Map<string, PendingCleanup>();
   private readonly teardownSessions = new Map<string, Promise<void>>();
   private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan } | undefined;
+  private viewportEpoch = 0;
+  private viewportSettlement: Promise<void> | undefined;
+  private viewportRollback = false;
   private viewTransform: PdfViewTransform = {
     scale: 1.25,
     rotation: 0,
@@ -629,8 +632,15 @@ export class PdfReaderController {
     return pageNumber === undefined ? false : this.renderPage(pageNumber, this.viewTransform, requestCommitGuard);
   }
 
+  private async awaitViewportIdle(): Promise<void> {
+    const settlement = this.viewportSettlement;
+    if (settlement === undefined) return;
+    this.invalidateViewportSynchronization();
+    await settlement;
+  }
   public invalidateViewportSynchronization(): void {
-    if (this.activeViewportPlan === undefined) return;
+    if (this.activeViewportPlan === undefined || this.viewportRollback) return;
+    this.viewportEpoch += 1;
     this.renderSequence += 1;
     void this.cancelActiveRender().catch(() => {
       if (!this.disposed) this.options.onStatus("PDF viewport cancellation pending.");
@@ -639,54 +649,98 @@ export class PdfReaderController {
   /** Synchronizes the bounded continuous resident window to finite host geometry. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     if (!Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    await this.awaitViewportIdle();
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const window = current.window;
     if (window === undefined) return false;
     const range = window.visibleRangeForViewport(scrollTop, clientHeight);
     if (range.firstVisiblePage === undefined || range.lastVisiblePage === undefined) return false;
+
+    const epoch = ++this.viewportEpoch;
+    let releaseSettlement!: () => void;
+    const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
+    this.viewportSettlement = settlement;
     const checkpoint = window.checkpoint();
     const originalResidents = new Set(checkpoint.residentPages);
+    const priorActivePage = current.activePageNumber;
     const plan = window.plan(range.firstVisiblePage, range.lastVisiblePage);
+    const transactionCurrent = (): boolean => this.viewportEpoch === epoch
+      && this.current === current
+      && !this.disposed
+      && (requestCommitGuard?.() ?? true);
     this.applyWindowSpacers(current, plan);
     this.activeViewportPlan = { candidate: current, plan };
     let succeeded = false;
     try {
       for (const page of plan.materializePages) {
+        if (!transactionCurrent()) return false;
+        while (!current.residentRasters.has(page) && current.residentRasters.size >= plan.plannedPages.length) {
+          const obsolete = plan.evictPages.find((candidate) => current.residentRasters.has(candidate) && candidate !== priorActivePage)
+            ?? plan.evictPages.find((candidate) => current.residentRasters.has(candidate));
+          if (obsolete === undefined) throw new Error("PDF_RESIDENT_TRANSITION_CAPACITY");
+          this.evictResidentPage(current, obsolete);
+        }
         window.begin(page, plan.generation);
-        if (requestCommitGuard !== undefined && !requestCommitGuard()) return false;
-        const committed = await this.renderPage(page, this.viewTransform, requestCommitGuard);
-        if (!committed || this.current !== current) return false;
+        const committed = await this.renderPageInternal(page, this.viewTransform, transactionCurrent);
+        if (!committed || !transactionCurrent()) return false;
         const raster = current.residentRasters.get(page);
         if (raster !== undefined) window.updateMetric(page, { width: raster.viewport.width, height: raster.viewport.height });
       }
       for (const page of plan.evictPages) this.evictResidentPage(current, page);
+      if (!transactionCurrent()) return false;
+      const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage);
+      this.applyWindowSpacers(current, finalPlan);
+      const center = window.pageNearestViewportCenter(
+        [...current.residentRasters.values()].map((raster) => {
+          const top = window.offsetForPage(raster.pageNumber);
+          return { pageNumber: raster.pageNumber, top, bottom: top + raster.viewport.height };
+        }),
+        scrollTop + clientHeight / 2,
+      ) ?? range.firstVisiblePage;
+      current.activePageNumber = center;
+      for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+        frame.dataset.activePage = String(Number(frame.dataset.page) === center);
+      }
       succeeded = true;
+      this.notifyObserver(() => this.options.onPage(center, this.viewTransform));
+      return true;
     } finally {
       for (const page of plan.materializePages) window.fail(page, plan.generation);
-      if (this.activeViewportPlan?.candidate === current && this.activeViewportPlan.plan === plan) this.activeViewportPlan = undefined;
-      if (!succeeded && this.current === current) {
-        for (const page of [...current.residentRasters.keys()]) {
-          if (!originalResidents.has(page)) this.evictResidentPage(current, page);
+      if (!succeeded && this.current === current && !this.disposed) {
+        this.viewportRollback = true;
+        try {
+          for (const page of [...current.residentRasters.keys()]) {
+            if (!originalResidents.has(page)) this.evictResidentPage(current, page);
+          }
+          const physicallyResident = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
+          const rollbackPlan = window.restore(checkpoint, physicallyResident);
+          this.activeViewportPlan = { candidate: current, plan: rollbackPlan };
+          for (const page of rollbackPlan.materializePages) {
+            window.begin(page, rollbackPlan.generation);
+            const restored = await this.renderPageInternal(page, this.viewTransform);
+            if (!restored) this.options.onStatus("PDF viewport rollback could not restore a page.");
+            window.fail(page, rollbackPlan.generation);
+          }
+          const restoredResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page));
+          this.applyWindowSpacers(current, window.restore(checkpoint, restoredResidents));
+          const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
+            ? priorActivePage
+            : [...originalResidents].find((page) => current.residentRasters.has(page));
+          if (restoredActive !== undefined) current.activePageNumber = restoredActive;
+          for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+            frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+          }
+        } catch (error) {
+          this.options.onStatus(`PDF viewport rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+          this.viewportRollback = false;
         }
-        this.applyWindowSpacers(current, window.restore(checkpoint));
       }
+      if (this.activeViewportPlan?.candidate === current) this.activeViewportPlan = undefined;
+      releaseSettlement();
+      if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;
     }
-    const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage);
-    this.applyWindowSpacers(current, finalPlan);
-    const center = window.pageNearestViewportCenter(
-      [...current.residentRasters.values()].map((raster) => {
-        const top = window.offsetForPage(raster.pageNumber);
-        return { pageNumber: raster.pageNumber, top, bottom: top + raster.viewport.height };
-      }),
-      scrollTop + clientHeight / 2,
-    ) ?? range.firstVisiblePage;
-    current.activePageNumber = center;
-    for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
-      frame.dataset.activePage = String(Number(frame.dataset.page) === center);
-    }
-    this.notifyObserver(() => this.options.onPage(center, this.viewTransform));
-    return true;
   }
   public captureScrollAnchor(): PdfScrollAnchor | undefined {
     const current = this.current;
@@ -728,7 +782,7 @@ export class PdfReaderController {
     host.scrollTop = restored.scrollTop;
   }
 
-  public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const cssTransformChanged = transform.scale !== this.viewTransform.scale || transform.rotation !== this.viewTransform.rotation;
@@ -782,6 +836,9 @@ export class PdfReaderController {
         if (prior !== undefined) this.releaseRaster(prior);
         this.canvasReplace(rendered.canvas, accessory);
         if (plan !== undefined) this.applyWindowSpacers(current, plan);
+        if (directPlan !== undefined && anchor === undefined && current.window !== undefined) {
+          this.options.canvasHost.scrollTop = current.window.offsetForPage(page);
+        }
         if (anchor !== undefined) this.restoreScrollAnchor(anchor);
         if (retainedAnchor !== undefined) this.evictedScrollAnchor = undefined;
         committed = true;
@@ -805,6 +862,62 @@ export class PdfReaderController {
     finally {
       if (directPlan?.materializePages.includes(page)) current.window?.fail(page, directPlan.generation);
     }
+  }
+  private async rerenderResidentBackingsForDpr(transform: PdfViewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+    const current = this.current;
+    const window = current?.window;
+    if (current === undefined || current.document === undefined || window === undefined || this.disposed) return false;
+    const pages = [...current.residentRasters.keys()].sort((a, b) => a - b);
+    if (pages.length === 0) return false;
+    const priorTransform = this.viewTransform;
+    const activePage = current.activePageNumber;
+    const checkpoint = window.checkpoint();
+    const basePlan = window.restore(checkpoint, checkpoint.residentPages);
+    const replaceAll = async (target: PdfViewTransform, guard?: PdfRequestCommitGuard): Promise<boolean> => {
+      for (const page of pages) {
+        if (guard !== undefined && !guard()) return false;
+        if (current.residentRasters.has(page)) this.evictResidentPage(current, page);
+        const pagePlan: PageWindowPlan = { ...basePlan, residentPages: this.residentPageNumbers(), materializePages: [page] };
+        this.activeViewportPlan = { candidate: current, plan: pagePlan };
+        window.begin(page, pagePlan.generation);
+        const replaced = await this.renderPageInternal(page, target, guard);
+        window.fail(page, pagePlan.generation);
+        if (!replaced) return false;
+      }
+      return true;
+    };
+    let succeeded = false;
+    try {
+      succeeded = await replaceAll(transform, requestCommitGuard);
+      if (!succeeded) return false;
+      if (activePage !== undefined) current.activePageNumber = activePage;
+      for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+        frame.dataset.activePage = String(activePage !== undefined && Number(frame.dataset.page) === activePage);
+      }
+      if (activePage !== undefined) this.notifyObserver(() => this.options.onPage(activePage, transform));
+      return true;
+    } finally {
+      if (!succeeded && this.current === current && !this.disposed) {
+        if (!await replaceAll(priorTransform)) this.options.onStatus("PDF DPR rollback could not restore every page.");
+        if (activePage !== undefined) current.activePageNumber = activePage;
+        for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+          frame.dataset.activePage = String(activePage !== undefined && Number(frame.dataset.page) === activePage);
+        }
+      }
+      window.restore(checkpoint, [...current.residentRasters.keys()].filter((page) => checkpoint.residentPages.includes(page)));
+      if (this.activeViewportPlan?.candidate === current) this.activeViewportPlan = undefined;
+    }
+  }
+
+  public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+    await this.awaitViewportIdle();
+    if (transform.scale === this.viewTransform.scale
+      && transform.rotation === this.viewTransform.rotation
+      && transform.devicePixelRatio !== this.viewTransform.devicePixelRatio
+      && (this.current?.residentRasters.size ?? 0) > 1) {
+      return this.rerenderResidentBackingsForDpr(transform, requestCommitGuard);
+    }
+    return this.renderPageInternal(page, transform, requestCommitGuard);
   }
   /** Cancels foreground rendering without releasing the owned document session. */
   public async suspend(): Promise<void> {

@@ -31,6 +31,9 @@ describe("W06 packaged Windows smoke contract", () => {
     const script = await source();
     expect(script).toMatch(/CreateKillOnCloseJob/);
     expect(script).toMatch(/AssignProcessToJobObject/);
+    expect(script).toMatch(/CreateProcess/);
+    expect(script).toMatch(/StartOwned/);
+    expect(script).toMatch(/0x4/);
     expect(script).toMatch(/TerminateJobObject/);
     expect(script).toMatch(/LaunchTimeoutMs=20000/);
     expect(script).toMatch(/ActionTimeoutMs=8000/);
@@ -44,9 +47,8 @@ describe("W06 packaged Windows smoke contract", () => {
   it("covers the reader states and rejects writable capabilities through accessible UI", async () => {
     const script = await source();
     for (const event of [
-      "native-open-dialog:fixture-selected",
+      "native-open-request:fixture-selected",
       "view:fit-width-default",
-      "view:actual-size",
       "view:zoom-in",
       "view:zoom-out",
       "view:rotate-quarter-turn",
@@ -60,6 +62,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toMatch(/TreeScope\]::Subtree/);
     expect(script).toMatch(/for\(\$i=0;\$i -lt 20;\$i\+\+\)/);
     expect(script).toMatch(/function Capture-VisualHash/);
+    expect(script).toMatch(/FocusedWindow/);
+    expect(script).toMatch(/GetGUIThreadInfo/);
   });
 
   it("emits a single path-free atomic terminal receipt and refuses stale evidence", async () => {

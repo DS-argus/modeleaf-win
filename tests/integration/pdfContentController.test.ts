@@ -592,6 +592,21 @@ describe("PdfContentController", () => {
     expect(subject.openExternal).toHaveBeenCalledWith("page-2-render-3-annotation-0", 3, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
+  it("preserves local residents and their prior native revision when reconciliation fails", async () => {
+    const subject = setup([
+      page("kept", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/kept" }]),
+    ]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    subject.prepareExternalLinks.mockRejectedValueOnce(new Error("registry unavailable"));
+
+    await expect(subject.controller.synchronizeResidentPages([])).rejects.toThrow("registry unavailable");
+    expect(subject.controller.activateResidentPage(1)).toBe(true);
+    subject.openExternal.mockClear();
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
+    await subject.controller.unmount();
+  });
   it("retains resident registry entries after a timed-out pre-prepare activation", async () => {
     vi.useFakeTimers();
     try {

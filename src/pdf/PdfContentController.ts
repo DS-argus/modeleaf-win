@@ -717,10 +717,10 @@ export class PdfContentController {
   public async synchronizeResidentPages(pageNumbers: readonly number[]): Promise<void> {
     const pages = new Set(pageNumbers);
     if ([...pages].some((page) => !Number.isSafeInteger(page) || page < 1)) throw new Error("PDF_RESIDENT_PAGE_INVALID");
-    for (const page of [...this.residentEntries.keys()]) {
-      if (!pages.has(page)) this.evictPage(page);
-    }
-    const publication = this.stageExternalLinks([...this.externalEntriesByPage.values()].flat(), Date.now() + SEARCH_TIMEOUT_MS);
+    const publication = this.stageExternalLinks(
+      [...this.externalEntriesByPage].filter(([page]) => pages.has(page)).flatMap(([, entries]) => entries),
+      Date.now() + SEARCH_TIMEOUT_MS,
+    );
     try {
       await publication.staged;
       await publication.commit();
@@ -728,8 +728,8 @@ export class PdfContentController {
       await publication.rollback();
       throw error;
     }
-    for (const entry of this.residentEntries.values()) {
-      for (const group of entry.hintGroups) group.registryRevision = publication.revision;
+    for (const [page, entry] of this.residentEntries) {
+      if (pages.has(page)) for (const group of entry.hintGroups) group.registryRevision = publication.revision;
     }
     const finalization = publication.finalize();
     void finalization.catch((error: unknown) => {

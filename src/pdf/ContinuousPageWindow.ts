@@ -100,10 +100,14 @@ export class ContinuousPageWindow {
     });
   }
 
-  public restore(checkpoint: PageWindowCheckpoint): PageWindowPlan {
+  public restore(checkpoint: PageWindowCheckpoint, physicallyResidentPages: readonly number[] = checkpoint.residentPages): PageWindowPlan {
     for (const page of [...checkpoint.plannedPages, ...checkpoint.residentPages]) this.assertPage(page);
     this.planned = new Set(checkpoint.plannedPages);
-    this.resident = new Set(checkpoint.residentPages);
+    for (const page of physicallyResidentPages) {
+      this.assertPage(page);
+      if (!checkpoint.residentPages.includes(page)) throw new Error(`Page ${page} is not in the checkpoint`);
+    }
+    this.resident = new Set(physicallyResidentPages);
     this.inFlight.clear();
     this.measuredHeights.clear();
     for (const [page, height] of checkpoint.measuredHeights) {
@@ -119,7 +123,7 @@ export class ContinuousPageWindow {
       generation: this.generation,
       plannedPages: pages,
       residentPages: [...this.resident].sort((a, b) => a - b),
-      materializePages: pages.filter((page) => !this.resident.has(page)),
+      materializePages: checkpoint.residentPages.filter((page) => !this.resident.has(page)),
       evictPages: [],
       topSpacer: this.offsetForPage(first),
       bottomSpacer: Math.max(0, this.totalHeight() - this.offsetForPage(last) - this.heightForPage(last)),
@@ -151,8 +155,7 @@ export class ContinuousPageWindow {
       throw new Error(`Page ${pageNumber} materialization is stale`);
     }
     if (!this.planned.has(pageNumber)) throw new Error(`Page ${pageNumber} is not in the current plan`);
-    const transitioningResidents = [...this.resident].filter((page) => !this.planned.has(page)).length;
-    if (!this.resident.has(pageNumber) && this.resident.size >= Math.max(this.maxResidentPages, this.planned.size) + transitioningResidents) {
+    if (!this.resident.has(pageNumber) && this.resident.size >= Math.max(this.maxResidentPages, this.planned.size)) {
       throw new Error("Resident page capacity exceeded");
     }
     this.inFlight.delete(pageNumber);

@@ -688,12 +688,13 @@ describe("PdfReaderController", () => {
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1"]);
     expect(canvases.get(2)?.width).toBe(0);
     expect(canvases.get(2)?.height).toBe(0);
+    expect(publishedCanvas(host).dataset.page).toBe("1");
     expect(resources.snapshot().totals["canvas-bytes"]).toBe(20 * 30 * 4);
 
     await controller.dispose();
     resources.assertEmpty();
   });
-  it("cancels stale viewport work before servicing the latest scroll plan", async () => {
+  it("serializes an overlapping latest scroll behind stale viewport rollback", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const delayed = deferred<void>();
     const cancel = vi.fn();
@@ -718,13 +719,11 @@ describe("PdfReaderController", () => {
     const stale = controller.synchronizeViewport(0, 30, () => current);
     await vi.waitFor(() => expect(resources.snapshot().totals.render).toBe(1));
     current = false;
-    controller.invalidateViewportSynchronization();
+    const latest = controller.synchronizeViewport(84, 30, () => true);
     expect(cancel).toHaveBeenCalledOnce();
     delayed.resolve();
     expect(await stale).toBe(false);
-    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1"]);
-
-    expect(await controller.synchronizeViewport(84, 30, () => true)).toBe(true);
+    expect(await latest).toBe(true);
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1", "2", "3", "4", "5"]);
     await controller.dispose();
     resources.assertEmpty();
@@ -746,26 +745,63 @@ describe("PdfReaderController", () => {
     await fitted.dispose();
     resources.assertEmpty();
   });
-  it("synchronizes a far 300-page viewport and preserves CSS planning geometry across DPR-only rerender", async () => {
+  it("positions the host explicitly after direct far-page navigation", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("direct-far", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(300))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    expect(await controller.renderPage(200)).toBe(true);
+    expect(host.scrollTop).toBe(199 * 42);
+    expect(publishedCanvas(host).dataset.page).toBe("200");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("synchronizes a far 300-page viewport and refreshes every backing across DPR-only rerender", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const onPage = vi.fn();
     const resources = new ResourceReservationManager();
+    let peakCanvasBytes = 0;
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      const source = page(pageNumber);
+      return {
+        ...source,
+        render: (options) => {
+          const operation = source.render(options);
+          peakCanvasBytes = Math.max(peakCanvasBytes, resources.snapshot().totals["canvas-bytes"] ?? 0);
+          return operation;
+        },
+      };
+    });
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("far-window", 1))), resources,
-      pdf: { getDocument: vi.fn(() => task(documentWith(300))), annotationMode: 0 }, canvasHost: host,
+      pdf: { getDocument: vi.fn(() => task(documentWith(300, getPage))), annotationMode: 0 }, canvasHost: host,
       onCommitted: vi.fn(), onPage, onStatus: vi.fn(),
     });
     await controller.open(1);
+    peakCanvasBytes = 0;
     expect(await controller.synchronizeViewport(199 * 42, 30)).toBe(true);
     const plannedPages = [...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page);
     const spacerHeights = [...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-spacer")].map((spacer) => spacer.style.height);
     expect(plannedPages).toEqual(["198", "199", "200", "201", "202"]);
+    expect(peakCanvasBytes).toBeLessThanOrEqual(5 * 20 * 30 * 4);
     expect(onPage).toHaveBeenLastCalledWith(200, expect.objectContaining({ scale: 1, rotation: 0 }));
+    peakCanvasBytes = 0;
     expect(await controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 })).toBe(true);
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(plannedPages);
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-spacer")].map((spacer) => spacer.style.height)).toEqual(spacerHeights);
-    expect(host.querySelectorAll(":scope > .pdf-page-frame > .pdf-page-canvas-layer")).toHaveLength(5);
+    const residentCanvases = host.querySelectorAll<HTMLCanvasElement>(":scope > .pdf-page-frame > .pdf-page-canvas-layer");
+    expect(residentCanvases).toHaveLength(5);
+    for (const canvas of residentCanvases) {
+      expect(canvas.width).toBe(40);
+      expect(canvas.height).toBe(60);
+    }
+    expect(peakCanvasBytes).toBeLessThanOrEqual(5 * 40 * 60 * 4);
     await controller.dispose();
     resources.assertEmpty();
   });
