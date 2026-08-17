@@ -61,7 +61,11 @@ const streamText = (
   });
 };
 
-const setup = (pages: PdfContentPage[], landing?: PdfContentControllerOptions["requestSearchLanding"]) => {
+const setup = (
+  pages: PdfContentPage[],
+  landing?: PdfContentControllerOptions["requestSearchLanding"],
+  navigateDestination?: PdfContentControllerOptions["navigateToDestination"],
+) => {
   const host = document.createElement("div");
   const canvas = document.createElement("canvas");
   host.append(canvas);
@@ -78,7 +82,7 @@ const setup = (pages: PdfContentPage[], landing?: PdfContentControllerOptions["r
     resources,
     onStatus: (message) => statuses.push(message),
     navigateToPage,
-    navigateToDestination: (pageNumber) => navigateToPage(pageNumber),
+    navigateToDestination: navigateDestination ?? (async (pageNumber) => { navigateToPage(pageNumber); return { kind: "verified" }; }),
     onSearchResults: () => undefined,
     requestSearchLanding: landing ?? (async ({ result }) => { navigateToPage(result.pageNumber); return "displayedDistinct"; }),
     prepareExternalLinks,
@@ -490,6 +494,41 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector(".pdf-content-layer")?.classList.contains("pdf-link-hints-active")).toBe(false);
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
+  it("aggregates labels and activation across exact visible resident pages", async () => {
+    const subject = setup([
+      page("one", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/one" }]),
+      page("two", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/two" }]),
+      page("three", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/three" }]),
+    ]);
+    const firstFrame = document.createElement("div"); firstFrame.className = "pdf-page-frame";
+    const secondFrame = document.createElement("div"); secondFrame.className = "pdf-page-frame";
+    subject.host.replaceChildren(firstFrame, secondFrame);
+    firstFrame.append(subject.canvas);
+    await subject.controller.renderPage({
+      pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas, retainedPages: [1],
+      commitCanvas: (layer) => { if (layer !== undefined) firstFrame.append(layer); return true; },
+    });
+    const secondCanvas = document.createElement("canvas"); secondFrame.append(secondCanvas);
+    await subject.controller.renderPage({
+      pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: secondCanvas, retainedPages: [1, 2],
+      commitCanvas: (layer) => { if (layer !== undefined) secondFrame.append(layer); return true; },
+    });
+    expect(subject.controller.activateVisiblePages([1, 2])).toBe(2);
+    const thirdFrame = document.createElement("div"); thirdFrame.className = "pdf-page-frame"; subject.host.append(thirdFrame);
+    const thirdCanvas = document.createElement("canvas"); thirdFrame.append(thirdCanvas);
+    await subject.controller.renderPage({
+      pageNumber: 3, page: await subject.pdf.getPage(3), viewport, canvas: thirdCanvas, retainedPages: [1, 2, 3],
+      commitCanvas: (layer) => { if (layer !== undefined) thirdFrame.append(layer); return true; },
+    });
+    expect(subject.controller.snapshot.visibleLinkCount).toBe(2);
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey({ key: "f", ctrlKey: true })).toBe(false);
+    expect(subject.controller.handleHintKey({ key: "f", altGraph: true })).toBe(false);
+    expect(subject.controller.snapshot.hintsVisible).toBe(true);
+    expect([...subject.host.querySelectorAll<HTMLElement>("[data-hint-label]")].filter((node) => node.style.display !== "none").map((node) => node.textContent)).toEqual(["f", "j"]);
+    subject.host.querySelector<HTMLButtonElement>("[data-annotation-id='page-1-render-2-annotation-0']")?.click();
+    await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 3, expect.any(String), expect.any(Number)));
+  });
   it("keeps PDF links mouse-clickable and applies valid annotation appearance", async () => {
     const subject = setup([page("link", [{
       subtype: "Link",
@@ -611,8 +650,8 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.userSelect).toBe("text");
     expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.getPropertyValue("--total-scale-factor")).toBe("1.25");
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
-    expect([...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent)).toEqual(["A", "S", "D"]);
-    subject.controller.handleHintKey("a");
+    expect([...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent)).toEqual(["f", "j", "d"]);
+    subject.controller.handleHintKey("f");
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
     expect(subject.controller.snapshot.hintsVisible).toBe(false);
   });
@@ -654,6 +693,27 @@ describe("PdfContentController", () => {
     expect(subject.navigateToPage).toHaveBeenCalledWith(2);
     expect(subject.statuses.filter((message) => /unsupported/i.test(message))).toHaveLength(3);
   });
+  it("shows a transient indicator only for a verified point destination", async () => {
+    const navigateDestination = vi.fn(async () => ({ kind: "verified" as const, point: { pageNumber: 1, x: 10, y: 20 } }));
+    const subject = setup([
+      page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: [0, { name: "XYZ" }, 10, 20, null] }]),
+      page("overscan"),
+    ], undefined, navigateDestination);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
+    await vi.waitFor(() => expect(subject.host.querySelector(".pdf-destination-indicator")).not.toBeNull());
+    const indicator = subject.host.querySelector<HTMLElement>(".pdf-destination-indicator")!;
+    expect(indicator.dataset).toMatchObject({ style: "pulse-ring", color: "red" });
+    expect(indicator.style.pointerEvents).toBe("none");
+    const overscanCanvas = document.createElement("canvas");
+    await subject.controller.renderPage({
+      pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: overscanCanvas, retainedPages: [1, 2],
+      commitCanvas: () => true,
+    });
+    expect(subject.host.contains(indicator)).toBe(true);
+    await subject.controller.unmount();
+    expect(subject.host.querySelector(".pdf-destination-indicator")).toBeNull();
+  });
   it("reports a valid internal destination whose page resolution stalls as timed out", async () => {
     vi.useFakeTimers();
     try {
@@ -674,7 +734,7 @@ describe("PdfContentController", () => {
       vi.useRealTimers();
     }
   });
-  it("refuses successor internal activations until the active raw destination settles", async () => {
+  it("admits the latest internal activation while retaining prior raw settlement ownership", async () => {
     let resolveFirst!: (destination: readonly unknown[]) => void;
     const first = new Promise<readonly unknown[]>((resolve) => { resolveFirst = resolve; });
     const subject = setup([page("x", [
@@ -696,7 +756,7 @@ describe("PdfContentController", () => {
     await vi.waitFor(() => expect(destinationCalls).toBe(3));
     targets[1]?.click();
     await Promise.resolve();
-    expect(destinationCalls).toBe(3);
+    expect(destinationCalls).toBe(4);
 
     let unmounted = false;
     const teardown = subject.controller.unmount().then(() => { unmounted = true; });
@@ -765,7 +825,7 @@ describe("PdfContentController", () => {
     expect(subject.controller.activateResidentPage(1)).toBe(true);
     expect(subject.controller.snapshot.pageNumber).toBe(1);
     subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.controller.handleHintKey("f")).toBe(true);
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
   });
   it("reconciles the native registry when a viewport transition only evicts residents", async () => {
@@ -780,8 +840,9 @@ describe("PdfContentController", () => {
     expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
       { annotationId: "page-2-render-3-annotation-0", target: "https://example.test/kept" },
     ], 3);
+    expect(subject.controller.activateVisiblePages([2])).toBe(1);
     subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.controller.handleHintKey("f")).toBe(true);
     expect(subject.openExternal).toHaveBeenCalledWith("page-2-render-3-annotation-0", 3, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
@@ -800,7 +861,7 @@ describe("PdfContentController", () => {
     expect(subject.controller.activateResidentPage(1)).toBe(true);
     subject.openExternal.mockClear();
     subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.controller.handleHintKey("f")).toBe(true);
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
@@ -815,7 +876,7 @@ describe("PdfContentController", () => {
     expect(subject.controller.activateResidentPage(1)).toBe(true);
     subject.openExternal.mockClear();
     subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.controller.handleHintKey("f")).toBe(true);
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
@@ -968,8 +1029,19 @@ describe("PdfContentController", () => {
 
     expect(subject.host.querySelectorAll("[data-hint-label]")).toHaveLength(3);
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
-    subject.controller.handleHintKey("A");
+    subject.controller.handleHintKey("f");
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
+  });
+  it("deduplicates exact unsupported URLs, actions, and unresolved destinations", async () => {
+    const rect = [10, 10, 30, 20] as const;
+    const subject = setup([page("x", [
+      { subtype: "Link", rect, url: "javascript:alert(1)" }, { subtype: "Link", rect, url: "javascript:alert(1)" },
+      { subtype: "Link", rect, action: "Launch" }, { subtype: "Link", rect, action: "Launch" },
+      { subtype: "Link", rect, dest: "missing" }, { subtype: "Link", rect, dest: "missing" },
+    ])]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
+    expect(subject.controller.snapshot.visibleLinkCount).toBe(3);
   });
 
   it("requires the viewport transform instead of using raw annotation rectangles", async () => {
@@ -1519,7 +1591,7 @@ describe("PdfContentController", () => {
     expect(subject.abortExternalLinks).toHaveBeenCalledWith(2);
     expect(subject.controller.snapshot.pageNumber).toBe(1);
     subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.controller.handleHintKey("f")).toBe(true);
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
   it("serializes out-of-order registry publication so stale rollback cannot replace a newer entry", async () => {

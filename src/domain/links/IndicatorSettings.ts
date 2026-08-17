@@ -67,3 +67,45 @@ export function normalizeIndicatorColor(value: unknown): IndicatorColor | undefi
   if (INDICATOR_COLORS.includes(value as IndicatorNamedColor)) return value as IndicatorNamedColor;
   return /^#[0-9a-fA-F]{6}$/u.test(value) ? value.toLowerCase() as IndicatorColor : undefined;
 }
+export interface IndicatorSettingsTransaction {
+  readonly baseline: IndicatorSettings;
+  readonly preview: IndicatorSettings;
+}
+
+export type IndicatorSettingsTransactionResult =
+  | { readonly ok: true; readonly transaction: IndicatorSettingsTransaction }
+  | { readonly ok: false; readonly error: IndicatorSettingsError };
+
+export interface IndicatorSettingsResolution {
+  readonly value: IndicatorSettings;
+  readonly persist: boolean;
+}
+
+export function openIndicatorSettingsTransaction(value: unknown): IndicatorSettingsTransactionResult {
+  const validated = validateIndicatorSettings(value);
+  return validated.ok
+    ? { ok: true, transaction: freezeTransaction(validated.value, validated.value) }
+    : validated;
+}
+
+export function previewIndicatorSettings(
+  transaction: IndicatorSettingsTransaction,
+  value: unknown,
+): IndicatorSettingsTransactionResult {
+  const validated = validateIndicatorSettings(value);
+  return validated.ok
+    ? { ok: true, transaction: freezeTransaction(transaction.baseline, validated.value) }
+    : validated;
+}
+
+export function cancelIndicatorSettings(transaction: IndicatorSettingsTransaction): IndicatorSettingsResolution {
+  return Object.freeze({ value: transaction.baseline, persist: false });
+}
+
+export function commitIndicatorSettings(transaction: IndicatorSettingsTransaction): IndicatorSettingsResolution {
+  return Object.freeze({ value: transaction.preview, persist: true });
+}
+
+function freezeTransaction(baseline: IndicatorSettings, preview: IndicatorSettings): IndicatorSettingsTransaction {
+  return Object.freeze({ baseline, preview });
+}

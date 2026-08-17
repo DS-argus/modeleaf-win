@@ -3,6 +3,10 @@ import {
   DEFAULT_INDICATOR_SETTINGS,
   INDICATOR_COLORS,
   INDICATOR_STYLES,
+  cancelIndicatorSettings,
+  commitIndicatorSettings,
+  openIndicatorSettingsTransaction,
+  previewIndicatorSettings,
   normalizeIndicatorColor,
   validateIndicatorSettings,
 } from "../../../src/domain/links/IndicatorSettings";
@@ -27,6 +31,23 @@ describe("IndicatorSettings", () => {
 
   it("accepts finite fractional sizes inside the inclusive Double range", () => {
     expect(validateIndicatorSettings({ style: "beacon", color: "cyan", size: 28.5, durationMilliseconds: 1500 })).toMatchObject({ ok: true, value: { size: 28.5 } });
+  });
+  it("previews immutably, cancels to the exact baseline, and commits once", () => {
+    const opened = openIndicatorSettingsTransaction(DEFAULT_INDICATOR_SETTINGS);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const previewed = previewIndicatorSettings(opened.transaction, {
+      style: "diamond-pulse", color: "#A0BC12", size: 32, durationMilliseconds: 900,
+    });
+    expect(previewed.ok).toBe(true);
+    if (!previewed.ok) return;
+    expect(previewed.transaction).not.toBe(opened.transaction);
+    expect(cancelIndicatorSettings(previewed.transaction)).toEqual({ value: DEFAULT_INDICATOR_SETTINGS, persist: false });
+    expect(commitIndicatorSettings(previewed.transaction)).toEqual({
+      value: { style: "diamond-pulse", color: "#a0bc12", size: 32, durationMilliseconds: 900 },
+      persist: true,
+    });
+    expect(previewIndicatorSettings(previewed.transaction, { style: "bad" })).toEqual({ ok: false, error: "INDICATOR_STYLE_INVALID" });
   });
   it.each([
     [null, "INDICATOR_NOT_OBJECT"],
