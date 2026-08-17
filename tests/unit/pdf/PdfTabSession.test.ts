@@ -207,6 +207,38 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
 
     expect(session.snapshot.reader.page).toBe(1);
   });
+  it("rolls logical and content ownership back when presentation recovery rejects", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(3);
+    session.reader.restoreView({ zoomMode: "custom", customScale: 1, rotationQuarterTurns: 0 });
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => 1 });
+    internals.pdfReader.renderPageWithTransform = vi.fn(async () => { throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"); });
+    session.apply({ type: "page.next" });
+
+    await expect(session.renderPage(2)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.reader.page).toBe(1);
+    expect(content.activateResidentPage).toHaveBeenLastCalledWith(1);
+  });
+
+  it("cancels a queued destination when its presentation rejects", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    internals.pdfReader.renderPageWithTransform = vi.fn(async () => { throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"); });
+    Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => 1 });
+
+    await expect(session.navigateToDestination(2, [null, { name: "Fit" }])).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(content.cancelDestination).toHaveBeenCalledWith(1);
+    expect(session.snapshot.reader.page).toBe(1);
+  });
   it("marks an interrupted render dirty and restores the current intent on reactivation", async () => {
     const session = createSession();
     const internals = session as unknown as {

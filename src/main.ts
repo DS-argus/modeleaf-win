@@ -427,6 +427,10 @@ function renderHelpRows(): void {
     return section;
   }));
 }
+function reportPresentationFailure(session: PdfTabSession): void {
+  session.reader.setStatus("PDF presentation could not be updated.");
+  render();
+}
 const boundaryPageTurns = new WeakSet<HTMLElement>();
 function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
   if (boundaryPageTurns.has(payload.host)) return true;
@@ -441,7 +445,7 @@ function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direc
     if (committed && direction < 0) {
       payload.host.scrollTop = Math.max(0, payload.host.scrollHeight - payload.host.clientHeight);
     }
-  }).finally(() => {
+  }).catch(() => reportPresentationFailure(payload.session)).finally(() => {
     boundaryPageTurns.delete(payload.host);
     rootKeyboard.syncContext();
     render();
@@ -472,8 +476,8 @@ function createTab(): TabPayload {
     resources,
     canvasHost: host,
     createContentOptions: (opened, generation) => ({
-      navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page); } },
-      navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination); },
+      navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch(() => reportPresentationFailure(session)); } },
+      navigateToDestination: (page, destination) => { if (active().session === session) void session.navigateToDestination(page, destination).catch(() => reportPresentationFailure(session)); },
       prepareExternalLinks: (entries, registryRevision) => invoke<void>("prepare_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, entries: entries.map((entry) => ({ annotation_id: entry.annotationId, target: entry.target })) }),
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
@@ -947,7 +951,7 @@ function dispatch(action: Action): void {
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
-  if (type.startsWith("page.")) void session.renderPage(reader.page); if (type.startsWith("view.")) void session.renderCurrentView();
+  if (type.startsWith("page.")) void session.renderPage(reader.page).catch(() => reportPresentationFailure(session)); if (type.startsWith("view.")) void session.renderCurrentView().catch(() => reportPresentationFailure(session));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchDialog.showModal(); searchInput.focus(); }
   if (type === "linkHints.toggle") session.toggleHints(); if (type === "prompt.cancel") session.cancelHints();
   if (type.startsWith("scroll.")) {
@@ -1032,7 +1036,8 @@ let devicePixelRatio = window.devicePixelRatio;
 const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
-  void active().session.renderCurrentView();
+  const session = active().session;
+  void session.renderCurrentView().catch(() => reportPresentationFailure(session));
 };
 function bindDprChange(): void {
   dprMediaQuery?.removeEventListener?.("change", onDprChange);
@@ -1061,7 +1066,7 @@ const disposeSearchPrompt = bindSearchPrompt(
   () => active().session,
   render,
 );
-window.addEventListener("resize", () => { scheduleDprPollFallback(); void active().session.renderCurrentView(); });
+window.addEventListener("resize", () => { scheduleDprPollFallback(); const session = active().session; void session.renderCurrentView().catch(() => reportPresentationFailure(session)); });
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);
 window.addEventListener("focusin", (event) => { if (isEditableTarget(event.target)) rootKeyboard.cancelPending(); });

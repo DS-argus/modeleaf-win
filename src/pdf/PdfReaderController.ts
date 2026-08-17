@@ -796,6 +796,7 @@ export class PdfReaderController {
       if (rollbackAuthorityError !== undefined) throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     }
   }
+  public get activePageNumber(): number | undefined { return this.current?.activePageNumber; }
   public captureScrollAnchor(): PdfScrollAnchor | undefined {
     const current = this.current;
     const pageNumber = current?.activePageNumber;
