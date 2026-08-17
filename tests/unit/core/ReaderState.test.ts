@@ -8,6 +8,34 @@ describe("ReaderState", () => {
     expect(() => reader.mountDocument(Number.NaN)).toThrow(RangeError);
   });
 
+  it("mounts page one in fit width and restores those defaults on close", () => {
+    const reader = new ReaderState();
+    reader.mountDocument(3);
+    expect(reader.snapshot).toMatchObject({
+      hasDocument: true,
+      page: 1,
+      pageCount: 3,
+      zoomMode: "fit-width",
+      customScale: 1.25,
+      rotationQuarterTurns: 0,
+      status: "Page 1 of 3 · Fit width · 0°",
+    });
+
+    reader.apply({ type: "view.fitPage" });
+    reader.apply({ type: "view.zoom", factor: 1.1 });
+    reader.apply({ type: "view.rotate", quarterTurns: 1 });
+    reader.closeDocument();
+    expect(reader.snapshot).toMatchObject({
+      hasDocument: false,
+      page: 0,
+      pageCount: 0,
+      zoomMode: "fit-width",
+      customScale: 1.25,
+      rotationQuarterTurns: 0,
+      status: "No document open",
+    });
+  });
+
   it("clamps page navigation at document bounds", () => {
     const reader = new ReaderState();
     reader.mountDocument(3);
@@ -17,9 +45,10 @@ describe("ReaderState", () => {
     reader.apply({ type: "page.next" });
     expect(reader.snapshot).toMatchObject({
       page: 3,
-      status: "Page 3 of 3 · Fit page · 0°",
+      status: "Page 3 of 3 · Fit width · 0°",
     });
   });
+
   it("increments document generation for replacement and close", () => {
     const reader = new ReaderState();
     reader.mountDocument(10);
@@ -39,9 +68,10 @@ describe("ReaderState", () => {
     reader.apply({ type: "prompt.cancel" });
     expect(reader.snapshot).toMatchObject({
       helpVisible: false,
-      status: "Page 7 of 10 · Fit page · 0°",
+      status: "Page 7 of 10 · Fit width · 0°",
     });
   });
+
   it("accumulates scroll intent separately until the shell consumes it", () => {
     const reader = new ReaderState();
     reader.mountDocument(2);
@@ -70,6 +100,24 @@ describe("ReaderState", () => {
     });
   });
 
+  it("sets Actual Size exactly once from fit and custom modes", () => {
+    const reader = new ReaderState();
+    reader.mountDocument(10);
+    reader.apply({ type: "view.fitPage" });
+    reader.apply({ type: "view.actualSize" });
+    expect(reader.snapshot).toMatchObject({
+      zoomMode: "custom",
+      customScale: 1,
+      status: "Page 1 of 10 · Custom 100% · 0°",
+    });
+
+    reader.apply({ type: "view.zoom", factor: 1.1 });
+    reader.apply({ type: "view.actualSize" });
+    const actualSize = reader.snapshot;
+    reader.apply({ type: "view.actualSize" });
+    expect(reader.snapshot).toEqual(actualSize);
+  });
+
   it("preserves custom scale through fit modes and normalizes rotation", () => {
     const reader = new ReaderState();
     reader.mountDocument(10);
@@ -95,6 +143,7 @@ describe("ReaderState", () => {
       status: "Page 1 of 10 · Custom 125% · 270°",
     });
   });
+
   it("clamps custom zoom and restores a prior view after render failure", () => {
     const reader = new ReaderState();
     reader.mountDocument(2);
@@ -117,9 +166,11 @@ describe("ReaderState", () => {
     });
   });
 
-  it("does not navigate without a document", () => {
+  it("does not change view actions without a document", () => {
     const reader = new ReaderState();
+    const before = reader.snapshot;
     reader.apply({ type: "page.next" });
-    expect(reader.snapshot).toMatchObject({ hasDocument: false, page: 0 });
+    reader.apply({ type: "view.actualSize" });
+    expect(reader.snapshot).toEqual(before);
   });
 });

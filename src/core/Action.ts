@@ -15,6 +15,7 @@ export type Action =
   | { readonly type: "view.fitWidth" }
   | { readonly type: "view.fitPage" }
   | { readonly type: "view.zoom"; readonly factor: number }
+  | { readonly type: "view.actualSize" }
   | { readonly type: "view.rotate"; readonly quarterTurns: 1 | -1 }
   | { readonly type: "application.new" }
   | { readonly type: "palette.toggle" }

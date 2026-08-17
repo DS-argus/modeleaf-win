@@ -359,6 +359,47 @@ describe("PdfContentController", () => {
     await Promise.resolve();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
+  it("blocks published link clicks while content interactions are suspended", async () => {
+    const subject = setup([page("link", [{ subtype: "Link", rect: [10, 20, 30, 40], url: "https://example.test" }])]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+
+    subject.controller.suspend();
+    overlay.click();
+    await Promise.resolve();
+    expect(subject.openExternal).not.toHaveBeenCalled();
+
+    subject.controller.resumeInteractions();
+    overlay.click();
+    await Promise.resolve();
+    expect(subject.openExternal).toHaveBeenCalledOnce();
+  });
+  it("permanently cancels an internal link callback across suspend and resume", async () => {
+    let destinationCalls = 0;
+    let resolveOld!: (destination: readonly unknown[]) => void;
+    const oldDestination = new Promise<readonly unknown[]>((resolve) => { resolveOld = resolve; });
+    const subject = setup([page("link", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: "target" }])]);
+    Object.assign(subject.pdf, {
+      getDestination: vi.fn(() => {
+        destinationCalls += 1;
+        return destinationCalls === 2 ? oldDestination : Promise.resolve([0, { name: "Fit" }]);
+      }),
+    });
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    overlay.click();
+    await vi.waitFor(() => expect(destinationCalls).toBe(2));
+
+    subject.controller.suspend();
+    subject.controller.resumeInteractions();
+    overlay.click();
+    await vi.waitFor(() => expect(destinationCalls).toBe(3));
+    await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
+
+    resolveOld([0, { name: "Fit" }]);
+    await vi.waitFor(() => expect((subject.controller as unknown as { internalDestinationActivation?: Promise<void> }).internalDestinationActivation).toBeUndefined());
+    expect(subject.navigateToPage).toHaveBeenCalledOnce();
+  });
   it("swallows rejected overlay work after its document generation becomes stale", async () => {
     let rejectText!: (error: Error) => void;
     const text = new Promise<{ items: readonly { str: string }[] }>((_resolve, reject) => { rejectText = reject; });
@@ -424,25 +465,17 @@ describe("PdfContentController", () => {
     expect(subject.controller.snapshot.hintsVisible).toBe(false);
   });
 
-  it("keeps TextLayer raw dimensions for PDF.js quarter-turn rotation", async () => {
+  it("keeps both published content layers within the rotated canvas CSS viewport", async () => {
     const subject = setup([page("select me")]);
-    const rotatedViewport = {
-      ...viewport,
-      width: 200,
-      height: 100,
-      scale: 2,
-      rotation: 90,
-      rawDims: { pageWidth: 50, pageHeight: 100 },
-    };
-    await subject.controller.renderPage({
-      pageNumber: 1,
-      page: await subject.pdf.getPage(1),
-      viewport: rotatedViewport,
-      canvas: subject.canvas,
-    });
+    const rotatedViewport = { ...viewport, width: 200, height: 100, scale: 2, rotation: 90, rawDims: { pageWidth: 50, pageHeight: 100 } };
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport: rotatedViewport, canvas: subject.canvas });
 
-    expect(subject.host.querySelector<HTMLElement>(".pdf-content-layer")?.style).toMatchObject({ width: "200px", height: "100px" });
-    expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style).toMatchObject({ width: "100px", height: "200px" });
+    const content = subject.host.querySelector<HTMLElement>(".pdf-content-layer")!;
+    const text = content.querySelector<HTMLElement>(":scope > .textLayer")!;
+    const annotations = content.querySelector<HTMLElement>(":scope > .annotationLayer")!;
+    expect(content.style).toMatchObject({ width: "200px", height: "100px" });
+    expect(text.style).toMatchObject({ width: "200px", height: "100px" });
+    expect(annotations.style.inset).toBe("0");
   });
   it("uses only injected safe external opening, navigates internal destinations, and rejects actions", async () => {
     const annotations: PdfContentAnnotation[] = [
@@ -557,9 +590,12 @@ describe("PdfContentController", () => {
     await teardown;
     expect(settled).toBe(true);
   });
-  it("waits for prior external activation before preparing a replacement registry", async () => {
+  it("publishes the aggregate resident external-link registry after prior activation settles", async () => {
     let resolveOpen!: () => void;
-    const subject = setup([page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]), page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }])]);
+    const subject = setup([
+      page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
+      page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
+    ]);
     subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
@@ -569,9 +605,69 @@ describe("PdfContentController", () => {
     expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(1);
     resolveOpen();
     await replacement;
-    expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([{ annotationId: "page-2-render-3-annotation-0", target: "https://example.test/new" }], 2);
+    expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
+      { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/old" },
+      { annotationId: "page-2-render-3-annotation-0", target: "https://example.test/new" },
+    ], 2);
+    subject.openExternal.mockClear();
+    expect(subject.controller.activateResidentPage(1)).toBe(true);
+    expect(subject.controller.snapshot.pageNumber).toBe(1);
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
   });
-  it("releases pre-prepare staging after a prior activation times out", async () => {
+  it("reconciles the native registry when a viewport transition only evicts residents", async () => {
+    const subject = setup([
+      page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
+      page("kept", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/kept" }]),
+    ]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    await subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
+
+    await subject.controller.synchronizeResidentPages([2]);
+    expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
+      { annotationId: "page-2-render-3-annotation-0", target: "https://example.test/kept" },
+    ], 3);
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-2-render-3-annotation-0", 3, expect.any(String), expect.any(Number));
+    await subject.controller.unmount();
+  });
+  it("retains rollback ownership until resident authority is finalized", async () => {
+    const subject = setup([
+      page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
+      page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
+    ]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    await subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
+
+    const transaction = await subject.controller.beginResidentPageAuthority([2]);
+    expect(subject.commitExternalLinks).toHaveBeenLastCalledWith(3);
+    await transaction.rollback();
+    expect(subject.abortExternalLinks).toHaveBeenLastCalledWith(3);
+    expect(subject.controller.activateResidentPage(1)).toBe(true);
+    subject.openExternal.mockClear();
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
+    await subject.controller.unmount();
+  });
+  it("preserves local residents and their prior native revision when reconciliation fails", async () => {
+    const subject = setup([
+      page("kept", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/kept" }]),
+    ]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    subject.prepareExternalLinks.mockRejectedValueOnce(new Error("registry unavailable"));
+
+    await expect(subject.controller.synchronizeResidentPages([])).rejects.toThrow("registry unavailable");
+    expect(subject.controller.activateResidentPage(1)).toBe(true);
+    subject.openExternal.mockClear();
+    subject.controller.toggleHints();
+    expect(subject.controller.handleHintKey("A")).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
+    await subject.controller.unmount();
+  });
+  it("retains resident registry entries after a timed-out pre-prepare activation", async () => {
     vi.useFakeTimers();
     try {
       let resolveOpen!: () => void;
@@ -589,11 +685,11 @@ describe("PdfContentController", () => {
       await failure;
       expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(1);
       expect(subject.abortExternalLinks).not.toHaveBeenCalledWith(2);
-
       resolveOpen();
       await Promise.resolve();
       await expect(subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas })).resolves.toBeUndefined();
       expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
+        { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/old" },
         { annotationId: "page-2-render-4-annotation-0", target: "https://example.test/new" },
       ], 3);
     } finally {
@@ -1239,6 +1335,7 @@ describe("PdfContentController", () => {
     expect([...subject.host.children]).toEqual(priorDom);
 
     expect(subject.prepareExternalLinks.mock.calls.at(-1)).toEqual([[
+      { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/old" },
       { annotationId: "page-2-render-3-annotation-0", target: "https://example.test/new" },
     ], 2]);
     expect(subject.commitExternalLinks).toHaveBeenCalledWith(2);
@@ -1270,6 +1367,7 @@ describe("PdfContentController", () => {
     resolveStaged();
     await Promise.all([staged, newer]);
     expect(subject.prepareExternalLinks.mock.calls.at(-1)).toEqual([[
+      { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/old" },
       { annotationId: "page-3-render-4-annotation-0", target: "https://example.test/new" },
     ], 3]);
     expect(subject.abortExternalLinks).toHaveBeenCalledWith(2);
@@ -1281,20 +1379,11 @@ describe("PdfContentController", () => {
       page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
     ]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-
     vi.useFakeTimers();
     try {
       let resolveLate!: () => void;
-      subject.prepareExternalLinks.mockImplementationOnce(() => new Promise<undefined>((resolve) => {
-        resolveLate = () => resolve(undefined);
-      }));
-      const late = subject.controller.renderPage({
-        pageNumber: 2,
-        page: await subject.pdf.getPage(2),
-        viewport,
-        canvas: document.createElement("canvas"),
-        commitCanvas: () => true,
-      });
+      subject.prepareExternalLinks.mockImplementationOnce(() => new Promise<undefined>((resolve) => { resolveLate = () => resolve(undefined); }));
+      const late = subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: document.createElement("canvas"), commitCanvas: () => true });
       await vi.advanceTimersByTimeAsync(0);
       expect(subject.prepareExternalLinks.mock.calls).toHaveLength(2);
       const lateFailure = expect(late).rejects.toThrow(/timed out/i);
@@ -1303,14 +1392,8 @@ describe("PdfContentController", () => {
       expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes);
       resolveLate();
       await lateFailure;
-
       expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes);
-      await expect(subject.controller.renderPage({
-        pageNumber: 3,
-        page: await subject.pdf.getPage(3),
-        viewport,
-        canvas: subject.canvas,
-      })).resolves.toBeUndefined();
+      await expect(subject.controller.renderPage({ pageNumber: 3, page: await subject.pdf.getPage(3), viewport, canvas: subject.canvas })).resolves.toBeUndefined();
       const abortedRevisions = subject.abortExternalLinks.mock.calls as unknown as Array<[number]>;
       expect(abortedRevisions.filter(([revision]) => revision === 2)).toHaveLength(1);
       expect(subject.controller.snapshot.pageNumber).toBe(3);
@@ -1327,29 +1410,18 @@ describe("PdfContentController", () => {
     expect(addPdfTextUtf8Bytes(RESOURCE_LIMITS.maxTextDocumentBytes - 2, "한", RESOURCE_LIMITS.maxTextDocumentBytes)).toBeUndefined();
   });
 
-
-  it("reserves visible text through the central budget and releases it on replacement", async () => {
+  it("reserves one maximum text page per resident layer until explicit eviction or unmount", async () => {
     const subject = setup([page("first"), page("second")]);
-    await subject.controller.renderPage({
-      pageNumber: 1,
-      page: await subject.pdf.getPage(1),
-      viewport,
-      canvas: subject.canvas,
-    });
-    expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    await subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
+    expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes * 2);
 
-    await subject.controller.renderPage({
-      pageNumber: 2,
-      page: await subject.pdf.getPage(2),
-      viewport,
-      canvas: subject.canvas,
-    });
+    expect(subject.controller.evictPage(1)).toBe(true);
     expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes);
-
+    expect(subject.controller.evictPage(1)).toBe(false);
     await subject.controller.unmount();
     expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(0);
   });
-
   it("rejects visible text larger than the page budget without leaking its reservation", async () => {
     const oversized = "x".repeat(RESOURCE_LIMITS.maxTextPageBytes + 1);
     const subject = setup([page(oversized)]);

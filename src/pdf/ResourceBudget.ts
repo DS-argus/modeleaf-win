@@ -11,6 +11,7 @@ export const RESOURCE_LIMITS = Object.freeze({
   maxRangeQueueProcess: 32,
   maxRangeQueueSession: 8,
   maxRendersProcess: 1,
+  maxResidentPageViews: 16,
   maxDevicePixelRatio: 2,
   maxCanvasDimension: 32_768,
   maxCanvasPixels: 64_000_000,
@@ -101,7 +102,7 @@ function capacityFor(kind: ResourceKind, sessionScoped: boolean): number {
     case "canvas-bytes": return limits.maxCanvasBytes;
     case "canvas-cache-bytes": return limits.maxCanvasCacheBytes;
     case "image-pixels": return limits.maxImagePixels;
-    case "text-page-bytes": return sessionScoped ? limits.maxTextPageBytes * 2 : limits.maxTextProcessBytes;
+    case "text-page-bytes": return sessionScoped ? limits.maxTextPageBytes * limits.maxResidentPageViews : limits.maxTextProcessBytes;
     case "text-document-bytes": return sessionScoped ? limits.maxTextDocumentBytes : limits.maxTextProcessBytes;
     case "text-process-bytes": return limits.maxTextProcessBytes;
     case "search-document-results": return sessionScoped ? limits.maxSearchResultsDocument : limits.maxSearchResultsProcess;

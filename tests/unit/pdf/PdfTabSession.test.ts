@@ -27,14 +27,18 @@ type SessionInternals = {
     search: (query: string) => Promise<void>;
     handleHintKey: (key: string) => boolean;
     suspend: () => void;
+    resumeInteractions: () => void;
     restoreEvictedSearch: () => Promise<void>;
     queueDestination: (page: number, destination: readonly unknown[]) => number | undefined;
     cancelDestination: (intentId?: number) => void;
+    synchronizeResidentPages: (pages: readonly number[]) => Promise<void>;
+    activateResidentPage: (page: number) => boolean;
   };
   pdfReader: {
     evictInactiveCanvas: () => boolean;
     adopt: () => Promise<true>;
     getPageNaturalSize: (page: number, rotation: number, guard: () => boolean) => Promise<{ width: number; height: number } | undefined>;
+    suspend: () => Promise<void>;
     renderPageWithTransform: (page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
   };
 };
@@ -48,9 +52,12 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     search: vi.fn(async () => undefined),
     handleHintKey: vi.fn(() => false),
     suspend: vi.fn(),
+    resumeInteractions: vi.fn(),
     restoreEvictedSearch: vi.fn(async () => undefined),
     queueDestination: vi.fn(() => 1),
     cancelDestination: vi.fn(),
+    synchronizeResidentPages: vi.fn(async () => undefined),
+    activateResidentPage: vi.fn(() => true),
   };
   (session as unknown as SessionInternals).content = content;
   return content;
@@ -153,9 +160,193 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(content.handleHintKey).toHaveBeenCalledWith("A");
     await session.deactivate();
     expect(session.handleHintKey("S")).toBe(false);
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+  });
+  it("rolls activity back when native resident publication fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    content.synchronizeResidentPages.mockRejectedValueOnce(new Error("activate registry failed"));
+
+    await expect(session.activate()).rejects.toThrow("activate registry failed");
+    expect(session.snapshot.active).toBe(false);
+
+    vi.spyOn(session, "renderCurrentView").mockResolvedValue(true);
+    await session.activate();
+    expect(session.snapshot.active).toBe(true);
+    content.synchronizeResidentPages.mockRejectedValueOnce(new Error("deactivate registry failed"));
+    await expect(session.deactivate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.active).toBe(false);
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
   });
 
 
+  it("revokes resident authority when a later activation restore stage fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockResolvedValue();
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+
+    await expect(session.activate()).rejects.toThrow("restore failed");
+    expect(session.snapshot.active).toBe(false);
+    expect(content.suspend).toHaveBeenCalledOnce();
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+  });
+
+  it("compensates a false physical restore and permits a truthful retry", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockResolvedValue();
+    vi.spyOn(session, "renderCurrentView").mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    await expect(session.activate()).rejects.toThrow("PDF_PRESENTATION_RESTORE_FAILED");
+    expect(session.snapshot.active).toBe(false);
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+
+    await session.activate();
+    expect(session.snapshot.active).toBe(true);
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+  });
+  it("keeps links suspended until activation restoration fully settles", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & {
+      presentationDirty: boolean;
+      presentationEvicted: boolean;
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(1);
+    internals.presentationDirty = true;
+    internals.presentationEvicted = true;
+    let releaseRestore!: () => void;
+    content.restoreEvictedSearch.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRestore = () => resolve(undefined); }));
+    vi.spyOn(session, "renderCurrentView").mockImplementationOnce(async () => {
+      internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      return true;
+    });
+
+    const activation = session.activate();
+    await vi.waitFor(() => expect(content.restoreEvictedSearch).toHaveBeenCalledOnce());
+    expect(content.resumeInteractions).not.toHaveBeenCalled();
+    releaseRestore();
+    await activation;
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+  });
+  it("prevents a stale activation failure from clearing a newer activation lease", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & {
+      presentationDirty: boolean;
+      presentationEvicted: boolean;
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(1);
+    let rejectFirst!: (error: Error) => void;
+    content.synchronizeResidentPages.mockImplementationOnce(() => new Promise<undefined>((_resolve, reject) => { rejectFirst = reject; }));
+    const firstActivation = session.activate();
+    await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledOnce());
+    await session.deactivate();
+
+    internals.presentationDirty = true;
+    internals.presentationEvicted = true;
+    let releaseRestore!: () => void;
+    content.restoreEvictedSearch.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRestore = () => resolve(undefined); }));
+    vi.spyOn(session, "renderCurrentView").mockImplementationOnce(async () => {
+      internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      return true;
+    });
+    const secondActivation = session.activate();
+    await vi.waitFor(() => expect(content.restoreEvictedSearch).toHaveBeenCalledOnce());
+
+    rejectFirst(new Error("stale activation failed"));
+    await expect(firstActivation).rejects.toThrow("stale activation failed");
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    expect(content.resumeInteractions).not.toHaveBeenCalled();
+
+    releaseRestore();
+    await secondActivation;
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+  });
+  it("shares overlapping deactivation settlement and blocks reactivation until revocation completes", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    session.reader.mountDocument(1);
+    await session.activate();
+    content.resumeInteractions.mockClear();
+    let releaseRevocation!: () => void;
+    content.synchronizeResidentPages.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRevocation = () => resolve(undefined); }));
+
+    const firstDeactivation = session.deactivate();
+    const secondDeactivation = session.deactivate();
+    await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2));
+    const reactivation = session.activate();
+    await Promise.resolve();
+    expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2);
+    expect(content.resumeInteractions).not.toHaveBeenCalled();
+
+    releaseRevocation();
+    await Promise.all([firstDeactivation, secondDeactivation]);
+    await reactivation;
+    expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(3);
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+    expect(session.snapshot.active).toBe(true);
+  });
+  it("quarantines activation when compensating authority revocation fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockResolvedValue();
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+    content.synchronizeResidentPages.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("revoke failed"));
+
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.active).toBe(false);
+    expect(content.suspend).toHaveBeenCalledOnce();
+  });
+  it("keeps public activity committed while compensation settles and blocks retry overlap", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    let releaseSuspend!: () => void;
+    let releaseRevoke!: () => void;
+    vi.spyOn(internals.pdfReader, "suspend").mockImplementation(() => new Promise<void>((resolve) => { releaseSuspend = resolve; }));
+    content.synchronizeResidentPages.mockResolvedValueOnce(undefined).mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRevoke = () => resolve(undefined); }));
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed")).mockResolvedValueOnce(true);
+
+    const activation = session.activate();
+    await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2));
+    expect(session.snapshot.active).toBe(true);
+    let retrySettled = false;
+    const retry = session.activate().then(() => { retrySettled = true; });
+    await Promise.resolve();
+    expect(retrySettled).toBe(false);
+    expect(session.submitSearch("blocked")).toEqual({ kind: "ignore" });
+    releaseSuspend();
+    releaseRevoke();
+    await expect(activation).rejects.toThrow("restore failed");
+    await retry;
+    expect(session.snapshot.active).toBe(true);
+  });
+
+  it("still attempts empty authority publication when reader suspension fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockRejectedValue(new Error("suspend failed"));
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+    expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2);
+    expect(session.snapshot.active).toBe(false);
+  });
   it("rolls back a failed page render only for its owning active generation", () => {
     const session = createSession();
     session.reader.mountDocument(3);
@@ -186,6 +377,81 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     internals.rollbackPendingRender(1, 1);
     internals.rollbackPendingRender(2, 1);
 
+    expect(session.snapshot.reader.page).toBe(1);
+  });
+  it("rolls logical and content ownership back when presentation recovery rejects", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(3);
+    session.reader.restoreView({ zoomMode: "custom", customScale: 1, rotationQuarterTurns: 0 });
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => 1 });
+    const onReaderStatus = (internals.pdfReader as unknown as { options: { onStatus: (status: string) => void } }).options.onStatus;
+    internals.pdfReader.renderPageWithTransform = vi.fn(async () => {
+      onReaderStatus("PDF direct rollback was incomplete.");
+      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    });
+    session.apply({ type: "page.next" });
+
+    await expect(session.renderPage(2)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.reader.page).toBe(1);
+    expect(content.activateResidentPage).toHaveBeenLastCalledWith(1);
+    expect(session.snapshot.status).toBe("PDF direct rollback was incomplete.");
+  });
+
+  it("preserves a precise viewport recovery diagnostic while observing rejection", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader as unknown as {
+      activePageNumber?: number;
+      options: { onStatus: (status: string) => void };
+      synchronizeViewport: (scrollTop: number, clientHeight: number, guard: () => boolean) => Promise<boolean>;
+    };
+    session.reader.mountDocument(3);
+    session.reader.restoreView({ zoomMode: "custom", customScale: 1, rotationQuarterTurns: 0 });
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    Object.defineProperty(reader, "activePageNumber", { configurable: true, get: () => 1 });
+    reader.synchronizeViewport = vi.fn(async () => {
+      reader.options.onStatus("PDF viewport rollback was incomplete.");
+      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    });
+
+    await expect(session.synchronizeViewport(0, 100)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(session.snapshot.status).toBe("PDF viewport rollback was incomplete.");
+    expect(content.activateResidentPage).toHaveBeenLastCalledWith(1);
+  });
+  it("suspends content when recovery has no physical active page", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { recoverFailedPresentation: (intent: number, activityGeneration: number) => void; presentationDirty: boolean };
+    session.reader.mountDocument(1);
+    await session.activate();
+    Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => undefined });
+
+    internals.recoverFailedPresentation(0, 1);
+    expect(content.suspend).toHaveBeenCalledOnce();
+    expect(internals.presentationDirty).toBe(true);
+    (session as unknown as { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void })
+      .onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    expect(content.resumeInteractions).toHaveBeenCalled();
+  });
+  it("cancels a queued destination when its presentation rejects", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    internals.pdfReader.renderPageWithTransform = vi.fn(async () => { throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"); });
+    Object.defineProperty(internals.pdfReader, "activePageNumber", { configurable: true, get: () => 1 });
+
+    await expect(session.navigateToDestination(2, [null, { name: "Fit" }])).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(content.cancelDestination).toHaveBeenCalledWith(1);
     expect(session.snapshot.reader.page).toBe(1);
   });
   it("marks an interrupted render dirty and restores the current intent on reactivation", async () => {
@@ -252,7 +518,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       globalWindow.window!.devicePixelRatio = 2;
       const restore = vi.spyOn(session, "renderCurrentView").mockResolvedValue(true);
 
-      session.activate();
+      await session.activate();
 
       expect(restore).toHaveBeenCalledOnce();
     } finally {

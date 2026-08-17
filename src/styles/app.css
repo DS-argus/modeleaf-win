@@ -64,6 +64,11 @@ body { overflow: hidden; }
   box-shadow: 0 4px 20px rgb(0 0 0 / 35%);
 }
 
+.pdf-page-canvas-layer { position: relative; z-index: 1; }
+.pdf-page-text-layer,
+.pdf-page-annotation-layer { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; }
+.pdf-page-text-layer { z-index: 2; pointer-events: none; }
+.pdf-page-annotation-layer { z-index: 3; pointer-events: none; }
 .pdf-content-layer {
   inset: 0 auto auto 0;
   z-index: 2;
@@ -367,6 +372,9 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
 .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline-color: var(--theme-focus-indicator); }
 .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible { outline-color: var(--theme-focus-indicator); }
 
+.reader-context-menu { z-index: 80; min-width: 8rem; padding: 0.25rem; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-background); box-shadow: 0 0.4rem 1rem color-mix(in srgb, var(--theme-foreground) 20%, transparent); }
+.reader-context-copy { width: 100%; border: 0; padding: 0.35rem 0.6rem; color: var(--theme-foreground); background: transparent; text-align: left; }
+.reader-context-copy:hover, .reader-context-copy:focus-visible { background: var(--theme-active-tab); outline: 1px solid var(--theme-focus-indicator); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
