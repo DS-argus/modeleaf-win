@@ -204,6 +204,41 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.snapshot.active).toBe(false);
     expect(content.suspend).toHaveBeenCalledOnce();
   });
+  it("keeps public activity committed while compensation settles and blocks retry overlap", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    let releaseSuspend!: () => void;
+    let releaseRevoke!: () => void;
+    vi.spyOn(internals.pdfReader, "suspend").mockImplementation(() => new Promise<void>((resolve) => { releaseSuspend = resolve; }));
+    content.synchronizeResidentPages.mockResolvedValueOnce(undefined).mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRevoke = () => resolve(undefined); }));
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+
+    const activation = session.activate();
+    await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2));
+    expect(session.snapshot.active).toBe(true);
+    await expect(session.activate()).resolves.toBeUndefined();
+    expect(session.submitSearch("blocked")).toEqual({ kind: "ignore" });
+    releaseSuspend();
+    releaseRevoke();
+    await expect(activation).rejects.toThrow("restore failed");
+    expect(session.snapshot.active).toBe(false);
+  });
+
+  it("still attempts empty authority publication when reader suspension fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { presentationDirty: boolean };
+    internals.presentationDirty = true;
+    vi.spyOn(internals.pdfReader, "suspend").mockRejectedValue(new Error("suspend failed"));
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+
+    await expect(session.activate()).rejects.toThrow("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
+    expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2);
+    expect(session.snapshot.active).toBe(false);
+  });
   it("rolls back a failed page render only for its owning active generation", () => {
     const session = createSession();
     session.reader.mountDocument(3);

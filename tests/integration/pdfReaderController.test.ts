@@ -2161,9 +2161,12 @@ describe("PdfReaderController", () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
+    let failRestore = false;
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => page(pageNumber,
+      failRestore && pageNumber === 3 ? Promise.reject(new Error("restore failed")) : Promise.resolve()));
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("inactive-eviction", 1))), resources,
-      pdf: { getDocument: vi.fn(() => task(documentWith(3))), annotationMode: 0 }, canvasHost: host,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, getPage))), annotationMode: 0 }, canvasHost: host,
       onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
     });
     await controller.open(1);
@@ -2173,6 +2176,10 @@ describe("PdfReaderController", () => {
     expect(controller.evictInactiveCanvas()).toBe(true);
     expect(controller.activePageNumber).toBeUndefined();
     expect(host.querySelectorAll(":scope > .pdf-page-frame")).toHaveLength(0);
+    failRestore = true;
+    expect(await controller.renderPage(3)).toBe(false);
+    expect(controller.activePageNumber).toBeUndefined();
+    failRestore = false;
     expect(await controller.renderPage(3)).toBe(true);
     expect(controller.activePageNumber).toBe(3);
     await controller.dispose();

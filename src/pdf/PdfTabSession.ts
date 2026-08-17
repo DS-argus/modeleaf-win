@@ -80,6 +80,7 @@ export class PdfTabSession {
   private presentationEvicted = false;
   private presentationDirty = false;
   private activityQuarantined = false;
+  private activationCompensating = false;
   private openingFitRenderPending = false;
   private openingFitRenderInFlight = false;
   private activityGeneration = 0;
@@ -171,7 +172,7 @@ export class PdfTabSession {
     return this.closed ? [] : this.pdfReader.readOutlineDestinations();
   }
   public async printCurrent(): Promise<boolean> {
-    return this.closed || !this.active ? false : this.pdfReader.printCurrent();
+    return this.closed || !this.isForegroundActive() ? false : this.pdfReader.printCurrent();
   }
   public async activate(): Promise<void> {
     if (this.closed || this.active) return;
@@ -181,7 +182,7 @@ export class PdfTabSession {
     const activityGeneration = ++this.activityGeneration;
     try {
       await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
-      if (this.closed || !this.active || this.activityGeneration !== activityGeneration) return;
+      if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       if (this.openingFitRenderPending) {
         await this.renderOpeningFitPage();
         return;
@@ -195,19 +196,21 @@ export class PdfTabSession {
       }
     } catch (error) {
       if (!this.closed && this.activityGeneration === activityGeneration) {
-        this.active = false;
+        this.activationCompensating = true;
         this.activityGeneration += 1;
         this.presentationDirty = true;
         this.content?.suspend();
-        try {
-          await this.pdfReader.suspend();
-          await this.content?.synchronizeResidentPages([]);
-          this.foregroundSuspended = true;
-        } catch {
+        const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
+        const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
+        const outcomes = await Promise.allSettled([suspend, revokeAuthority]);
+        this.activationCompensating = false;
+        this.active = false;
+        if (outcomes.some((outcome) => outcome.status === "rejected")) {
           this.activityQuarantined = true;
           this.foregroundSuspended = false;
           throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
         }
+        this.foregroundSuspended = true;
       }
       throw error;
     }
@@ -260,12 +263,12 @@ export class PdfTabSession {
     }
   }
   public async renderPage(page: number, transform?: PdfViewTransform): Promise<boolean> {
-    if (this.closed || !this.active) return false;
+    if (this.closed || !this.isForegroundActive()) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const intent = this.renderIntent;
     const navigationIntent = this.navigationIntent;
-    const guard = (): boolean => !this.closed && this.active && this.activityGeneration === activityGeneration
+    const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.navigationIntent === navigationIntent;
     this.pendingPresentationRenders += 1;
     try {
@@ -307,14 +310,14 @@ export class PdfTabSession {
   }
   /** Production scroll entry point: materializes the bounded continuous window. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
-    if (this.closed || !this.active || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
     const navigationIntent = this.navigationIntent;
     const renderIntent = this.renderIntent;
     const viewportIntent = ++this.viewportIntent;
-    const guard = (): boolean => !this.closed && this.active && this.activityGeneration === activityGeneration
+    const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.navigationIntent === navigationIntent && this.viewportIntent === viewportIntent;
     try {
       const style = typeof getComputedStyle === "function" ? getComputedStyle(this.options.canvasHost) : undefined;
@@ -333,7 +336,7 @@ export class PdfTabSession {
           committed = await this.pdfReader.renderPageWithTransform(snapshot.page, stableTransform, guard);
         }
       }
-      if (!this.closed && this.active && this.reader.snapshot.documentGeneration === documentGeneration) {
+      if (!this.closed && this.isForegroundActive() && this.reader.snapshot.documentGeneration === documentGeneration) {
         this.content?.activateResidentPage(this.reader.snapshot.page);
       }
       if (!committed && !guard()) this.presentationDirty = true;
@@ -349,13 +352,13 @@ export class PdfTabSession {
     }
   }
   public async activateViewportPage(page: number): Promise<boolean> {
-    if (this.closed || !this.active || !Number.isInteger(page)) return false;
+    if (this.closed || !this.isForegroundActive() || !Number.isInteger(page)) return false;
     if (page === this.reader.snapshot.page) return true;
     this.apply({ type: "page.goTo", page });
     return this.renderPage(this.reader.snapshot.page);
   }
   public submitSearch(source: string, reverse = false): PdfTabSearchDecision {
-    if (this.closed || !this.active) return { kind: "ignore" };
+    if (this.closed || !this.isForegroundActive()) return { kind: "ignore" };
     const content = this.content;
     if (content === undefined) return { kind: "ignore" };
     const decision = decidePdfTabSearch(content.snapshot, source, reverse);
@@ -365,7 +368,7 @@ export class PdfTabSession {
   }
 
   public apply(action: Parameters<ReaderState["apply"]>[0]): void {
-    if (this.closed || !this.active) return;
+    if (this.closed || !this.isForegroundActive()) return;
     if (action.type.startsWith("page.") || action.type.startsWith("view.") || action.type.startsWith("scroll.")) {
       this.supersedeNavigation();
       const snapshot = this.lastCommittedRender;
@@ -376,11 +379,11 @@ export class PdfTabSession {
     }
     this.reader.apply(action);
   }
-  public nextMatch(reverse: boolean): void { if (!this.closed && this.active) this.content?.nextMatch(reverse); }
-  public toggleHints(): void { if (!this.closed && this.active) this.content?.toggleHints(); }
-  public cancelHints(): void { if (!this.closed && this.active) this.content?.cancelHints(); }
-  public handleHintKey(key: string): boolean { return !this.closed && this.active && this.content?.handleHintKey(key) === true; }
-  public invalidateSearch(): void { if (!this.closed && this.active) this.content?.invalidateSearch(); }
+  public nextMatch(reverse: boolean): void { if (!this.closed && this.isForegroundActive()) this.content?.nextMatch(reverse); }
+  public toggleHints(): void { if (!this.closed && this.isForegroundActive()) this.content?.toggleHints(); }
+  public cancelHints(): void { if (!this.closed && this.isForegroundActive()) this.content?.cancelHints(); }
+  public handleHintKey(key: string): boolean { return !this.closed && this.isForegroundActive() && this.content?.handleHintKey(key) === true; }
+  public invalidateSearch(): void { if (!this.closed && this.isForegroundActive()) this.content?.invalidateSearch(); }
   public get query(): string { return this.content?.snapshot.query ?? ""; }
   public get hintsVisible(): boolean { return this.content?.snapshot.hintsVisible ?? false; }
   public async renderCurrentView(): Promise<boolean> {
@@ -390,12 +393,12 @@ export class PdfTabSession {
   }
 
   public async navigateToDestination(page: number, destination: readonly unknown[]): Promise<void> {
-    if (this.closed || !this.active) return;
+    if (this.closed || !this.isForegroundActive()) return;
     const content = this.content;
     if (content === undefined) return;
     const navigationIntent = this.supersedeNavigation();
     const activityGeneration = this.activityGeneration;
-    const guard = (): boolean => !this.closed && this.active && this.activityGeneration === activityGeneration
+    const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.navigationIntent === navigationIntent;
     const snapshot = this.reader.snapshot;
     const targetSize = await this.pdfReader.getPageNaturalSize(page, snapshot.rotationQuarterTurns * 90, guard);
@@ -423,19 +426,19 @@ export class PdfTabSession {
     }
   }
 
-  public async search(query: string): Promise<void> { if (!this.closed && this.active) await this.content?.search(query); }
+  public async search(query: string): Promise<void> { if (!this.closed && this.isForegroundActive()) await this.content?.search(query); }
 
   private async restorePresentation(activityGeneration: number): Promise<void> {
     const rendered = await this.renderCurrentView();
-    if (!rendered || this.closed || !this.active || this.activityGeneration !== activityGeneration) return;
+    if (!rendered || this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
     if (this.presentationEvicted) await this.content?.restoreEvictedSearch();
-    if (this.closed || !this.active || this.activityGeneration !== activityGeneration) return;
+    if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
     this.presentationEvicted = false;
     this.presentationDirty = false;
   }
   private async restoreInterruptedSearch(activityGeneration: number): Promise<void> {
     await this.content?.restoreEvictedSearch();
-    if (this.closed || !this.active || this.activityGeneration !== activityGeneration) return;
+    if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
   }
 
   private async viewTransformFor(page: number, guard: () => boolean): Promise<PdfViewTransform | undefined> {
@@ -489,6 +492,9 @@ export class PdfTabSession {
     }
   }
 
+  private isForegroundActive(): boolean {
+    return this.active && !this.activationCompensating && !this.activityQuarantined;
+  }
   private availableContentSize(): { readonly width: number; readonly height: number } {
     const host = this.options.canvasHost;
     const style = typeof getComputedStyle === "function" ? getComputedStyle(host) : undefined;
@@ -527,7 +533,7 @@ export class PdfTabSession {
     const rollback = this.pendingRenderRollback;
     if (rollback === undefined || rollback.intent !== intent || rollback.activityGeneration !== activityGeneration
       || rollback.activityGeneration !== this.activityGeneration || rollback.documentGeneration !== this.reader.snapshot.documentGeneration
-      || this.closed || !this.active) return;
+      || this.closed || !this.isForegroundActive()) return;
     this.reader.apply({ type: "page.goTo", page: rollback.page });
     this.reader.restoreView(rollback);
     this.pendingRenderRollback = undefined;
