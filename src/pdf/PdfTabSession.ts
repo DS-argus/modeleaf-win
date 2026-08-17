@@ -81,7 +81,7 @@ export class PdfTabSession {
   private presentationDirty = false;
   private activityQuarantined = false;
   private activitySettling = false;
-  private activationInProgress = false;
+  private activationGeneration?: number;
   private openingFitRenderPending = false;
   private openingFitRenderInFlight = false;
   private activityGeneration = 0;
@@ -179,17 +179,17 @@ export class PdfTabSession {
   public async activate(): Promise<void> {
     if (this.closed || this.active) return;
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
-    this.activationInProgress = true;
     this.active = true;
     this.foregroundSuspended = false;
     const activityGeneration = ++this.activityGeneration;
+    this.activationGeneration = activityGeneration;
     try {
       await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
       if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       if (this.openingFitRenderPending) {
         await this.renderOpeningFitPage();
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
-        this.activationInProgress = false;
+        this.finishActivation(activityGeneration);
         this.content?.resumeInteractions();
         return;
       }
@@ -202,10 +202,10 @@ export class PdfTabSession {
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       }
       if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
-      this.activationInProgress = false;
+      this.finishActivation(activityGeneration);
       this.content?.resumeInteractions();
     } catch (error) {
-      this.activationInProgress = false;
+      this.finishActivation(activityGeneration);
       if (!this.closed && this.activityGeneration === activityGeneration) {
         this.activitySettling = true;
         this.activityGeneration += 1;
@@ -229,6 +229,7 @@ export class PdfTabSession {
   public async deactivate(): Promise<void> {
     if (this.closed) return;
     if (this.pendingPresentationRenders > 0) this.presentationDirty = true;
+    delete this.activationGeneration;
     this.activitySettling = true;
     this.foregroundSuspended = false;
     this.activityGeneration += 1;
@@ -501,6 +502,9 @@ export class PdfTabSession {
     }
   }
 
+  private finishActivation(generation: number): void {
+    if (this.activationGeneration === generation) delete this.activationGeneration;
+  }
   private isForegroundActive(): boolean {
     return this.active && !this.activitySettling && !this.activityQuarantined;
   }
@@ -555,7 +559,7 @@ export class PdfTabSession {
     this.reader.apply({ type: "page.goTo", page });
     this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: transform.scale, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
     this.content?.activateResidentPage(page);
-    if (this.isForegroundActive() && !this.activationInProgress) this.content?.resumeInteractions();
+    if (this.isForegroundActive() && this.activationGeneration === undefined) this.content?.resumeInteractions();
     const committed = this.reader.snapshot;
     this.lastCommittedRender = {
       documentGeneration: committed.documentGeneration,

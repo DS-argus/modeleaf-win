@@ -235,6 +235,41 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await activation;
     expect(content.resumeInteractions).toHaveBeenCalledOnce();
   });
+  it("prevents a stale activation failure from clearing a newer activation lease", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & {
+      presentationDirty: boolean;
+      presentationEvicted: boolean;
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(1);
+    let rejectFirst!: (error: Error) => void;
+    content.synchronizeResidentPages.mockImplementationOnce(() => new Promise<undefined>((_resolve, reject) => { rejectFirst = reject; }));
+    const firstActivation = session.activate();
+    await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledOnce());
+    await session.deactivate();
+
+    internals.presentationDirty = true;
+    internals.presentationEvicted = true;
+    let releaseRestore!: () => void;
+    content.restoreEvictedSearch.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRestore = () => resolve(undefined); }));
+    vi.spyOn(session, "renderCurrentView").mockImplementationOnce(async () => {
+      internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      return true;
+    });
+    const secondActivation = session.activate();
+    await vi.waitFor(() => expect(content.restoreEvictedSearch).toHaveBeenCalledOnce());
+
+    rejectFirst(new Error("stale activation failed"));
+    await expect(firstActivation).rejects.toThrow("stale activation failed");
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    expect(content.resumeInteractions).not.toHaveBeenCalled();
+
+    releaseRestore();
+    await secondActivation;
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+  });
   it("quarantines activation when compensating authority revocation fails", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
