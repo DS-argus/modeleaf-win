@@ -334,6 +334,7 @@ export class PdfContentController {
   private partialSearchReason: string | undefined;
   private hintsVisible = false;
   private interactionsEnabled = true;
+  private interactionEpoch = 0;
   private registryQuarantined: { readonly revision: number; readonly reason: unknown } | undefined;
   private readonly publishedRegistryFinalizers = new Map<number, PublishedRegistryFinalizer>();
   private unsettledVisibleTextCleanup: Promise<void> | undefined;
@@ -381,6 +382,7 @@ export class PdfContentController {
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
     this.interactionsEnabled = false;
+    this.interactionEpoch += 1;
     this.renderSequence += 1;
     this.searchSequence += 1;
     if (this.activeSearchSettlement !== undefined && this.query.length > 0) {
@@ -1153,6 +1155,7 @@ export class PdfContentController {
     const document = this.document;
     const generation = this.generation;
     if (!this.interactionsEnabled || document === undefined || generation === undefined || this.isClosing()) return;
+    const interactionEpoch = this.interactionEpoch;
     const { annotation } = group;
     if (annotation.url !== undefined) {
       const activation = ++this.linkActivationSequence;
@@ -1182,6 +1185,8 @@ export class PdfContentController {
     const activation = ++this.linkActivationSequence;
     const deadline = Date.now() + LINK_ACTIVATION_TIMEOUT_MS;
     const isActive = (): boolean => activation === this.linkActivationSequence
+      && interactionEpoch === this.interactionEpoch
+      && this.interactionsEnabled
       && group.renderSequence === this.renderedSequence
       && this.hintGroups.includes(group)
       && this.isCurrent(generation, document);

@@ -374,6 +374,31 @@ describe("PdfContentController", () => {
     await Promise.resolve();
     expect(subject.openExternal).toHaveBeenCalledOnce();
   });
+  it("permanently cancels an internal link callback across suspend and resume", async () => {
+    let destinationCalls = 0;
+    let resolveOld!: (destination: readonly unknown[]) => void;
+    const oldDestination = new Promise<readonly unknown[]>((resolve) => { resolveOld = resolve; });
+    const subject = setup([page("link", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: "target" }])]);
+    Object.assign(subject.pdf, {
+      getDestination: vi.fn(() => {
+        destinationCalls += 1;
+        return destinationCalls === 2 ? oldDestination : Promise.resolve([0, { name: "Fit" }]);
+      }),
+    });
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    overlay.click();
+    await vi.waitFor(() => expect(destinationCalls).toBe(2));
+
+    subject.controller.suspend();
+    subject.controller.resumeInteractions();
+    resolveOld([0, { name: "Fit" }]);
+    await vi.waitFor(() => expect((subject.controller as unknown as { internalDestinationActivation?: Promise<void> }).internalDestinationActivation).toBeUndefined());
+    expect(subject.navigateToPage).not.toHaveBeenCalled();
+
+    overlay.click();
+    await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
+  });
   it("swallows rejected overlay work after its document generation becomes stale", async () => {
     let rejectText!: (error: Error) => void;
     const text = new Promise<{ items: readonly { str: string }[] }>((_resolve, reject) => { rejectText = reject; });
