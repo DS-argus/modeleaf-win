@@ -114,6 +114,7 @@ export class PdfTabSession {
       onStatus: (status) => this.setReaderStatus(status),
       onPage: (page, transform) => this.onPage(page, transform),
       onEvictPage: (page) => { this.content?.evictPage(page); },
+      onBeforeResidentCommit: async (pages) => { await this.content?.synchronizeResidentPages(pages); },
       onCommitted: (pageCount, displayName) => {
         this.title = displayName;
         this.lastCommittedRender = undefined;
@@ -175,31 +176,48 @@ export class PdfTabSession {
     this.active = true;
     this.foregroundSuspended = false;
     const activityGeneration = ++this.activityGeneration;
-    if (this.openingFitRenderPending) {
-      await this.renderOpeningFitPage();
-      return;
-    }
-    const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers();
-    if (needsPresentationRestore) {
-      await this.restorePresentation(activityGeneration);
-    } else {
-      if (this.content !== undefined) {
-        await this.content.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
-        this.content.activateResidentPage(this.reader.snapshot.page);
+    try {
+      await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
+      if (this.closed || !this.active || this.activityGeneration !== activityGeneration) return;
+      if (this.openingFitRenderPending) {
+        await this.renderOpeningFitPage();
+        return;
       }
-      await this.restoreInterruptedSearch(activityGeneration);
+      const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers();
+      if (needsPresentationRestore) {
+        await this.restorePresentation(activityGeneration);
+      } else {
+        this.content?.activateResidentPage(this.reader.snapshot.page);
+        await this.restoreInterruptedSearch(activityGeneration);
+      }
+    } catch (error) {
+      if (!this.closed && this.activityGeneration === activityGeneration) {
+        this.active = false;
+        this.activityGeneration += 1;
+      }
+      throw error;
     }
   }
   public async deactivate(): Promise<void> {
     if (this.closed) return;
+    const wasActive = this.active;
     if (this.pendingPresentationRenders > 0) this.presentationDirty = true;
     this.active = false;
     this.foregroundSuspended = false;
     this.activityGeneration += 1;
     this.content?.suspend();
-    await this.pdfReader.suspend();
-    await this.content?.synchronizeResidentPages([]);
-    this.foregroundSuspended = true;
+    try {
+      await this.pdfReader.suspend();
+      await this.content?.synchronizeResidentPages([]);
+      this.foregroundSuspended = true;
+    } catch (error) {
+      if (!this.closed) {
+        this.active = wasActive;
+        this.activityGeneration += 1;
+        if (wasActive) this.content?.activateResidentPage(this.reader.snapshot.page);
+      }
+      throw error;
+    }
   }
   public evictInactiveHeavyResources(): void {
     if (this.closed || this.active || !this.foregroundSuspended) return;
@@ -292,7 +310,6 @@ export class PdfTabSession {
       }
     }
     if (!this.closed && this.active && this.reader.snapshot.documentGeneration === documentGeneration) {
-      await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
       this.content?.activateResidentPage(this.reader.snapshot.page);
     }
     if (!committed && !guard()) this.presentationDirty = true;

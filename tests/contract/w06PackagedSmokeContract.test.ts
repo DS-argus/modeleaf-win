@@ -33,6 +33,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toMatch(/AssignProcessToJobObject/);
     expect(script).toMatch(/CreateProcess/);
     expect(script).toMatch(/StartOwned/);
+    expect(script).toMatch(/StartOwnedArguments/);
+    expect(script).not.toMatch(/\$helper=Start-Process/);
     expect(script).toMatch(/0x4/);
     expect(script).toMatch(/TerminateJobObject/);
     expect(script).toMatch(/LaunchTimeoutMs=20000/);

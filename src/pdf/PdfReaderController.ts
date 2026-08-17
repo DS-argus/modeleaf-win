@@ -190,6 +190,7 @@ export interface PdfReaderControllerOptions {
   ) => Promise<void>;
   readonly onStatus: (message: string) => void;
   readonly onEvictPage?: (page: number) => void;
+  readonly onBeforeResidentCommit?: (pages: readonly number[]) => Promise<void>;
 }
 interface RenderedCanvas extends PdfRenderedPage {
   readonly transform: PdfViewTransform;
@@ -308,7 +309,7 @@ export class PdfReaderController {
   private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan } | undefined;
   private viewportEpoch = 0;
   private viewportSettlement: Promise<void> | undefined;
-  private viewportRequestSequence = 0;
+  private presentationRequestSequence = 0;
   private viewportRollback = false;
   private viewTransform: PdfViewTransform = {
     scale: 1.25,
@@ -642,7 +643,7 @@ export class PdfReaderController {
     }
   }
   public invalidateViewportSynchronization(): void {
-    if (this.activeViewportPlan === undefined || this.viewportRollback) return;
+    if (this.viewportSettlement === undefined || this.viewportRollback) return;
     this.viewportEpoch += 1;
     this.renderSequence += 1;
     void this.cancelActiveRender().catch(() => {
@@ -652,9 +653,9 @@ export class PdfReaderController {
   /** Synchronizes the bounded continuous resident window to finite host geometry. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     if (!Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
-    const requestSequence = ++this.viewportRequestSequence;
+    const requestSequence = ++this.presentationRequestSequence;
     await this.awaitViewportIdle();
-    if (requestSequence !== this.viewportRequestSequence) return false;
+    if (requestSequence !== this.presentationRequestSequence) return false;
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const window = current.window;
@@ -692,6 +693,8 @@ export class PdfReaderController {
         const raster = current.residentRasters.get(page);
         if (raster !== undefined) window.updateMetric(page, { width: raster.viewport.width, height: raster.viewport.height });
       }
+      await this.options.onBeforeResidentCommit?.(plan.plannedPages);
+      if (!transactionCurrent()) return false;
       for (const page of plan.evictPages) this.evictResidentPage(current, page);
       if (!transactionCurrent()) return false;
       const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage);
@@ -913,19 +916,29 @@ export class PdfReaderController {
       if (this.activeViewportPlan?.candidate === current) this.activeViewportPlan = undefined;
     }
   }
-
   public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+    const requestSequence = ++this.presentationRequestSequence;
     await this.awaitViewportIdle();
-    if (transform.scale === this.viewTransform.scale
+    if (requestSequence !== this.presentationRequestSequence) return false;
+    const replacesResidentDpr = transform.scale === this.viewTransform.scale
       && transform.rotation === this.viewTransform.rotation
       && transform.devicePixelRatio !== this.viewTransform.devicePixelRatio
-      && (this.current?.residentRasters.size ?? 0) > 1) {
-      return this.rerenderResidentBackingsForDpr(transform, requestCommitGuard);
+      && (this.current?.residentRasters.size ?? 0) > 1;
+    if (!replacesResidentDpr) return this.renderPageInternal(page, transform, requestCommitGuard);
+    let releaseSettlement!: () => void;
+    const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
+    this.viewportSettlement = settlement;
+    try {
+      return await this.rerenderResidentBackingsForDpr(transform, requestCommitGuard);
+    } finally {
+      releaseSettlement();
+      if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;
     }
-    return this.renderPageInternal(page, transform, requestCommitGuard);
   }
   /** Cancels foreground rendering without releasing the owned document session. */
   public async suspend(): Promise<void> {
+    this.presentationRequestSequence += 1;
+    await this.awaitViewportIdle();
     const print = this.activePrint;
     print?.abort.abort();
     if (print !== undefined) {
@@ -951,6 +964,8 @@ export class PdfReaderController {
   }
 
   public async dispose(): Promise<void> {
+    this.presentationRequestSequence += 1;
+    await this.awaitViewportIdle();
     this.disposed = true;
     this.renderSequence += 1;
     try {

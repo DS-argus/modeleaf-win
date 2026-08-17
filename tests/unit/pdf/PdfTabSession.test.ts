@@ -159,6 +159,20 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.handleHintKey("S")).toBe(false);
     expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
   });
+  it("rolls activity back when native resident publication fails", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    content.synchronizeResidentPages.mockRejectedValueOnce(new Error("activate registry failed"));
+
+    await expect(session.activate()).rejects.toThrow("activate registry failed");
+    expect(session.snapshot.active).toBe(false);
+
+    await session.activate();
+    expect(session.snapshot.active).toBe(true);
+    content.synchronizeResidentPages.mockRejectedValueOnce(new Error("deactivate registry failed"));
+    await expect(session.deactivate()).rejects.toThrow("deactivate registry failed");
+    expect(session.snapshot.active).toBe(true);
+  });
 
 
   it("rolls back a failed page render only for its owning active generation", () => {
@@ -257,7 +271,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       globalWindow.window!.devicePixelRatio = 2;
       const restore = vi.spyOn(session, "renderCurrentView").mockResolvedValue(true);
 
-      session.activate();
+      await session.activate();
 
       expect(restore).toHaveBeenCalledOnce();
     } finally {

@@ -663,6 +663,27 @@ describe("PdfReaderController", () => {
     expect(transformed.every((canvas) => canvas.width === 0 && canvas.height === 0)).toBe(true);
     resources.assertEmpty();
   });
+  it("keeps the committed resident window when eviction-only native publication fails", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const publishResidents = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("registry unavailable"));
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("resident-authority", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(5))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+    const committedPages = ["1", "2", "3", "4", "5"];
+    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(committedPages);
+
+    await expect(controller.synchronizeViewport(0, 0)).rejects.toThrow("registry unavailable");
+    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(committedPages);
+    expect(publishedCanvas(host).dataset.page).toBe("3");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("rolls back newly published residents when a later viewport page fails", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const canvases = new Map<number, HTMLCanvasElement>();
@@ -691,6 +712,38 @@ describe("PdfReaderController", () => {
     expect(publishedCanvas(host).dataset.page).toBe("1");
     expect(resources.snapshot().totals["canvas-bytes"]).toBe(20 * 30 * 4);
 
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("rematerializes a disjoint full resident checkpoint within the exact peak cap", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    let failPageEight = false;
+    let peakCanvasBytes = 0;
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      const source = page(pageNumber, failPageEight && pageNumber === 8 ? Promise.reject(new Error("page eight failed")) : Promise.resolve());
+      return { ...source, render: (options) => {
+        const operation = source.render(options);
+        peakCanvasBytes = Math.max(peakCanvasBytes, resources.snapshot().totals["canvas-bytes"] ?? 0);
+        return operation;
+      } };
+    });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("rollback-window", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(10, getPage))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+    expect(publishedCanvas(host).dataset.page).toBe("3");
+    failPageEight = true;
+    peakCanvasBytes = 0;
+
+    expect(await controller.synchronizeViewport(7 * 42, 30)).toBe(false);
+    expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1", "2", "3", "4", "5"]);
+    expect(publishedCanvas(host).dataset.page).toBe("3");
+    expect(peakCanvasBytes).toBeLessThanOrEqual(5 * 20 * 30 * 4);
     await controller.dispose();
     resources.assertEmpty();
   });
@@ -807,6 +860,42 @@ describe("PdfReaderController", () => {
     resources.assertEmpty();
   });
 
+  it("serializes a scroll behind cancelled all-resident DPR rollback", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const delayed = deferred<void>();
+    const cancellation = Object.assign(new Error("Rendering cancelled"), { name: "RenderingCancelledException" });
+    const cancel = vi.fn(() => delayed.reject(cancellation));
+    let delayNextPageOne = false;
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      if (delayNextPageOne && pageNumber === 1) {
+        delayNextPageOne = false;
+        return page(pageNumber, delayed.promise, cancel);
+      }
+      return page(pageNumber);
+    });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("dpr-scroll", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    expect(await controller.synchronizeViewport(84, 30)).toBe(true);
+    delayNextPageOne = true;
+    const dpr = controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 });
+    await vi.waitFor(() => expect(resources.snapshot().totals.render).toBe(1));
+    const scroll = controller.synchronizeViewport(84, 30);
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+
+    expect(await dpr).toBe(false);
+    expect(await scroll).toBe(true);
+    const canvases = host.querySelectorAll<HTMLCanvasElement>(":scope > .pdf-page-frame > .pdf-page-canvas-layer");
+    expect(canvases).toHaveLength(5);
+    expect([...canvases].every((canvas) => canvas.dataset.devicePixelRatio === "1")).toBe(true);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("restores a canonical PDF-space anchor within half a point through zoom and rotation", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
