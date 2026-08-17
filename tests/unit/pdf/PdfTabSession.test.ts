@@ -270,6 +270,30 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await secondActivation;
     expect(content.resumeInteractions).toHaveBeenCalledOnce();
   });
+  it("shares overlapping deactivation settlement and blocks reactivation until revocation completes", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    session.reader.mountDocument(1);
+    await session.activate();
+    content.resumeInteractions.mockClear();
+    let releaseRevocation!: () => void;
+    content.synchronizeResidentPages.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRevocation = () => resolve(undefined); }));
+
+    const firstDeactivation = session.deactivate();
+    const secondDeactivation = session.deactivate();
+    await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2));
+    const reactivation = session.activate();
+    await Promise.resolve();
+    expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2);
+    expect(content.resumeInteractions).not.toHaveBeenCalled();
+
+    releaseRevocation();
+    await Promise.all([firstDeactivation, secondDeactivation]);
+    await reactivation;
+    expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(3);
+    expect(content.resumeInteractions).toHaveBeenCalledOnce();
+    expect(session.snapshot.active).toBe(true);
+  });
   it("quarantines activation when compensating authority revocation fails", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
@@ -293,17 +317,21 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     let releaseRevoke!: () => void;
     vi.spyOn(internals.pdfReader, "suspend").mockImplementation(() => new Promise<void>((resolve) => { releaseSuspend = resolve; }));
     content.synchronizeResidentPages.mockResolvedValueOnce(undefined).mockImplementationOnce(() => new Promise<undefined>((resolve) => { releaseRevoke = () => resolve(undefined); }));
-    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed"));
+    vi.spyOn(session, "renderCurrentView").mockRejectedValueOnce(new Error("restore failed")).mockResolvedValueOnce(true);
 
     const activation = session.activate();
     await vi.waitFor(() => expect(content.synchronizeResidentPages).toHaveBeenCalledTimes(2));
     expect(session.snapshot.active).toBe(true);
-    await expect(session.activate()).resolves.toBeUndefined();
+    let retrySettled = false;
+    const retry = session.activate().then(() => { retrySettled = true; });
+    await Promise.resolve();
+    expect(retrySettled).toBe(false);
     expect(session.submitSearch("blocked")).toEqual({ kind: "ignore" });
     releaseSuspend();
     releaseRevoke();
     await expect(activation).rejects.toThrow("restore failed");
-    expect(session.snapshot.active).toBe(false);
+    await retry;
+    expect(session.snapshot.active).toBe(true);
   });
 
   it("still attempts empty authority publication when reader suspension fails", async () => {

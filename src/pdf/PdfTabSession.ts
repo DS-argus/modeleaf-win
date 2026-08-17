@@ -81,6 +81,7 @@ export class PdfTabSession {
   private presentationDirty = false;
   private activityQuarantined = false;
   private activitySettling = false;
+  private activitySettlement?: Promise<void>;
   private activationGeneration?: number;
   private openingFitRenderPending = false;
   private openingFitRenderInFlight = false;
@@ -177,6 +178,8 @@ export class PdfTabSession {
     return this.closed || !this.isForegroundActive() ? false : this.pdfReader.printCurrent();
   }
   public async activate(): Promise<void> {
+    const pendingActivity = this.activitySettlement;
+    if (pendingActivity !== undefined) await pendingActivity;
     if (this.closed || this.active) return;
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
     this.active = true;
@@ -206,44 +209,13 @@ export class PdfTabSession {
       this.content?.resumeInteractions();
     } catch (error) {
       this.finishActivation(activityGeneration);
-      if (!this.closed && this.activityGeneration === activityGeneration) {
-        this.activitySettling = true;
-        this.activityGeneration += 1;
-        this.presentationDirty = true;
-        this.content?.suspend();
-        const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
-        const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
-        const outcomes = await Promise.allSettled([suspend, revokeAuthority]);
-        this.activitySettling = false;
-        this.active = false;
-        if (outcomes.some((outcome) => outcome.status === "rejected")) {
-          this.activityQuarantined = true;
-          this.foregroundSuspended = false;
-          throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
-        }
-        this.foregroundSuspended = true;
-      }
+      if (!this.closed && this.activityGeneration === activityGeneration) await this.settleInactiveAuthority();
       throw error;
     }
   }
   public async deactivate(): Promise<void> {
     if (this.closed) return;
-    if (this.pendingPresentationRenders > 0) this.presentationDirty = true;
-    delete this.activationGeneration;
-    this.activitySettling = true;
-    this.foregroundSuspended = false;
-    this.activityGeneration += 1;
-    this.content?.suspend();
-    const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
-    const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
-    const outcomes = await Promise.allSettled([suspend, revokeAuthority]);
-    this.activitySettling = false;
-    this.active = false;
-    if (outcomes.some((outcome) => outcome.status === "rejected")) {
-      this.activityQuarantined = true;
-      throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
-    }
-    this.foregroundSuspended = true;
+    await this.settleInactiveAuthority();
   }
   public evictInactiveHeavyResources(): void {
     if (this.closed || this.active || !this.foregroundSuspended) return;
@@ -259,6 +231,8 @@ export class PdfTabSession {
     this.activityGeneration += 1;
     const settlement = (async () => {
       this.content?.suspend();
+      const activitySettlement = this.activitySettlement;
+      if (activitySettlement !== undefined) await Promise.allSettled([activitySettlement]);
       await this.pdfReader.dispose();
       this.content = undefined;
       this.contentBySession.clear();
@@ -502,6 +476,34 @@ export class PdfTabSession {
     }
   }
 
+  private settleInactiveAuthority(): Promise<void> {
+    if (this.activitySettlement !== undefined) return this.activitySettlement;
+    const settlement = (async () => {
+      if (this.pendingPresentationRenders > 0) this.presentationDirty = true;
+      delete this.activationGeneration;
+      this.activitySettling = true;
+      this.foregroundSuspended = false;
+      this.activityGeneration += 1;
+      this.content?.suspend();
+      const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
+      const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
+      const outcomes = await Promise.allSettled([suspend, revokeAuthority]);
+      this.active = false;
+      if (outcomes.some((outcome) => outcome.status === "rejected")) {
+        this.activityQuarantined = true;
+        throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
+      }
+      this.foregroundSuspended = true;
+    })();
+    this.activitySettlement = settlement;
+    void settlement.then(() => {
+      if (this.activitySettlement === settlement) delete this.activitySettlement;
+      this.activitySettling = false;
+    }, () => {
+      this.activitySettling = false;
+    });
+    return settlement;
+  }
   private finishActivation(generation: number): void {
     if (this.activationGeneration === generation) delete this.activationGeneration;
   }
