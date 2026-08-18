@@ -323,7 +323,7 @@ Back/Forward도 destination을 peek하고 restore가 성공한 후에만 directi
 - link hints는 현재 visible pages의 link만 대상으로 deterministic reading order를 사용한다.
 - exact duplicate annotation만 dedupe한다. 같은 destination이거나 인접했다는 이유로 합치지 않는다.
 - `f`가 hints, `F`가 Fit Page다.
-- hint labels는 lowercase letter sequence이고 modified key를 거부한다.
+- hint labels는 lowercase letter sequence이며 plain/Shift/Caps ASCII letters는 lowercase로 normalize하고 Ctrl/Alt/Meta/AltGraph, IME/composition, keyCode 229, dead/process/unidentified, non-letter input은 거부한다.
 - 성공하고 point가 있는 internal destination에는 configurable indicator를 표시한다.
 
 Indicator 계약:

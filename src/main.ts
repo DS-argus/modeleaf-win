@@ -505,7 +505,7 @@ function createTab(): TabPayload {
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       abortExternalLinks: (registryRevision) => invoke<void>("abort_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       indicatorSettings: () => indicatorSettings,
-      openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<void>("open_external_link", { request: { operationId, operationSequence, sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, annotationId } }),
+      openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<number>("open_external_link", { request: { operationId, operationSequence, sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, annotationId } }),
     }),
     onStatus: () => {
       render();

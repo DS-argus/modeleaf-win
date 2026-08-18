@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory=$true)][string]$PdfPath,
   [Parameter(Mandatory=$true)][string]$EvidenceDirectory,
   [Parameter(ParameterSetName='Run')][switch]$Run,
+  [Parameter(ParameterSetName='Run')][switch]$W08,
   [Parameter(ParameterSetName='Run')][ValidateRange(1000,60000)][int]$LaunchTimeoutMs=20000,
   [Parameter(ParameterSetName='Run')][ValidateRange(1000,60000)][int]$ActionTimeoutMs=8000,
   [Parameter(ParameterSetName='Run')][ValidateRange(1000,60000)][int]$ExitTimeoutMs=15000,
@@ -66,16 +67,33 @@ function Get-Sample { $process.Refresh();[ordered]@{ownedRoot=$true;workingSetBy
 function Assert-Resources([object]$Sample) { if([long]$Sample.workingSetBytes -gt ($MaxWorkingSetMiB*1MB)){throw 'Owned working set exceeded bound'};if([double]$Sample.cpuMilliseconds -gt $MaxCpuMilliseconds){throw 'Owned CPU exceeded bound'} }
 function Assert-FixtureUnchanged([string]$Action) { $after=Get-Sha256 $pdf;if($after -ne $fixtureHash){throw "Fixture SHA-256 changed after $Action"};Add-Event "fixture:$Action" 'sha256-unchanged' }
 function Capture-VisualHash([string]$State) { $process.Refresh();$rect=New-Object W06Native+RECT;if($process.MainWindowHandle -eq [IntPtr]::Zero -or -not [W06Native]::GetWindowRect($process.MainWindowHandle,[ref]$rect)){throw 'Reader window is unavailable'};$width=$rect.Right-$rect.Left;$height=$rect.Bottom-$rect.Top;if($width -lt 320 -or $height -lt 240){throw 'Reader bounds are invalid'};$bitmap=New-Object Drawing.Bitmap $width,$height;$graphics=[Drawing.Graphics]::FromImage($bitmap);try{$graphics.CopyFromScreen($rect.Left,$rect.Top,0,0,$bitmap.Size);$bytes=[Collections.Generic.List[byte]]::new();$colors=[Collections.Generic.HashSet[int]]::new();for($x=0;$x -lt 32;$x++){for($y=0;$y -lt 32;$y++){$pixel=$bitmap.GetPixel([math]::Floor(($x+.5)*$width/32),[math]::Floor(($y+.5)*$height/32));[void]$colors.Add($pixel.ToArgb());[void]$bytes.Add($pixel.R);[void]$bytes.Add($pixel.G);[void]$bytes.Add($pixel.B)}};if($colors.Count -lt 12){throw 'Reader page is visually blank or uniform'};$h=[Security.Cryptography.SHA256]::Create();try{$hash=([BitConverter]::ToString($h.ComputeHash($bytes.ToArray()))).Replace('-','').ToLowerInvariant()}finally{$h.Dispose()};$visualHashes[$State]=$hash;Add-Event "visual:$State" "sha256:$hash;sample-colors:$($colors.Count)";Assert-FixtureUnchanged "visual:$State";return $hash}finally{$graphics.Dispose();$bitmap.Dispose()} }
-function Assert-ReaderAlive([string]$State) { $process.Refresh();if($process.HasExited -or $process.MainWindowHandle -eq [IntPtr]::Zero){throw "Reader exited during $State"};$root=[System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle);if($null -eq $root){throw "Reader accessibility root unavailable during $State"};$nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Subtree,[System.Windows.Automation.Condition]::TrueCondition);if($nodes.Count -lt 1 -or $nodes.Count -gt 512){throw "Reader accessibility tree invalid during $State"};Add-Event "reader:$State" "alive-accessible:nodes:$($nodes.Count)" }
+function Assert-ReaderAlive([string]$State) { $process.Refresh();if($process.HasExited -or $process.MainWindowHandle -eq [IntPtr]::Zero){throw "Reader exited during $State"};$root=[System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle);if($null -eq $root){throw "Reader accessibility root unavailable during $State"};$nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Subtree,[System.Windows.Automation.Condition]::TrueCondition);if($nodes.Count -lt 1 -or $nodes.Count -gt 4096){throw "Reader accessibility tree invalid during $State"};Add-Event "reader:$State" "alive-accessible:nodes:$($nodes.Count)" }
 function Focus-ReaderDocument { $root=[System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle);$nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Subtree,[System.Windows.Automation.Condition]::TrueCondition);for($i=0;$i -lt $nodes.Count;$i++){$node=$nodes.Item($i);if([bool]$node.Current.IsKeyboardFocusable -and [string]$node.Current.ControlType.ProgrammaticName -ne 'ControlType.Edit'){$node.SetFocus();return}};throw 'Reader keyboard focus target is unavailable' }
 function Send-ReaderKey([int]$Key,[bool]$Ctrl,[bool]$Shift,[string]$Action) { if(-not $automationShell.AppActivate($process.Id)){throw "Reader activation failed before $Action"};Start-Sleep -Milliseconds 100;Focus-ReaderDocument;Start-Sleep -Milliseconds 100;[W06Native]::Key($process.MainWindowHandle,$Key,$Ctrl,$Shift);Start-Sleep -Milliseconds 350;Add-Event $Action 'sent';Assert-FixtureUnchanged $Action }
-function Assert-ReadOnlyUi { $root=[System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle);$nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Subtree,[System.Windows.Automation.Condition]::TrueCondition);if($nodes.Count -gt 512){throw 'Accessible UI tree exceeded bounded node count'};$forbidden='^(Save|Save As|Export|Download)(?:\b|$)';for($i=0;$i -lt $nodes.Count;$i++){if(([string]$nodes.Item($i).Current.Name) -match $forbidden){throw 'Accessible UI exposes a forbidden read-only capability'}};Add-Event 'read-only:forbidden-capability-check' "passed:nodes:$($nodes.Count)" }
+function Assert-ReadOnlyUi { $root=[System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle);$nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Subtree,[System.Windows.Automation.Condition]::TrueCondition);if($nodes.Count -gt 4096){throw 'Accessible UI tree exceeded bounded node count'};$forbidden='^(Save|Save As|Export|Download)(?:\b|$)';for($i=0;$i -lt $nodes.Count;$i++){if(([string]$nodes.Item($i).Current.Name) -match $forbidden){throw 'Accessible UI exposes a forbidden read-only capability'}};Add-Event 'read-only:forbidden-capability-check' "passed:nodes:$($nodes.Count)" }
 
+function Get-ReaderUiNodes { $root=[System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle);if($null -eq $root){throw 'Reader accessibility root unavailable'};$nodes=$root.FindAll([System.Windows.Automation.TreeScope]::Subtree,[System.Windows.Automation.Condition]::TrueCondition);if($nodes.Count -lt 1 -or $nodes.Count -gt 4096){throw 'Reader accessibility tree invalid'};return @($nodes|ForEach-Object{$_}) }
+function Assert-W08Fixture { if([IO.Path]::GetFileName($pdf) -ine 'links.pdf'){throw 'W08 requires the committed links.pdf fixture'};if($fixtureHash -ne 'dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4'){throw 'W08 links.pdf SHA-256 binding mismatch'};Add-Event 'w08:fixture-binding' 'committed-links-pdf-sha256-verified' }
+function Run-W08Scenario {
+  Assert-W08Fixture
+  Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^PDF link [a-z]+$'}).Count -eq 4 } $ActionTimeoutMs 'Visible supported PDF annotation authority did not publish'
+  Add-Event 'w08:annotation-authority' 'exact-four-supported-of-six-display-link-annotations'
+  Send-ReaderKey 0x46 $false $false 'w08:hints-open'
+  Capture-VisualHash 'w08-hints-visible'|Out-Null
+  if($visualHashes['page-visible'] -eq $visualHashes['w08-hints-visible']){throw 'W08 hint overlay did not change the visible reader'}
+  Add-Event 'w08:hints-visible' 'keyboard-opened-and-visually-nonuniform'
+  Send-ReaderKey 0x1B $false $false 'w08:hints-dismiss'
+  Capture-VisualHash 'w08-hints-dismissed'|Out-Null
+  if($visualHashes['w08-hints-visible'] -eq $visualHashes['w08-hints-dismissed']){throw 'W08 hint dismissal did not change the visible reader'}
+  Add-Event 'w08:hints-dismissal' 'escape-dismissed-overlay'
+  Assert-FixtureUnchanged 'w08-complete'
+}
 $script=(Resolve-Path -LiteralPath $MyInvocation.MyCommand.Path).Path
 $exe=(Resolve-Path -LiteralPath $ExePath -ErrorAction Stop).Path
 $pdf=(Resolve-Path -LiteralPath $PdfPath -ErrorAction Stop).Path
 if([IO.Path]::GetExtension($exe) -ine '.exe'){throw 'ExePath must name an EXE'}
 if(Test-Path -LiteralPath $EvidenceDirectory){throw 'EvidenceDirectory already exists; refusing stale evidence overwrite'}
+if($W08 -and -not $Run){throw 'W08 requires -Run'}
 [void][IO.Directory]::CreateDirectory($EvidenceDirectory);$evidence=(Resolve-Path -LiteralPath $EvidenceDirectory).Path
 $terminal=Join-Path $evidence 'w06-packaged-smoke.json'
 $fixtureHash=Get-Sha256 $pdf;$exeHash=Get-Sha256 $exe;$scriptHash=Get-Sha256 $script
@@ -95,6 +113,7 @@ try {
     Add-Event 'native-open-request:fixture-selected' 'owned-startup-request-without-retaining-path'
     Wait-Until { try { Capture-VisualHash 'page-visible'|Out-Null;$true } catch {$false} } $ActionTimeoutMs 'Nonblank reader page timeout'
     Assert-FixtureUnchanged 'open';Assert-ReadOnlyUi;$before=Get-Sample;Assert-Resources $before;Add-Event 'resource:before' 'owned-process-resource-bounded' $before
+    if($W08){Run-W08Scenario}
     Send-ReaderKey 0x57 $false $false 'view:fit-width-default';Assert-ReaderAlive 'fit-width'
     Send-ReaderKey 0xBB $false $false 'view:zoom-in';Assert-ReaderAlive 'zoom-in'
     Send-ReaderKey 0xBD $false $false 'view:zoom-out';Assert-ReaderAlive 'zoom-out'
@@ -116,6 +135,6 @@ finally {
   } catch { $success=$false;$cleanup=$false;$failure=if($null -eq $failure){$_.Exception.Message}else{$failure} }
   if($job -ne [IntPtr]::Zero){try{[void][W06Native]::CloseHandle($job)}catch{$success=$false;$cleanup=$false}}
   $status=if($success -and $cleanup){'passed'}else{'failed'};$safeFailure=if($null -eq $failure){$null}else{'invariant-failed'}
-  Write-AtomicTerminal $terminal ([ordered]@{schemaVersion=1;kind='w06-packaged-windows-smoke';status=$status;dryRun=(-not $Run);bindings=[ordered]@{exeSha256=$exeHash;scriptSha256=$scriptHash;fixtureSha256Before=$fixtureHash;fixtureSha256After=(Get-Sha256 $pdf)};limits=[ordered]@{launchTimeoutMs=$LaunchTimeoutMs;actionTimeoutMs=$ActionTimeoutMs;exitTimeoutMs=$ExitTimeoutMs;maxWorkingSetMiB=$MaxWorkingSetMiB;maxCpuMilliseconds=$MaxCpuMilliseconds};visualHashes=$visualHashes;events=$events;cleanupGuaranteed=$cleanup;failure=$safeFailure})
+  Write-AtomicTerminal $terminal ([ordered]@{schemaVersion=1;kind='w06-packaged-windows-smoke';status=$status;dryRun=(-not $Run);w08Scenario=$W08;bindings=[ordered]@{exeSha256=$exeHash;scriptSha256=$scriptHash;fixtureSha256Before=$fixtureHash;fixtureSha256After=(Get-Sha256 $pdf);w08CommittedLinksFixtureSha256=if($W08){'dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4'}else{$null}};limits=[ordered]@{launchTimeoutMs=$LaunchTimeoutMs;actionTimeoutMs=$ActionTimeoutMs;exitTimeoutMs=$ExitTimeoutMs;maxWorkingSetMiB=$MaxWorkingSetMiB;maxCpuMilliseconds=$MaxCpuMilliseconds};visualHashes=$visualHashes;events=$events;cleanupGuaranteed=$cleanup;failure=$safeFailure})
 }
 if(-not $success -or -not $cleanup){if($null -eq $failure){throw 'W06 packaged smoke failed'};throw $failure}
