@@ -14,7 +14,7 @@ import {
   type PdfViewportAnchor,
   type PdfViewportLanding,
 } from "./PdfViewportAnchor";
-import { printPdfPrototype } from "./PdfPrintPrototype";
+import { printPdfDocument, type PdfPrintProgress } from "./PdfPrintService";
 import { probePdfOutline, type PdfOutlineDocument, type PdfOutlineItem, type PdfOutlineProbeRow } from "./PdfOutlineProbe";
 import { readOutlineTree, type PdfOutlineAdapterDocument } from "./PdfOutlineAdapter";
 import type { RawOutlineNode } from "../domain/outlines/OutlineModel";
@@ -548,7 +548,7 @@ export class PdfReaderController {
     const transform = this.viewTransform;
     const abort = new AbortController();
     const printOwnerships = new Set<Promise<void>>();
-    const operation = printPdfPrototype({
+    const operation = printPdfDocument({
       document: current.document,
       pageCount: current.document.numPages,
       annotationMode: this.options.pdf.annotationMode,
@@ -571,7 +571,15 @@ export class PdfReaderController {
       this.retryQuarantinedCandidate(current);
     });
     try {
-      await operation;
+      const outcome = await operation;
+      if (outcome.kind === "failed") {
+        // A failed print must never be reported as success.
+        if (this.current === current && !this.disposed) this.options.onStatus("Printing failed.");
+        return false;
+      }
+      if (outcome.kind === "cancelled") return false;
+      // State preservation is part of the contract: the reader must be exactly
+      // where it was before the print began.
       return this.current === current
         && !current.closed
         && current.activePageNumber === activePageNumber
