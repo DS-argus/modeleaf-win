@@ -2,12 +2,65 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { generateHintLabels } from "../../src/domain/links/LinkHints";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const source = async (): Promise<string> => readFile(resolve(root, "tools/windows/smoke-w06.ps1"), "utf8");
 const mainSource = async (): Promise<string> => readFile(resolve(root, "src/main.ts"), "utf8");
+const nativeSource = async (): Promise<string> => readFile(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 
 describe("W06 packaged Windows smoke contract", () => {
+  it("projects the committed display annotations to the exact packaged hint labels", async () => {
+    const task = getDocument({ data: new Uint8Array(await readFile(resolve(root, "fixtures/pdf/links.pdf"))) });
+    try {
+      const pdf = await task.promise;
+      const annotations = await (await pdf.getPage(1)).getAnnotations({ intent: "display" });
+      expect(annotations).toHaveLength(6);
+      expect(annotations.map(({ url, unsafeUrl, dest }) => ({ url, unsafeUrl, dest }))).toMatchObject([
+        { url: "https://example.invalid/allowed" },
+        { unsafeUrl: "file:///C:/forbidden" },
+        { dest: expect.any(Array) },
+        { dest: expect.any(Array) },
+        { dest: "unresolved-destination" },
+        { unsafeUrl: expect.stringContaining("foreign.pdf") },
+      ]);
+      const supported = annotations.filter(({ url, dest }) => typeof url === "string" || dest !== undefined);
+      expect(supported).toHaveLength(4);
+      expect(generateHintLabels(supported.length)).toEqual(["f", "j", "d", "k"]);
+    } finally {
+      await task.destroy();
+    }
+  });
+
+  it("keeps W08 as an explicit fail-closed links fixture scenario bound to immutable authority", async () => {
+    const script = await source();
+    const linkHints = await readFile(resolve(root, "src/domain/links/LinkHints.ts"), "utf8");
+    const manifest = await readFile(resolve(root, "fixtures/manifest.json"), "utf8");
+    const porting = await readFile(resolve(root, "docs/windows-porting/feature-spec.md"), "utf8");
+    expect(script).toMatch(/\[switch\]\$W08/);
+    expect(script).toContain("if($W08){Run-W08Scenario}");
+    expect(script).toContain("W08 requires the committed links.pdf fixture");
+    expect(script).toContain("if($W08 -and -not $Run){throw 'W08 requires -Run'}");
+    expect(script).toContain("dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4");
+    expect(manifest).toContain('"name": "links.pdf"');
+    expect(manifest).toContain('"sha256": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4"');
+    expect(porting).toContain("0f7ff0b54c3674c48f6b555261f939397cfbfb88");
+    expect(porting).toContain("PR [#1]");
+    expect(porting).toContain("[#23]");
+    expect(linkHints).toContain("Accepts Shift/Caps ASCII letters");
+    expect(linkHints).toMatch(/input\.altKey \|\| input\.ctrlKey \|\| input\.metaKey \|\| input\.altGraph \|\| input\.isComposing \|\| input\.keyCode === 229/);
+    expect(linkHints).toContain("return query.toLowerCase() + input.key.toLowerCase()");
+    for (const interaction of ["w08:annotation-authority", "w08:hints-open", "w08:hints-visible", "w08:hints-dismiss", "w08:hints-dismissal"]) expect(script).toContain(interaction);
+    expect(script).toContain("exact-four-supported-of-six-display-link-annotations");
+    expect(script).toContain("W08 hint overlay did not change the visible reader");
+    expect(script).toContain("W08 hint dismissal did not change the visible reader");
+    expect(await mainSource()).toContain('invoke<number>("open_external_link"');
+    expect(await nativeSource()).toMatch(/open_external_link[\s\S]*Result<u64, ExternalLinkError>[\s\S]*Ok\(operation_sequence\)/);
+    expect(script).toContain("Capture-VisualHash 'w08-hints-visible'");
+    expect(script).toContain("Capture-VisualHash 'w08-hints-dismissed'");
+    expect(script).toContain("w08CommittedLinksFixtureSha256");
+  });
   it("requires explicit run admission and leaves the default route product-free", async () => {
     const script = await source();
     expect(script).toMatch(/CmdletBinding\(DefaultParameterSetName='DryRun'\)/);
@@ -103,7 +156,7 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toMatch(/\.tmp/);
     expect(script).toMatch(/\[IO\.File\]::Move\(\$temporary,\$Path\)/);
     expect(script).toMatch(/w06-packaged-smoke\.json/);
-    expect(script).toMatch(/status=\$status;dryRun=\(-not \$Run\);bindings=/);
+    expect(script).toMatch(/status=\$status;dryRun=\(-not \$Run\);w08Scenario=\$W08;bindings=/);
     expect(script).not.toMatch(/\.png|Copy\(\$pdf|Set-Content/);
   });
 });

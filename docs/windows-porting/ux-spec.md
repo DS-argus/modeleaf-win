@@ -256,7 +256,7 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 - PDF surface 위 transparent overlay다.
 - visible annotation links만 labels를 갖는다.
 - lower-case ASCII label을 사용하고 matching prefix는 강조, non-match는 dim한다.
-- modifier, IME composition, dead key는 label 입력으로 받지 않는다.
+- plain/Shift/Caps ASCII letter는 lowercase label 입력으로 normalize한다. Ctrl/Alt/Meta/AltGraph, IME/composition, keyCode 229, dead/process/unidentified, non-letter input은 받지 않는다.
 - exact duplicate가 아닌 rectangles는 겹쳐 보여도 별도 labels다.
 - scroll/wheel/pinch/zoom/rotate/resize/divider drag/tab/pane switch에서 dismiss한다.
 - destination indicator는 successful point GoTo에만 보이고 timeout 후 사라진다.
