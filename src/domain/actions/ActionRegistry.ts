@@ -16,7 +16,6 @@ export const ACTION_IDS = Object.freeze([
   "prompt.commit", "prompt.cancel", "search.prompt", "search.next", "search.previous", "search.cancel",
   "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
   "config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "indicator.picker", "update.show",
-  "pane.splitRight", "pane.splitDown", "pane.focusLeft", "pane.focusDown", "pane.focusUp", "pane.focusRight", "pane.unsplit",
 ] as const);
 
 export type ActionId = (typeof ACTION_IDS)[number];
@@ -117,13 +116,6 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("indicator.picker", "Link indicator settings", contexts(READER_CONTEXTS)),
   descriptor("update.show", "View Available Update", contexts(READER_CONTEXTS)),
 
-  descriptor("pane.splitRight", "Split Right", contexts(READER_CONTEXTS)),
-  descriptor("pane.splitDown", "Split Down", contexts(READER_CONTEXTS)),
-  descriptor("pane.focusLeft", "Focus Left Pane", contexts(READER_CONTEXTS)),
-  descriptor("pane.focusDown", "Focus Down Pane", contexts(READER_CONTEXTS)),
-  descriptor("pane.focusUp", "Focus Up Pane", contexts(READER_CONTEXTS)),
-  descriptor("pane.focusRight", "Focus Right Pane", contexts(READER_CONTEXTS)),
-  descriptor("pane.unsplit", "Close Other Pane", contexts(READER_CONTEXTS)),
 ]);
 
 const DESCRIPTOR_BY_ID: ReadonlyMap<ActionId, ActionDescriptor> = new Map(
@@ -155,7 +147,6 @@ export interface ActionRuntimeContext {
   readonly canCreateSession: boolean;
   readonly canCreateWindow: boolean;
   readonly tabCount: number;
-  readonly paneCount: number;
   readonly modalOpen: boolean;
   readonly updateAvailable: boolean;
   readonly configExists: boolean;
@@ -178,7 +169,6 @@ const DOCUMENT_ACTIONS = new Set<ActionId>([
   ...ACTION_IDS.filter((id) => id.startsWith("page.")),
   "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel",
   ...ACTION_IDS.filter((id) => id.startsWith("view.")), "link.hint", "indicator.picker",
-  ...ACTION_IDS.filter((id) => id.startsWith("pane.")),
 ]);
 
 /** Runtime availability used by menu/palette/help projections; input-context routing is checked separately. */
@@ -197,8 +187,6 @@ export function getActionRuntimeAvailability(id: ActionId, state: ActionRuntimeC
   const tabMatch = /^tab\.select\.(\d)$/u.exec(id);
   if (tabMatch !== null && Number(tabMatch[1]) > state.tabCount) return { enabled: false, reason: "Tab not open" };
   if ((id === "tab.next" || id === "tab.previous") && state.tabCount < 2) return { enabled: false, reason: "Only one tab open" };
-  if ((id === "pane.splitRight" || id === "pane.splitDown") && state.paneCount >= 4) return { enabled: false, reason: "Maximum panes open" };
-  if ((id.startsWith("pane.focus") || id === "pane.unsplit") && state.paneCount < 2) return { enabled: false, reason: "Only one pane open" };
   if (id === "config.writeDefault" && state.configExists) return { enabled: false, reason: "Config already exists" };
   if (id === "config.resetDefault" && !state.configExists) return { enabled: false, reason: "No config to reset" };
   if ((id === "search.next" || id === "search.previous" || id === "search.cancel") && !state.searchActive) return { enabled: false, reason: "No active search" };

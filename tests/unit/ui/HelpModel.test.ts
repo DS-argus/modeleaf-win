@@ -4,7 +4,7 @@ import { buildHelpRows } from "../../../src/ui/HelpModel";
 
 const unavailableContext: ActionRuntimeContext = {
   hasDocument: false, canCreateSession: false, canOpenDocument: false, canCreateWindow: false,
-  tabCount: 1, paneCount: 1, modalOpen: true, updateAvailable: false, configExists: false,
+  tabCount: 1, modalOpen: true, updateAvailable: false, configExists: false,
   searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0,
 };
 

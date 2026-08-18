@@ -11,7 +11,6 @@ const raw: Record<ActionId, readonly string[]> = {
   "search.prompt":["/"], "search.next":["<Enter>"], "search.previous":["<S-Enter>"], "search.cancel":["<Esc>"],
   "view.zoomIn":["="], "view.zoomOut":["-"], "view.zoomReset":[], "view.fitWidth":["w"], "view.fitPage":["F"], "view.rotateLeft":["["], "view.rotateRight":["]"],
   "link.hint":["f"], "config.reload":["<prefix>r"], "config.writeDefault":[], "config.resetDefault":[], "theme.picker":["T"], "indicator.picker":["I"], "update.show":["U"],
-  "pane.splitRight":["<prefix>|"], "pane.splitDown":["<prefix>-"], "pane.focusLeft":["<C-h>"], "pane.focusDown":["<C-j>"], "pane.focusUp":["<C-k>"], "pane.focusRight":["<C-l>"], "pane.unsplit":["<prefix>o"],
 };
 
 export const DEFAULT_BINDINGS: Readonly<Record<ActionId, readonly string[]>> = Object.freeze(
