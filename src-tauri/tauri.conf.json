@@ -30,7 +30,39 @@
     }
   },
   "bundle": {
-    "active": false,
-    "targets": "nsis"
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "DS-argus",
+    "copyright": "Copyright (c) 2026 DS-argus",
+    "category": "Productivity",
+    "shortDescription": "Keyboard-first read-only PDF reader",
+    "longDescription": "Modeleaf is a keyboard-first, read-only PDF reader for Windows. It never modifies source PDFs.",
+    "fileAssociations": [
+      {
+        "ext": [
+          "pdf"
+        ],
+        "name": "PDF Document",
+        "description": "Portable Document Format",
+        "mimeType": "application/pdf",
+        "role": "Viewer"
+      }
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "startMenuFolder": "Modeleaf"
+      }
+    }
   }
 }
