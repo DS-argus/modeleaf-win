@@ -464,3 +464,67 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
 @keyframes destination-indicator-pulse { from { opacity: 1; transform: scale(.36); } to { opacity: 0; transform: scale(1); } }
 @keyframes destination-indicator-beacon { from { opacity: 1; transform: scale(.28); } to { opacity: 0; transform: scale(1); } }
 @keyframes destination-indicator-diamond { from { opacity: 1; transform: rotate(45deg) scale(.36); } to { opacity: 0; transform: rotate(45deg) scale(1); } }
+
+/* Floating TOC overlay. Absolutely positioned so it never resizes the PDF canvas. */
+.toc-widget {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--theme-statusline);
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  font-size: 12px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 35%);
+}
+.toc-widget[hidden] { display: none; }
+.toc-widget-list { flex: 1 1 auto; overflow: hidden; }
+.toc-widget-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--theme-border);
+}
+.toc-widget-row[data-current="true"] { background: var(--theme-active-tab); }
+.toc-widget-selector {
+  flex: 0 0 auto;
+  min-width: 18px;
+  text-align: right;
+  /* foreground, not muted-text: muted fails the 4.0 contrast bar in
+     Solarized Dark, Dracula, and Catppuccin Latte. */
+  color: var(--theme-foreground);
+  font-variant-numeric: tabular-nums;
+}
+.toc-widget-title {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: none;
+  border: 0;
+  color: var(--theme-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.toc-widget-title:disabled { color: var(--theme-muted-text); cursor: default; }
+.toc-widget-footer {
+  flex: 0 0 auto;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 6px;
+  color: var(--theme-accent);
+  font-variant-numeric: tabular-nums;
+}
+.toc-widget-empty { margin: 0; padding: 6px; color: var(--theme-muted-text); }
+
+@media (forced-colors: active) {
+  .toc-widget { border-color: CanvasText; }
+  .toc-widget-row[data-current="true"] { background: Highlight; }
+  .toc-widget-title { color: CanvasText; }
+  .toc-widget-title:disabled { color: GrayText; }
+}

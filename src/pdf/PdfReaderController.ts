@@ -16,6 +16,8 @@ import {
 } from "./PdfViewportAnchor";
 import { printPdfPrototype } from "./PdfPrintPrototype";
 import { probePdfOutline, type PdfOutlineDocument, type PdfOutlineItem, type PdfOutlineProbeRow } from "./PdfOutlineProbe";
+import { readOutlineTree, type PdfOutlineAdapterDocument } from "./PdfOutlineAdapter";
+import type { RawOutlineNode } from "../domain/outlines/OutlineModel";
 import {
   checkedCanvasBytes,
   RESOURCE_LIMITS,
@@ -653,6 +655,19 @@ export class PdfReaderController {
     return Object.freeze([...(this.current?.residentRasters.keys() ?? [])].sort((a, b) => a - b));
   }
   /** Bounded immutable adapter for downstream outline presentation; this method creates no UI. */
+  /**
+   * Reads the embedded outline as pure-domain nodes.
+   *
+   * Returns an empty tree when the document has no outline; an outline is
+   * never generated or inferred.
+   */
+  public async readOutlineTreeNodes(): Promise<readonly RawOutlineNode[]> {
+    const current = this.current;
+    const document = current?.document;
+    if (current === undefined || document === undefined || this.disposed) return [];
+    if (typeof document.getOutline !== "function" || typeof document.getPageIndex !== "function") return [];
+    return readOutlineTree(document as unknown as PdfOutlineAdapterDocument);
+  }
   public async readOutlineDestinations(): Promise<readonly PdfOutlineProbeRow[]> {
     const current = this.current;
     const document = current?.document;
