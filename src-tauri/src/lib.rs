@@ -906,12 +906,13 @@ async fn open_external_link(
     window: Window,
     state: State<'_, PdfSessionManager>,
     request: ExternalLinkActivationRequest,
-) -> Result<(), ExternalLinkError> {
+) -> Result<u64, ExternalLinkError> {
     let session_id = SessionId::from_opaque(request.session_id)
         .map_err(|_| ExternalLinkError::SessionNotFound)?;
     let owner = command_owner(&window, request.owner_generation);
     let manager = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let operation_sequence = request.operation_sequence;
         manager.activate_external_link_with_operation(
             &owner,
             &session_id,
@@ -920,10 +921,11 @@ async fn open_external_link(
                 request.registry_revision,
                 &request.annotation_id,
                 &request.operation_id,
-                request.operation_sequence,
+                operation_sequence,
             ),
             launch_external_link,
-        )
+        )?;
+        Ok(operation_sequence)
     })
     .await
     .map_err(|_| ExternalLinkError::LinkLaunchFailed)?

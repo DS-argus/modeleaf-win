@@ -71,7 +71,7 @@ const setup = (
   host.append(canvas);
   const statuses: string[] = [];
   const navigateToPage = vi.fn();
-  const openExternal = vi.fn((): Promise<void> => Promise.resolve());
+  const openExternal = vi.fn<PdfContentControllerOptions["openExternal"]>(async (_annotationId, _registryRevision, _operationId, operationSequence) => operationSequence);
   const prepareExternalLinks = vi.fn(async () => undefined);
   const commitExternalLinks = vi.fn(async () => undefined);
   const finalizeExternalLinks = vi.fn(async () => undefined);
@@ -120,6 +120,38 @@ const viewport = {
 };
 
 describe("PdfContentController", () => {
+  it("requests display annotations from the PDF.js boundary", async () => {
+    const getAnnotations = vi.fn(async () => [] as const);
+    const rendered: PdfContentPage = {
+      getTextContent: async () => ({ items: [{ str: "visible" }] }),
+      getAnnotations,
+    };
+    const subject = setup([rendered]);
+
+    await subject.controller.renderPage({ pageNumber: 1, page: rendered, viewport, canvas: subject.canvas });
+
+    expect(getAnnotations).toHaveBeenCalledWith({ intent: "display" });
+  });
+  it("publishes and reuses a bounded label set for 256 visible links", async () => {
+    const links = Array.from({ length: 256 }, (_, index): PdfContentAnnotation => ({
+      subtype: "Link",
+      rect: [index, index, index + 1, index + 1],
+      url: `https://example.test/${index}`,
+    }));
+    const subject = setup([page("links", links)]);
+
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    subject.controller.toggleHints();
+    const labels = [...subject.host.querySelectorAll<HTMLElement>("[data-hint-label]")].map((element) => element.dataset.hintLabel!);
+
+    expect(labels).toHaveLength(256);
+    expect(new Set(labels).size).toBe(256);
+    expect(labels.every((label) => label.length === 2)).toBe(true);
+    expect(subject.controller.handleHintKey(labels[255]![0]!)).toBe(true);
+    expect(subject.openExternal).not.toHaveBeenCalled();
+    expect(subject.controller.handleHintKey(labels[255]![1]!)).toBe(true);
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-255", 1, expect.any(String), expect.any(Number));
+  });
   it("searches Korean literal text with trimmed case-insensitive cycling and highlights the rendered page", async () => {
     const subject = setup([page("첫 한국어 MATCH"), page("한국어 match")]);
     const originalGetClientRects = Range.prototype.getClientRects;
@@ -549,17 +581,41 @@ describe("PdfContentController", () => {
     overlay.click();
     await Promise.resolve();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
+    await vi.waitFor(() => expect(subject.statuses).toContain("PDF link opened (dispatch 1)."));
+    expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 1");
+  });
+  it.each([undefined, 2] as const)("fails closed for an invalid native dispatch receipt %s", async (receipt) => {
+    const subject = setup([page("link", [{ subtype: "Link", rect: [10, 10, 40, 24], url: "https://example.test/receipt" }])]);
+    subject.openExternal.mockResolvedValueOnce(receipt as never);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!.click();
+    await vi.waitFor(() => expect(subject.statuses).toContain("PDF link dispatch receipt was invalid."));
+    expect(subject.statuses.some((status) => status.startsWith("PDF link opened"))).toBe(false);
+  });
+  it("keeps a newer external success when an older activation rejects late", async () => {
+    let rejectFirst!: (reason: Error) => void;
+    const subject = setup([page("link", [{ subtype: "Link", rect: [10, 10, 40, 24], url: "https://example.test/race" }])]);
+    subject.openExternal
+      .mockImplementationOnce(() => new Promise<number>((_resolve, reject) => { rejectFirst = reject; }))
+      .mockResolvedValueOnce(2);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    overlay.click();
+    overlay.click();
+    await vi.waitFor(() => expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 2"));
+    rejectFirst(new Error("late failure"));
+    await Promise.resolve();
+    expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 2");
+    expect(subject.statuses).not.toContain("PDF link could not be opened.");
   });
   it("blocks published link clicks while content interactions are suspended", async () => {
     const subject = setup([page("link", [{ subtype: "Link", rect: [10, 20, 30, 40], url: "https://example.test" }])]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
-
     subject.controller.suspend();
     overlay.click();
     await Promise.resolve();
     expect(subject.openExternal).not.toHaveBeenCalled();
-
     subject.controller.resumeInteractions();
     overlay.click();
     await Promise.resolve();
@@ -788,9 +844,9 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector(".pdf-content-layer")?.textContent).toContain("old");
   });
   it("retains pending external activation settlement through teardown", async () => {
-    let resolveOpen!: () => void;
+    let resolveOpen!: (value: number) => void;
     const subject = setup([page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test" }])]);
-    subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
+    subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
     await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledOnce());
@@ -798,24 +854,24 @@ describe("PdfContentController", () => {
     const teardown = subject.controller.unmount().then(() => { settled = true; });
     await Promise.resolve();
     expect(settled).toBe(false);
-    resolveOpen();
+    resolveOpen(1);
     await teardown;
     expect(settled).toBe(true);
   });
   it("publishes the aggregate resident external-link registry after prior activation settles", async () => {
-    let resolveOpen!: () => void;
+    let resolveOpen!: (value: number) => void;
     const subject = setup([
       page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
       page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
     ]);
-    subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
+    subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
     await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledOnce());
     const replacement = subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
     await Promise.resolve();
     expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(1);
-    resolveOpen();
+    resolveOpen(1);
     await replacement;
     expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
       { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/old" },
@@ -883,13 +939,13 @@ describe("PdfContentController", () => {
   it("retains resident registry entries after a timed-out pre-prepare activation", async () => {
     vi.useFakeTimers();
     try {
-      let resolveOpen!: () => void;
+      let resolveOpen!: (value: number) => void;
       const subject = setup([
         page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
         page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
       ]);
       await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-      subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
+      subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
       subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
       await vi.advanceTimersByTimeAsync(0);
       const timedOut = subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
@@ -898,7 +954,7 @@ describe("PdfContentController", () => {
       await failure;
       expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(1);
       expect(subject.abortExternalLinks).not.toHaveBeenCalledWith(2);
-      resolveOpen();
+      resolveOpen(1);
       await Promise.resolve();
       await expect(subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas })).resolves.toBeUndefined();
       expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
@@ -910,14 +966,14 @@ describe("PdfContentController", () => {
     }
   });
   it("releases a staged-before-close registry without quarantining a revision that never prepared", async () => {
-    let resolveOpen!: () => void;
+    let resolveOpen!: (value: number) => void;
     const subject = setup([
       page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
       page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
     ]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     await vi.waitFor(() => expect(subject.finalizeExternalLinks).toHaveBeenCalledWith(1));
-    subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
+    subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
     subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
     await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledOnce());
     const activationSettlement = [...(subject.controller as unknown as { linkActivationSettlements: Set<Promise<void>> }).linkActivationSettlements][0]!;
@@ -930,7 +986,7 @@ describe("PdfContentController", () => {
     await vi.waitFor(() => expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(RESOURCE_LIMITS.maxTextPageBytes * 2));
 
     const unmounting = subject.controller.unmount();
-    resolveOpen();
+    resolveOpen(1);
     await expect(unmounting).resolves.toBeUndefined();
     await replacement;
     expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(1);
@@ -947,7 +1003,7 @@ describe("PdfContentController", () => {
   });
   it("settles an old-overlay activation started during replacement preparation before finalization", async () => {
     let releasePreparation!: () => void;
-    let resolveOpen!: () => void;
+    let resolveOpen!: (value: number) => void;
     const subject = setup([
       page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/old" }]),
       page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
@@ -955,7 +1011,7 @@ describe("PdfContentController", () => {
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     const oldLink = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay");
     subject.prepareExternalLinks.mockImplementationOnce(() => new Promise<undefined>((resolve) => { releasePreparation = () => resolve(undefined); }));
-    subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
+    subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
 
     const replacement = subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
     await vi.waitFor(() => expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(2));
@@ -967,7 +1023,7 @@ describe("PdfContentController", () => {
     await vi.waitFor(() => expect(subject.host.querySelector(".pdf-content-layer")?.textContent).toContain("new"));
     expect(subject.finalizeExternalLinks).not.toHaveBeenCalledWith(2);
 
-    resolveOpen();
+    resolveOpen(1);
     await replacement;
     await vi.waitFor(() => expect(subject.finalizeExternalLinks).toHaveBeenCalledWith(2));
     expect(subject.statuses).not.toContain("STALE_REGISTRATION");
@@ -998,9 +1054,9 @@ describe("PdfContentController", () => {
   it("classifies the frontend activation deadline as outcome-unknown while retaining raw ownership", async () => {
     vi.useFakeTimers();
     try {
-      let resolveOpen!: () => void;
+      let resolveOpen!: (value: number) => void;
       const subject = setup([page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test" }])]);
-      subject.openExternal.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveOpen = resolve; }));
+      subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
       await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
       subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
       await vi.advanceTimersByTimeAsync(10_001);
@@ -1010,7 +1066,7 @@ describe("PdfContentController", () => {
       const teardown = subject.controller.unmount().then(() => { unmounted = true; });
       await Promise.resolve();
       expect(unmounted).toBe(false);
-      resolveOpen();
+      resolveOpen(1);
       await teardown;
     } finally {
       vi.useRealTimers();

@@ -335,7 +335,7 @@ export class PdfTabSession {
       }
       if (committed && guard() && this.reader.snapshot.documentGeneration === documentGeneration) {
         this.content?.activateResidentPage(this.reader.snapshot.page);
-        (this.content as Partial<PdfContentController> | undefined)?.activateVisiblePages?.(this.pdfReader.visiblePageNumbers);
+        this.content?.activateVisiblePages(this.pdfReader.visiblePageNumbers);
       }
       if (!committed && !guard()) this.presentationDirty = true;
       return committed;
@@ -412,7 +412,7 @@ export class PdfTabSession {
     if (this.closed || !this.isForegroundActive()) return;
     if (action.type.startsWith("page.") || action.type.startsWith("view.") || action.type.startsWith("scroll.")) {
       this.supersedeNavigation();
-      (this.content as Partial<PdfContentController> | undefined)?.dismissLinkDecorations?.();
+      this.content?.dismissLinkDecorations();
       const snapshot = this.lastCommittedRender;
       if (snapshot !== undefined && snapshot.documentGeneration === this.reader.snapshot.documentGeneration) {
         const intent = ++this.renderIntent;
@@ -438,7 +438,7 @@ export class PdfTabSession {
   public get visibleLinkCount(): number { return this.content?.snapshot.visibleLinkCount ?? 0; }
   public get indicatorPublicationPending(): boolean { return this.content?.indicatorPublicationPending ?? false; }
   public get linkDecorationsVisible(): boolean { return this.content?.linkDecorationsVisible ?? false; }
-  public clearVisibleLinkAuthority(): void { (this.content as Partial<PdfContentController> | undefined)?.clearVisibleLinkAuthority?.(); }
+  public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
   public dismissLinkDecorations(): void { if (!this.closed && this.isForegroundActive()) this.content?.dismissLinkDecorations(); }
   public async renderCurrentView(): Promise<boolean> {
     const rendered = await this.renderPage(this.reader.snapshot.page);
@@ -792,7 +792,7 @@ export class PdfTabSession {
     this.reader.apply({ type: "page.goTo", page });
     this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: transform.scale, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
     this.content?.activateResidentPage(page);
-    (this.content as Partial<PdfContentController> | undefined)?.activateVisiblePages?.(this.pdfReader.visiblePageNumbers);
+    this.content?.activateVisiblePages(this.pdfReader.visiblePageNumbers);
     if (this.isForegroundActive() && this.activationGeneration === undefined) this.content?.resumeInteractions();
     const committed = this.reader.snapshot;
     this.lastCommittedRender = {

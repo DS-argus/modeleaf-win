@@ -35,6 +35,9 @@ type SessionInternals = {
     cancelDestination: (intentId?: number) => void;
     synchronizeResidentPages: (pages: readonly number[]) => Promise<void>;
     activateResidentPage: (page: number) => boolean;
+    activateVisiblePages: (pages: readonly number[]) => number;
+    clearVisibleLinkAuthority: () => void;
+    dismissLinkDecorations: () => void;
   };
   pdfReader: {
     evictInactiveCanvas: () => boolean;
@@ -73,6 +76,9 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     takeDestinationLanding: vi.fn<(intentId: number) => { pageIndex: number; x: number; y: number } | undefined>(() => undefined),
     synchronizeResidentPages: vi.fn(async () => undefined),
     activateResidentPage: vi.fn(() => true),
+    activateVisiblePages: vi.fn(() => 0),
+    clearVisibleLinkAuthority: vi.fn(),
+    dismissLinkDecorations: vi.fn(),
   };
   (session as unknown as SessionInternals).content = content;
   return content;
@@ -93,6 +99,25 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(reader.getPageTopLanding).toHaveBeenCalledWith(2, expect.objectContaining({ rotation: 0 }), expect.any(Function));
     expect(restore.mock.calls[0]?.[0]).toEqual({ pageIndex: 1, x: 10, y: 90 });
     expect(restore.mock.calls[0]?.[3]).toBe("page-top");
+  });
+  it("uses concrete content synchronization and dismissal methods during navigation", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(3);
+    await session.activate();
+    Object.defineProperty(internals.pdfReader, "visiblePageNumbers", { configurable: true, get: () => [1, 2] });
+
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    expect(content.activateResidentPage).toHaveBeenLastCalledWith(1);
+    expect(content.activateVisiblePages).toHaveBeenLastCalledWith([1, 2]);
+
+    session.apply({ type: "page.next" });
+    expect(content.dismissLinkDecorations).toHaveBeenCalledOnce();
+    session.clearVisibleLinkAuthority();
+    expect(content.clearVisibleLinkAuthority).toHaveBeenCalledOnce();
   });
   it("commits verified history, traverses directionally, and preserves stacks on compensated failure", async () => {
     const session = createSession();
