@@ -538,6 +538,42 @@ impl SecondInstanceIngress {
         )
     }
 }
+/// Chooses which window label should receive shell-opened paths.
+///
+/// Prefers the focused window so a second launch lands where the user is
+/// looking. Otherwise falls back to the lowest label in sorted order, which is
+/// stable and independent of `HashMap` iteration order. Returns `None` only
+/// when no window is live, which leaves paths queued for a later window rather
+/// than dropping them.
+fn select_shell_open_label<'a>(windows: &[(&'a str, bool)]) -> Option<&'a str> {
+    let mut labels = windows.iter().map(|(label, _)| *label).collect::<Vec<_>>();
+    labels.sort_unstable();
+    for label in &labels {
+        if windows
+            .iter()
+            .any(|(candidate, focused)| candidate == label && *focused)
+        {
+            return Some(label);
+        }
+    }
+    labels.first().copied()
+}
+
+/// Resolves the live window that should receive shell-opened paths.
+///
+/// The initial `main` window may already be closed while other reader windows
+/// remain open, so this must never assume a fixed label.
+fn resolve_shell_open_target<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<tauri::WebviewWindow<R>> {
+    let windows = app.webview_windows();
+    let focus = windows
+        .iter()
+        .map(|(label, window)| (label.as_str(), window.is_focused().unwrap_or(false)))
+        .collect::<Vec<_>>();
+    let selected = select_shell_open_label(&focus)?.to_owned();
+    windows.get(&selected).cloned()
+}
 
 fn enqueue_second_instance(ingress: &SecondInstanceIngress, argv: Vec<String>, cwd: &str) {
     ingress.enqueue_paths(resolve_second_instance_paths(
@@ -1039,7 +1075,7 @@ pub fn run() {
             }
             let ingress = app.state::<SecondInstanceIngress>();
             enqueue_second_instance(&ingress, argv, &cwd);
-            if let Some(window) = app.get_webview_window("main") {
+            if let Some(window) = resolve_shell_open_target(app) {
                 let workspace = app.state::<WorkspaceManager>();
                 let _ = workspace.claim_window(window.label());
                 drain_second_instance_ingress(
@@ -1218,8 +1254,8 @@ pub fn run() {
         });
 }
 #[cfg(test)]
-mod window_close_tests {
-    use super::WindowCloseCoordinator;
+mod window_lifecycle_tests {
+    use super::{select_shell_open_label, WindowCloseCoordinator};
 
     #[test]
     fn close_requests_are_replayed_and_acknowledged_per_window() {
@@ -1245,5 +1281,32 @@ mod window_close_tests {
         assert!(!coordinator.acknowledge("right", Some(left_request)));
         assert!(coordinator.acknowledge("right", Some(right_request)));
         assert!(coordinator.claim_timeout("left", left_request));
+    }
+
+    #[test]
+    fn shell_open_prefers_the_focused_window_over_label_order() {
+        let windows = [("main", false), ("reader-00ff", true)];
+        assert_eq!(select_shell_open_label(&windows), Some("reader-00ff"));
+    }
+
+    #[test]
+    fn shell_open_falls_back_to_a_live_window_when_main_is_closed() {
+        let windows = [("reader-00ff", false), ("reader-00aa", false)];
+        assert_eq!(select_shell_open_label(&windows), Some("reader-00aa"));
+    }
+
+    #[test]
+    fn shell_open_selection_is_stable_regardless_of_input_order() {
+        let ascending = [("reader-00aa", false), ("reader-00ff", false)];
+        let descending = [("reader-00ff", false), ("reader-00aa", false)];
+        assert_eq!(
+            select_shell_open_label(&ascending),
+            select_shell_open_label(&descending)
+        );
+    }
+
+    #[test]
+    fn shell_open_has_no_target_when_no_window_is_live() {
+        assert_eq!(select_shell_open_label(&[]), None);
     }
 }
