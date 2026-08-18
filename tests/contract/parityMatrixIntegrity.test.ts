@@ -67,7 +67,10 @@ describe("parity matrix integrity", () => {
     for (const phase of ["W13"] as const) {
       const row = matrix.split("\n").find((line) => line.startsWith(`| ${phase} |`));
       expect(row, `${phase} phase row missing`).toBeDefined();
-      expect(row).not.toContain("`parity`");
+      // Only the status column counts. Prose may legitimately mention parity,
+      // for example to explain why a phase has not reached it.
+      const status = row!.split("|")[2]?.trim();
+      expect(status, `${phase} status column`).not.toBe("`parity`");
     }
   });
 
