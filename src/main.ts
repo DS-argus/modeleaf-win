@@ -31,7 +31,10 @@ import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSessio
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 import { DEFAULT_INDICATOR_SETTINGS, type IndicatorSettings } from "./domain/links/IndicatorSettings";
-import { readIndicatorState } from "./platform/tauri-commands";
+import { commitIndicatorPicker, indicatorPickerDialogKeyAction, INDICATOR_PICKER_ROWS, openIndicatorPicker, previewIndicatorPickerRow, revertIndicatorPicker, revertIndicatorPickerToDurable, CLOSED_INDICATOR_PICKER, type IndicatorPickerModel, type IndicatorPickerOpenModel } from "./ui/IndicatorPickerModel";
+import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
+import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
+import { commitIndicatorState, readIndicatorState, readProductConfig } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
@@ -46,6 +49,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "toc.toggle", "toc.scrollDown", "toc.scrollUp",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
   "config.writeDefault", "config.resetDefault", "theme.picker",
+  "config.reload", "indicator.picker", "update.show",
   "history.back", "history.forward",
 ]);
 function isNativeCompositionEvent(event: KeyboardEvent): boolean {
@@ -648,6 +652,84 @@ async function activateOutlineRow(session: PdfTabSession, row: OutlineRow): Prom
   render();
 }
 
+let indicatorPicker: IndicatorPickerModel = CLOSED_INDICATOR_PICKER;
+let updateNotice: UpdateNoticeState = HIDDEN_UPDATE_NOTICE;
+const RELEASE_REPOSITORY = "DS-argus/modeleaf-win";
+
+/**
+ * Reloads config.toml and reports the outcome truthfully.
+ *
+ * A rejected or unreadable file leaves the live configuration untouched, so a
+ * broken edit can never degrade the running app to defaults.
+ */
+async function reloadConfiguration(): Promise<ConfigReloadOutcome> {
+  let outcome: ConfigReloadOutcome;
+  try {
+    const raw = await readProductConfig(invoke);
+    const validated = validateProductConfig(raw ?? {});
+    outcome = validated.ok
+      ? { kind: "applied", config: validated.value }
+      : { kind: "rejected", rows: projectConfigDiagnostics(validated.diagnostics) };
+  } catch {
+    outcome = { kind: "unavailable", rows: [] };
+  }
+  active().session.reader.setStatus(summarizeConfigReload(outcome));
+  render();
+  return outcome;
+}
+
+/** Opens the five-style indicator picker as a preview transaction. */
+function openIndicatorPickerDialog(): void {
+  try {
+    indicatorPicker = openIndicatorPicker(indicatorSettings);
+  } catch {
+    // Corrupt durable settings cannot seed a transaction; fall back to defaults.
+    indicatorPicker = openIndicatorPicker(DEFAULT_INDICATOR_SETTINGS);
+  }
+  render();
+}
+
+/** Commits the previewed indicator settings, reverting to durable state on failure. */
+async function commitIndicatorPickerDialog(): Promise<void> {
+  if (indicatorPicker.status !== "open") return;
+  const { intent } = commitIndicatorPicker(indicatorPicker);
+  const previous = indicatorPicker.transaction.baseline;
+  indicatorPicker = CLOSED_INDICATOR_PICKER;
+  try {
+    await commitIndicatorState(invoke, intent.settings);
+    indicatorSettings = intent.settings;
+  } catch {
+    // A failed durable write must never be reported as success.
+    indicatorSettings = previous;
+    active().session.reader.setStatus("Could not save the link indicator setting.");
+  }
+  render();
+}
+
+/** Closes the indicator picker and restores the settings captured on open. */
+function revertIndicatorPickerDialog(): void {
+  if (indicatorPicker.status !== "open") return;
+  const { effect } = revertIndicatorPicker(indicatorPicker);
+  indicatorPicker = CLOSED_INDICATOR_PICKER;
+  indicatorSettings = effect.settings;
+  render();
+}
+
+/** Opens the release page for an available update. Notify-only: never installs. */
+async function showUpdateNotice(): Promise<void> {
+  const url = releasePageUrl(updateNotice, RELEASE_REPOSITORY);
+  if (url === undefined) {
+    active().session.reader.setStatus("No update is available.");
+    render();
+    return;
+  }
+  try {
+    await invoke<void>("open_external_link", { url });
+  } catch {
+    active().session.reader.setStatus("Could not open the release page.");
+  }
+  render();
+}
 function render(): void {
   const current = active();
   renderToc();
@@ -980,6 +1062,7 @@ function dispatchActionId(id: ActionId): void {
     "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.actualSize" },
     "view.fitWidth": { type: "view.fitWidth" }, "view.fitPage": { type: "view.fitPage" }, "view.rotateLeft": { type: "view.rotate", quarterTurns: -1 }, "view.rotateRight": { type: "view.rotate", quarterTurns: 1 },
     "link.hint": { type: "linkHints.toggle" }, "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
+    "config.reload": { type: "config.reload" }, "indicator.picker": { type: "indicator.open" }, "update.show": { type: "update.show" },
   };
   if (id === "page.prompt") {
     pagePromptDigits = "";
@@ -1049,6 +1132,9 @@ function dispatch(action: Action): void {
   if (type === "page.first") { void active().session.navigateFirstPage().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   if (type === "page.last") { void active().session.navigateLastPage().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   if (type === "theme.open") { openThemePicker(); return; }
+  if (type === "config.reload") { void reloadConfiguration(); return; }
+  if (type === "indicator.open") { openIndicatorPickerDialog(); return; }
+  if (type === "update.show") { void showUpdateNotice(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
   if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
