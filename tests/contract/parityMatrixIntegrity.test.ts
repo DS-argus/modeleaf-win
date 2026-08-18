@@ -61,10 +61,10 @@ describe("parity matrix integrity", () => {
   });
 
   it("does not claim parity for phases that are still unfinished", () => {
-    // W12 has only the W02 feasibility prototype; W13 has only SemanticVersion.
+    // W13 has only SemanticVersion and no installer or release tooling.
     // This list is a ratchet: a phase leaves it only when its gate actually
     // merges, which forces every parity claim to be a deliberate edit here.
-    for (const phase of ["W12", "W13"] as const) {
+    for (const phase of ["W13"] as const) {
       const row = matrix.split("\n").find((line) => line.startsWith(`| ${phase} |`));
       expect(row, `${phase} phase row missing`).toBeDefined();
       expect(row).not.toContain("`parity`");
