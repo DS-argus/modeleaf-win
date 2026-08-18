@@ -19,6 +19,9 @@ export type Action =
   | { readonly type: "view.rotate"; readonly quarterTurns: 1 | -1 }
   | { readonly type: "application.new" }
   | { readonly type: "palette.toggle" }
+  | { readonly type: "toc.toggle" }
+  | { readonly type: "toc.scrollDown" }
+  | { readonly type: "toc.scrollUp" }
   | { readonly type: "tab.close" }
   | { readonly type: "tab.activate"; readonly index: number }
   | { readonly type: "tab.next" }

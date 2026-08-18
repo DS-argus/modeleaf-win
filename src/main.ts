@@ -21,6 +21,10 @@ import { CLOSED_THEME_PICKER, THEME_PICKER_ROWS, commitThemePicker, openThemePic
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
+import { TocController } from "./ui/reader/TocController";
+import { TocWidgetView } from "./ui/reader/TocWidgetView";
+import { normalizeOutline, type OutlineRow } from "./domain/outlines/OutlineModel";
+import { readOutlineTree, type PdfOutlineAdapterDocument } from "./pdf/PdfOutlineAdapter";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
@@ -39,6 +43,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
+  "toc.toggle", "toc.scrollDown", "toc.scrollUp",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
   "config.writeDefault", "config.resetDefault", "theme.picker",
   "history.back", "history.forward",
@@ -142,6 +147,7 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
   }
 }
 function claimOverlay(id: OverlayId): void {
+  active().toc.cancelPending();
   active().session.dismissLinkDecorations();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
   const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
@@ -303,7 +309,7 @@ const native = {
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
 };
 
-type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly disposeUi: () => void };
+type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly toc: TocController; readonly tocView: TocWidgetView; readonly disposeUi: () => void };
 let workspace!: TabWorkspace<TabPayload>;
 const resources = new ResourceReservationManager((needed) => {
   if (workspace === undefined || !["canvas-bytes", "canvas-cache-bytes", "text-page-bytes", "text-document-bytes", "text-process-bytes", "search-document-results", "search-process-results", "search-extractor"].includes(needed.kind)) return;
@@ -578,18 +584,73 @@ function createTab(): TabPayload {
   }
   host.addEventListener("scroll", onReaderScroll, { passive: true });
   queueMicrotask(scheduleViewportSync);
-  return { host, session, disposeUi: () => {
+  const toc = new TocController({
+    clock: {
+      now: () => performance.now(),
+      schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      cancel: (handle) => { window.clearTimeout(handle); },
+    },
+    onActivate: ({ row }) => { void activateOutlineRow(session, row); },
+    onChange: () => { if (active().session === session) renderToc(); },
+  });
+  const tocView = new TocWidgetView({
+    host,
+    onActivateRow: (row) => { toc.activateRow(row); },
+  });
+  return { host, session, toc, tocView, disposeUi: () => {
     viewportDisposed = true;
     if (viewportFrameRequest !== undefined) window.cancelAnimationFrame(viewportFrameRequest);
     host.removeEventListener("scroll", onReaderScroll);
     copyContextMenu.dispose();
+    toc.dispose();
+    tocView.dispose();
   } };
 }
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
 active().session.activate();
+/** Re-raises and repaints the active tab's TOC so it never sinks below a replaced canvas. */
+function renderToc(): void {
+  const current = active();
+  current.toc.setContainerSize({ width: current.host.clientWidth, height: current.host.clientHeight });
+  current.tocView.raise();
+  current.tocView.render(current.toc.view());
+}
+
+/**
+ * Loads the embedded outline for a session and hands it to its TOC.
+ *
+ * A PDF without an outline yields an empty list and the widget shows its empty
+ * state; no outline is ever inferred.
+ */
+async function loadOutline(session: PdfTabSession, payload: TabPayload): Promise<void> {
+  try {
+    payload.toc.setOutline(normalizeOutline(await session.readOutlineTreeNodes()));
+  } catch {
+    // An unreadable outline is not a document failure; the TOC degrades to empty.
+    payload.toc.setOutline([]);
+  }
+}
+
+/** Activates one outline row through the app-owned verified navigation transaction. */
+async function activateOutlineRow(session: PdfTabSession, row: OutlineRow): Promise<void> {
+  const destination = row.destination;
+  if (destination === undefined) return;
+  if (active().session !== session) return;
+  try {
+    await session.navigateToDestination(
+      destination.pageIndex + 1,
+      [destination.pageIndex, { name: "XYZ" }, destination.x, destination.y, null],
+      "outline",
+    );
+  } catch (error: unknown) {
+    reportPresentationFailure(session, error);
+  }
+  render();
+}
 
 function render(): void {
   const current = active();
+  renderToc();
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
     windowId: SHELL_WINDOW_ID,
@@ -645,6 +706,8 @@ function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(a
   }
   const priorId = workspace.activeTabId;
   const prior = active();
+  // A buffered TOC selector must never commit into a different tab.
+  prior.toc.cancelPending();
   try {
     await prior.session.deactivate();
     if (!workspace.activate(id)) { await prior.session.activate(); render(); return; }
@@ -692,6 +755,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
     }
     try {
       await publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration));
+    await loadOutline(payload.session, payload);
       if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
       await activateCurrentTab();
       adoptedSession = payload.session;
@@ -907,6 +971,7 @@ function dispatchActionId(id: ActionId): void {
     "document.open": { type: "document.open" }, "document.close": { type: "tab.close" }, "document.print": { type: "document.print" },
     "app.quit": { type: "application.quit" }, "app.new": { type: "application.new" }, "palette.open": { type: "palette.toggle" }, "help.show": { type: "help.toggle" },
     "tab.next": { type: "tab.next" }, "tab.previous": { type: "tab.previous" },
+    "toc.toggle": { type: "toc.toggle" }, "toc.scrollDown": { type: "toc.scrollDown" }, "toc.scrollUp": { type: "toc.scrollUp" },
     "scroll.left": { type: "scroll.byCssPixels", axis: "horizontal", delta: -32 }, "scroll.right": { type: "scroll.byCssPixels", axis: "horizontal", delta: 32 },
     "scroll.down": { type: "scroll.byCssPixels", axis: "vertical", delta: 32 }, "scroll.up": { type: "scroll.byCssPixels", axis: "vertical", delta: -32 },
     "scroll.largeDown": { type: "scroll.byViewport", factor: 0.8 }, "scroll.largeUp": { type: "scroll.byViewport", factor: -0.8 },
@@ -975,6 +1040,9 @@ function dispatch(action: Action): void {
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
   if (type === "application.new") { void invoke<void>("create_app_window").catch(() => { active().session.reader.setStatus("WINDOW_CREATE_FAILED"); render(); }); return; }
+  if (type === "toc.toggle") { active().toc.toggle(); render(); return; }
+  if (type === "toc.scrollDown") { active().toc.scrollRows(1); render(); return; }
+  if (type === "toc.scrollUp") { active().toc.scrollRows(-1); render(); return; }
   if (type === "palette.toggle") { openPalette(); return; }
   if (type === "tab.next") { void switchTab(workspace.adjacentId(1)); return; }
   if (type === "tab.previous") { void switchTab(workspace.adjacentId(-1)); return; }

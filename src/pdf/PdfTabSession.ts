@@ -11,6 +11,7 @@ import {
   type PdfContentSnapshot,
 } from "./PdfContentController";
 import type { PdfOutlineProbeRow } from "./PdfOutlineProbe";
+import type { RawOutlineNode } from "../domain/outlines/OutlineModel";
 import { resolvePdfDestinationView } from "./PdfDestination";
 import {
   PdfReaderController,
@@ -179,6 +180,9 @@ export class PdfTabSession {
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
+  }
+  public async readOutlineTreeNodes(): Promise<readonly RawOutlineNode[]> {
+    return this.closed ? [] : this.pdfReader.readOutlineTreeNodes();
   }
   public async readOutlineDestinations(): Promise<readonly PdfOutlineProbeRow[]> {
     return this.closed ? [] : this.pdfReader.readOutlineDestinations();
