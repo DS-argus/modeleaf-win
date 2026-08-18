@@ -78,9 +78,10 @@ function Run-W08Scenario {
   Assert-W08Fixture
   Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^PDF link [a-z]+$'}).Count -eq 4 } $ActionTimeoutMs 'Visible supported PDF annotation authority did not publish'
   Add-Event 'w08:annotation-authority' 'exact-four-supported-of-six-display-link-annotations'
+  Capture-VisualHash 'w08-authority-baseline'|Out-Null
   Send-ReaderKey 0x46 $false $false 'w08:hints-open'
   Capture-VisualHash 'w08-hints-visible'|Out-Null
-  if($visualHashes['page-visible'] -eq $visualHashes['w08-hints-visible']){throw 'W08 hint overlay did not change the visible reader'}
+  if($visualHashes['w08-authority-baseline'] -eq $visualHashes['w08-hints-visible']){throw 'W08 hint overlay did not change the visible reader'}
   Add-Event 'w08:hints-visible' 'keyboard-opened-and-visually-nonuniform'
   Send-ReaderKey 0x1B $false $false 'w08:hints-dismiss'
   Capture-VisualHash 'w08-hints-dismissed'|Out-Null
