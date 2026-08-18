@@ -57,6 +57,8 @@ describe("W06 packaged Windows smoke contract", () => {
     expect(script).toContain("W08 hint dismissal did not change the visible reader");
     expect(await mainSource()).toContain('invoke<number>("open_external_link"');
     expect(await nativeSource()).toMatch(/open_external_link[\s\S]*Result<u64, ExternalLinkError>[\s\S]*Ok\(operation_sequence\)/);
+    expect(script).toContain("Capture-VisualHash 'w08-authority-baseline'");
+    expect(script).toContain("$visualHashes['w08-authority-baseline'] -eq $visualHashes['w08-hints-visible']");
     expect(script).toContain("Capture-VisualHash 'w08-hints-visible'");
     expect(script).toContain("Capture-VisualHash 'w08-hints-dismissed'");
     expect(script).toContain("w08CommittedLinksFixtureSha256");

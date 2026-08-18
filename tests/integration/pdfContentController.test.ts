@@ -608,6 +608,26 @@ describe("PdfContentController", () => {
     expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 2");
     expect(subject.statuses).not.toContain("PDF link could not be opened.");
   });
+  it("keeps a newer internal success when an older destination rejects late", async () => {
+    let rejectFirst!: (reason: Error) => void;
+    const destination = [0, { name: "XYZ" }, 10, 20, null] as const;
+    const subject = setup([page("link", [{ subtype: "Link", rect: [10, 10, 40, 24], dest: "target" }])]);
+    Object.assign(subject.pdf, {
+      getDestination: vi.fn()
+        .mockResolvedValueOnce(destination)
+        .mockImplementationOnce(() => new Promise<readonly unknown[]>((_resolve, reject) => { rejectFirst = reject; }))
+        .mockResolvedValueOnce(destination),
+    });
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    overlay.click();
+    overlay.click();
+    await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
+    rejectFirst(new Error("late destination failure"));
+    await Promise.resolve();
+    expect(overlay.getAttribute("aria-label")).toBe("PDF link f");
+    expect(subject.statuses).not.toContain("Unsupported PDF link destination.");
+  });
   it("blocks published link clicks while content interactions are suspended", async () => {
     const subject = setup([page("link", [{ subtype: "Link", rect: [10, 20, 30, 40], url: "https://example.test" }])]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
