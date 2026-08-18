@@ -6,7 +6,7 @@ export interface WindowsMenuSection { readonly id: CommandCategory; readonly lab
 const MENU_ORDER: readonly { readonly id: CommandCategory; readonly label: string }[] = Object.freeze([
   { id: "application", label: "File" }, { id: "document", label: "Document" }, { id: "tabs", label: "Tabs" },
   { id: "navigation", label: "Navigate" }, { id: "search", label: "Search" }, { id: "view", label: "View" },
-  { id: "panes", label: "Panes" }, { id: "settings", label: "Settings" },
+  { id: "settings", label: "Settings" },
 ]);
 export function buildWindowsMenuModel(state: ActionRuntimeContext, config: ProductConfig): readonly WindowsMenuSection[] {
   const commands = projectMenuCommands(state, config);

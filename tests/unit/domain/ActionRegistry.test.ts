@@ -18,10 +18,10 @@ const snapshot = JSON.parse(readFileSync(
 )) as { readonly ids: readonly string[]; readonly count: number };
 
 describe("ActionRegistry", () => {
-  it("matches the exact frozen 61-action order with no duplicates", () => {
+  it("matches the exact frozen 54-action order with no duplicates", () => {
     expect(ACTION_IDS).toEqual(snapshot.ids);
     expect(ACTION_IDS).toHaveLength(snapshot.count);
-    expect(new Set(ACTION_IDS).size).toBe(61);
+    expect(new Set(ACTION_IDS).size).toBe(54);
     expect(ACTION_DESCRIPTORS.map(({ id }) => id)).toEqual(ACTION_IDS);
   });
 
@@ -32,7 +32,7 @@ describe("ActionRegistry", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(57);
+    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(50);
   });
 
   it("exposes exactly four input contexts and context-scoped availability", () => {
@@ -50,15 +50,13 @@ describe("ActionRegistry", () => {
   });
 
   it("returns explicit runtime availability reasons for capacities and ownership", () => {
-    const ready = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 2, paneCount: 2, modalOpen: false, updateAvailable: true, configExists: true, searchActive: true, canHistoryBack: true, canHistoryForward: true, linkCount: 2 };
+    const ready = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: true, configExists: true, searchActive: true, canHistoryBack: true, canHistoryForward: true, linkCount: 2 };
     expect(getActionRuntimeAvailability("document.print", ready)).toEqual({ enabled: true });
     expect(getActionRuntimeAvailability("document.print", { ...ready, hasDocument: false })).toEqual({ enabled: false, reason: "No document open" });
     expect(getActionRuntimeAvailability("document.open", { ...ready, canCreateSession: false })).toEqual({ enabled: false, reason: "Document capacity unavailable" });
     expect(getActionRuntimeAvailability("app.new", { ...ready, canCreateWindow: false })).toEqual({ enabled: false, reason: "Window capacity unavailable" });
     expect(getActionRuntimeAvailability("tab.select.3", ready)).toEqual({ enabled: false, reason: "Tab not open" });
     expect(getActionRuntimeAvailability("tab.next", { ...ready, tabCount: 1 })).toEqual({ enabled: false, reason: "Only one tab open" });
-    expect(getActionRuntimeAvailability("pane.splitRight", { ...ready, paneCount: 4 })).toEqual({ enabled: false, reason: "Maximum panes open" });
-    expect(getActionRuntimeAvailability("pane.unsplit", { ...ready, paneCount: 1 })).toEqual({ enabled: false, reason: "Only one pane open" });
     expect(getActionRuntimeAvailability("config.writeDefault", ready)).toEqual({ enabled: false, reason: "Config already exists" });
     expect(getActionRuntimeAvailability("config.resetDefault", { ...ready, configExists: false })).toEqual({ enabled: false, reason: "No config to reset" });
     expect(getActionRuntimeAvailability("search.cancel", { ...ready, searchActive: false })).toEqual({ enabled: false, reason: "No active search" });

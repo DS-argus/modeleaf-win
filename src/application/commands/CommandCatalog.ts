@@ -9,7 +9,7 @@ import type { ProductConfig } from "../../domain/config/ConfigValidator";
 import { parseKeySequence, type CanonicalKeyToken } from "../../domain/input/KeyGrammar";
 
 export type CommandSurface = "menu" | "palette" | "help";
-export type CommandCategory = "application" | "tabs" | "navigation" | "search" | "view" | "document" | "panes" | "settings";
+export type CommandCategory = "application" | "tabs" | "navigation" | "search" | "view" | "document" | "settings";
 
 export interface CommandProjection {
   readonly id: ActionId;
@@ -21,7 +21,7 @@ export interface CommandProjection {
 }
 
 const CATEGORY_BY_PREFIX: readonly [string, CommandCategory][] = Object.freeze([
-  ["app.", "application"], ["tab.", "tabs"], ["pane.", "panes"], ["search.", "search"],
+  ["app.", "application"], ["tab.", "tabs"], ["search.", "search"],
   ["view.", "view"], ["config.", "settings"], ["theme.", "settings"], ["indicator.", "settings"], ["update.", "settings"],
   ["document.", "document"], ["scroll.", "navigation"], ["toc.", "navigation"], ["page.", "navigation"],
   ["history.", "navigation"], ["link.", "navigation"], ["palette.", "application"], ["help.", "application"],

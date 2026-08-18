@@ -87,14 +87,7 @@
     "config.resetDefault": [],
     "theme.picker": ["T"],
     "indicator.picker": ["I"],
-    "update.show": ["U"],
-    "pane.splitRight": ["<prefix>|"],
-    "pane.splitDown": ["<prefix>-"],
-    "pane.focusLeft": ["<C-h>"],
-    "pane.focusDown": ["<C-j>"],
-    "pane.focusUp": ["<C-k>"],
-    "pane.focusRight": ["<C-l>"],
-    "pane.unsplit": ["<prefix>o"]
+    "update.show": ["U"]
   },
   "fixedBindings": {
     "prompt.commit": ["<Enter>"],
@@ -108,7 +101,7 @@
     "zoomMode": "fit-width",
     "initialPage": 1
   },
-  "caps": { "recentFiles": 15, "panes": 4, "navigationHistoryPositions": 100 },
+  "caps": { "recentFiles": 15, "navigationHistoryPositions": 100 },
   "themeIds": [
     "tokyo-night",
     "gruvbox-dark",

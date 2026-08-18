@@ -7,7 +7,7 @@ import { buildCommandPaletteEntries, type CommandPaletteCommandEntry } from "../
 import { buildHelpRows } from "../../src/ui/HelpModel";
 const configResult = validateProductConfig({});
 if (!configResult.ok) throw new Error("built-in config invalid");
-const runtime: ActionRuntimeContext = { hasDocument: true, canCreateSession: true, canOpenDocument: true, canCreateWindow: true, tabCount: 2, paneCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 1 };
+const runtime: ActionRuntimeContext = { hasDocument: true, canCreateSession: true, canOpenDocument: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 1 };
 function key(keyValue: string, init: Partial<RootKeyboardEvent> = {}) { let prevented = false; return { event: { key: keyValue, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault: () => { prevented = true; }, ...init } satisfies RootKeyboardEvent, prevented: () => prevented }; }
 describe("shortcut workflow", () => {
   it("routes reader actions through the W03 root registry", () => {

@@ -4,11 +4,11 @@ import { validateProductConfig } from "../../../src/domain/config/ConfigValidato
 import type { ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
 const configResult = validateProductConfig({});
 if (!configResult.ok) throw new Error("built-in config invalid");
-const state: ActionRuntimeContext = { hasDocument: false, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, paneCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
+const state: ActionRuntimeContext = { hasDocument: false, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
 describe("WindowsMenuModel", () => {
   it("groups one registry projection in stable Windows menu order", () => {
     const menu = buildWindowsMenuModel(state, configResult.value);
-    expect(menu.map(({ label }) => label)).toEqual(["File", "Document", "Tabs", "Navigate", "Search", "View", "Panes", "Settings"]);
+    expect(menu.map(({ label }) => label)).toEqual(["File", "Document", "Tabs", "Navigate", "Search", "View", "Settings"]);
     const ids = menu.flatMap(({ commands }) => commands.map(({ id }) => id));
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).not.toContain("palette.open");

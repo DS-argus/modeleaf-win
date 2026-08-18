@@ -5,7 +5,7 @@ import { createRootKeyboardRouter, type RootKeyboardContext, type RootKeyboardEv
 const validated = validateProductConfig({});
 if (!validated.ok) throw new Error("built-in config invalid");
 const config = validated.value;
-const runtime = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, paneCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
+const runtime = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
 function keyboard(key: string, overrides: Partial<RootKeyboardEvent> = {}) {
   let prevented = false;
   const event: RootKeyboardEvent = { key, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault: () => { prevented = true; }, ...overrides };

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "cf50e6169221bc93d371336173298ba49538f8e8a5586e777641107a59fd81a1";
+  "3a4d103574332f6ab9a36c5ac29494ca69bc93e80709df99020ba1305d5b114c";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -60,14 +60,7 @@ const ACTION_IDS = [
   "config.resetDefault",
   "theme.picker",
   "indicator.picker",
-  "update.show",
-  "pane.splitRight",
-  "pane.splitDown",
-  "pane.focusLeft",
-  "pane.focusDown",
-  "pane.focusUp",
-  "pane.focusRight",
-  "pane.unsplit",
+  "update.show"
 ] as const;
 const THEME_IDS = [
   "tokyo-night",
@@ -108,7 +101,7 @@ const fingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("v0.10.0 golden snapshots", () => {
-  it("freezes all 61 action identifiers and separates fixed bindings", async () => {
+  it("freezes all 54 action identifiers and separates fixed bindings", async () => {
     const actions = await json("tests/contract/snapshots/action-ids.json");
     const defaults = await json(
       "tests/contract/snapshots/product-defaults.json",
@@ -119,9 +112,9 @@ describe("v0.10.0 golden snapshots", () => {
     ).toBe(PRODUCT_DEFAULTS_FINGERPRINT);
     expect(actions.schemaVersion).toBe(1);
     expect(actions.baseline.sha).toBe(BASELINE_SHA);
-    expect(actions.count).toBe(61);
+    expect(actions.count).toBe(54);
     expect(actions.ids).toEqual(ACTION_IDS);
-    expect(new Set(actions.ids).size).toBe(61);
+    expect(new Set(actions.ids).size).toBe(54);
 
     const fixed = Object.keys(defaults.fixedBindings).filter(
       (key) => key !== "reason",
@@ -133,7 +126,7 @@ describe("v0.10.0 golden snapshots", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(configurable).toHaveLength(57);
+    expect(configurable).toHaveLength(50);
     expect(new Set([...configurable, ...fixed])).toEqual(new Set(ACTION_IDS));
     expect(defaults.configurableKeyTemplates["app.quit"]).toEqual(["<A-F4>"]);
     expect(defaults.configurableKeyTemplates["history.back"]).toEqual([
@@ -207,7 +200,6 @@ describe("v0.10.0 golden snapshots", () => {
     });
     expect(defaults.caps).toEqual({
       recentFiles: 15,
-      panes: 4,
       navigationHistoryPositions: 100,
     });
     expect(defaults.themeIds).toEqual(THEME_IDS);
