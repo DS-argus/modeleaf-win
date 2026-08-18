@@ -1396,10 +1396,12 @@ export class PdfContentController {
         }
       }
     } catch (error) {
-      if (isActive()) this.options.onStatus(error instanceof Error && error.message === "PDF link destination resolution timed out."
-        ? error.message
-        : "Unsupported PDF link destination.");
-      this.markLinkOutcome(group, "unsupported");
+      if (isActive()) {
+        this.options.onStatus(error instanceof Error && error.message === "PDF link destination resolution timed out."
+          ? error.message
+          : "Unsupported PDF link destination.");
+        this.markLinkOutcome(group, "unsupported");
+      }
     } finally {
       void rawSettlement.then(releaseSettlement);
     }
