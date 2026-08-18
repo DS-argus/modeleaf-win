@@ -15,7 +15,7 @@ export interface PdfContentDocument { readonly numPages: number; getPage(pageNum
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
-export type PdfLinkActivationCause = "internal-link" | "link-hint";
+export type PdfLinkActivationCause = "internal-link" | "link-hint" | "outline";
 export type PdfDestinationNavigationOutcome =
   | { readonly kind: "verified"; readonly point?: { readonly pageNumber: number; readonly x: number; readonly y: number } }
   | { readonly kind: "rejected" | "same-location" | "stale" | "failed" };
