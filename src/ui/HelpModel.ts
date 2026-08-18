@@ -7,7 +7,7 @@ export interface HelpRow { readonly id: ActionId; readonly category: HelpCategor
 const DEFAULT_CONFIG_RESULT = validateProductConfig({});
 if (!DEFAULT_CONFIG_RESULT.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
 const DEFAULT_CONFIG = DEFAULT_CONFIG_RESULT.value;
-const DEFAULT_RUNTIME_CONTEXT: ActionRuntimeContext = Object.freeze({ hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, paneCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: true, canHistoryForward: true, linkCount: 1 });
+const DEFAULT_RUNTIME_CONTEXT: ActionRuntimeContext = Object.freeze({ hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: true, canHistoryForward: true, linkCount: 1 });
 
 export function helpCategoryForId(id: ActionId): HelpCategory {
   if (id.startsWith("tab.")) return "Tabs";

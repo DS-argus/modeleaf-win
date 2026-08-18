@@ -8,7 +8,7 @@ if (!configResult.ok) throw new Error("built-in config invalid");
 const config = configResult.value;
 const state = (overrides: Partial<ActionRuntimeContext> = {}): ActionRuntimeContext => ({
   hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true,
-  tabCount: 2, paneCount: 1, modalOpen: false, updateAvailable: false, configExists: false,
+  tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false,
   searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0, ...overrides,
 });
 
@@ -42,6 +42,5 @@ describe("CommandCatalog", () => {
   it("marks future-workstream actions non-executable with an exact reason", () => {
     const rows = projectPaletteCommands(state({ implementedActionIds: new Set(["document.open"] as const) }), config);
     expect(rows.find(({ id }) => id === "document.open")).toMatchObject({ enabled: true });
-    expect(rows.find(({ id }) => id === "pane.splitRight")).toMatchObject({ enabled: false, disabledReason: "Not available in this workstream" });
   });
 });

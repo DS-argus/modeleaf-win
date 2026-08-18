@@ -384,7 +384,6 @@ function commandAvailabilityContext(): ActionRuntimeContext {
     canOpenDocument: workspace.snapshot.tabs.some((tab) => !tab.payload.session.snapshot.reader.hasDocument) || canCreateSession,
     canCreateWindow: true,
     tabCount: workspace.snapshot.tabs.length,
-    paneCount: 1,
     modalOpen: dialogOpenPending || searchDialog.open || helpDialog.open || themeDialog.open || paletteDialog.open || fileOpenerDialog.open,
     updateAvailable: false,
     configExists,
@@ -594,8 +593,8 @@ function render(): void {
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
     windowId: SHELL_WINDOW_ID,
-    activePaneId: "primary",
-    panes: [{ id: "primary", activeTabId: String(workspace.activeTabId), tabs: workspace.snapshot.tabs.map((tab) => { const payload = workspace.getPayload(tab.id); if (payload === undefined) throw new Error("SHELL_TAB_PAYLOAD_MISSING"); const tabSnapshot = payload.session.snapshot; return { id: String(tab.id), title: tabSnapshot.title, hasDocument: tabSnapshot.reader.hasDocument, status: tabSnapshot.status }; }) }],
+    activeTabId: String(workspace.activeTabId),
+    tabs: workspace.snapshot.tabs.map((tab) => { const payload = workspace.getPayload(tab.id); if (payload === undefined) throw new Error("SHELL_TAB_PAYLOAD_MISSING"); const tabSnapshot = payload.session.snapshot; return { id: String(tab.id), title: tabSnapshot.title, hasDocument: tabSnapshot.reader.hasDocument, status: tabSnapshot.status }; }),
   });
   if (!shell.ok) throw new Error(`SHELL_PROJECTION_INVALID:${shell.code}`);
   const menuModel = buildWindowsMenuModel(commandAvailabilityContext(), shellConfig);

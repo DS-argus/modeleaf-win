@@ -52,13 +52,6 @@
 "theme.picker" = ["T"]
 "indicator.picker" = ["I"]
 "update.show" = ["U"]
-"pane.splitRight" = ["<prefix>|"]
-"pane.splitDown" = ["<prefix>-"]
-"pane.focusLeft" = ["<C-h>"]
-"pane.focusDown" = ["<C-j>"]
-"pane.focusUp" = ["<C-k>"]
-"pane.focusRight" = ["<C-l>"]
-"pane.unsplit" = ["<prefix>o"]
 
 [navigation]
 small_scroll_points = 32.0

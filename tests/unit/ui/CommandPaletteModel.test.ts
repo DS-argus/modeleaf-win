@@ -12,7 +12,7 @@ import {
 
 const baseContext: ActionRuntimeContext = {
   hasDocument: true, canCreateSession: true, canOpenDocument: true, canCreateWindow: true,
-  tabCount: 2, paneCount: 1, modalOpen: false, updateAvailable: false, configExists: false,
+  tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false,
   searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 1,
 };
 const unavailableContext: ActionRuntimeContext = { ...baseContext, hasDocument: false, canCreateSession: false, canOpenDocument: false, canCreateWindow: false, modalOpen: true, linkCount: 0 };

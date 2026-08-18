@@ -10,7 +10,6 @@ const expectedDomains = [
   "links",
   "navigation",
   "outlines",
-  "panes",
   "recent",
   "tabs",
   "theme",

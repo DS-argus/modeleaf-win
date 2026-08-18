@@ -13,9 +13,17 @@ The Windows product preserves the v0.10.0 reader contract where platform behavio
 
 ### Same-process windows and current-window close
 
-`app.new` creates an independent Tauri top-level window in the existing process. Each window owns its tabs, panes, overlays, and history; process-wide Rust services are shared. `app.quit` remains the stable action ID, projects as **Close Window**, and closes only the invoking top-level window. `Alt+F4` has the same current-window behavior. The process exits when its final window closes. There is no `Exit All` action.
+`app.new` creates an independent Tauri top-level window in the existing process. Each window owns its tabs, overlays, and history; process-wide Rust services are shared. `app.quit` remains the stable action ID, projects as **Close Window**, and closes only the invoking top-level window. `Alt+F4` has the same current-window behavior. The process exits when its final window closes. There is no `Exit All` action.
 
 This replaces macOS's new-process implementation while preserving independent-window UX and prevents one window's close accelerator from destroying another window.
+
+### No panes or split view
+
+The Windows product does not port the macOS pane subsystem. Binary 1–4 pane topology, pane-owned tab stores, directional pane focus, dividers, unsplit, and verified-position split duplication are removed from scope by owner directive (2026-08-18). Tabs are owned by the window, and multiple documents are compared by opening independent windows with `app.new`.
+
+This removes seven action IDs from the frozen v0.10.0 registry — `pane.splitRight`, `pane.splitDown`, `pane.focusLeft`, `pane.focusDown`, `pane.focusUp`, `pane.focusRight`, and `pane.unsplit` — reducing the contract from 61 to 54 actions, of which 50 are configurable. Their default bindings (prefix `|`, prefix `-`, prefix `o`, `Ctrl+H`, `Ctrl+J`, `Ctrl+K`, `Ctrl+L`) are released and not reassigned. The `panes: 4` cap is removed from the frozen product defaults.
+
+Split duplication existed only as a pane-split operation and has no standalone action, so it is removed rather than re-homed. Reintroducing duplication on a tab or window action requires a separate owner decision. W10–W13 must not reintroduce pane actions, topology, UI, routing, persistence, tests, or release claims.
 
 ### Native Windows titlebar
 
@@ -27,7 +35,7 @@ Configuration is stored at `appConfigDir()/config.toml`; state is stored at `app
 
 ### Windows key grammar and defaults
 
-The key grammar uses `C=Ctrl`, `A=Alt`, and `S=Shift`; `Win` is not a configurable modifier. A macOS `D` modifier is a migration error, not a silent conversion to Ctrl. The default templates use Ctrl for Open/Close/Print/New, palette, and tab selection; `Alt+Left`/`Alt+Right` for app-owned history; `Alt+F4` for current-window close; and `<C-b>` as the pane prefix. The four fixed prompt/search bindings remain non-configurable.
+The key grammar uses `C=Ctrl`, `A=Alt`, and `S=Shift`; `Win` is not a configurable modifier. A macOS `D` modifier is a migration error, not a silent conversion to Ctrl. The default templates use Ctrl for Open/Close/Print/New, palette, and tab selection; `Alt+Left`/`Alt+Right` for app-owned history; `Alt+F4` for current-window close; and `<C-b>` as the command prefix. The four fixed prompt/search bindings remain non-configurable.
 
 ### Opaque PDF transport remains pending W02 evidence
 
