@@ -722,11 +722,19 @@ where
 }
 
 #[tauri::command]
-fn open_pdf_dialog(
+async fn open_pdf_dialog(
     window: Window,
     coordinator: State<'_, OpenRequestCoordinator>,
 ) -> Result<Option<open_request::OpenRequestNotice>, OpenRequestError> {
-    match choose_pdf_file(&window) {
+    // GetOpenFileNameW blocks until the user dismisses the dialog and runs its
+    // own modal message pump. Running it on the main thread stalls the whole
+    // event loop, which left the renderer unable to observe the dialog closing
+    // and latched the shell into a permanent "dialog open" state.
+    let owner_hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+    let chosen = tauri::async_runtime::spawn_blocking(move || choose_pdf_file(owner_hwnd))
+        .await
+        .map_err(|_| OpenRequestError::from(PdfSessionError::DialogFailed))?;
+    match chosen {
         Ok(Some(path)) => match coordinator.ingest_path(window.label(), &path) {
             Ok(notice) => Ok(Some(notice)),
             Err(error) => {
@@ -741,6 +749,7 @@ fn open_pdf_dialog(
         }
     }
 }
+
 #[tauri::command]
 fn ack_open_failure(
     window: Window,
@@ -809,10 +818,11 @@ fn record_recent(
 
 #[tauri::command]
 fn list_recents(recents: State<'_, Mutex<RecentStore>>) -> Vec<RecentDocument> {
+    // Only recents whose file still exists; a missing one can only fail.
     recents
         .lock()
         .expect("recent store state poisoned")
-        .documents()
+        .available_documents()
 }
 
 #[tauri::command]

@@ -97,6 +97,23 @@ impl RecentStore {
             .collect()
     }
 
+    /// Lists only recents whose backing file is still present.
+    ///
+    /// Offering a recent whose file was deleted or moved guarantees a failed
+    /// open, so the picker must never show one. Pruning happens here rather
+    /// than only on a failed open, which was too late to help the user.
+    pub fn available_documents(&self) -> Vec<RecentDocument> {
+        self.records
+            .iter()
+            .filter(|record| record.canonical_path.exists())
+            .filter_map(|record| {
+                Some(RecentDocument {
+                    recent_id: record.recent_id.clone(),
+                    display_name: safe_display_name(&record.canonical_path)?,
+                })
+            })
+            .collect()
+    }
     pub fn record_trusted_opened_and_save(
         &mut self,
         identity: TrustedRecentIdentity,

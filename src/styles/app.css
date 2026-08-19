@@ -528,3 +528,24 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .toc-widget-title { color: CanvasText; }
   .toc-widget-title:disabled { color: GrayText; }
 }
+
+/* The empty-state hint is the click target, so it must read as text while
+   behaving as a button for pointer and assistive-technology users. */
+.empty-reader-hint {
+  background: none;
+  border: 0;
+  padding: 8px 12px;
+  border-radius: 6px;
+  color: var(--theme-muted-text);
+  font: inherit;
+  cursor: pointer;
+}
+.empty-reader-hint:hover:not(:disabled) { background: var(--theme-active-tab); color: var(--theme-foreground); }
+.empty-reader-hint:disabled { cursor: default; opacity: 0.6; }
+.empty-reader-hint kbd {
+  padding: 2px 6px;
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+  background: var(--theme-statusline);
+  color: var(--theme-foreground);
+}

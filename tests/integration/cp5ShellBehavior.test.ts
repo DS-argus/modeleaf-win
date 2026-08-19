@@ -38,7 +38,10 @@ describe("CP5 shell integration", () => {
     expect(mainSource).not.toContain('id="theme-button"');
     expect(mainSource).not.toContain("Windows foundation");
     expect(mainSource).not.toContain("Keyboard-first PDF reading for Windows");
-    expect(mainSource).toContain('<p><kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF');
+    // The hint is now the accessible click target rather than inert text, so
+    // one affordance carries both the shortcut and the action.
+    expect(mainSource).toContain('<kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF');
+    expect(mainSource).toContain('empty-reader-hint');
     expect(styles).toContain("place-content: center");
   });
 

@@ -47,7 +47,7 @@ pub fn open_selected_path(
 }
 
 #[cfg(windows)]
-pub fn choose_pdf_file(window: &tauri::Window) -> Result<Option<PathBuf>, PdfSessionError> {
+pub fn choose_pdf_file(owner_hwnd: isize) -> Result<Option<PathBuf>, PdfSessionError> {
     use std::ffi::c_void;
 
     #[repr(C)]
@@ -89,13 +89,12 @@ pub fn choose_pdf_file(window: &tauri::Window) -> Result<Option<PathBuf>, PdfSes
     const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
     const OFN_DONTADDTORECENT: u32 = 0x0200_0000;
 
-    let hwnd = window.hwnd().map_err(|_| PdfSessionError::DialogFailed)?;
     let filter: Vec<u16> = "PDF files (*.pdf)\0*.pdf\0\0".encode_utf16().collect();
     let mut file = vec![0_u16; 32_768];
     let mut open_file_name = OpenFileNameW {
         l_struct_size: u32::try_from(std::mem::size_of::<OpenFileNameW>())
             .map_err(|_| PdfSessionError::DialogFailed)?,
-        hwnd_owner: hwnd.0 as isize,
+        hwnd_owner: owner_hwnd,
         h_instance: 0,
         filter: filter.as_ptr(),
         custom_filter: std::ptr::null_mut(),
@@ -139,6 +138,6 @@ pub fn choose_pdf_file(window: &tauri::Window) -> Result<Option<PathBuf>, PdfSes
 }
 
 #[cfg(not(windows))]
-pub fn choose_pdf_file(_: &tauri::Window) -> Result<Option<PathBuf>, PdfSessionError> {
+pub fn choose_pdf_file(_owner_hwnd: isize) -> Result<Option<PathBuf>, PdfSessionError> {
     Err(PdfSessionError::DialogFailed)
 }

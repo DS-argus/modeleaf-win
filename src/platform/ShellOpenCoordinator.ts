@@ -46,16 +46,23 @@ export function createShellOpenCoordinator(options: ShellOpenCoordinatorOptions)
     if (disposed || pending) return;
     requestId = null;
     setPending(true);
+    // pending tracks only whether the native dialog is on screen. It is
+    // released the moment the invoke settles, whatever the outcome, so a
+    // retryable adoption failure can never latch the shell into a state
+    // where every action reports "Close the current dialog".
+    const release = (): void => { requestId = null; setPending(false); };
     void options.invoke("open_pdf_dialog", {}).then((value) => {
-      if (disposed) return;
-      if (value === null) { clear(null); return; }
+      if (disposed) { release(); return; }
+      if (value === null) { release(); return; }
       const notice = openNotice(value);
-      if (notice === undefined) { clear(null); options.dialog.reportFailure(value); return; }
+      if (notice === undefined) { release(); options.dialog.reportFailure(value); return; }
       requestId = notice.requestId;
-      client.admitNotice(notice, clear);
+      release();
+      // Adoption continues in the background with its own retry policy.
+      client.admitNotice(notice);
     }, (error: unknown) => {
+      release();
       if (disposed) return;
-      clear(null);
       options.dialog.reportFailure(error);
     });
   };

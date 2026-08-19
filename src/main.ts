@@ -74,7 +74,7 @@ root.innerHTML = `
 <section id="app-shell" data-testid="app-shell" class="app-shell" tabindex="-1" role="application" aria-label="Modeleaf PDF reader">
   <nav id="windows-menu" data-testid="windows-menu" class="windows-menu" aria-label="Application menu"></nav>
   <div id="tab-strip" data-testid="tab-strip" class="tab-strip" role="tablist" aria-label="Open PDFs"></div>
-  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader" aria-labelledby="empty-reader-title"><h1 id="empty-reader-title">No PDF open</h1><p>Open a PDF to start reading.</p><button id="empty-reader-open" type="button">Open PDF…</button></section></main>
+  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader" aria-labelledby="empty-reader-title"><h1 id="empty-reader-title">No PDF open</h1><button id="empty-reader-open" type="button" class="empty-reader-hint"><kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF</button></section></main>
   <section id="prompt" class="prompt" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">Arrow keys or Control J and K preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
@@ -474,7 +474,7 @@ function createTab(): TabPayload {
   host.className = "reader-surface tab-host";
   host.tabIndex = 0;
   host.setAttribute("role", "tabpanel");
-  host.innerHTML = '<div class="empty-state"><p><kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF</p></div>';
+  host.replaceChildren();
   host.addEventListener("dragover", (event) => event.preventDefault());
   host.addEventListener("drop", (event) => event.preventDefault());
   tabHosts.append(host);
@@ -745,7 +745,7 @@ function render(): void {
   renderWindowsMenu(menuModel);
   const openCommand = menuModel.flatMap((section) => section.commands).find(({ id }) => id === "document.open");
   if (openCommand !== undefined) {
-    emptyReaderOpen.textContent = openCommand.shortcuts.length === 0 ? openCommand.title : `${openCommand.title} (${openCommand.shortcuts.join(", ")})`;
+    // The label is the keyboard hint itself; only availability is projected.
     emptyReaderOpen.disabled = !openCommand.enabled;
     emptyReaderOpen.title = openCommand.disabledReason ?? "";
   }
