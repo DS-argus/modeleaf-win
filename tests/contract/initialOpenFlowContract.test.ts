@@ -7,6 +7,7 @@ describe("initial open flow contract", () => {
   const styles = source("src/styles/app.css");
   const native = source("src-tauri/src/lib.rs");
   const recent = source("src-tauri/src/recent.rs");
+  const adoptionOwnership = source("src/application/OpenAdoptionOwnership.ts");
 
   it("has one canonical centered empty action with a live shortcut badge", () => {
     expect(main.match(/id="empty-reader-open"/gu)).toHaveLength(1);
@@ -57,7 +58,12 @@ describe("initial open flow contract", () => {
     expect(main.slice(adoptStart, terminalStart)).not.toContain("recordRecentDocument");
     expect(main.indexOf("recordRecentDocument(invoke, pending.request.sessionId", terminalStart)).toBeGreaterThan(terminalStart);
     expect(main.slice(adoptStart, terminalStart)).toContain("workspace.commitAdoption(id)");
-    expect(main).toContain("workspace.close(settled.id)");
+    expect(main).toContain("rollbackOpenAdoptionOwnership(settled.id, settled.priorActiveId");
+    expect(adoptionOwnership).toContain("operations.close(settledId)");
+    expect(main).toContain('await activateCurrentTab(terminal.tag !== "DISPOSED")');
+    const terminalRollback = main.slice(terminalStart);
+    expect(terminalRollback.indexOf("cancelPagePromptOwnership()"))
+      .toBeLessThan(terminalRollback.indexOf("rollbackOpenAdoptionOwnership(settled.id"));
     expect(source("src/platform/ShellOpenCoordinator.ts")).toContain("flow.advance(epoch, requestId, progress.step");
     const adoptionSlice = main.slice(adoptStart, terminalStart);
     expect(adoptionSlice.indexOf("pendingOpenAdoptions.set(request.requestId")).toBeLessThan(adoptionSlice.indexOf("publishActivateAndAdoptPdfTab"));

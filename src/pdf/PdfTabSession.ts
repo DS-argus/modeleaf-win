@@ -52,6 +52,11 @@ export type PdfTabSearchDecision =
   | { readonly kind: "cycle"; readonly reverse: boolean }
   | { readonly kind: "search"; readonly query: string };
 
+interface NavigationOwner {
+  readonly intent: number;
+  readonly guard: () => boolean;
+}
+
 const isAuthorityIncomplete = (error: unknown): boolean => error instanceof Error && error.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE";
 export async function publishActivateAndAdoptPdfTab<T>(
   publish: () => void,
@@ -82,7 +87,9 @@ export class PdfTabSession {
   private activationGeneration?: number;
   private openingFitRenderPending = false;
   private readonly navigationHistory = new NavigationHistory();
+  private pageStepQueue: Promise<void> = Promise.resolve();
   private searchLandingEpoch = 0;
+  private pageStepGeneration = 0;
   private searchLandingEpochActive = false;
   private searchLandingEpochOrigin: NavigationSnapshot | undefined;
   private historyHealthy = true;
@@ -95,7 +102,9 @@ export class PdfTabSession {
   private pendingPresentationRenders = 0;
   private readerStatusVersion = 0;
   private navigationIntent = 0;
+  private navigationLandingIntent: number | undefined;
   private viewportIntent = 0;
+  private cancelledNavigation: { readonly ownerIntent: number; readonly fenceIntent: number; readonly activityGeneration: number } | undefined;
   private pendingRenderRollback: {
     readonly intent: number;
     readonly activityGeneration: number;
@@ -306,12 +315,14 @@ export class PdfTabSession {
     }
   }
   public invalidateViewportSynchronization(): void {
+    if (this.navigationLandingIntent !== undefined) return;
     this.viewportIntent += 1;
     this.pdfReader.invalidateViewportSynchronization();
   }
   /** Production scroll entry point: materializes the bounded continuous window. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
     if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    if (this.navigationLandingIntent !== undefined) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
@@ -371,6 +382,7 @@ export class PdfTabSession {
     this.searchLandingOwnerRevision += 1;
     this.searchLandingGeneration = -1;
     this.searchLandingSelection = -1;
+    this.invalidatePageStepQueue();
     this.supersedeNavigation();
     this.beginSearchLandingEpoch();
     void content.search(query);
@@ -380,6 +392,8 @@ export class PdfTabSession {
     if (this.closed || !this.isForegroundActive()) return { kind: "ignore" };
     const content = this.content;
     if (content === undefined || content.snapshot.searchPending || content.snapshot.searchIncomplete || content.snapshot.results.length === 0) return { kind: "ignore" };
+    this.invalidatePageStepQueue();
+    this.supersedeNavigation();
     void content.nextMatch(reverse);
     return { kind: "cycle", reverse };
   }
@@ -393,9 +407,34 @@ export class PdfTabSession {
     }
     return this.searchLandingEpoch;
   }
-  public async navigatePagePrompt(page: number): Promise<PdfTabNavigationDecision> { return this.navigateHistoryJump(page, "page-prompt"); }
-  public async navigateFirstPage(): Promise<PdfTabNavigationDecision> { return this.navigateHistoryJump(1, "page-first"); }
-  public async navigateLastPage(): Promise<PdfTabNavigationDecision> { return this.navigateHistoryJump(this.reader.snapshot.pageCount, "page-last"); }
+  public navigatePagePrompt(page: number): Promise<PdfTabNavigationDecision> {
+    this.invalidatePageStepQueue();
+    return this.navigateHistoryJump(page, "page-prompt");
+  }
+  public navigateFirstPage(): Promise<PdfTabNavigationDecision> {
+    this.invalidatePageStepQueue();
+    return this.navigateHistoryJump(1, "page-first");
+  }
+  public navigateLastPage(): Promise<PdfTabNavigationDecision> {
+    this.invalidatePageStepQueue();
+    return this.navigateHistoryJump(this.reader.snapshot.pageCount, "page-last");
+  }
+  public navigateAdjacentPage(direction: -1 | 1): Promise<PdfTabNavigationDecision> {
+    const queueGeneration = this.pageStepGeneration;
+    const scheduled = this.pageStepQueue.then(() => queueGeneration === this.pageStepGeneration
+      ? this.navigateAdjacentPageNow(direction, queueGeneration)
+      : { kind: "stale" } as const);
+    this.pageStepQueue = scheduled.then(() => undefined, () => undefined);
+    return scheduled;
+  }
+  public cancelPendingNavigation(): void {
+    this.recoverFailedPresentation(this.renderIntent, this.activityGeneration);
+    this.invalidatePageStepQueue();
+    const ownerIntent = this.navigationIntent;
+    const fenceIntent = this.supersedeNavigation(true);
+    this.cancelledNavigation = { ownerIntent, fenceIntent, activityGeneration: this.activityGeneration };
+    this.navigationHistory.cancelPending();
+  }
   public async navigateSearchLanding(request: PdfSearchLandingRequest): Promise<PdfTabNavigationDecision> {
     if (request.result.geometry === undefined) return { kind: "preflightRejected" };
     if (request.searchGeneration < this.searchLandingGeneration
@@ -408,13 +447,21 @@ export class PdfTabSession {
     const ownerGuard = (): boolean => ownerRevision === this.searchLandingOwnerRevision
       && request.searchGeneration === this.searchLandingGeneration
       && request.selectionSequence === this.searchLandingSelection;
+    this.invalidatePageStepQueue();
     return this.navigateHistoryJump(request.result.pageNumber, "search", this.beginSearchLandingEpoch(), request.result.geometry, ownerGuard);
   }
-  public async navigateHistoryBack(): Promise<PdfTabNavigationDecision> { return this.navigateHistoryTraversal("back"); }
-  public async navigateHistoryForward(): Promise<PdfTabNavigationDecision> { return this.navigateHistoryTraversal("forward"); }
+  public navigateHistoryBack(): Promise<PdfTabNavigationDecision> {
+    this.invalidatePageStepQueue();
+    return this.navigateHistoryTraversal("back");
+  }
+  public navigateHistoryForward(): Promise<PdfTabNavigationDecision> {
+    this.invalidatePageStepQueue();
+    return this.navigateHistoryTraversal("forward");
+  }
   public apply(action: Parameters<ReaderState["apply"]>[0]): void {
     if (this.closed || !this.isForegroundActive()) return;
     if (action.type.startsWith("page.") || action.type.startsWith("view.") || action.type.startsWith("scroll.")) {
+      this.invalidatePageStepQueue();
       this.supersedeNavigation();
       this.content?.dismissLinkDecorations();
       const snapshot = this.lastCommittedRender;
@@ -425,7 +472,7 @@ export class PdfTabSession {
     }
     this.reader.apply(action);
   }
-  public nextMatch(reverse: boolean): void { if (!this.closed && this.isForegroundActive()) this.content?.nextMatch(reverse); }
+  public nextMatch(reverse: boolean): void { this.cycleSearch(reverse); }
   public toggleHints(): void { if (!this.closed && this.isForegroundActive()) this.content?.toggleHints(); }
   public cancelHints(): void { if (!this.closed && this.isForegroundActive()) this.content?.cancelHints(); }
   public handleHintKey(input: string | HintKeyInput): boolean { return !this.closed && this.isForegroundActive() && this.content?.handleHintKey(input) === true; }
@@ -434,6 +481,7 @@ export class PdfTabSession {
     this.searchLandingGeneration = Number.MAX_SAFE_INTEGER;
     this.searchLandingSelection = Number.MAX_SAFE_INTEGER;
     this.supersedeNavigation();
+    this.invalidatePageStepQueue();
     if (!this.closed && this.isForegroundActive()) this.content?.invalidateSearch();
     this.endSearchLandingEpoch();
   }
@@ -460,16 +508,17 @@ export class PdfTabSession {
     const content = this.content;
     const origin = this.captureNavigationSnapshot();
     if (content === undefined || origin === undefined) return { kind: "rejected" };
+    this.invalidatePageStepQueue();
     const navigationIntent = this.supersedeNavigation();
     const activityGeneration = this.activityGeneration;
     const sessionGuard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.navigationIntent === navigationIntent;
     const guard = (): boolean => sessionGuard() && activationGuard();
     const snapshot = this.reader.snapshot;
-    const compensateToOrigin = async (): Promise<"failed" | "stale"> => {
+    const compensateToOrigin = async (compensationGuard: () => boolean = sessionGuard): Promise<"failed" | "stale"> => {
       this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: snapshot.customScale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
-      const compensated = await this.restoreCanonicalLanding(origin, sessionGuard);
-      if (!sessionGuard() || compensated.kind === "staleOrCancelled") return "stale";
+      const compensated = await this.restoreCanonicalLanding(origin, compensationGuard);
+      if (!compensationGuard() || compensated.kind === "staleOrCancelled") return "stale";
       if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
       return "failed";
     };
@@ -521,6 +570,15 @@ export class PdfTabSession {
     }
     if (!guard()) {
       this.navigationHistory.rollback(prepared.transaction);
+      const cancellation = this.cancelledNavigation;
+      if (cancellation?.ownerIntent === navigationIntent && cancellation.fenceIntent === this.navigationIntent
+        && cancellation.activityGeneration === activityGeneration) {
+        const cancellationGuard = (): boolean => !this.closed && this.isForegroundActive()
+          && this.activityGeneration === activityGeneration && this.navigationIntent === cancellation.fenceIntent;
+        await compensateToOrigin(cancellationGuard);
+        if (this.cancelledNavigation === cancellation) this.cancelledNavigation = undefined;
+        return { kind: "stale" };
+      }
       if (!sessionGuard()) return { kind: "stale" };
       await compensateToOrigin();
       return { kind: "stale" };
@@ -539,11 +597,25 @@ export class PdfTabSession {
       ? { kind: "verified" }
       : { kind: "verified", point: { pageNumber: page, ...requestedPoint } };
   }
-  public async search(query: string): Promise<void> { if (!this.closed && this.isForegroundActive()) await this.content?.search(query); }
-
   private endSearchLandingEpoch(): void {
     this.searchLandingEpochActive = false;
     this.searchLandingEpochOrigin = undefined;
+  }
+  private async navigateAdjacentPageNow(direction: -1 | 1, queueGeneration: number): Promise<PdfTabNavigationDecision> {
+    const navigationOwner = this.acquireNavigation(() => queueGeneration === this.pageStepGeneration);
+    const { guard } = navigationOwner;
+    const origin = this.captureNavigationSnapshot();
+    const reader = this.reader.snapshot;
+    if (origin === undefined || !reader.hasDocument) return guard() ? { kind: "unavailable" } : { kind: "stale" };
+    const targetPageIndex = Math.min(reader.pageCount - 1, Math.max(0, origin.pageIndex + direction));
+    if (targetPageIndex === origin.pageIndex) return guard() ? { kind: "noOp" } : { kind: "stale" };
+    const page = targetPageIndex + 1;
+    const transform = await this.viewTransformFor(page, guard);
+    const target = transform === undefined ? undefined : await this.pdfReader.getPageTopLanding(page, transform, guard);
+    if (target === undefined) return guard() ? { kind: "preflightRejected" } : { kind: "stale" };
+    const result = await this.restoreDisplayOnlyLanding(origin, target, navigationOwner, "page-top");
+    if (result.kind === "verifiedLanding") this.endSearchLandingEpoch();
+    return result;
   }
   private async navigateHistoryJump(
     page: number,
@@ -551,12 +623,13 @@ export class PdfTabSession {
     searchEpoch?: number,
     point?: { readonly x: number; readonly y: number },
     ownerGuard: () => boolean = () => true,
+    navigationOwner: NavigationOwner = this.acquireNavigation(ownerGuard),
   ): Promise<PdfTabNavigationDecision> {
-    if (!this.historyHealthy) return { kind: "unavailable" };
-    const liveOrigin = this.captureNavigationSnapshot();
+    const preflightGuard = navigationOwner.guard;
+    if (!this.historyHealthy) return preflightGuard() ? { kind: "unavailable" } : { kind: "stale" };
+    const initialOrigin = this.captureNavigationSnapshot();
     const reader = this.reader.snapshot;
-    if (liveOrigin === undefined || !Number.isSafeInteger(page) || page < 1 || page > reader.pageCount) return { kind: "preflightRejected" };
-    const preflightGuard = (): boolean => ownerGuard() && !this.closed && this.isForegroundActive();
+    if (initialOrigin === undefined || !Number.isSafeInteger(page) || page < 1 || page > reader.pageCount) return preflightGuard() ? { kind: "preflightRejected" } : { kind: "stale" };
     let target: NavigationSnapshot | undefined;
     if (point !== undefined) target = { pageIndex: page - 1, x: point.x, y: point.y };
     else {
@@ -564,31 +637,34 @@ export class PdfTabSession {
       if (transform !== undefined) target = await this.pdfReader.getPageTopLanding(page, transform, preflightGuard);
     }
     if (target === undefined) return preflightGuard() ? { kind: "preflightRejected" } : { kind: "stale" };
+    const liveOrigin = cause === "search" ? initialOrigin : this.captureNavigationSnapshot();
+    if (liveOrigin === undefined) return preflightGuard() ? { kind: "preflightRejected" } : { kind: "stale" };
     if (cause === "search" && this.searchLandingEpochOrigin === undefined) {
       return sameSnapshotWithinTolerance(liveOrigin, target)
         ? { kind: "noOp" }
-        : this.restoreDisplayOnlyLanding(liveOrigin, target, ownerGuard);
+        : this.restoreDisplayOnlyLanding(liveOrigin, target, navigationOwner);
     }
     const historyOrigin = cause === "search" ? this.searchLandingEpochOrigin! : liveOrigin;
     this.navigationHistory.cancelPending();
     const prepared = this.navigationHistory.prepareJump(historyOrigin, target, cause, searchEpoch);
-    if (prepared.kind === "search-epoch-recorded") return this.restoreDisplayOnlyLanding(liveOrigin, target, ownerGuard);
+    if (prepared.kind === "search-epoch-recorded") return this.restoreDisplayOnlyLanding(liveOrigin, target, navigationOwner);
     if (prepared.kind === "same-location") {
       return cause === "search" && !sameSnapshotWithinTolerance(liveOrigin, target)
-        ? this.restoreDisplayOnlyLanding(liveOrigin, target, ownerGuard)
+        ? this.restoreDisplayOnlyLanding(liveOrigin, target, navigationOwner)
         : { kind: "noOp" };
     }
     if (prepared.kind !== "prepared") return { kind: prepared.kind };
-    return this.restoreHistoryTransaction(prepared.transaction, ownerGuard, liveOrigin, point === undefined ? "page-top" : "center");
+    return this.restoreHistoryTransaction(prepared.transaction, navigationOwner, liveOrigin, point === undefined ? "page-top" : "center");
   }
   private async navigateHistoryTraversal(direction: "back" | "forward"): Promise<PdfTabNavigationDecision> {
-    if (!this.historyHealthy) return { kind: "unavailable" };
+    const navigationOwner = this.acquireNavigation();
+    if (!this.historyHealthy) return navigationOwner.guard() ? { kind: "unavailable" } : { kind: "stale" };
     const liveOrigin = this.captureNavigationSnapshot();
-    if (liveOrigin === undefined) return { kind: "unavailable" };
+    if (liveOrigin === undefined) return navigationOwner.guard() ? { kind: "unavailable" } : { kind: "stale" };
     this.navigationHistory.cancelPending();
     const transaction = direction === "back" ? this.navigationHistory.prepareBack(liveOrigin) : this.navigationHistory.prepareForward(liveOrigin);
-    if (transaction === undefined) return { kind: "unavailable" };
-    return this.restoreHistoryTransaction(transaction);
+    if (transaction === undefined) return navigationOwner.guard() ? { kind: "unavailable" } : { kind: "stale" };
+    return this.restoreHistoryTransaction(transaction, navigationOwner);
   }
   private async restoreCanonicalLanding(
     target: NavigationSnapshot,
@@ -601,59 +677,79 @@ export class PdfTabSession {
   }
   private async restoreHistoryTransaction(
     transaction: NavigationTransaction,
-    ownerGuard: () => boolean = () => true,
+    navigationOwner: NavigationOwner,
     compensationOrigin: NavigationSnapshot = transaction.origin,
     placement: "center" | "page-top" = "center",
   ): Promise<PdfTabNavigationDecision> {
-    const intent = this.supersedeNavigation();
-    const activityGeneration = this.activityGeneration;
-    const guard = (): boolean => ownerGuard() && !this.closed && this.isForegroundActive()
-      && this.navigationIntent === intent && this.activityGeneration === activityGeneration;
-    const outcome = await this.restoreCanonicalLanding(transaction.target, guard, placement);
-    if ((outcome.kind === "verified" || outcome.kind === "constrainedEdgeVerified") && guard()) {
-      const verificationTarget = outcome.kind === "constrainedEdgeVerified" ? outcome.expected : transaction.target;
-      const result = this.navigationHistory.commit(transaction, outcome.landing, verificationTarget);
-      if (result === "committed" && transaction.cause !== "search") this.endSearchLandingEpoch();
-      return { kind: result === "committed" ? "verifiedLanding" : result === "same-location" ? "noOp" : result };
-    }
-    this.navigationHistory.rollback(transaction);
-    if (outcome.kind === "preflightRejected") return { kind: "preflightRejected" };
-    if (outcome.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
-    const compensated = await this.restoreCanonicalLanding(compensationOrigin, guard);
-    if (compensated.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
-    if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
-    return { kind: compensated.kind === "verified" || compensated.kind === "constrainedEdgeVerified"
-      ? "compensatedFailure"
-      : "uncompensatedInvariantFailure" };
+    const { intent, guard } = navigationOwner;
+    return this.withNavigationLanding(intent, async () => {
+      const compensate = async (): Promise<PdfTabNavigationDecision> => {
+        const compensated = await this.restoreCanonicalLanding(compensationOrigin, guard);
+        if (compensated.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
+        if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
+        return { kind: compensated.kind === "verified" || compensated.kind === "constrainedEdgeVerified"
+          ? "compensatedFailure"
+          : "uncompensatedInvariantFailure" };
+      };
+      const outcome = await this.restoreCanonicalLanding(transaction.target, guard, placement);
+      if ((outcome.kind === "verified" || outcome.kind === "constrainedEdgeVerified") && guard()) {
+        const verificationTarget = outcome.kind === "constrainedEdgeVerified" ? outcome.expected : transaction.target;
+        const result = this.navigationHistory.commit(transaction, outcome.landing, verificationTarget);
+        if (result === "committed") {
+          if (transaction.cause !== "search") this.endSearchLandingEpoch();
+          return { kind: "verifiedLanding" };
+        }
+        if (result === "same-location") return { kind: "noOp" };
+        if (!guard()) return { kind: "stale" };
+        return compensate();
+      }
+      this.navigationHistory.rollback(transaction);
+      if (outcome.kind === "preflightRejected") return { kind: "preflightRejected" };
+      if (outcome.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
+      return compensate();
+    });
   }
-  private async restoreDisplayOnlyLanding(origin: NavigationSnapshot, target: NavigationSnapshot, ownerGuard: () => boolean): Promise<PdfTabNavigationDecision> {
-    const intent = this.supersedeNavigation();
-    const activityGeneration = this.activityGeneration;
-    const guard = (): boolean => ownerGuard() && !this.closed && this.isForegroundActive()
-      && this.navigationIntent === intent && this.activityGeneration === activityGeneration;
-    const outcome = await this.restoreCanonicalLanding(target, guard);
-    if ((outcome.kind === "verified" || outcome.kind === "constrainedEdgeVerified") && guard()) return { kind: "verifiedLanding" };
-    if (outcome.kind === "preflightRejected") return { kind: "preflightRejected" };
-    if (outcome.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
-    const compensated = await this.restoreCanonicalLanding(origin, guard);
-    if (compensated.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
-    if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
-    return { kind: compensated.kind === "verified" || compensated.kind === "constrainedEdgeVerified"
-      ? "compensatedFailure"
-      : "uncompensatedInvariantFailure" };
+  private async restoreDisplayOnlyLanding(origin: NavigationSnapshot, target: NavigationSnapshot, navigationOwner: NavigationOwner, placement: "center" | "page-top" = "center"): Promise<PdfTabNavigationDecision> {
+    const { intent, guard } = navigationOwner;
+    return this.withNavigationLanding(intent, async () => {
+      const outcome = await this.restoreCanonicalLanding(target, guard, placement);
+      if ((outcome.kind === "verified" || outcome.kind === "constrainedEdgeVerified") && guard()) return { kind: "verifiedLanding" };
+      if (outcome.kind === "preflightRejected") return { kind: "preflightRejected" };
+      if (outcome.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
+      const compensated = await this.restoreCanonicalLanding(origin, guard);
+      if (compensated.kind === "staleOrCancelled" || !guard()) return { kind: "stale" };
+      if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
+      return { kind: compensated.kind === "verified" || compensated.kind === "constrainedEdgeVerified"
+        ? "compensatedFailure"
+        : "uncompensatedInvariantFailure" };
+    });
+  }
+  private async withNavigationLanding(intent: number, operation: () => Promise<PdfTabNavigationDecision>): Promise<PdfTabNavigationDecision> {
+    this.navigationLandingIntent = intent;
+    try { return await operation(); }
+    finally { if (this.navigationLandingIntent === intent) this.navigationLandingIntent = undefined; }
   }
   private captureNavigationSnapshot(): NavigationSnapshot | undefined {
     if (!this.reader.snapshot.hasDocument) return undefined;
     return this.pdfReader.captureViewportLanding();
   }
   private async restorePresentation(activityGeneration: number): Promise<void> {
-    const rendered = await this.renderCurrentView();
-    if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
-    if (!rendered) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
-    await this.content?.restoreEvictedSearch();
-    if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
-    this.presentationEvicted = false;
-    this.presentationDirty = false;
+    const intent = this.navigationIntent;
+    this.navigationLandingIntent = intent;
+    try {
+      let rendered = false;
+      for (let attempt = 0; attempt < 2 && !rendered; attempt += 1) {
+        rendered = await this.renderCurrentView();
+        if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+      }
+      if (!rendered) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
+      await this.content?.restoreEvictedSearch();
+      if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+      this.presentationEvicted = false;
+      this.presentationDirty = false;
+    } finally {
+      if (this.navigationLandingIntent === intent) this.navigationLandingIntent = undefined;
+    }
   }
   private async restoreInterruptedSearch(activityGeneration: number): Promise<void> {
     await this.content?.restoreEvictedSearch();
@@ -742,6 +838,16 @@ export class PdfTabSession {
   private finishActivation(generation: number): void {
     if (this.activationGeneration === generation) delete this.activationGeneration;
   }
+  private acquireNavigation(ownerGuard: () => boolean = () => true): NavigationOwner {
+    const intent = this.supersedeNavigation();
+    const activityGeneration = this.activityGeneration;
+    return {
+      intent,
+      guard: () => ownerGuard() && !this.closed && this.isForegroundActive()
+        && this.navigationIntent === intent && this.activityGeneration === activityGeneration,
+    };
+  }
+  private invalidatePageStepQueue(): void { this.pageStepGeneration += 1; }
   private isForegroundActive(): boolean {
     return this.active && !this.activitySettling && !this.activityQuarantined;
   }
@@ -758,7 +864,8 @@ export class PdfTabSession {
     };
   }
 
-  private supersedeNavigation(): number {
+  private supersedeNavigation(preserveCancellation = false): number {
+    if (!preserveCancellation) this.cancelledNavigation = undefined;
     this.content?.cancelDestination();
     return ++this.navigationIntent;
   }

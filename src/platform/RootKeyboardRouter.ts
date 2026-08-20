@@ -87,9 +87,17 @@ export function createRootKeyboardRouter(options: RootKeyboardRouterOptions): Ro
     }
     const token = keyboardToken(event);
     if (token === undefined) { cancelPending(); return false; }
-    const result = engine.advance(token, context.inputContext, now(), event.repeat);
+    const timestamp = now();
+    const pending = engine.state();
+    if (pending.kind === "pending" && timestamp >= pending.deadline) {
+      clear();
+      emit(engine.expire(context.inputContext, timestamp, pending.epoch));
+      syncContext();
+    }
+    const routedContext = options.getContext();
+    const result = engine.advance(token, routedContext.inputContext, timestamp, event.repeat);
     const deferred = result.kind === "dispatch" && options.deferAction?.(result.dispatch.actionId) === true;
-    const unboundHandled = result.kind === "invalid" && result.reason === "no-binding" && options.onUnboundToken?.(token, context) === true;
+    const unboundHandled = result.kind === "invalid" && result.reason === "no-binding" && options.onUnboundToken?.(token, routedContext) === true;
     const claimed = !deferred && (unboundHandled || result.kind === "pending" || result.kind === "dispatch" || (result.kind === "invalid" && (result.reason === "repeat-suppressed" || result.reason === "invalid-sequence")));
     if (claimed) event.preventDefault();
     if (deferred || unboundHandled) options.onState?.({ kind: "idle" });

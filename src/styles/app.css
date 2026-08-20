@@ -12,12 +12,17 @@ html, body, #app { width: 100%; height: 100%; margin: 0; }
 body { overflow: hidden; }
 
 .app-shell {
+  position: relative;
   display: grid;
-  grid-template-rows: auto 1fr auto 28px;
+  grid-template-rows: auto auto minmax(0, 1fr) 28px;
   width: 100%;
   height: 100%;
   background: var(--theme-background);
 }
+.windows-menu { grid-row: 1; }
+.tab-strip { grid-row: 2; }
+#reader-main { grid-row: 3; min-height: 0; }
+.statusbar { grid-row: 4; }
 
 .statusbar {
   display: flex;
@@ -190,13 +195,25 @@ kbd {
 }
 
 .prompt {
-  margin: 0 12px 8px;
-  padding: 8px 10px;
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: 40px;
+  display: flex;
+  align-items: center;
+  width: clamp(360px, calc(100vw - 48px), 520px);
+  max-width: calc(100% - 24px);
+  min-height: 42px;
+  margin: 0;
+  padding: 8px 14px;
+  overflow-wrap: anywhere;
   border: 1px solid var(--theme-accent);
   border-radius: 5px;
   background: var(--theme-inactive-tab);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  transform: translateX(-50%);
 }
-
+.prompt[hidden] { display: none; }
 dialog {
   width: min(520px, calc(100vw - 48px));
   max-height: calc(100vh - 80px);
@@ -392,6 +409,11 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .textLayer .pdf-search-current,
   .pdf-search-fallback[data-search-current="true"] { background: Highlight; outline-color: HighlightText; }
   .pdf-link-hint { color: CanvasText; background: Canvas; border-color: Highlight; forced-color-adjust: none; }
+  .prompt { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
+  .toc-widget { border-color: CanvasText; }
+  .toc-widget-row[data-current="true"] { background: Highlight; }
+  .toc-widget-title { color: CanvasText; }
+  .toc-widget-title:disabled { color: GrayText; }
 }
 
 @media (min-resolution: 2dppx), (min-width: 1600px) {
@@ -531,12 +553,6 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
 }
 .toc-widget-empty { margin: 0; padding: 6px; color: var(--theme-muted-text); }
 
-@media (forced-colors: active) {
-  .toc-widget { border-color: CanvasText; }
-  .toc-widget-row[data-current="true"] { background: Highlight; }
-  .toc-widget-title { color: CanvasText; }
-  .toc-widget-title:disabled { color: GrayText; }
-}
 
 /* The empty-state hint is the click target, so it must read as text while
    behaving as a button for pointer and assistive-technology users. */

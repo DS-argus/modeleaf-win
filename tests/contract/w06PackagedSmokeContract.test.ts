@@ -8,6 +8,7 @@ import { generateHintLabels } from "../../src/domain/links/LinkHints";
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const source = async (): Promise<string> => readFile(resolve(root, "tools/windows/smoke-w06.ps1"), "utf8");
 const mainSource = async (): Promise<string> => readFile(resolve(root, "src/main.ts"), "utf8");
+const tabActivationSource = async (): Promise<string> => readFile(resolve(root, "src/application/TabActivationCoordinator.ts"), "utf8");
 const nativeSource = async (): Promise<string> => readFile(resolve(root, "src-tauri/src/lib.rs"), "utf8");
 
 describe("W06 packaged Windows smoke contract", () => {
@@ -135,17 +136,18 @@ describe("W06 packaged Windows smoke contract", () => {
 
   it("awaits tab activity publication and never swallows revocation failure", async () => {
     const main = await mainSource();
+    const coordinator = await tabActivationSource();
     expect(main).toMatch(/async function activateCurrentTab/);
-    expect(main).toMatch(/await prior\.session\.deactivate\(\)/);
-    expect(main).toMatch(/await activateCurrentTab\(true\)/);
-    expect(main).not.toMatch(/deactivate\(\)\.catch\(\(\) => undefined\)/);
+    expect(coordinator).toMatch(/await operations\.deactivate\(prior\)/);
+    expect(main).toMatch(/activateCurrent: \(restoreFocus\) => activateCurrentTab\(restoreFocus\)/);
+    expect(coordinator).not.toMatch(/deactivate\([^)]*\)\.catch\(\(\) => undefined\)/);
     expect(main).toMatch(/function reportPresentationFailure/);
     expect(main).toMatch(/error\.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE"/);
     expect(main).toMatch(/viewportSynchronization\.catch\(\(error: unknown\)/);
     expect(main).toMatch(/renderPage\(reader\.page\)\.catch/);
     expect(main).toMatch(/renderCurrentView\(\)\.catch/);
     expect(main).toMatch(/await session\.navigateToDestination\(page, destination, cause, isActivationCurrent\)/);
-    expect(main).toMatch(/active\(\)\.session\.snapshot\.active/);
+    expect(main).toMatch(/isActive: \(payload\) => payload\.session\.snapshot\.active/);
     expect(main).toMatch(/Could not activate this tab/);
     expect(main).toMatch(/Could not activate the tab after closing/);
     expect(main).toMatch(/queueWorkspaceTransition[\s\S]*?\.catch/);
