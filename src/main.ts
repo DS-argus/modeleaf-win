@@ -16,7 +16,10 @@ import { bindSearchPrompt } from "./ui/SearchPromptController";
 import { buildHelpRows } from "./ui/HelpModel";
 import { buildWindowsMenuModel } from "./application/commands/WindowsMenuModel";
 import { createShellOpenCoordinator } from "./platform/ShellOpenCoordinator";
+import { beginPagePromptCommit, editPagePrompt, navigationFailureStatus, openPagePrompt, revokePagePromptOwnership, settlePagePromptCommit, type PagePromptNavigationKind, type PagePromptState } from "./application/PagePromptTransaction";
 import type { InitiatedTerminal } from "./application/OpenFlowCoordinator";
+import { performTabActivation, queueRelativeTabActivation } from "./application/TabActivationCoordinator";
+import { rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
 import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "./application/WorkspaceTransitionQueue";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
 import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
@@ -86,7 +89,7 @@ root.innerHTML = `
   <nav id="windows-menu" data-testid="windows-menu" class="windows-menu" aria-label="Application menu"></nav>
   <div id="tab-strip" data-testid="tab-strip" class="tab-strip" role="tablist" aria-label="Open PDFs"></div>
   <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd></button></section></main>
-  <section id="prompt" class="prompt" hidden></section>
+  <section id="prompt" class="prompt" role="group" aria-label="Go to page" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">Arrow keys or Control J and K preview a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><h2 id="search-title">Search PDF text</h2><label>Literal text <input id="search-input" type="search" spellcheck="false"></label><p class="dialog-hint">Press <kbd>Enter</kbd> to start or restart the search. Close the prompt to use configured next and previous shortcuts.</p></form></dialog>
@@ -156,8 +159,15 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
     if (effect.type === "hide") { const dialog = overlayDialog(effect.overlay); if (dialog?.open === true) dialog.close(); }
     else if (effect.type === "show") { const dialog = overlayDialog(effect.overlay); if (dialog !== undefined && !dialog.open) dialog.showModal(); }
     else if (effect.type === "restorePrompt") {
-      if (effect.prompt.kind === "page") { pagePromptDigits = effect.prompt.text; prompt.hidden = false; prompt.textContent = `Go to page: ${pagePromptDigits || "_"}`; }
-      else { searchInput.value = effect.prompt.text; searchInput.setSelectionRange(effect.prompt.selectionStart, effect.prompt.selectionEnd); }
+      if (effect.prompt.kind === "page") {
+        const transaction = suspendedPagePrompt;
+        suspendedPagePrompt = undefined;
+        if (transaction !== undefined && ownsPagePrompt(transaction)) {
+          pagePromptTransaction = { ...transaction, digits: effect.prompt.text, committing: false, revision: ++pagePromptRevision };
+          prompt.hidden = false;
+          prompt.textContent = `Go to page: ${effect.prompt.text || "_"}`;
+        } else prompt.hidden = true;
+      } else { searchInput.value = effect.prompt.text; searchInput.setSelectionRange(effect.prompt.selectionStart, effect.prompt.selectionEnd); }
     }
     else if (effect.type === "focus") restoreOwnedFocus(effect.target);
   }
@@ -167,8 +177,13 @@ function claimOverlay(id: OverlayId): void {
   active().session.dismissLinkDecorations();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
   const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
-  const suspendedPrompt = pagePromptDigits === undefined ? undefined : { kind: "page" as const, text: pagePromptDigits, selectionStart: pagePromptDigits.length, selectionEnd: pagePromptDigits.length };
-  if (suspendedPrompt !== undefined) pagePromptDigits = undefined;
+  const activePrompt = pagePromptTransaction;
+  const suspendedPrompt = activePrompt === undefined ? undefined : { kind: "page" as const, text: activePrompt.digits, selectionStart: activePrompt.digits.length, selectionEnd: activePrompt.digits.length };
+  if (activePrompt !== undefined) {
+    activePrompt.payload.session.cancelPendingNavigation();
+    suspendedPagePrompt = { ...activePrompt, committing: false, revision: ++pagePromptRevision };
+    pagePromptTransaction = undefined;
+  }
   const transition = reduceOverlayOwner(overlayOwner, { type: "open", windowId: SHELL_WINDOW_ID, overlay: id, ...(focusedTarget === undefined ? {} : { focusedTarget }), ...(suspendedPrompt === undefined ? {} : { suspendedPrompt }) }, (target) => isRestorableFocusTarget(target));
   overlayOwner = transition.state;
   applyOverlayEffects(transition.effects);
@@ -334,7 +349,19 @@ const resources = new ResourceReservationManager((needed) => {
     if (tab.id !== activeTabId) tab.payload.session.evictInactiveHeavyResources();
   }
 });
-let pagePromptDigits: string | undefined;
+type PagePromptTransaction = PagePromptState<{
+  readonly ownerTabId: TabId;
+  readonly documentGeneration: number;
+  readonly payload: TabPayload;
+}>;
+let pagePromptTransaction: PagePromptTransaction | undefined;
+let suspendedPagePrompt: PagePromptTransaction | undefined;
+let pagePromptRevision = 0;
+function ownsPagePrompt(transaction: PagePromptTransaction): boolean {
+  return workspace.activeTabId === transaction.ownerTabId
+    && workspace.getPayload(transaction.ownerTabId)?.session === transaction.payload.session
+    && transaction.payload.session.snapshot.reader.documentGeneration === transaction.documentGeneration;
+}
 let configExists = false;
 let nativeOpenPending = false;
 const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = {
@@ -771,8 +798,8 @@ function render(): void {
   tabStrip.inert = shell.emptyState !== undefined;
   if (!snapshot.reader.helpVisible && overlayOwner.active?.id === "help") releaseOverlay("help");
   renderHelpRows();
-  prompt.hidden = pagePromptDigits === undefined;
-  prompt.textContent = pagePromptDigits === undefined ? "" : `Go to page: ${pagePromptDigits || "_"}`;
+  prompt.hidden = pagePromptTransaction === undefined;
+  prompt.textContent = pagePromptTransaction === undefined ? "" : `Go to page: ${pagePromptTransaction.digits || "_"}${pagePromptTransaction.committing ? " · Moving…" : pagePromptTransaction.validationMessage === undefined ? "" : ` · ${pagePromptTransaction.validationMessage}`}`;
   const tabs = workspace.snapshot.tabs;
   const documentTabs = tabs.filter((tab) => tab.payload.session.snapshot.reader.hasDocument);
   tabStrip.hidden = documentTabs.length === 0;
@@ -797,34 +824,39 @@ function render(): void {
     const item = document.createElement("div"); item.className = "workspace-tab-item"; item.append(button, close); item.dataset.index = String(index); return item;
   }));
 }
-async function activateCurrentTab(focus = false): Promise<void> { const current = active(); await current.session.activate(); render(); if (focus) current.host.focus(); }
-function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(async () => {
-  if (id === workspace.activeTabId) {
-    if (active().session.snapshot.active) return;
-    try { await activateCurrentTab(true); } catch { active().session.reader.setStatus("Could not activate this tab."); render(); }
-    return;
-  }
-  const priorId = workspace.activeTabId;
-  const prior = active();
-  // A buffered TOC selector must never commit into a different tab.
-  prior.toc.cancelPending();
-  try {
-    await prior.session.deactivate();
-    if (!workspace.activate(id)) { await prior.session.activate(); render(); return; }
-    try { await activateCurrentTab(true); } catch (error) {
-      workspace.activate(priorId);
-      await prior.session.activate();
-      render();
-      throw error;
-    }
-  } catch {
-    prior.session.reader.setStatus("Could not switch tabs.");
-    render();
-  }
-}); }
+function cancelPagePromptOwnership(): void {
+  const revoked = revokePagePromptOwnership(pagePromptTransaction, suspendedPagePrompt);
+  const transaction = revoked.transaction;
+  pagePromptTransaction = revoked.live;
+  suspendedPagePrompt = revoked.suspended;
+  if (transaction === undefined) return;
+  pagePromptRevision += 1;
+  transaction.payload.session.cancelPendingNavigation();
+  cancelPendingShellInput();
+}
+async function activateCurrentTab(focus = false): Promise<void> { const current = active(); await current.session.activate(); render(); if (focus) current.host.focus({ preventScroll: true }); }
+function switchTabNow(id: TabId): Promise<void> {
+  const sameTab = id === workspace.activeTabId;
+  return performTabActivation(id, {
+    activeId: () => workspace.activeTabId,
+    payload: (tabId) => workspace.getPayload(tabId),
+    isActive: (payload) => payload.session.snapshot.active,
+    cancelPending: (payload) => { cancelPagePromptOwnership(); payload.toc.cancelPending(); },
+    deactivate: (payload) => payload.session.deactivate(),
+    activateWorkspace: (tabId) => workspace.activate(tabId),
+    activateCurrent: (restoreFocus) => activateCurrentTab(restoreFocus),
+    publish: render,
+    reportFailure: (payload) => payload.session.reader.setStatus(sameTab ? "Could not activate this tab." : "Could not switch tabs."),
+  });
+}
+function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(() => switchTabNow(id)); }
+function switchAdjacentTab(direction: -1 | 1): Promise<void> {
+  return queueRelativeTabActivation(direction, queueWorkspaceActivation, (step) => workspace.adjacentId(step), switchTabNow);
+}
 function closeTab(id: TabId): void {
   void queueWorkspaceTransition(async () => {
     const wasActive = id === workspace.activeTabId;
+    if (wasActive) cancelPagePromptOwnership();
     if (!workspace.close(id)) return;
     if (wasActive) await activateCurrentTab(); else render();
   }).catch(() => {
@@ -836,14 +868,17 @@ interface PendingOpenAdoption {
   readonly request: OpenRequestAdoption;
   readonly id?: TabId;
   readonly payload?: TabPayload;
+  readonly priorActiveId?: TabId;
 }
 const pendingOpenAdoptions = new Map<string, PendingOpenAdoption>();
 async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
   pendingOpenAdoptions.set(request.requestId, { request });
   try {
-    await queueWorkspaceOwnership(async () => {
-      if (!pendingOpenAdoptions.has(request.requestId)) throw new Error("OPEN_REQUEST_DISPOSED");
-      const priorActiveId = workspace.activeTabId;
+    await queueWorkspaceOwnership(() => withOpenAdoptionOwnership({
+      requestPending: () => pendingOpenAdoptions.has(request.requestId),
+      activeId: () => workspace.activeTabId,
+      cancelPagePrompt: cancelPagePromptOwnership,
+    }, async (priorActiveId) => {
       let id = priorActiveId;
       let payload = active();
       let staged = false;
@@ -861,7 +896,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         id = stagedId;
         staged = true;
       }
-      pendingOpenAdoptions.set(request.requestId, { request, id, payload });
+      pendingOpenAdoptions.set(request.requestId, { request, id, payload, priorActiveId });
       try {
         await publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration));
         await loadOutline(payload.session, payload);
@@ -880,7 +915,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         render();
         throw error;
       }
-    });
+    }));
   } catch (error) {
     pendingOpenAdoptions.delete(request.requestId);
     throw error;
@@ -924,9 +959,14 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
       }
       return;
     }
-    workspace.close(settled.id);
+    cancelPagePromptOwnership();
+    rollbackOpenAdoptionOwnership(settled.id, settled.priorActiveId, {
+      close: (id) => { workspace.close(id); },
+      has: (id) => workspace.getPayload(id) !== undefined,
+      activate: (id) => { workspace.activate(id); },
+    });
+    await activateCurrentTab(terminal.tag !== "DISPOSED");
     if (terminal.tag !== "DISPOSED") {
-      await activateCurrentTab(true);
       active().session.reader.setStatus("The PDF open transaction was rolled back.");
       render();
     }
@@ -1140,6 +1180,7 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
       else if (ownedOverlay === "commandPalette") closePalette();
       else if (ownedOverlay === "recent") closeFileOpener();
       else if (ownedOverlay !== undefined) releaseOverlay(ownedOverlay);
+      cancelPagePromptOwnership();
       shellDisposing = true;
       themeUnlisten?.();
       recentSnapshotUnlisten?.();
@@ -1200,25 +1241,53 @@ function dispatchActionId(id: ActionId): void {
     "config.reload": { type: "config.reload" }, "indicator.picker": { type: "indicator.open" }, "update.show": { type: "update.show" },
   };
   if (id === "page.prompt") {
-    pagePromptDigits = "";
-    active().session.reader.setStatus("Go to page");
+    const payload = active();
+    pagePromptTransaction = openPagePrompt({
+      ownerTabId: workspace.activeTabId,
+      documentGeneration: payload.session.snapshot.reader.documentGeneration,
+      payload,
+    }, ++pagePromptRevision);
+    payload.session.reader.setStatus("Go to page");
     render();
+    payload.host.focus({ preventScroll: true });
     return;
   }
-  if (id === "prompt.cancel" && pagePromptDigits !== undefined) {
-    pagePromptDigits = undefined;
-    active().session.apply({ type: "prompt.cancel" });
+  if (id === "prompt.cancel" && pagePromptTransaction !== undefined) {
+    const transaction = pagePromptTransaction;
+    pagePromptTransaction = undefined;
+    pagePromptRevision += 1;
+    transaction.payload.session.cancelPendingNavigation();
+    transaction.payload.session.apply({ type: "prompt.cancel" });
+    rootKeyboard.syncContext();
     render();
+    if (ownsPagePrompt(transaction)) transaction.payload.host.focus({ preventScroll: true });
     return;
   }
-  if (id === "prompt.commit" && pagePromptDigits !== undefined) {
-    const page = Number(pagePromptDigits);
-    if (pagePromptDigits.length === 0) active().session.reader.setStatus("Enter a page number.");
-    else if (!Number.isSafeInteger(page)) active().session.reader.setStatus("Page number is too large.");
-    else if (page < 1) active().session.reader.setStatus("Page numbers start at 1.");
-    else if (page > active().session.snapshot.reader.pageCount) active().session.reader.setStatus(`Page ${page} is outside 1–${active().session.snapshot.reader.pageCount}.`);
-    else { pagePromptDigits = undefined; void active().session.navigatePagePrompt(page).then(render, (error: unknown) => reportPresentationFailure(active().session, error)); }
+  if (id === "prompt.commit" && pagePromptTransaction !== undefined) {
+    const transaction = pagePromptTransaction;
+    if (transaction.committing) return;
+    const revision = ++pagePromptRevision;
+    const start = beginPagePromptCommit(transaction, transaction.payload.session.snapshot.reader.pageCount, revision);
+    pagePromptTransaction = start.state;
+    if (start.kind === "invalid") {
+      transaction.payload.session.reader.setStatus(start.message);
+      render();
+      return;
+    }
     render();
+    const settle = (outcome: PagePromptNavigationKind | "exception"): void => {
+      const current = pagePromptTransaction;
+      const nextRevision = pagePromptRevision + 1;
+      const settlement = settlePagePromptCommit(current, start.revision, current !== undefined && ownsPagePrompt(current), outcome, nextRevision);
+      if (settlement.kind === "stale") return;
+      pagePromptRevision = nextRevision;
+      pagePromptTransaction = settlement.state;
+      if (settlement.kind === "failed") current?.payload.session.reader.setStatus(settlement.message);
+      rootKeyboard.syncContext();
+      render();
+      if ("restoreFocus" in settlement && settlement.restoreFocus) current?.payload.host.focus({ preventScroll: true });
+    };
+    void transaction.payload.session.navigatePagePrompt(start.page).then((result) => settle(result.kind), () => settle("exception"));
     return;
   }
   if (id === "search.next" || id === "search.previous") {
@@ -1262,10 +1331,28 @@ function dispatch(action: Action): void {
   if (type === "toc.scrollDown") { active().toc.scrollRows(1); render(); return; }
   if (type === "toc.scrollUp") { active().toc.scrollRows(-1); render(); return; }
   if (type === "palette.toggle") { openPalette(); return; }
-  if (type === "tab.next") { void switchTab(workspace.adjacentId(1)); return; }
-  if (type === "tab.previous") { void switchTab(workspace.adjacentId(-1)); return; }
-  if (type === "page.first") { void active().session.navigateFirstPage().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
-  if (type === "page.last") { void active().session.navigateLastPage().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
+  if (type === "tab.next") { void switchAdjacentTab(1); return; }
+  if (type === "tab.previous") { void switchAdjacentTab(-1); return; }
+  if (type === "page.next" || type === "page.previous") {
+    const payload = active();
+    const direction = type === "page.next" ? 1 : -1;
+    void payload.session.navigateAdjacentPage(direction).then((result) => {
+      if (result.kind !== "verifiedLanding" && result.kind !== "noOp") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
+      render();
+      if (active().session === payload.session) payload.host.focus({ preventScroll: true });
+    }, (error: unknown) => reportPresentationFailure(payload.session, error));
+    return;
+  }
+  if (type === "page.first" || type === "page.last") {
+    const payload = active();
+    const navigation = type === "page.first" ? payload.session.navigateFirstPage() : payload.session.navigateLastPage();
+    void navigation.then((result) => {
+      if (result.kind !== "verifiedLanding" && result.kind !== "noOp") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
+      render();
+      if (active().session === payload.session) payload.host.focus({ preventScroll: true });
+    }, (error: unknown) => reportPresentationFailure(payload.session, error));
+    return;
+  }
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "config.reload") { void reloadConfiguration(); return; }
   if (type === "indicator.open") { openIndicatorPickerDialog(); return; }
@@ -1305,23 +1392,33 @@ const rootKeyboard = createRootKeyboardRouter({
     windowId: SHELL_WINDOW_ID,
     routeRevision: String(workspace.activeTabId),
     generation: active().session.snapshot.reader.documentGeneration,
-    inputContext: pagePromptDigits !== undefined ? "pagePrompt" : overlayOwner.active?.id === "search" ? "searchPrompt" : active().session.query.length > 0 ? "searchResults" : "navigation",
+    inputContext: pagePromptTransaction !== undefined ? "pagePrompt" : overlayOwner.active?.id === "search" ? "searchPrompt" : active().session.query.length > 0 ? "searchResults" : "navigation",
     runtime: commandAvailabilityContext(),
   }),
   onDispatch: (id, sequenceDispatch) => {
     dispatchActionId(id);
-    if (sequenceDispatch.replay !== undefined && pagePromptDigits !== undefined) {
-      pagePromptDigits += sequenceDispatch.replay.token;
-      active().session.reader.setStatus(`Go to page: ${pagePromptDigits}`);
-      render();
+    const transaction = pagePromptTransaction;
+    if (sequenceDispatch.replay !== undefined && transaction !== undefined) {
+      const revision = pagePromptRevision + 1;
+      const edited = editPagePrompt(transaction, sequenceDispatch.replay.token, revision, ownsPagePrompt(transaction));
+      if (edited !== undefined) {
+        pagePromptRevision = revision;
+        pagePromptTransaction = edited;
+        transaction.payload.session.reader.setStatus(`Go to page: ${edited.digits || "_"}`);
+        render();
+      }
     }
   },
   onUnboundToken: (key, context) => {
-    if (context.inputContext !== "pagePrompt" || pagePromptDigits === undefined) return false;
-    if (/^[0-9]$/u.test(key) && pagePromptDigits.length < 16) pagePromptDigits += key;
-    else if (key === "<BS>") pagePromptDigits = pagePromptDigits.slice(0, -1);
-    else return false;
-    active().session.reader.setStatus(`Go to page: ${pagePromptDigits || "_"}`);
+    const transaction = pagePromptTransaction;
+    if (context.inputContext !== "pagePrompt" || transaction === undefined) return false;
+    if (transaction.committing) return /^[0-9]$/u.test(key) || key === "<BS>";
+    const revision = pagePromptRevision + 1;
+    const edited = editPagePrompt(transaction, key, revision, ownsPagePrompt(transaction));
+    if (edited === undefined) return false;
+    pagePromptRevision = revision;
+    pagePromptTransaction = edited;
+    transaction.payload.session.reader.setStatus(`Go to page: ${edited.digits || "_"}`);
     render();
     return true;
   },
