@@ -653,6 +653,13 @@ export class PdfReaderController {
     requestCommitGuard?: PdfRequestCommitGuard,
   ): Promise<boolean> {
     const normalized = this.normalizeViewTransform(transform);
+    const current = this.current;
+    if (current?.residentRasters.has(page)
+      && normalized.scale === this.viewTransform.scale
+      && normalized.rotation === this.viewTransform.rotation
+      && normalized.devicePixelRatio === this.viewTransform.devicePixelRatio) {
+      return requestCommitGuard?.() ?? true;
+    }
     const rendered = await this.renderPage(page, normalized, requestCommitGuard);
     if (!rendered) return false;
     return true;
@@ -755,7 +762,11 @@ export class PdfReaderController {
         }
         window.begin(page, plan.generation);
         const committed = await this.renderPageInternal(page, this.viewTransform, transactionCurrent);
-        if (!committed || !transactionCurrent()) return false;
+        if (!committed) {
+          if (transactionCurrent()) this.options.onStatus(`PDF viewport page ${page} could not be materialized.`);
+          return false;
+        }
+        if (!transactionCurrent()) return false;
         const raster = current.residentRasters.get(page);
         if (raster !== undefined) window.updateMetric(page, { width: raster.viewport.width, height: raster.viewport.height });
       }
@@ -968,10 +979,34 @@ export class PdfReaderController {
     } catch {
       return { kind: "preflightRejected" };
     }
+    await this.awaitViewportIdle();
     if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
     const pageNumber = target.pageIndex + 1;
     try {
-      const committed = await this.renderPage(pageNumber, targetTransform, requestCommitGuard);
+      const transformUnchanged = targetTransform.scale === this.viewTransform.scale
+        && targetTransform.rotation === this.viewTransform.rotation
+        && targetTransform.devicePixelRatio === this.viewTransform.devicePixelRatio;
+      let committed = true;
+      const synchronizeTargetWindow = async (offset: number): Promise<boolean> => {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          if (await this.synchronizeViewport(offset, this.options.canvasHost.clientHeight, requestCommitGuard)) return true;
+          if (!(requestCommitGuard?.() ?? true) || this.current !== current || this.disposed) return false;
+          await this.awaitViewportIdle();
+        }
+        return false;
+      };
+      if (!(transformUnchanged && current.residentRasters.has(pageNumber))) {
+        const targetOffset = current.window?.offsetForPage(pageNumber);
+        if (transformUnchanged && targetOffset !== undefined) {
+          committed = await synchronizeTargetWindow(targetOffset);
+        } else {
+          committed = await this.renderPage(pageNumber, targetTransform, requestCommitGuard);
+          const transformedOffset = current.window?.offsetForPage(pageNumber);
+          if (committed && transformedOffset !== undefined) {
+            committed = await synchronizeTargetWindow(transformedOffset);
+          }
+        }
+      }
       if (!committed) return !(requestCommitGuard?.() ?? true) ? { kind: "staleOrCancelled" } : { kind: "failed" };
       if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
       const anchor: PdfViewportAnchor = Object.freeze({

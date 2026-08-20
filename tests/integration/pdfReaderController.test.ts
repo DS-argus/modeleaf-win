@@ -913,6 +913,53 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
+  it("waits for active viewport authority before restoring a canonical landing", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const delayed = deferred<void>();
+    const cancel = vi.fn();
+    let pageTwoRequests = 0;
+    const getPage = vi.fn(async (pageNumber: number) => {
+      if (pageNumber !== 2) return page(pageNumber);
+      pageTwoRequests += 1;
+      return page(pageNumber, pageTwoRequests === 1 ? delayed.promise : Promise.resolve(), cancel);
+    });
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 100 }, clientHeight: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("landing-after-viewport", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    const viewport = controller.synchronizeViewport(0, 30);
+    await vi.waitFor(() => expect(resources.snapshot().totals.render).toBe(1));
+    const activePlansAtLandingSync: unknown[] = [];
+    const synchronizeViewport = controller.synchronizeViewport.bind(controller);
+    vi.spyOn(controller, "synchronizeViewport").mockImplementation((...args) => {
+      activePlansAtLandingSync.push(Reflect.get(controller, "activeViewportPlan"));
+      return activePlansAtLandingSync.length < 3 ? Promise.resolve(false) : synchronizeViewport(...args);
+    });
+    const landing = controller.restoreViewportLanding({ pageIndex: 4, x: 0, y: 30 });
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledOnce());
+    delayed.resolve();
+    await expect(viewport).resolves.toBe(false);
+    const outcome = await landing;
+    expect(activePlansAtLandingSync).toEqual([undefined, undefined, undefined]);
+    expect(outcome.kind).toBe("constrainedEdgeVerified");
+    if (outcome.kind !== "constrainedEdgeVerified") throw new Error("expected a verified constrained-edge landing");
+    expect(outcome.landing).toEqual(outcome.expected);
+    expect(outcome.expected).toEqual(controller.captureViewportLanding());
+    expect(outcome.expected).toMatchObject({ pageIndex: 4, x: expect.any(Number), y: expect.any(Number) });
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("keeps a stalled direct precommit from replacing a newer no-materialization scroll", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
@@ -1187,19 +1234,35 @@ describe("PdfReaderController", () => {
     const restored = controller.captureScrollAnchor()!;
     expect(Math.hypot(restored.pagePoint.x - anchor.pagePoint.x, restored.pagePoint.y - anchor.pagePoint.y)).toBeLessThanOrEqual(0.5);
     expect(controller.captureViewportLanding()).toMatchObject({ pageIndex: 0 });
+    const committedRender = vi.spyOn(controller, "renderPage");
+    await expect(controller.renderPageWithTransform(1, { scale: 2, rotation: 90, devicePixelRatio: 1 })).resolves.toBe(true);
+    expect(committedRender).not.toHaveBeenCalled();
+    committedRender.mockRestore();
     const landingOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 });
     const negativeOriginOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: -5, y: -5 });
     const restoreAnchor = vi.spyOn(controller, "restoreScrollAnchor");
     const pageTopOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 }, undefined, undefined, "page-top");
+    const requireVerifiedLanding = (outcome: Awaited<ReturnType<typeof controller.restoreViewportLanding>>) => {
+      expect(["verified", "constrainedEdgeVerified"]).toContain(outcome.kind);
+      if (outcome.kind === "verified") return outcome.landing;
+      if (outcome.kind === "constrainedEdgeVerified") {
+        expect(outcome.landing).toEqual(outcome.expected);
+        return outcome.landing;
+      }
+      throw new Error(`expected verified landing, received ${outcome.kind}`);
+    };
     expect(restoreAnchor.mock.calls.at(-1)?.[0].viewportOffset).toEqual({ x: 50, y: 0 });
-    expect(["verified", "constrainedEdgeVerified"]).toContain(pageTopOutcome.kind);
+    requireVerifiedLanding(pageTopOutcome);
     restoreAnchor.mockRestore();
-    expect(negativeOriginOutcome.kind).not.toBe("preflightRejected");
-    expect(["verified", "constrainedEdgeVerified"]).toContain(landingOutcome.kind);
+    requireVerifiedLanding(negativeOriginOutcome);
+    requireVerifiedLanding(landingOutcome);
+    const currentOutcome = await controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 });
+    const currentLanding = requireVerifiedLanding(currentOutcome);
+    expect(controller.captureViewportLanding()).toEqual(currentLanding);
     await expect(controller.restoreViewportLanding({ pageIndex: 1, x: 0, y: 0 })).resolves.toEqual({ kind: "preflightRejected" });
     await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 }, () => false)).resolves.toEqual({ kind: "staleOrCancelled" });
     const rejectedRender = vi.spyOn(controller, "renderPage").mockRejectedValueOnce(new Error("render failed"));
-    await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 })).resolves.toEqual({ kind: "failed" });
+    await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 }, undefined, { scale: 2, rotation: 0, devicePixelRatio: 1 })).resolves.toEqual({ kind: "failed" });
     rejectedRender.mockRestore();
     const rejectedGeometry = vi.spyOn(controller, "restoreScrollAnchor").mockImplementationOnce(() => { throw new Error("geometry failed"); });
     await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 5, y: 5 })).resolves.toEqual({ kind: "failed" });
