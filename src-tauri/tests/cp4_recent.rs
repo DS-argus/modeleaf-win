@@ -1,5 +1,7 @@
 use modeleaf_lib::local_path::{DriveKind, LocalPathPolicy, PathPolicyError};
-use modeleaf_lib::recent::{RecentStore, RecentStoreError, MAX_RECENT_DOCUMENTS};
+use modeleaf_lib::recent::{
+    RecentListOutcome, RecentStateReason, RecentStore, RecentStoreError, MAX_RECENT_DOCUMENTS,
+};
 use modeleaf_lib::theme_state::{ThemeId, ThemeStateManager};
 use serde_json::Value;
 use std::fs;
@@ -105,26 +107,83 @@ fn theme_recent_and_unknown_fields_survive_each_others_updates() {
 }
 
 #[test]
-fn malformed_recent_sibling_is_isolated_from_theme_and_replaced_on_recent_success() {
+fn malformed_recent_sibling_is_reported_and_preserved_byte_for_byte() {
     let directory = temp_dir("malformed");
     let state = directory.join("state.json");
     fs::write(&state, br#"{"selected_theme":"dracula","recent_files":{}}"#).unwrap();
+    let original = fs::read(&state).unwrap();
     assert_eq!(
         ThemeStateManager::load(&state).current().theme_id(),
         ThemeId::Dracula
     );
     let policy = Policy(DriveKind::Fixed);
     let mut store = RecentStore::load(&state, &policy).unwrap();
-    assert!(store.documents().is_empty());
-    store
-        .debug_record_opened_and_save(&pdf(&directory, 0), &policy)
+    assert_eq!(
+        store.list_outcome(),
+        RecentListOutcome::StateUnavailable {
+            reason: RecentStateReason::RecentFieldInvalid
+        }
+    );
+    assert!(matches!(
+        store.debug_record_opened_and_save(&pdf(&directory, 0), &policy),
+        Err(RecentStoreError::StateUnavailable(
+            RecentStateReason::RecentFieldInvalid
+        ))
+    ));
+    assert_eq!(fs::read(&state).unwrap(), original);
+    fs::remove_dir_all(directory).unwrap();
+}
+#[test]
+fn unknown_and_semantically_invalid_recent_members_are_fail_closed() {
+    let directory = temp_dir("strict-members");
+    let candidate = pdf(&directory, 0).to_string_lossy().into_owned();
+    let invalid_members = [
+        serde_json::json!({"absolute_path": candidate, "last_opened_at": "1", "extra": true}),
+        serde_json::json!({"absolute_path": "relative.pdf", "last_opened_at": "1"}),
+        serde_json::json!({"absolute_path": directory.join("not-pdf.txt").to_string_lossy(), "last_opened_at": "1"}),
+        serde_json::json!({"absolute_path": directory.join("valid.pdf").to_string_lossy(), "last_opened_at": "invalid"}),
+    ];
+    let policy = Policy(DriveKind::Fixed);
+    for (index, member) in invalid_members.into_iter().enumerate() {
+        let state = directory.join(format!("state-{index}.json"));
+        let bytes = serde_json::to_vec(
+            &serde_json::json!({"selected_theme":"nord","recent_files":[member]}),
+        )
         .unwrap();
-    let root: Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
-    assert!(root["recent_files"].is_array());
-    assert_eq!(root["selected_theme"], "dracula");
+        fs::write(&state, &bytes).unwrap();
+        let mut store = RecentStore::load(&state, &policy).unwrap();
+        assert_eq!(
+            store.list_outcome(),
+            RecentListOutcome::StateUnavailable {
+                reason: RecentStateReason::RecentFieldInvalid
+            }
+        );
+        assert!(matches!(
+            store.debug_record_opened_and_save(&pdf(&directory, index + 10), &policy),
+            Err(RecentStoreError::StateUnavailable(
+                RecentStateReason::RecentFieldInvalid
+            ))
+        ));
+        assert_eq!(fs::read(&state).unwrap(), bytes);
+    }
     fs::remove_dir_all(directory).unwrap();
 }
 
+#[test]
+fn invalid_root_introduced_after_load_is_not_replaced_by_recent_mutation() {
+    let directory = temp_dir("late-invalid-root");
+    let state = directory.join("state.json");
+    fs::write(&state, b"{}").unwrap();
+    let policy = Policy(DriveKind::Fixed);
+    let mut store = RecentStore::load(&state, &policy).unwrap();
+    fs::write(&state, b"[]").unwrap();
+    assert!(matches!(
+        store.debug_record_opened_and_save(&pdf(&directory, 0), &policy),
+        Err(RecentStoreError::Io(_))
+    ));
+    assert_eq!(fs::read(&state).unwrap(), b"[]");
+    fs::remove_dir_all(directory).unwrap();
+}
 #[test]
 fn invalid_root_is_reported_without_quarantine_or_compatibility_fallback() {
     let directory = temp_dir("invalid");
@@ -132,8 +191,18 @@ fn invalid_root_is_reported_without_quarantine_or_compatibility_fallback() {
     fs::write(&state, b"not-json").unwrap();
     let policy = Policy(DriveKind::Fixed);
     let mut store = RecentStore::load(&state, &policy).unwrap();
-    assert!(store.take_startup_recovery_needed());
-    assert!(!store.take_startup_recovery_needed());
+    assert!(matches!(
+        store.list_outcome(),
+        RecentListOutcome::StateUnavailable {
+            reason: RecentStateReason::StateInvalidRoot
+        }
+    ));
+    assert!(matches!(
+        store.debug_record_opened_and_save(&pdf(&directory, 99), &policy),
+        Err(RecentStoreError::StateUnavailable(
+            RecentStateReason::StateInvalidRoot
+        ))
+    ));
     assert_eq!(fs::read(&state).unwrap(), b"not-json");
     assert!(!directory.join("recent.quarantine.json").exists());
     fs::remove_dir_all(directory).unwrap();

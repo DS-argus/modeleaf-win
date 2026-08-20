@@ -60,6 +60,16 @@ function setup(rows: readonly OutlineRow[] = manyRows()) {
   controller.setContainerSize({ width: 1000, height: 800 });
   return { clock, controller, activations };
 }
+describe("TOC container updates", () => {
+  it("does not notify for an unchanged size", () => {
+    let changes = 0;
+    const controller = new TocController({ clock: new FakeClock(), onActivate: () => undefined, onChange: () => { changes += 1; } });
+    controller.setContainerSize({ width: 1000, height: 800 });
+    const afterFirst = changes;
+    controller.setContainerSize({ width: 1000, height: 800 });
+    expect(changes).toBe(afterFirst);
+  });
+});
 
 describe("TOC selector timing", () => {
   it("does not commit an ambiguous selector at 399ms", () => {

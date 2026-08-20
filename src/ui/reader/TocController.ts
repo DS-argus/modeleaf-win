@@ -93,6 +93,7 @@ export class TocController {
   }
 
   public setContainerSize(size: TocContainerSize): void {
+    if (this.container.width === size.width && this.container.height === size.height) return;
     this.container = size;
     this.notify();
   }

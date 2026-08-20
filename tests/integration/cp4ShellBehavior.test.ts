@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createRemovedTabTeardownSupervisor, createShellOpenCoordinator, createWorkspaceTransitionQueue } from "../../src/platform/ShellOpenCoordinator";
+import { createShellOpenCoordinator } from "../../src/platform/ShellOpenCoordinator";
+import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "../../src/application/WorkspaceTransitionQueue";
 import { publishActivateAndAdoptPdfTab } from "../../src/pdf/PdfTabSession";
 const opaque = (character: string) => character.repeat(64);
 const claim = () => ({ sessionId: opaque("d"), documentGeneration: 1, ownerGeneration: 1, length: 1, displayName: "report.pdf" });
@@ -11,10 +12,10 @@ describe("CP4 shell open coordinator", () => {
     const visibleCommit = new Promise<void>((resolve) => { commitVisible = resolve; }); const pending: boolean[] = []; const adopted: string[] = [];
     const invoke = vi.fn(async (command: string, args: { requestId?: string }) => command === "open_pdf_dialog" ? chooser : command === "list_pending_open_ingress" ? ingress : command === "claim_open_request" ? args.requestId === malformed ? { ...claim(), displayName: "\\\\server\\secret.pdf" } : claim() : undefined);
     const coordinator = createShellOpenCoordinator({ invoke, listen: async () => () => undefined, dialog: { setPending: (value) => pending.push(value), reportFailure: () => undefined }, adopt: async (request) => { adopted.push(request.requestId); if (request.requestId === accepted) await visibleCommit; }, onFailure: () => undefined });
-    await coordinator.ready; chooser = { requestId: accepted }; ingress = [{ tag: "OPEN_REQUEST", requestId: accepted }]; coordinator.requestOpen();
+    await coordinator.ready; chooser = { tag: "ADMITTED", requestId: accepted }; ingress = [{ tag: "OPEN_REQUEST", requestId: accepted }]; coordinator.requestOpen();
     await waitFor(() => expect(adopted).toEqual([accepted])); expect(invoke).not.toHaveBeenCalledWith("ack_open_request", { requestId: accepted });
     commitVisible(); await waitFor(() => expect(invoke).toHaveBeenCalledWith("ack_open_request", { requestId: accepted }));
-    chooser = { requestId: malformed }; ingress = [{ tag: "OPEN_REQUEST", requestId: malformed }]; coordinator.requestOpen(); await waitFor(() => expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId: malformed }));
+    chooser = { tag: "ADMITTED", requestId: malformed }; ingress = [{ tag: "OPEN_REQUEST", requestId: malformed }]; coordinator.requestOpen(); await waitFor(() => expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId: malformed }));
     expect(adopted).toEqual([accepted]); expect(pending).toEqual([true, false, true, false]); coordinator.dispose();
   });
   it("publishes visibility before activation and adoption", async () => { const order: string[] = []; await publishActivateAndAdoptPdfTab(() => { order.push("visible"); }, { activate: vi.fn(async () => { order.push("activate"); }) } as never, async () => { order.push("adopt"); }); expect(order).toEqual(["visible", "activate", "adopt"]); });

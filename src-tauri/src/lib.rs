@@ -26,7 +26,10 @@ use pdf_session::{
     PdfSessionError, PdfSessionManager, SessionId,
 };
 use rand::RngCore;
-use recent::{RecentDocument, RecentStore, RecentStoreError};
+use recent::{
+    RecentListOutcome, RecentOpenOutcome, RecentRecordOutcome, RecentStorageReason, RecentStore,
+    RecentStoreError,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -416,6 +419,33 @@ pub fn generate_reader_window_label() -> String {
     format!("reader-{:032x}", u128::from_be_bytes(bytes))
 }
 
+/// Preferred inner size for a new window, in logical pixels.
+///
+/// A fixed 1040x760 is wrong on both ends: cramped on a 4K panel and larger
+/// than the work area on a small laptop. This takes a fraction of the current
+/// monitor work area, clamped to the documented minimum and a comfortable
+/// reading width, so the window always fits the display it opens on.
+fn preferred_window_size<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> (f64, f64) {
+    const DEFAULT: (f64, f64) = (1040.0, 760.0);
+    const MIN: (f64, f64) = (480.0, 360.0);
+    const MAX: (f64, f64) = (1600.0, 1200.0);
+    let Ok(Some(monitor)) = app.primary_monitor() else {
+        return DEFAULT;
+    };
+    let scale = monitor.scale_factor();
+    if !scale.is_finite() || scale <= 0.0 {
+        return DEFAULT;
+    }
+    let size = monitor.size();
+    let logical_width = f64::from(size.width) / scale;
+    let logical_height = f64::from(size.height) / scale;
+    if !logical_width.is_finite() || !logical_height.is_finite() {
+        return DEFAULT;
+    }
+    let width = (logical_width * 0.62).clamp(MIN.0, MAX.0.min(logical_width));
+    let height = (logical_height * 0.78).clamp(MIN.1, MAX.1.min(logical_height));
+    (width, height)
+}
 #[tauri::command]
 async fn create_app_window(
     app: tauri::AppHandle,
@@ -425,6 +455,7 @@ async fn create_app_window(
     if app.state::<QuitCoordinator>().is_shutting_down() {
         return Err(CreateAppWindowError::ShuttingDown);
     }
+    let (preferred_width, preferred_height) = preferred_window_size(&app);
     let label = generate_reader_window_label();
     let owner = workspace
         .claim_window(&label)
@@ -436,7 +467,7 @@ async fn create_app_window(
         .decorations(true)
         .resizable(true)
         .fullscreen(false)
-        .inner_size(1040.0, 760.0)
+        .inner_size(preferred_width, preferred_height)
         .min_inner_size(480.0, 360.0)
         .build()
     {
@@ -624,64 +655,6 @@ fn command_owner(window: &Window, generation: u64) -> PdfOwner {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "tag", rename_all = "SCREAMING_SNAKE_CASE")]
-enum RecentCommandError {
-    OwnerMismatch,
-    Session(PdfSessionError),
-    NotFound,
-    RemotePath,
-    PathRejected,
-    PdfInvalid,
-    Storage,
-}
-
-impl std::fmt::Display for RecentCommandError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::OwnerMismatch => "RECENT_OWNER_MISMATCH",
-            Self::Session(error) => error.tag(),
-            Self::NotFound => "RECENT_NOT_FOUND",
-            Self::RemotePath => "RECENT_REMOTE_PATH",
-            Self::PathRejected => "RECENT_PATH_REJECTED",
-            Self::PdfInvalid => "RECENT_PDF_INVALID",
-            Self::Storage => "RECENT_STORAGE_FAILED",
-        })
-    }
-}
-impl std::error::Error for RecentCommandError {}
-
-fn recent_store_error(error: RecentStoreError) -> RecentCommandError {
-    match error {
-        RecentStoreError::RemotePath => RecentCommandError::RemotePath,
-        RecentStoreError::PathRejected => RecentCommandError::PathRejected,
-        RecentStoreError::NotPdf => RecentCommandError::PdfInvalid,
-        RecentStoreError::MissingRecentId => RecentCommandError::NotFound,
-        RecentStoreError::Io(_) => RecentCommandError::Storage,
-    }
-}
-
-fn recent_open_failure(error: RecentStoreError) -> OpenRequestError {
-    match error {
-        RecentStoreError::NotPdf => OpenRequestError::Session(PdfSessionError::PdfInvalid),
-        RecentStoreError::Io(_) => OpenRequestError::Session(PdfSessionError::FileUnreadable),
-        // A recent path is never trusted as route provenance; collapse it at the coordinator.
-        RecentStoreError::RemotePath
-        | RecentStoreError::PathRejected
-        | RecentStoreError::MissingRecentId => {
-            OpenRequestError::Session(PdfSessionError::PathRejected)
-        }
-    }
-}
-
-fn recent_owner(
-    workspace: &WorkspaceManager,
-    window: &Window,
-) -> Result<PdfOwner, RecentCommandError> {
-    workspace
-        .active_owner(window.label())
-        .ok_or(RecentCommandError::OwnerMismatch)
-}
 fn publish_open_failure<R, E>(
     emitter: &E,
     window_label: &str,
@@ -720,26 +693,132 @@ where
         Err(error) => publish_open_failure(emitter, window_label, coordinator, error),
     }
 }
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum NativeDialogFailureReason {
+    OwnerUnavailable,
+    WorkerFailed,
+    PickerFailed,
+}
 
-#[tauri::command]
-fn open_pdf_dialog(
-    window: Window,
-    coordinator: State<'_, OpenRequestCoordinator>,
-) -> Result<Option<open_request::OpenRequestNotice>, OpenRequestError> {
-    match choose_pdf_file(&window) {
-        Ok(Some(path)) => match coordinator.ingest_path(window.label(), &path) {
-            Ok(notice) => Ok(Some(notice)),
-            Err(error) => {
-                publish_open_failure(&window, window.label(), &coordinator, error)?;
-                Ok(None)
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum NativeSelectionRejectionReason {
+    OpenRequestNotFound,
+    OpenRequestCapacity,
+    OpenRequestOwnerMismatch,
+    OpenRequestNotClaimed,
+    OpenRequestCancelled,
+    OpenRequestRejected,
+    OpenRequestDeliveryExpired,
+    PathRejected,
+    RemotePath,
+    MissingFile,
+    FileUnreadable,
+    PdfInvalid,
+    DocumentTooLarge,
+    SessionCapacity,
+    RangeInvalid,
+    RangeCapacity,
+    SessionNotFound,
+    OwnerMismatch,
+    GenerationMismatch,
+    SessionClosing,
+    BarrierMismatch,
+    DialogFailed,
+    ExternalLinkDrainTimeout,
+}
+
+fn native_selection_reason(error: OpenRequestError) -> NativeSelectionRejectionReason {
+    match error {
+        OpenRequestError::NotFound => NativeSelectionRejectionReason::OpenRequestNotFound,
+        OpenRequestError::Capacity => NativeSelectionRejectionReason::OpenRequestCapacity,
+        OpenRequestError::OwnerMismatch => NativeSelectionRejectionReason::OpenRequestOwnerMismatch,
+        OpenRequestError::NotClaimed => NativeSelectionRejectionReason::OpenRequestNotClaimed,
+        OpenRequestError::Cancelled => NativeSelectionRejectionReason::OpenRequestCancelled,
+        OpenRequestError::Rejected => NativeSelectionRejectionReason::OpenRequestRejected,
+        OpenRequestError::DeliveryExpired => {
+            NativeSelectionRejectionReason::OpenRequestDeliveryExpired
+        }
+        OpenRequestError::Session(error) => match error {
+            PdfSessionError::PathRejected => NativeSelectionRejectionReason::PathRejected,
+            PdfSessionError::RemotePath => NativeSelectionRejectionReason::RemotePath,
+            PdfSessionError::MissingFile => NativeSelectionRejectionReason::MissingFile,
+            PdfSessionError::FileUnreadable => NativeSelectionRejectionReason::FileUnreadable,
+            PdfSessionError::PdfInvalid => NativeSelectionRejectionReason::PdfInvalid,
+            PdfSessionError::DocumentTooLarge => NativeSelectionRejectionReason::DocumentTooLarge,
+            PdfSessionError::SessionCapacity => NativeSelectionRejectionReason::SessionCapacity,
+            PdfSessionError::RangeInvalid => NativeSelectionRejectionReason::RangeInvalid,
+            PdfSessionError::RangeCapacity => NativeSelectionRejectionReason::RangeCapacity,
+            PdfSessionError::SessionNotFound => NativeSelectionRejectionReason::SessionNotFound,
+            PdfSessionError::OwnerMismatch => NativeSelectionRejectionReason::OwnerMismatch,
+            PdfSessionError::GenerationMismatch => {
+                NativeSelectionRejectionReason::GenerationMismatch
+            }
+            PdfSessionError::SessionClosing => NativeSelectionRejectionReason::SessionClosing,
+            PdfSessionError::BarrierMismatch => NativeSelectionRejectionReason::BarrierMismatch,
+            PdfSessionError::DialogFailed => NativeSelectionRejectionReason::DialogFailed,
+            PdfSessionError::ExternalLinkDrainTimeout => {
+                NativeSelectionRejectionReason::ExternalLinkDrainTimeout
             }
         },
-        Ok(None) => Ok(None),
-        Err(error) => {
-            publish_open_failure(&window, window.label(), &coordinator, error.into())?;
-            Ok(None)
-        }
     }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(
+    tag = "tag",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+enum NativeDialogOutcome {
+    Cancelled,
+    Admitted {
+        request_id: OpenRequestId,
+    },
+    DialogFailed {
+        reason: NativeDialogFailureReason,
+    },
+    SelectionRejected {
+        reason: NativeSelectionRejectionReason,
+    },
+}
+#[tauri::command]
+async fn open_pdf_dialog(
+    window: Window,
+    coordinator: State<'_, OpenRequestCoordinator>,
+) -> Result<NativeDialogOutcome, OpenRequestError> {
+    let owner_hwnd = match window.hwnd() {
+        Ok(hwnd) if !hwnd.0.is_null() => hwnd.0 as isize,
+        _ => {
+            return Ok(NativeDialogOutcome::DialogFailed {
+                reason: NativeDialogFailureReason::OwnerUnavailable,
+            })
+        }
+    };
+    let chosen =
+        match tauri::async_runtime::spawn_blocking(move || choose_pdf_file(owner_hwnd)).await {
+            Ok(result) => result,
+            Err(_) => {
+                return Ok(NativeDialogOutcome::DialogFailed {
+                    reason: NativeDialogFailureReason::WorkerFailed,
+                })
+            }
+        };
+    Ok(match chosen {
+        Ok(Some(path)) => match coordinator.ingest_path(window.label(), &path) {
+            Ok(notice) => NativeDialogOutcome::Admitted {
+                request_id: notice.request_id,
+            },
+            Err(error) => NativeDialogOutcome::SelectionRejected {
+                reason: native_selection_reason(error),
+            },
+        },
+        Ok(None) => NativeDialogOutcome::Cancelled,
+        Err(_) => NativeDialogOutcome::DialogFailed {
+            reason: NativeDialogFailureReason::PickerFailed,
+        },
+    })
 }
 #[tauri::command]
 fn ack_open_failure(
@@ -784,82 +863,205 @@ fn reject_open_request(
 ) -> Result<(), OpenRequestError> {
     coordinator.reject(window.label(), OpenRequestId::from_opaque(request_id)?)
 }
+const RECENT_STATE_CHANGED_EVENT: &str = "recent-state-changed";
+fn publish_recent_snapshot(window: &Window, outcome: &RecentListOutcome) {
+    let _ = window
+        .app_handle()
+        .emit(RECENT_STATE_CHANGED_EVENT, outcome);
+}
 
 #[tauri::command]
 fn record_recent(
     window: Window,
     sessions: State<'_, PdfSessionManager>,
-    workspace: State<'_, WorkspaceManager>,
     recents: State<'_, Mutex<RecentStore>>,
     session_id: String,
     document_generation: u64,
-) -> Result<RecentDocument, RecentCommandError> {
-    let owner = recent_owner(&workspace, &window)?;
-    let session_id = SessionId::from_opaque(session_id)
-        .map_err(|_| RecentCommandError::Session(PdfSessionError::SessionNotFound))?;
-    let identity = sessions
-        .trusted_recent_identity(&owner, &session_id, document_generation)
-        .map_err(RecentCommandError::Session)?;
+    owner_generation: u64,
+) -> RecentRecordOutcome {
+    let owner = command_owner(&window, owner_generation);
+    let session_id = match SessionId::from_opaque(session_id) {
+        Ok(session_id) => session_id,
+        Err(_) => {
+            return RecentRecordOutcome::StorageFailed {
+                reason: RecentStorageReason::IdentityUnavailable,
+            }
+        }
+    };
+    let identity = match sessions.trusted_recent_identity(&owner, &session_id, document_generation)
+    {
+        Ok(identity) => identity,
+        Err(_) => {
+            return RecentRecordOutcome::StorageFailed {
+                reason: RecentStorageReason::IdentityUnavailable,
+            }
+        }
+    };
     let mut recents = recents.lock().expect("recent store state poisoned");
-    let document = recents
-        .record_trusted_opened_and_save(identity)
-        .map_err(recent_store_error)?;
-    Ok(document)
+    match recents.record_trusted_opened_and_save(identity) {
+        Ok(_) => {
+            let (revision, entries) = recents.snapshot();
+            let event = RecentListOutcome::Ready {
+                revision: revision.clone(),
+                entries: entries.clone(),
+            };
+            drop(recents);
+            publish_recent_snapshot(&window, &event);
+            RecentRecordOutcome::Committed { revision, entries }
+        }
+        Err(RecentStoreError::StateUnavailable(reason)) => {
+            RecentRecordOutcome::StateUnavailable { reason }
+        }
+        Err(_) => RecentRecordOutcome::StorageFailed {
+            reason: RecentStorageReason::StateWriteFailed,
+        },
+    }
 }
-
 #[tauri::command]
-fn list_recents(recents: State<'_, Mutex<RecentStore>>) -> Vec<RecentDocument> {
+fn list_recents(recents: State<'_, Mutex<RecentStore>>) -> RecentListOutcome {
     recents
         .lock()
         .expect("recent store state poisoned")
-        .documents()
+        .list_outcome()
 }
 
+fn prune_confirmed_missing(
+    store: &mut RecentStore,
+    recent_id: &str,
+) -> (RecentOpenOutcome, Option<RecentListOutcome>) {
+    match store.prune_missing_id(recent_id) {
+        Ok(true) => {
+            let (revision, entries) = store.snapshot();
+            let event = RecentListOutcome::Ready {
+                revision: revision.clone(),
+                entries: entries.clone(),
+            };
+            (
+                RecentOpenOutcome::MissingPruned { revision, entries },
+                Some(event),
+            )
+        }
+        Ok(false) => {
+            let (revision, entries) = store.snapshot();
+            (
+                RecentOpenOutcome::StaleSelection { revision, entries },
+                None,
+            )
+        }
+        Err(RecentStoreError::StateUnavailable(_)) => (
+            RecentOpenOutcome::MissingPruneFailed {
+                reason: "STATE_UNAVAILABLE".into(),
+            },
+            None,
+        ),
+        Err(_) => (
+            RecentOpenOutcome::MissingPruneFailed {
+                reason: "STATE_WRITE_FAILED".into(),
+            },
+            None,
+        ),
+    }
+}
 #[tauri::command]
 fn open_recent(
     window: Window,
     coordinator: State<'_, OpenRequestCoordinator>,
     recents: State<'_, Mutex<RecentStore>>,
     recent_id: String,
-) -> Result<(), RecentCommandError> {
-    let resolution = recents
-        .lock()
-        .expect("recent store state poisoned")
-        .resolve_for_open(&recent_id, &SystemLocalPathPolicy);
-    let path = match resolution {
-        Ok(path) => path,
-        Err(error) => {
-            if matches!(&error, RecentStoreError::Io(source) if source.kind() == std::io::ErrorKind::NotFound)
-            {
-                recents
-                    .lock()
-                    .expect("recent store state poisoned")
-                    .prune_missing_id(&recent_id)
-                    .map_err(recent_store_error)?;
+) -> RecentOpenOutcome {
+    let mut store = recents.lock().expect("recent store state poisoned");
+    if let Some(reason) = store.health_reason() {
+        return RecentOpenOutcome::StateUnavailable { reason };
+    }
+    let (outcome, event) = match store.resolve_for_open(&recent_id, &SystemLocalPathPolicy) {
+        Ok(path) => match coordinator.ingest_path(window.label(), &path) {
+            Ok(notice) => (
+                RecentOpenOutcome::Admitted {
+                    request_id: notice.request_id.into_opaque(),
+                },
+                None,
+            ),
+            Err(OpenRequestError::Session(PdfSessionError::MissingFile)) => {
+                prune_confirmed_missing(&mut store, &recent_id)
             }
-            publish_open_failure(
-                &window,
-                window.label(),
-                &coordinator,
-                recent_open_failure(error),
+            Err(OpenRequestError::Session(PdfSessionError::RemotePath)) => (
+                RecentOpenOutcome::AccessDenied {
+                    reason: "REMOTE_PATH".into(),
+                },
+                None,
+            ),
+            Err(OpenRequestError::Session(PdfSessionError::PathRejected)) => (
+                RecentOpenOutcome::AccessDenied {
+                    reason: "PATH_REJECTED".into(),
+                },
+                None,
+            ),
+            Err(OpenRequestError::Session(PdfSessionError::FileUnreadable)) => (
+                RecentOpenOutcome::TransientFailure {
+                    reason: "IO_TRANSIENT".into(),
+                },
+                None,
+            ),
+            Err(error) => (
+                RecentOpenOutcome::DocumentRejected {
+                    reason: error.to_string(),
+                },
+                None,
+            ),
+        },
+        Err(RecentStoreError::MissingRecentId) => {
+            let (revision, entries) = store.snapshot();
+            (
+                RecentOpenOutcome::StaleSelection { revision, entries },
+                None,
             )
-            .map_err(|error| match error {
-                OpenRequestError::OwnerMismatch => RecentCommandError::OwnerMismatch,
-                OpenRequestError::Capacity => {
-                    RecentCommandError::Session(PdfSessionError::SessionCapacity)
-                }
-                OpenRequestError::Session(error) => RecentCommandError::Session(error),
-                _ => RecentCommandError::Storage,
-            })?;
-            return Ok(());
+        }
+        Err(RecentStoreError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            prune_confirmed_missing(&mut store, &recent_id)
+        }
+        Err(RecentStoreError::RemotePath) => (
+            RecentOpenOutcome::AccessDenied {
+                reason: "REMOTE_PATH".into(),
+            },
+            None,
+        ),
+        Err(RecentStoreError::PathRejected) => (
+            RecentOpenOutcome::AccessDenied {
+                reason: "PATH_REJECTED".into(),
+            },
+            None,
+        ),
+        Err(RecentStoreError::NotPdf) => (
+            RecentOpenOutcome::DocumentRejected {
+                reason: "PDF_INVALID".into(),
+            },
+            None,
+        ),
+        Err(RecentStoreError::Io(error))
+            if error.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            (
+                RecentOpenOutcome::AccessDenied {
+                    reason: "PERMISSION_DENIED".into(),
+                },
+                None,
+            )
+        }
+        Err(RecentStoreError::Io(_)) => (
+            RecentOpenOutcome::TransientFailure {
+                reason: "IO_TRANSIENT".into(),
+            },
+            None,
+        ),
+        Err(RecentStoreError::StateUnavailable(reason)) => {
+            (RecentOpenOutcome::StateUnavailable { reason }, None)
         }
     };
-    emit_open_request(&window, window.label(), &coordinator, &path).map_err(|error| match error {
-        OpenRequestError::Session(error) => RecentCommandError::Session(error),
-        OpenRequestError::OwnerMismatch => RecentCommandError::OwnerMismatch,
-        OpenRequestError::Capacity => RecentCommandError::Session(PdfSessionError::SessionCapacity),
-        _ => RecentCommandError::Storage,
-    })
+    drop(store);
+    if let Some(event) = event.as_ref() {
+        publish_recent_snapshot(&window, event);
+    }
+    outcome
 }
 #[tauri::command]
 fn prepare_external_links(
@@ -1097,9 +1299,16 @@ pub fn run() {
             app.manage(StateFileStore::new(state_path.clone()));
             let window = app.get_webview_window("main").expect("main window missing");
             disable_browser_accelerators(&window)?;
+            // The configured size is a fallback. Resize to fit the monitor the
+            // window actually opens on, then centre it, before it is shown.
+            let (preferred_width, preferred_height) = preferred_window_size(app.handle());
             window.show()?;
-            let mut recents = RecentStore::load(state_path.clone(), &SystemLocalPathPolicy)?;
-            let recent_recovery_needed = recents.take_startup_recovery_needed();
+            // The size must be applied after the window is realised. Setting it
+            // while still hidden was silently overridden, leaving the window at
+            // nearly the full work-area height regardless of configuration.
+            let _ = window.set_size(tauri::LogicalSize::new(preferred_width, preferred_height));
+            let _ = window.center();
+            let recents = RecentStore::load(state_path.clone(), &SystemLocalPathPolicy)?;
             app.manage(Mutex::new(recents));
             let themes = ThemeStateManager::load(state_path);
             let theme_recovery_needed = themes.take_startup_recovery_needed();
@@ -1124,14 +1333,6 @@ pub fn run() {
                 &app.state::<OpenRequestCoordinator>(),
                 &app.state::<SecondInstanceIngress>(),
             );
-            if recent_recovery_needed {
-                let _ = publish_open_failure(
-                    &window,
-                    window.label(),
-                    &app.state::<OpenRequestCoordinator>(),
-                    OpenRequestError::Session(PdfSessionError::FileUnreadable),
-                );
-            }
             Ok(())
         })
         .on_window_event(|window, event| match event {

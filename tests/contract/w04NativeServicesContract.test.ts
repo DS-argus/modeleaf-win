@@ -34,7 +34,7 @@ describe("W04 native services contract", () => {
     const main = source("src/main.ts");
     expect(main).toContain("const shellOpen = createShellOpenCoordinator");
     expect(main).toContain("adopt: adoptRequest");
-    expect(main).toContain('invoke("record_recent"');
+    expect(main).toContain("recordRecentDocument(invoke, pending.request.sessionId, pending.request.documentGeneration, pending.request.ownerGeneration)");
     expect(source("src/platform/OpenRequestClient.ts")).toContain("MISSING_FILE");
   });
 

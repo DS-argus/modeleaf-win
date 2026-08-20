@@ -163,14 +163,15 @@ describe("search prompt production binding", () => {
     document.body.append(dialog);
     const startSearch = vi.fn(() => ({ kind: "search" as const }));
     const render = vi.fn();
+    const close = vi.fn(() => dialog.removeAttribute("open"));
     const dispose = bindSearchPrompt(
       { dialog, form, input },
       () => ({ startSearch }),
+      close,
       render,
     );
 
     dialog.setAttribute("open", "");
-    dialog.close = vi.fn(() => dialog.removeAttribute("open"));
     input.value = "retained query";
     input.focus();
     const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
@@ -180,6 +181,7 @@ describe("search prompt production binding", () => {
     expect(startSearch).not.toHaveBeenCalled();
     expect(input.value).toBe("retained query");
     expect(dialog.open).toBe(false);
+    expect(close).toHaveBeenCalledOnce();
     expect(render).toHaveBeenCalledOnce();
 
     dispose();

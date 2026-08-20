@@ -2,7 +2,7 @@ export type OverlayId = "commandPalette" | "search" | "help" | "theme" | "indica
 export type WindowOwnerId = string;
 export type FocusTargetId = string;
 export interface SuspendedPrompt { readonly kind: "page" | "search"; readonly text: string; readonly selectionStart: number; readonly selectionEnd: number }
-export interface ActiveOverlay { readonly id: OverlayId; readonly returnFocusTarget: FocusTargetId; readonly suspendedPrompt?: SuspendedPrompt; readonly prior?: ActiveOverlay }
+export interface ActiveOverlay { readonly id: OverlayId; readonly returnFocusTarget: FocusTargetId; readonly suspendedPrompt?: SuspendedPrompt }
 export interface OverlayOwnerState { readonly windowId: WindowOwnerId; readonly fallbackFocusTarget: FocusTargetId; readonly active?: ActiveOverlay }
 export type OverlayIntent =
   | { readonly type: "open"; readonly windowId: WindowOwnerId; readonly overlay: OverlayId; readonly focusedTarget?: FocusTargetId; readonly suspendedPrompt?: SuspendedPrompt }
@@ -21,6 +21,13 @@ export function createOverlayOwner(windowId: WindowOwnerId, fallbackFocusTarget:
   return Object.freeze({ windowId, fallbackFocusTarget });
 }
 
+/**
+ * Sole authority for application overlays.
+ *
+ * Native Windows dialogs are deliberately absent from this model. Replacing an
+ * application overlay never retains a hidden stack: at most one app overlay is
+ * owned, visible and keyboard-routable at any instant.
+ */
 export function reduceOverlayOwner(
   state: OverlayOwnerState,
   intent: OverlayIntent,
@@ -29,25 +36,21 @@ export function reduceOverlayOwner(
   if (intent.windowId !== state.windowId) return freezeTransition(state, []);
   if (intent.type === "open") {
     const prior = state.active;
+    if (prior?.id === intent.overlay) return freezeTransition(state, []);
     const requested = intent.focusedTarget;
-    const returnFocusTarget = prior?.returnFocusTarget
-      ?? (requested !== undefined && validTarget(requested) && isTargetValid(requested) ? requested : state.fallbackFocusTarget);
+    const returnFocusTarget = requested !== undefined && validTarget(requested) && isTargetValid(requested)
+      ? requested
+      : prior?.returnFocusTarget ?? state.fallbackFocusTarget;
     const suspendedPrompt = intent.suspendedPrompt ?? prior?.suspendedPrompt;
-    const active = Object.freeze({ id: intent.overlay, returnFocusTarget, ...(suspendedPrompt === undefined ? {} : { suspendedPrompt }), ...(prior === undefined || prior.id === intent.overlay ? {} : { prior }) });
+    const active = Object.freeze({ id: intent.overlay, returnFocusTarget, ...(suspendedPrompt === undefined ? {} : { suspendedPrompt }) });
     return freezeTransition(Object.freeze({ ...state, active }), Object.freeze([
       { type: "cancelPendingInput" as const },
-      ...(prior === undefined || prior.id === intent.overlay ? [] : [{ type: "hide" as const, overlay: prior.id }]),
+      ...(prior === undefined ? [] : [{ type: "hide" as const, overlay: prior.id }]),
       { type: "show" as const, overlay: intent.overlay },
     ]));
   }
   const active = state.active;
   if (active === undefined || (intent.type === "close" && intent.overlay !== active.id)) return freezeTransition(state, []);
-  if (active.prior !== undefined) {
-    return freezeTransition(Object.freeze({ ...state, active: active.prior }), Object.freeze([
-      { type: "hide", overlay: active.id },
-      { type: "show", overlay: active.prior.id },
-    ]));
-  }
   const focusTarget = validTarget(active.returnFocusTarget) && isTargetValid(active.returnFocusTarget)
     ? active.returnFocusTarget : state.fallbackFocusTarget;
   return freezeTransition(Object.freeze({ windowId: state.windowId, fallbackFocusTarget: state.fallbackFocusTarget }), Object.freeze([
