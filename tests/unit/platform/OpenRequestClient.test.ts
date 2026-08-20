@@ -53,19 +53,21 @@ describe("OpenRequestClient", () => {
     let firstClaims = 0;
     const adopted: string[] = [];
     const terminal = vi.fn();
+    const progress = vi.fn();
     const invoke = vi.fn(async (command: string, args: { requestId?: string }) => {
       if (command === "list_pending_open_ingress") return [request(first), request(second)];
-      if (command === "claim_open_request" && args.requestId === first && firstClaims++ === 0) throw new Error("transient");
+      if (command === "claim_open_request" && args.requestId === first && firstClaims++ === 0) throw new Error("BACKEND_NOT_FOUND_RETRYABLE");
       return command === "claim_open_request" ? claim() : undefined;
     });
     const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: vi.fn((entry: OpenRequestAdoption) => { adopted.push(entry.requestId); }) });
     await client.ready;
-    client.admitNotice({ requestId: second }, terminal);
+    client.admitNotice({ requestId: second }, terminal, progress);
     events.emitRequest({ requestId: second, path: "C:\\secret.pdf" });
     await vi.advanceTimersByTimeAsync(0);
     expect(adopted).toEqual([first, second]);
     expect(terminal).toHaveBeenCalledTimes(1);
-    expect(terminal).toHaveBeenCalledWith(second);
+    expect(progress.mock.calls.map(([, value]) => value.step)).toEqual(["ADOPT", "ACK"]);
+    expect(terminal).toHaveBeenCalledWith(second, { tag: "ACKNOWLEDGED" });
     client.dispose();
   });
 
@@ -78,7 +80,7 @@ describe("OpenRequestClient", () => {
     const adopted: string[] = [];
     const invoke = vi.fn(async (command: string, args: { requestId?: string }) => {
       if (command === "list_pending_open_ingress") return [request(first), request(second)];
-      if (command === "claim_open_request" && args.requestId === first && !recover) throw new Error("transient");
+      if (command === "claim_open_request" && args.requestId === first && !recover) throw new Error("BACKEND_NOT_FOUND_RETRYABLE");
       return command === "claim_open_request" ? claim() : undefined;
     });
     const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: vi.fn((entry: OpenRequestAdoption) => { adopted.push(entry.requestId); }) });
@@ -149,7 +151,7 @@ describe("OpenRequestClient", () => {
     expect(terminal).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(50);
     expect(terminal).toHaveBeenCalledTimes(1);
-    expect(terminal).toHaveBeenCalledWith(requestId);
+    expect(terminal).toHaveBeenCalledWith(requestId, { tag: "ACKNOWLEDGED" });
     expect(acknowledgements).toBe(2);
     client.dispose();
   });
@@ -193,5 +195,97 @@ describe("OpenRequestClient", () => {
     expect(terminal.mock.calls.map(([id]) => id)).toEqual([accepted, malformed]);
     expect(invoke.mock.calls.some(([, args]) => JSON.stringify(args).includes("secret.pdf"))).toBe(false);
     client.dispose();
+  });
+
+  it("preserves terminal acknowledgement warnings instead of collapsing them", async () => {
+    const events = listenerHarness();
+    const requestId = opaque("d");
+    const terminal = vi.fn();
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "list_pending_open_ingress") return [request(requestId)];
+      if (command === "claim_open_request") return claim();
+      if (command === "ack_open_request") throw { tag: "OPEN_REQUEST_DELIVERY_EXPIRED" };
+      return undefined;
+    });
+    const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: vi.fn() });
+    client.admitNotice({ requestId }, terminal);
+    await client.ready;
+    await waitFor(() => terminal.mock.calls.length === 1);
+    expect(terminal).toHaveBeenCalledWith(requestId, { tag: "ADOPTED_WITH_WARNING", reason: "DELIVERY_EXPIRED" });
+    client.dispose();
+  });
+
+  it("publishes a terminal for retained startup ingress without an admitNotice callback", async () => {
+    const requestId = opaque("7");
+    const terminal = vi.fn();
+    const invoke = vi.fn(async (command: string) => command === "list_pending_open_ingress" ? [request(requestId)] : command === "claim_open_request" ? claim() : undefined);
+    const client = createOpenRequestClient({ listen: listenerHarness().listen, invoke, adopt: vi.fn(), onTerminal: terminal });
+    await client.ready;
+    await waitFor(() => terminal.mock.calls.length === 1);
+    expect(terminal).toHaveBeenCalledWith(requestId, { tag: "ACKNOWLEDGED" });
+    client.dispose();
+  });
+
+  it("publishes rollback ownership and never acknowledges an adoption that settles after disposal", async () => {
+    const requestId = opaque("8");
+    const terminal = vi.fn();
+    let releaseAdoption!: () => void;
+    const adoption = new Promise<void>((resolve) => { releaseAdoption = resolve; });
+    const adopt = vi.fn(() => adoption);
+    const invoke = vi.fn(async (command: string) => command === "list_pending_open_ingress" ? [request(requestId)] : command === "claim_open_request" ? claim() : undefined);
+    const client = createOpenRequestClient({ listen: listenerHarness().listen, invoke, adopt, onTerminal: terminal });
+    await waitFor(() => adopt.mock.calls.length === 1);
+    client.dispose();
+    releaseAdoption();
+    await settle();
+    expect(terminal).toHaveBeenCalledWith(requestId, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" });
+    expect(invoke.mock.calls.some(([command]) => command === "ack_open_request")).toBe(false);
+    expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId });
+
+  });
+  it("rejects a pre-enumeration admission instead of clearing its terminal", async () => {
+    const requestId = opaque("9");
+    const terminal = vi.fn();
+    const invoke = vi.fn(async () => undefined);
+    const client = createOpenRequestClient({ listen: listenerHarness().listen, invoke, adopt: vi.fn(), onTerminal: vi.fn() });
+    client.admitNotice({ requestId }, terminal);
+    client.dispose();
+    await settle();
+    expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId });
+    expect(terminal).toHaveBeenCalledWith(requestId, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" });
+  });
+
+  it("never adopts a claim that resolves after disposal", async () => {
+    const requestId = opaque("a");
+    let releaseClaim!: (value: unknown) => void;
+    const claimedLater = new Promise<unknown>((resolve) => { releaseClaim = resolve; });
+    const adopt = vi.fn();
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "list_pending_open_ingress") return [request(requestId)];
+      if (command === "claim_open_request") return claimedLater;
+      return undefined;
+    });
+    const client = createOpenRequestClient({ listen: listenerHarness().listen, invoke, adopt, onTerminal: vi.fn() });
+    await waitFor(() => invoke.mock.calls.some(([command]) => command === "claim_open_request"));
+    client.dispose();
+    releaseClaim(claim());
+    await settle();
+    expect(adopt).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId });
+  });
+
+  it("rejects requests returned by enumeration after disposal", async () => {
+    const requestId = opaque("e");
+    let releaseList!: (value: unknown) => void;
+    const delayedList = new Promise<unknown>((resolve) => { releaseList = resolve; });
+    const terminal = vi.fn();
+    const invoke = vi.fn(async (command: string) => command === "list_pending_open_ingress" ? delayedList : undefined);
+    const client = createOpenRequestClient({ listen: listenerHarness().listen, invoke, adopt: vi.fn(), onTerminal: terminal });
+    await waitFor(() => invoke.mock.calls.some(([command]) => command === "list_pending_open_ingress"));
+    client.dispose();
+    releaseList([request(requestId)]);
+    await settle();
+    expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId });
+    expect(terminal).toHaveBeenCalledWith(requestId, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" });
   });
 });

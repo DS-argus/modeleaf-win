@@ -18,8 +18,17 @@ pub enum PathPolicyError {
 
 pub trait LocalPathPolicy: Send + Sync {
     fn classify(&self, path: &Path) -> Result<DriveKind, PathPolicyError>;
+    fn validate_syntax(&self, _path: &Path) -> Result<(), PathPolicyError> {
+        Ok(())
+    }
+    fn classify_syntax(&self, path: &Path) -> Result<DriveKind, PathPolicyError> {
+        self.classify(path)
+    }
     fn validate_preopen(&self, _path: &Path) -> Result<(), PathPolicyError> {
         Ok(())
+    }
+    fn validate_existing_ancestors(&self, path: &Path) -> Result<(), PathPolicyError> {
+        self.validate_preopen(path)
     }
 }
 
@@ -75,11 +84,15 @@ pub fn classify_with_root_resolver<R: VolumeRootResolver, C: DriveTypeClassifier
 
 #[cfg(windows)]
 fn validate_reparse_components(path: &Path) -> Result<(), PathPolicyError> {
-    validate_reparse_components_inner(path, 0)
+    validate_reparse_components_inner(path, 0, false)
 }
 
 #[cfg(windows)]
-fn validate_reparse_components_inner(path: &Path, depth: usize) -> Result<(), PathPolicyError> {
+fn validate_reparse_components_inner(
+    path: &Path,
+    depth: usize,
+    allow_missing: bool,
+) -> Result<(), PathPolicyError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{
@@ -104,6 +117,9 @@ fn validate_reparse_components_inner(path: &Path, depth: usize) -> Result<(), Pa
             .collect();
         let attributes = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
         if attributes == INVALID_FILE_ATTRIBUTES {
+            if allow_missing {
+                break;
+            }
             return Err(PathPolicyError::PathRejected);
         }
         if attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
@@ -112,7 +128,7 @@ fn validate_reparse_components_inner(path: &Path, depth: usize) -> Result<(), Pa
             reject_unsafe_input(&target)?;
             match classify_input_drive(&target, &SystemDriveTypeClassifier)? {
                 DriveKind::Fixed | DriveKind::Removable => {
-                    validate_reparse_components_inner(&target, depth + 1)?;
+                    validate_reparse_components_inner(&target, depth + 1, false)?;
                 }
                 DriveKind::Remote => return Err(PathPolicyError::RemotePath),
             }
@@ -120,7 +136,6 @@ fn validate_reparse_components_inner(path: &Path, depth: usize) -> Result<(), Pa
     }
     Ok(())
 }
-
 #[cfg(windows)]
 fn read_reparse_target(path: &Path) -> Result<PathBuf, PathPolicyError> {
     use std::os::windows::ffi::OsStrExt;
@@ -325,12 +340,24 @@ impl LocalPathPolicy for SystemLocalPathPolicy {
         classify_with_root_resolver(path, &SystemVolumeRootResolver, &SystemDriveTypeClassifier)
     }
 
+    fn validate_syntax(&self, path: &Path) -> Result<(), PathPolicyError> {
+        reject_unsafe_input(path)
+    }
+
+    fn classify_syntax(&self, path: &Path) -> Result<DriveKind, PathPolicyError> {
+        classify_input_drive(path, &SystemDriveTypeClassifier)
+    }
+
     #[cfg(windows)]
     fn validate_preopen(&self, path: &Path) -> Result<(), PathPolicyError> {
         validate_reparse_components(path)
     }
-}
 
+    #[cfg(windows)]
+    fn validate_existing_ancestors(&self, path: &Path) -> Result<(), PathPolicyError> {
+        validate_reparse_components_inner(path, 0, true)
+    }
+}
 /// Classifies and resolves the final path of an already-open handle. This is required after
 /// pre-open policy validation so a local reparse point cannot redirect the retained handle to a
 /// remote location.

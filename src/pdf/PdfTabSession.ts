@@ -808,16 +808,20 @@ export class PdfTabSession {
       devicePixelRatio: Math.min(2, transform.devicePixelRatio),
     };
     this.pendingRenderRollback = undefined;
-    this.options.onStatus?.(this.reader.snapshot.status);
     if (this.openingFitRenderPending && !this.openingFitRenderInFlight) {
       this.openingFitRenderInFlight = true;
       const intent = ++this.renderIntent;
       this.pendingRenderRollback = { intent, activityGeneration: this.activityGeneration, ...this.lastCommittedRender };
       const documentGeneration = committed.documentGeneration;
-      void this.renderOpeningFitPage().catch((error: unknown) => { if (!isAuthorityIncomplete(error)) this.setStatus("PDF presentation could not be updated."); }).finally(() => {
+      const fallbackOrigin = this.lastCommittedRender;
+      void this.renderOpeningFitPage().catch((error: unknown) => {
+        if (!isAuthorityIncomplete(error) && this.lastCommittedRender === fallbackOrigin) this.setStatus("PDF presentation could not be updated.");
+      }).finally(() => {
         if (this.reader.snapshot.documentGeneration === documentGeneration) this.openingFitRenderInFlight = false;
       });
+      return;
     }
+    this.options.onStatus?.(this.reader.snapshot.status);
   }
 
   private setReaderStatus(status: string): void {

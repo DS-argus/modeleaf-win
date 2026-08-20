@@ -24,6 +24,89 @@ impl RecentDocument {
         &self.display_name
     }
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RecentStateReason {
+    StateUnreadable,
+    StateInvalidRoot,
+    RecentFieldInvalid,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "tag",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecentListOutcome {
+    Ready {
+        revision: String,
+        entries: Vec<RecentDocument>,
+    },
+    StateUnavailable {
+        reason: RecentStateReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum RecentStorageReason {
+    StateWriteFailed,
+    IdentityUnavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "tag",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecentRecordOutcome {
+    Committed {
+        revision: String,
+        entries: Vec<RecentDocument>,
+    },
+    StateUnavailable {
+        reason: RecentStateReason,
+    },
+    StorageFailed {
+        reason: RecentStorageReason,
+    },
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "tag",
+    rename_all = "SCREAMING_SNAKE_CASE",
+    rename_all_fields = "camelCase"
+)]
+pub enum RecentOpenOutcome {
+    Admitted {
+        request_id: String,
+    },
+    StaleSelection {
+        revision: String,
+        entries: Vec<RecentDocument>,
+    },
+    MissingPruned {
+        revision: String,
+        entries: Vec<RecentDocument>,
+    },
+    MissingPruneFailed {
+        reason: String,
+    },
+    AccessDenied {
+        reason: String,
+    },
+    TransientFailure {
+        reason: String,
+    },
+    DocumentRejected {
+        reason: String,
+    },
+    StateUnavailable {
+        reason: RecentStateReason,
+    },
+}
 
 #[derive(Debug)]
 pub enum RecentStoreError {
@@ -32,6 +115,7 @@ pub enum RecentStoreError {
     NotPdf,
     MissingRecentId,
     Io(io::Error),
+    StateUnavailable(RecentStateReason),
 }
 impl std::fmt::Display for RecentStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,6 +125,7 @@ impl std::fmt::Display for RecentStoreError {
             Self::NotPdf => "PDF_INVALID",
             Self::MissingRecentId => "RECENT_NOT_FOUND",
             Self::Io(_) => "RECENT_STORAGE_FAILED",
+            Self::StateUnavailable(_) => "RECENT_STATE_UNAVAILABLE",
         })
     }
 }
@@ -61,28 +146,64 @@ struct StoredRecent {
 pub struct RecentStore {
     state: StateFileStore,
     records: Vec<StoredRecent>,
-    startup_recovery_needed: bool,
+    health: Option<RecentStateReason>,
+    revision: u64,
 }
 impl RecentStore {
     pub fn load<P: AsRef<Path>, L: LocalPathPolicy>(
         state_path: P,
-        _policy: &L,
+        policy: &L,
     ) -> Result<Self, RecentStoreError> {
         let state = StateFileStore::new(state_path.as_ref().to_path_buf());
-        let (records, startup_recovery_needed) = match state.load() {
-            Ok(snapshot) => (records_from_state(snapshot.recent_files, &[]), false),
-            Err(StateFileError::Absent) => (Vec::new(), false),
-            Err(_) => (Vec::new(), true),
+        let (records, health) = match state.load_recents_strict() {
+            Ok(values)
+                if values
+                    .iter()
+                    .all(|value| valid_persisted_recent(value, policy)) =>
+            {
+                (records_from_state(values, &[]), None)
+            }
+            Ok(_) => (Vec::new(), Some(RecentStateReason::RecentFieldInvalid)),
+            Err(StateFileError::Absent) => (Vec::new(), None),
+            Err(StateFileError::Invalid) => (Vec::new(), Some(RecentStateReason::StateInvalidRoot)),
+            Err(StateFileError::RecentInvalid) => {
+                (Vec::new(), Some(RecentStateReason::RecentFieldInvalid))
+            }
+            Err(_) => (Vec::new(), Some(RecentStateReason::StateUnreadable)),
         };
         Ok(Self {
             state,
             records,
-            startup_recovery_needed,
+            health,
+            revision: 0,
         })
     }
 
-    pub fn take_startup_recovery_needed(&mut self) -> bool {
-        std::mem::take(&mut self.startup_recovery_needed)
+    pub fn list_outcome(&self) -> RecentListOutcome {
+        match self.health {
+            Some(reason) => RecentListOutcome::StateUnavailable { reason },
+            None => RecentListOutcome::Ready {
+                revision: self.revision.to_string(),
+                entries: self.documents(),
+            },
+        }
+    }
+
+    pub fn snapshot(&self) -> (String, Vec<RecentDocument>) {
+        (self.revision.to_string(), self.documents())
+    }
+
+    pub fn health_reason(&self) -> Option<RecentStateReason> {
+        self.health
+    }
+    fn ensure_writable(&self) -> Result<(), RecentStoreError> {
+        match self.health {
+            Some(reason) => Err(RecentStoreError::StateUnavailable(reason)),
+            None => Ok(()),
+        }
+    }
+    fn committed(&mut self) {
+        self.revision = self.revision.saturating_add(1);
     }
 
     pub fn documents(&self) -> Vec<RecentDocument> {
@@ -97,23 +218,6 @@ impl RecentStore {
             .collect()
     }
 
-    /// Lists only recents whose backing file is still present.
-    ///
-    /// Offering a recent whose file was deleted or moved guarantees a failed
-    /// open, so the picker must never show one. Pruning happens here rather
-    /// than only on a failed open, which was too late to help the user.
-    pub fn available_documents(&self) -> Vec<RecentDocument> {
-        self.records
-            .iter()
-            .filter(|record| record.canonical_path.exists())
-            .filter_map(|record| {
-                Some(RecentDocument {
-                    recent_id: record.recent_id.clone(),
-                    display_name: safe_display_name(&record.canonical_path)?,
-                })
-            })
-            .collect()
-    }
     pub fn record_trusted_opened_and_save(
         &mut self,
         identity: TrustedRecentIdentity,
@@ -135,10 +239,12 @@ impl RecentStore {
         &mut self,
         canonical_path: PathBuf,
     ) -> Result<RecentDocument, RecentStoreError> {
+        self.ensure_writable()?;
         if !is_pdf(&canonical_path) {
             return Err(RecentStoreError::NotPdf);
         }
         let canonical_path = normalize_canonical_path(canonical_path)?;
+        let display_name = safe_display_name(&canonical_path).ok_or(RecentStoreError::NotPdf)?;
         let timestamp = format_recent_timestamp(&SystemClock).map_err(state_error)?;
         self.state
             .record_recent_success(RecentFile {
@@ -146,21 +252,31 @@ impl RecentStore {
                 last_opened_at: timestamp,
             })
             .map_err(state_error)?;
-        let snapshot = self.state.load().map_err(state_error)?;
-        self.records = records_from_state(snapshot.recent_files, &self.records);
-        let record = self
+        let recent_id = self
             .records
             .iter()
             .find(|record| record.canonical_path == canonical_path)
-            .ok_or(RecentStoreError::MissingRecentId)?;
+            .map(|record| record.recent_id.clone())
+            .unwrap_or_else(new_recent_id);
+        self.records
+            .retain(|record| record.canonical_path != canonical_path);
+        self.records.insert(
+            0,
+            StoredRecent {
+                recent_id: recent_id.clone(),
+                canonical_path: canonical_path.clone(),
+            },
+        );
+        self.records.truncate(MAX_RECENT_DOCUMENTS);
+        self.committed();
         Ok(RecentDocument {
-            recent_id: record.recent_id.clone(),
-            display_name: safe_display_name(&record.canonical_path)
-                .ok_or(RecentStoreError::NotPdf)?,
+            recent_id,
+            display_name,
         })
     }
 
     pub fn prune_missing_id(&mut self, recent_id: &str) -> Result<bool, RecentStoreError> {
+        self.ensure_writable()?;
         let Some(index) = self
             .records
             .iter()
@@ -176,6 +292,7 @@ impl RecentStore {
             return Ok(false);
         }
         self.records.remove(index);
+        self.committed();
         Ok(true)
     }
     pub fn resolve_for_open<L: LocalPathPolicy>(
@@ -183,32 +300,55 @@ impl RecentStore {
         recent_id: &str,
         policy: &L,
     ) -> Result<PathBuf, RecentStoreError> {
+        self.ensure_writable()?;
         let record = self
             .records
             .iter()
             .find(|record| record.recent_id == recent_id)
             .ok_or(RecentStoreError::MissingRecentId)?;
+        policy
+            .validate_syntax(&record.canonical_path)
+            .map_err(map_policy_error)?;
+        match policy
+            .classify_syntax(&record.canonical_path)
+            .map_err(map_policy_error)?
+        {
+            DriveKind::Fixed | DriveKind::Removable => {}
+            DriveKind::Remote => return Err(RecentStoreError::RemotePath),
+        }
+        policy
+            .validate_existing_ancestors(&record.canonical_path)
+            .map_err(map_policy_error)?;
+        std::fs::metadata(&record.canonical_path).map_err(RecentStoreError::Io)?;
         validate_and_canonicalize(&record.canonical_path, policy)
     }
 }
 
+fn valid_persisted_recent<L: LocalPathPolicy>(value: &RecentFile, policy: &L) -> bool {
+    let path = Path::new(&value.absolute_path);
+    path.is_absolute()
+        && is_pdf(path)
+        && value.last_opened_at.parse::<u64>().is_ok()
+        && policy.validate_syntax(path).is_ok()
+        && matches!(
+            policy.classify_syntax(path),
+            Ok(DriveKind::Fixed | DriveKind::Removable)
+        )
+}
 fn records_from_state(values: Vec<RecentFile>, previous: &[StoredRecent]) -> Vec<StoredRecent> {
     values
         .into_iter()
-        .filter_map(|value| {
+        .map(|value| {
             let canonical_path = PathBuf::from(value.absolute_path);
-            if !is_pdf(&canonical_path) {
-                return None;
-            }
             let recent_id = previous
                 .iter()
                 .find(|record| record.canonical_path == canonical_path)
                 .map(|record| record.recent_id.clone())
                 .unwrap_or_else(new_recent_id);
-            Some(StoredRecent {
+            StoredRecent {
                 recent_id,
                 canonical_path,
-            })
+            }
         })
         .collect()
 }
@@ -265,6 +405,7 @@ fn state_error(error: StateFileError) -> RecentStoreError {
     RecentStoreError::Io(io::Error::other(match error {
         StateFileError::Absent => "state absent",
         StateFileError::Invalid => "state invalid",
+        StateFileError::RecentInvalid => "recent field invalid",
         StateFileError::Io => "state I/O",
         StateFileError::LockTimeout => "state lock timeout",
         StateFileError::Fault => "state persistence fault",

@@ -328,6 +328,7 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .windows-menu-commands button:hover:not(:disabled), .windows-menu-commands button:focus-visible { background: var(--theme-active-tab); }
 .windows-menu-commands button:disabled { color: var(--theme-muted-text); }
 .tab-strip { display: flex; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; background: var(--theme-inactive-tab); border-bottom: 1px solid var(--theme-border); }
+.tab-strip[hidden] { display: none; }
 .workspace-tab-item { display: flex; min-width: 0; }
 .workspace-tab, .workspace-tab-close { border: 0; color: var(--theme-muted-text); background: var(--theme-active-tab); }
 .workspace-tab { max-width: 220px; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -419,8 +420,16 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .pdf-print-page:last-child { break-after: auto; page-break-after: auto; }
 
 }
+#reader-main {
+  display: grid;
+  grid-template-areas: "reader";
+  min-height: 0;
+  overflow: hidden;
+}
+#reader-main > .tab-hosts,
+#reader-main > .empty-reader { grid-area: reader; min-width: 0; min-height: 0; }
+
 .empty-reader {
-  min-height: 100%;
   display: grid;
   place-content: center;
   justify-items: center;
@@ -531,7 +540,10 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
 
 /* The empty-state hint is the click target, so it must read as text while
    behaving as a button for pointer and assistive-technology users. */
-.empty-reader-hint {
+.empty-reader-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   background: none;
   border: 0;
   padding: 8px 12px;
@@ -540,12 +552,18 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   font: inherit;
   cursor: pointer;
 }
-.empty-reader-hint:hover:not(:disabled) { background: var(--theme-active-tab); color: var(--theme-foreground); }
-.empty-reader-hint:disabled { cursor: default; opacity: 0.6; }
-.empty-reader-hint kbd {
+.empty-reader-action:hover:not(:disabled) { background: var(--theme-active-tab); color: var(--theme-foreground); }
+.empty-reader-action:disabled { cursor: default; opacity: 0.6; }
+.empty-reader-action kbd {
   padding: 2px 6px;
   border: 1px solid var(--theme-border);
   border-radius: 4px;
   background: var(--theme-statusline);
   color: var(--theme-foreground);
+}
+
+.file-opener-diagnostic {
+  padding: 8px 12px;
+  color: var(--theme-muted-text);
+  line-height: 1.35;
 }

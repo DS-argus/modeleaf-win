@@ -1,11 +1,11 @@
-import { createOpenRequestClient, type OpenFailureNotice, type OpenRequestAdoption, type OpenRequestInvoke, type OpenRequestListener } from "./OpenRequestClient";
-
-const ID = /^[0-9a-f]{64}$/i;
-const WORKSPACE_QUEUE_LIMIT = 8;
+import { createOpenFlowCoordinator, type InitiatedTerminal } from "../application/OpenFlowCoordinator";
+import { openNativePdfDialog, type NativeDialogOutcome, type NativeInvoke } from "./tauri-commands";
+import { createOpenRequestClient, type OpenFailureNotice, type OpenRequestAdoption, type OpenRequestInvoke, type OpenRequestListener, type OpenRequestTerminalOutcome } from "./OpenRequestClient";
 
 export interface ShellOpenDialog {
   readonly setPending: (pending: boolean) => void;
   readonly reportFailure: (error?: unknown) => void;
+  readonly restoreFocus?: (terminal: InitiatedTerminal) => void;
 }
 export interface ShellOpenCoordinatorOptions {
   readonly invoke: OpenRequestInvoke;
@@ -13,137 +13,96 @@ export interface ShellOpenCoordinatorOptions {
   readonly dialog: ShellOpenDialog;
   readonly adopt: (request: OpenRequestAdoption) => Promise<void> | void;
   readonly onFailure: (tag: OpenFailureNotice["tag"]) => void;
+  readonly onTerminal?: (terminal: InitiatedTerminal) => void;
 }
 export interface ShellOpenCoordinator {
   readonly ready: Promise<void>;
   readonly requestOpen: () => void;
   readonly retryPending: () => void;
   readonly dispose: () => void;
+  readonly admitOpen: (notice: NativeDialogOutcome) => boolean;
 }
-
-function openNotice(value: unknown): { readonly requestId: string } | undefined {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 1 || !("requestId" in value) || typeof value.requestId !== "string" || !ID.test(value.requestId)) return undefined;
-  return { requestId: value.requestId };
+function projectTerminal(requestId: string, terminal: OpenRequestTerminalOutcome): InitiatedTerminal {
+  if (terminal.tag === "ACKNOWLEDGED") return { tag: "ADOPTED", requestId, completion: "ACKNOWLEDGED" };
+  if (terminal.tag === "ADOPTED_WITH_WARNING") return { tag: "ADOPTED_WITH_WARNING", requestId, phase: "ACK", reason: terminal.reason };
+  return { tag: "REJECTED", requestId, phase: terminal.phase, baseReason: terminal.baseReason, cleanup: terminal.cleanup };
 }
 
 export function createShellOpenCoordinator(options: ShellOpenCoordinatorOptions): ShellOpenCoordinator {
   let disposed = false;
-  let pending = false;
-  let requestId: string | null = null;
-  const setPending = (next: boolean): void => { pending = next; options.dialog.setPending(next); };
-  const clear = (id: string | null): void => {
-    if (!pending || requestId !== id) return;
-    requestId = null;
-    setPending(false);
+  const flow = createOpenFlowCoordinator((terminal) => { options.dialog.setPending(false); options.dialog.restoreFocus?.(terminal); });
+  const dialogInvoke: NativeInvoke = async <T>(command: string): Promise<T> => await options.invoke(command, {}) as T;
+  const release = (epoch: number, terminal: InitiatedTerminal): void => {
+    flow.release(epoch, terminal);
+  };
+  const rejectLateAdmission = (requestId: string): void => {
+    void options.invoke("reject_open_request", { requestId }).then(
+      () => options.onTerminal?.({ tag: "REJECTED", requestId, phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" }),
+      () => options.onTerminal?.({ tag: "REJECTED", requestId, phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" }),
+    );
   };
   const client = createOpenRequestClient({
     listen: options.listen,
     invoke: options.invoke,
     adopt: options.adopt,
+    onTerminal: (requestId, terminal) => options.onTerminal?.(projectTerminal(requestId, terminal)),
     onFailure: options.onFailure,
   });
+  const admit = (epoch: number, origin: "browse" | "recent", outcome: Extract<NativeDialogOutcome, { tag: "ADMITTED" }>): boolean => {
+    if (!flow.admit(epoch, origin, outcome.requestId)) return false;
+    client.admitNotice(
+      { requestId: outcome.requestId },
+      (requestId, terminal) => release(epoch, projectTerminal(requestId, terminal)),
+      (requestId, progress) => {
+        flow.advance(epoch, requestId, progress.step, "descriptor" in progress ? progress.descriptor : undefined, "baseReason" in progress ? progress.baseReason : undefined);
+      },
+    );
+    return true;
+  };
   const requestOpen = (): void => {
-    if (disposed || pending) return;
-    requestId = null;
-    setPending(true);
-    // pending tracks only whether the native dialog is on screen. It is
-    // released the moment the invoke settles, whatever the outcome, so a
-    // retryable adoption failure can never latch the shell into a state
-    // where every action reports "Close the current dialog".
-    const release = (): void => { requestId = null; setPending(false); };
-    void options.invoke("open_pdf_dialog", {}).then((value) => {
-      if (disposed) { release(); return; }
-      if (value === null) { release(); return; }
-      const notice = openNotice(value);
-      if (notice === undefined) { release(); options.dialog.reportFailure(value); return; }
-      requestId = notice.requestId;
-      release();
-      // Adoption continues in the background with its own retry policy.
-      client.admitNotice(notice);
+    if (disposed) return;
+    const epoch = flow.begin("empty");
+    if (epoch === undefined || !flow.showDialog(epoch)) return;
+    options.dialog.setPending(true);
+    void openNativePdfDialog(dialogInvoke).then((outcome) => {
+      if (disposed) { if (outcome.tag === "ADMITTED") rejectLateAdmission(outcome.requestId); release(epoch, { tag: "DISPOSED" }); return; }
+      if (outcome.tag === "CANCELLED") { release(epoch, { tag: "REJECTED", requestId: "", phase: "CLAIM", baseReason: "NATIVE_CANCELLED", cleanup: "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" }); return; }
+      if (outcome.tag !== "ADMITTED") {
+        release(epoch, { tag: "REJECTED", requestId: "", phase: "CLAIM", baseReason: "NATIVE_REJECTED", cleanup: "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" });
+        options.dialog.reportFailure(outcome);
+        return;
+      }
+      if (!admit(epoch, "browse", outcome)) {
+        release(epoch, { tag: "REJECTED", requestId: outcome.requestId, phase: "CLAIM", baseReason: "CLAIM_INVALID", cleanup: "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" });
+        rejectLateAdmission(outcome.requestId);
+        options.dialog.reportFailure(outcome);
+      }
     }, (error: unknown) => {
-      release();
-      if (disposed) return;
-      options.dialog.reportFailure(error);
+      release(epoch, { tag: "REJECTED", requestId: "", phase: "CLAIM", baseReason: "NATIVE_REJECTED", cleanup: "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" });
+      if (!disposed) options.dialog.reportFailure(error);
     });
   };
   return {
     ready: client.ready,
     requestOpen,
+    admitOpen: (outcome) => {
+      if (outcome.tag !== "ADMITTED") return false;
+      if (disposed) { rejectLateAdmission(outcome.requestId); return false; }
+      const epoch = flow.begin("reader");
+      if (epoch === undefined) { rejectLateAdmission(outcome.requestId); return false; }
+      options.dialog.setPending(true);
+      if (admit(epoch, "recent", outcome)) return true;
+      release(epoch, { tag: "REJECTED", requestId: outcome.requestId, phase: "CLAIM", baseReason: "CLAIM_INVALID", cleanup: "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" });
+      rejectLateAdmission(outcome.requestId);
+      return false;
+    },
     retryPending: client.retryPending,
-    dispose: () => { disposed = true; client.dispose(); },
-  };
-}
-type QueueItem = {
-  readonly kind: "normal" | "ownership" | "activation";
-  work: () => Promise<void> | void;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-};
-export interface WorkspaceTransitionQueue {
-  readonly enqueue: (work: () => Promise<void> | void) => Promise<void>;
-  readonly enqueueOwnership: (work: () => Promise<void> | void) => Promise<void>;
-  readonly enqueueActivation: (work: () => Promise<void> | void) => Promise<void>;
-}
-/** Claimed native sessions reject on saturation; they are never silently dropped. */
-export function createWorkspaceTransitionQueue(onOverflow: () => void, limit = WORKSPACE_QUEUE_LIMIT, ownershipLimit = WORKSPACE_QUEUE_LIMIT): WorkspaceTransitionQueue {
-  const pending: QueueItem[] = [];
-  let running = false;
-  const count = (kind: QueueItem["kind"]): number => pending.filter((item) => item.kind === kind).length;
-  const drain = (): void => {
-    if (running) return;
-    const item = pending.shift();
-    if (item === undefined) return;
-    running = true;
-    Promise.resolve().then(item.work).then(
-      () => item.resolve(),
-      (error: unknown) => item.reject(error),
-    ).finally(() => { running = false; drain(); });
-  };
-  const enqueue = (kind: QueueItem["kind"], work: QueueItem["work"]): Promise<void> => new Promise((resolve, reject) => {
-    const prior = kind === "activation" ? pending[pending.length - 1] : undefined;
-    if (prior?.kind === "activation") {
-      // Superseded calls settle immediately; only the latest work/settlement remains retained.
-      prior.resolve();
-      prior.work = work;
-      prior.resolve = resolve;
-      prior.reject = reject;
-      return;
-    }
-    if (kind === "normal" && count("normal") >= limit) { onOverflow(); resolve(); return; }
-    if (kind === "ownership" && count("ownership") >= ownershipLimit) { reject(new Error("OWNERSHIP_QUEUE_CAPACITY")); return; }
-    pending.push({ kind, work, resolve, reject });
-    drain();
-  });
-  return { enqueue: (work) => enqueue("normal", work), enqueueOwnership: (work) => enqueue("ownership", work), enqueueActivation: (work) => enqueue("activation", work) };
-}
-
-export interface RemovedTabTeardownSupervisor<T> {
-  readonly remove: (value: T) => void;
-  readonly close: (value: T) => Promise<void>;
-  readonly retryParked: () => void;
-  readonly dispose: () => void;
-}
-export function createRemovedTabTeardownSupervisor<T>(options: { readonly remove: (value: T) => void; readonly close: (value: T) => Promise<void>; readonly initialDelayMs?: number; readonly maxAttempts?: number; }): RemovedTabTeardownSupervisor<T> {
-  const retained = new Map<T, { attempts: number; timer?: ReturnType<typeof setTimeout> }>();
-  const initialDelayMs = options.initialDelayMs ?? 100;
-  const maxAttempts = options.maxAttempts ?? 4;
-  let disposed = false;
-  const clear = (item: { timer?: ReturnType<typeof setTimeout> }): void => { if (item.timer !== undefined) clearTimeout(item.timer); };
-  const attempt = (value: T): void => {
-    const item = retained.get(value);
-    if (disposed || item === undefined) return;
-    void options.close(value).then(() => { const current = retained.get(value); if (current) { clear(current); retained.delete(value); } }, () => {
-      const current = retained.get(value);
-      if (disposed || current === undefined) return;
-      current.attempts += 1;
-      if (current.attempts >= maxAttempts) return;
-      current.timer = setTimeout(() => { delete current.timer; attempt(value); }, initialDelayMs * 2 ** (current.attempts - 1));
-    });
-  };
-  return {
-    remove: (value) => { options.remove(value); if (retained.has(value)) return; retained.set(value, { attempts: 0 }); attempt(value); },
-    close: options.close,
-    retryParked: () => { if (disposed) return; for (const [value, item] of retained) { if (item.timer === undefined && item.attempts >= maxAttempts) { item.attempts = 0; attempt(value); } } },
-    dispose: () => { disposed = true; for (const item of retained.values()) clear(item); },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      flow.dispose();
+      options.dialog.setPending(false);
+      client.dispose();
+    },
   };
 }

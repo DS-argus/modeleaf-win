@@ -40,8 +40,8 @@ describe("CP5 shell integration", () => {
     expect(mainSource).not.toContain("Keyboard-first PDF reading for Windows");
     // The hint is now the accessible click target rather than inert text, so
     // one affordance carries both the shortcut and the action.
-    expect(mainSource).toContain('<kbd>Ctrl</kbd>+<kbd>O</kbd> to open a PDF');
-    expect(mainSource).toContain('empty-reader-hint');
+    expect(mainSource).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd>');
+    expect(mainSource).toContain('empty-reader-action');
     expect(styles).toContain("place-content: center");
   });
 
@@ -56,8 +56,10 @@ describe("CP5 shell integration", () => {
   });
   it("keeps command palette entries command-only and claims navigation across the dialog", () => {
     expect(mainSource).toContain(".filter((entry): entry is CommandPaletteCommandEntry => entry.kind === \"command\")");
-    expect(mainSource).toContain('invoke("open_recent"');
-    expect(mainSource).toContain('invoke<unknown>("list_recents")');
+    expect(mainSource).toContain("openRecentDocument(invoke, row.recentId)");
+    expect(mainSource).toContain("listRecentDocuments(invoke)");
+    expect(mainSource).toContain("chooserRows(fileOpenerModel)");
+    expect(mainSource).toContain("fileOpenerModel = updateChooserQuery(fileOpenerModel, fileOpenerInput.value)");
     expect(mainSource).toContain('paletteDialog.addEventListener("keydown"');
     expect(mainSource).toContain("}, { capture: true });");
   });

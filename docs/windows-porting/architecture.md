@@ -226,6 +226,10 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 - open insertion, meaningful navigation, split duplicate는 prepare → perform → verify → commit/rollback transaction으로 구현한다.
 - window별 root store를 생성하고 app-wide service handle만 공유한다.
 - overlay focus ownership과 복원을 state machine으로 관리한다.
+- application overlay visibility/focus는 window별 `overlayOwner` reducer가 단독 소유하며 동시에 하나만 활성화한다.
+- Windows file picker는 app overlay가 아니라 별도 native open epoch다. Browse는 chooser를 release한 뒤 HWND-owned picker를 시작하고, epoch는 terminal ack/reject/cancel에서 정확히 한 번 해제한다.
+- recents는 startup에 Rust에서 path-free snapshot으로 preload한다. Rust가 revision, health, record/prune commit과 filesystem authority를 소유하고 renderer는 monotonic full snapshot만 채택한다.
+- unreadable/invalid state는 writable empty로 복구하지 않는다. record/prune은 fail closed이며 기존 bytes와 sibling fields를 보존한다.
 
 ### 5.3 UI layer
 

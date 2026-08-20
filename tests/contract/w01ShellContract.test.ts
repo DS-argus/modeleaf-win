@@ -95,8 +95,9 @@ describe("W01 secure shell contract", () => {
     expect(retain).toBeGreaterThan(show);
     expect(command.slice(setup)).toMatch(/window\.destroy\(\)[\s\S]*?workspace\.destroy_window/);
     expect(command).toMatch(/WebviewWindowBuilder/);
-    expect(command).toMatch(/inner_size\(1040(?:\.0)?,\s*760(?:\.0)?\)/);
+    expect(command).toMatch(/inner_size\(preferred_width,\s*preferred_height\)/);
     expect(command).toMatch(/min_inner_size\(480(?:\.0)?,\s*360(?:\.0)?\)/);
+    expect(source).toMatch(/fn preferred_window_size[\s\S]*?primary_monitor\(\)[\s\S]*?scale_factor\(\)[\s\S]*?\.clamp\(MIN\.0,[\s\S]*?\.clamp\(MIN\.1/);
     expect(command).toMatch(/decorations\(true\)/);
     expect(command).toMatch(/resizable\(true\)/);
     expect(command).toMatch(/fullscreen\(false\)/);

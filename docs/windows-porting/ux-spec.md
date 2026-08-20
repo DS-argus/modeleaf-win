@@ -188,15 +188,14 @@ Palette 자체가 독자 action list를 가지면 안 된다. action registry de
 ## 10. Recent/Open picker
 
 - content top에서 72px, centered
-- 첫 row `Browse…`
-- 이후 recents 최대 15개
-- 정상 창에서는 15개가 모두 보이되 작은 창에서는 내부 scroll
-- filename이 primary, path가 secondary
-- query는 Unicode filename fuzzy search
-- `Ctrl+C` clear, arrows/`Ctrl+J/K`, Enter, Esc
-- missing entry open 실패는 inline error 후 해당 entry만 prune
-- permission/locked/network error는 inline error지만 prune하지 않음
-
+- 첫 frame부터 첫 row `Browse…`와 startup에 준비된 recents 최대 15개를 native 순서로 표시한다. loading/false-empty frame은 없다.
+- 정상 창에서는 15개가 모두 보이되 작은 창에서는 내부 scroll한다.
+- renderer에는 opaque recent ID와 Unicode filename만 전달하며 path는 표시하거나 전달하지 않는다.
+- query는 Unicode NFC filename fuzzy search이며 입력 자체가 refresh trigger가 아니다.
+- `Ctrl+C` clear, arrows/`Ctrl+J/K`, Enter, Esc를 지원한다.
+- Browse는 app chooser overlay를 먼저 닫은 뒤 HWND-owned Windows dialog를 연다. native dialog는 app overlay owner에 포함하지 않는다.
+- missing entry는 durable prune 성공 후에만 row를 제거한다. stale selection은 최신 snapshot으로 갱신하고 chooser/focus를 유지한다.
+- permission/locked/network/state/persistence error는 typed inline error로 남기며 prune하거나 `Could not read this PDF`로 오진하지 않는다.
 기준 이미지: [`ui/02-open-recent-cmd-o.png`](./ui/02-open-recent-cmd-o.png).
 
 ## 11. Page/Search prompt

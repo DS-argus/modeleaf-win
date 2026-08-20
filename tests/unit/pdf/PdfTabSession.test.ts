@@ -814,7 +814,8 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await expect(session.adopt({ sessionId: "failed", documentGeneration: 2, length: 1, displayName: "failed.pdf" }, 2)).rejects.toThrow("PDF_ADOPTION_NOT_COMMITTED");
   });
   it("starts the mounted opening fit render with the opening canvas retained as rollback", async () => {
-    const session = createSession();
+    const onStatus = vi.fn();
+    const session = createSession(onStatus);
     const internals = session as unknown as SessionInternals & {
       onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
       openingFitRenderPending: boolean;
@@ -826,10 +827,37 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
     vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockResolvedValue(true);
 
+    onStatus.mockClear();
     internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
     await vi.waitFor(() => expect(internals.pdfReader.renderPageWithTransform).toHaveBeenCalledWith(1, { scale: 1, rotation: 0, devicePixelRatio: 1 }, expect.any(Function)));
+    expect(onStatus).not.toHaveBeenCalled();
 
     expect(internals.pendingRenderRollback).toMatchObject({ page: 1, devicePixelRatio: 1 });
+  });
+
+  it("keeps a newer committed opening presentation after late fit settlement rejection", async () => {
+    const onStatus = vi.fn();
+    const session = createSession(onStatus);
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      openingFitRenderPending: boolean;
+      openingFitRenderInFlight: boolean;
+    };
+    session.reader.mountDocument(1);
+    await session.activate();
+    internals.openingFitRenderPending = true;
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
+    vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockImplementation(async () => {
+      internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      throw new Error("POST_COMMIT_SETTLEMENT_FAILED");
+    });
+    onStatus.mockClear();
+
+    internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
+    await vi.waitFor(() => expect(internals.openingFitRenderInFlight).toBe(false));
+
+    expect(session.snapshot.status).not.toBe("PDF presentation could not be updated.");
+    expect(onStatus).not.toHaveBeenCalledWith("PDF presentation could not be updated.");
   });
 
   it.each([
