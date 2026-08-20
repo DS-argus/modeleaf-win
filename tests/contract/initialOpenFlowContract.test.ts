@@ -1,0 +1,69 @@
+import { readFileSync } from "node:fs";
+import { describe, expect, it } from "vitest";
+const source = (path: string): string => readFileSync(path, "utf8");
+
+describe("initial open flow contract", () => {
+  const main = source("src/main.ts");
+  const styles = source("src/styles/app.css");
+  const native = source("src-tauri/src/lib.rs");
+  const recent = source("src-tauri/src/recent.rs");
+
+  it("has one canonical centered empty action with a live shortcut badge", () => {
+    expect(main.match(/id="empty-reader-open"/gu)).toHaveLength(1);
+    expect(main).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd>');
+    expect(main).not.toContain("No PDF open");
+    expect(main).toContain("emptyReaderShortcut.textContent = shortcut");
+    expect(main).toContain("tabStrip.hidden = documentTabs.length === 0");
+    expect(styles).toContain(".tab-strip[hidden] { display: none; }");
+    expect(styles).toContain("place-content: center");
+  });
+
+  it("uses reducer-only application dialogs and a separate native transition gate", () => {
+    expect(main).toContain("modalOpen: overlayOwner.active !== undefined");
+    expect(main).not.toContain("dialogOpenPending");
+    expect(main).not.toContain("fileOpenerDialog.showModal()");
+    expect(main).not.toContain("paletteDialog.showModal()");
+    expect(main).toContain("nativeOpenPending");
+  });
+
+  it("prepares path-free recents before revealing the chooser", () => {
+    expect(main).toContain('fileOpenerDialog.addEventListener("close"');
+    const preload = main.indexOf("const initialRecentsReady = recentListenerReady.then");
+    expect(preload).toBeGreaterThanOrEqual(0);
+    expect(preload).toBeLessThan(main.indexOf("async function openFileOpener"));
+    expect(main).toContain("await initialRecentsReady");
+    expect(recent).toContain("RecentListOutcome");
+    expect(recent).not.toContain("available_documents");
+    const listener = main.indexOf("const recentListenerReady = listen(\"recent-state-changed\"");
+    const fetch = main.indexOf("recentListenerReady.then(() => listRecentDocuments(invoke))");
+    expect(listener).toBeGreaterThanOrEqual(0);
+    expect(listener).toBeLessThan(fetch);
+    expect(main).toContain("fileOpenerModel = adoptChooserSnapshot(fileOpenerModel");
+    expect(native).not.toContain("recent_recovery_needed");
+  });
+
+  it("returns typed dialog/recent outcomes and requires a nonzero HWND", () => {
+    expect(native).toContain("enum NativeDialogOutcome");
+    expect(native).toContain("RecentOpenOutcome");
+    expect(native).toContain("if !hwnd.0.is_null()");
+    expect(source("src-tauri/src/open_dialog.rs")).toContain("IFileOpenDialog");
+    expect(source("src-tauri/src/open_dialog.rs")).toContain("FOS_DONTADDTORECENT");
+    expect(native).toContain("spawn_blocking");
+  });
+
+  it("commits visible adoption before acknowledgement and records recents only from a typed terminal", () => {
+    const adoptStart = main.indexOf("async function adoptRequest");
+    const terminalStart = main.indexOf("function handleOpenTerminal");
+    expect(main.slice(adoptStart, terminalStart)).not.toContain("recordRecentDocument");
+    expect(main.indexOf("recordRecentDocument(invoke, pending.request.sessionId", terminalStart)).toBeGreaterThan(terminalStart);
+    expect(main.slice(adoptStart, terminalStart)).toContain("workspace.commitAdoption(id)");
+    expect(main).toContain("workspace.close(settled.id)");
+    expect(source("src/platform/ShellOpenCoordinator.ts")).toContain("flow.advance(epoch, requestId, progress.step");
+    const adoptionSlice = main.slice(adoptStart, terminalStart);
+    expect(adoptionSlice.indexOf("pendingOpenAdoptions.set(request.requestId")).toBeLessThan(adoptionSlice.indexOf("publishActivateAndAdoptPdfTab"));
+    expect(main).toContain("onTerminal: handleOpenTerminal");
+    expect(adoptionSlice.indexOf("pendingOpenAdoptions.set(request.requestId")).toBeLessThan(adoptionSlice.indexOf("queueWorkspaceOwnership"));
+    expect(main).toContain("pending.request.ownerGeneration");
+    expect(source("src/platform/OpenRequestClient.ts")).toContain("if (!active) return true;");
+  });
+});

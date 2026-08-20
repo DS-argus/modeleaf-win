@@ -21,6 +21,7 @@ export interface SearchPromptElements {
 export function bindSearchPrompt(
   elements: SearchPromptElements,
   getSession: () => SearchPromptSession,
+  close: () => void,
   render: () => void,
 ): () => void {
   const onSubmit = (event: SubmitEvent): void => event.preventDefault();
@@ -29,14 +30,14 @@ export function bindSearchPrompt(
     const action = promptKeyAction(event);
     if (action === "close") {
       event.preventDefault();
-      elements.dialog.close();
+      close();
       render();
       return;
     }
     if (action === "search") {
       event.preventDefault();
       const decision = getSession().startSearch(elements.input.value);
-      if (decision.kind === "search") elements.dialog.close();
+      if (decision.kind === "search") close();
       render();
     }
   };

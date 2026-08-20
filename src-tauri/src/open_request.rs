@@ -29,6 +29,10 @@ impl OpenRequestId {
             Err(OpenRequestError::NotFound)
         }
     }
+
+    pub fn into_opaque(self) -> String {
+        self.0
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]

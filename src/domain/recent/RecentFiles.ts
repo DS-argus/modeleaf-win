@@ -1,32 +1,29 @@
 export const MAX_RECENT_FILES = 15;
-export interface RecentFile { readonly id: string; readonly path: string; readonly filename: string; readonly openedAt: number }
-export interface RecentFileMatch { readonly id: string; readonly filename: string; readonly openedAt: number; readonly score: number; readonly matchedIndices: readonly number[] }
-export type RecentOpenResult =
-  | { readonly ok: true; readonly entries: readonly RecentFile[] }
-  | { readonly ok: false; readonly error: "RECENT_PATH_EMPTY" | "RECENT_NOT_PDF" | "RECENT_FILENAME_EMPTY" | "RECENT_FILENAME_MISMATCH" | "RECENT_TIMESTAMP_INVALID" };
-export type RecentOpenFailure = "missing" | "path-not-found" | "permission" | "transient" | "invalid-pdf";
+export interface RecentFile { readonly recentId: string; readonly displayName: string }
+export interface RecentFileMatch { readonly recentId: string; readonly displayName: string; readonly score: number; readonly matchedIndices: readonly number[] }
+export interface RecentSnapshot { readonly revision: string; readonly entries: readonly RecentFile[] }
 
-export function recordSuccessfulPdfOpen(entries: readonly RecentFile[], input: { readonly id: string; readonly path: string; readonly filename: string; readonly openedAt: number }): RecentOpenResult {
-  if (input.path.length === 0 || input.id.length === 0) return { ok: false, error: "RECENT_PATH_EMPTY" };
-  const authoritativeFilename = basename(input.path);
-  if (authoritativeFilename.length === 0) return { ok: false, error: "RECENT_FILENAME_EMPTY" };
-  if (authoritativeFilename !== input.filename) return { ok: false, error: "RECENT_FILENAME_MISMATCH" };
-  if (!/\.pdf$/iu.test(authoritativeFilename)) return { ok: false, error: "RECENT_NOT_PDF" };
-  if (!Number.isFinite(input.openedAt) || input.openedAt < 0) return { ok: false, error: "RECENT_TIMESTAMP_INVALID" };
-  const candidate = Object.freeze({ id: input.id, path: input.path, filename: authoritativeFilename, openedAt: input.openedAt });
-  return { ok: true, entries: Object.freeze([candidate, ...entries.filter((entry) => entry.path !== input.path)].slice(0, MAX_RECENT_FILES)) };
+export function adoptRecentSnapshot(current: RecentSnapshot | undefined, candidate: RecentSnapshot): RecentSnapshot {
+  const currentRevision = current === undefined ? -1n : BigInt(current.revision);
+  const candidateRevision = BigInt(candidate.revision);
+  if (candidateRevision < currentRevision) return current!;
+  return Object.freeze({
+    revision: candidate.revision,
+    entries: Object.freeze(candidate.entries.slice(0, MAX_RECENT_FILES).map((entry) => Object.freeze({
+      recentId: entry.recentId,
+      displayName: entry.displayName.normalize("NFC"),
+    }))),
+  });
 }
-
-export function shouldPruneRecent(failure: RecentOpenFailure): boolean { return failure === "missing" || failure === "path-not-found"; }
 
 export function filterRecentFiles(entries: readonly RecentFile[], query: string): readonly RecentFileMatch[] {
   const normalized = Array.from(query.normalize("NFC").trim().toLocaleLowerCase());
   const projected = entries.map((entry, inputIndex) => {
-    const filename = entry.filename.normalize("NFC");
-    const matched = fuzzyMatch(Array.from(filename.toLocaleLowerCase()), normalized);
+    const displayName = entry.displayName.normalize("NFC");
+    const matched = fuzzyMatch(Array.from(displayName.toLocaleLowerCase()), normalized);
     return matched === undefined ? undefined : {
       inputIndex,
-      value: Object.freeze({ id: entry.id, filename, openedAt: entry.openedAt, score: matched.score, matchedIndices: Object.freeze(matched.indices) }),
+      value: Object.freeze({ recentId: entry.recentId, displayName, score: matched.score, matchedIndices: Object.freeze(matched.indices) }),
     };
   }).filter((value): value is NonNullable<typeof value> => value !== undefined);
   projected.sort((left, right) => left.value.score - right.value.score || left.inputIndex - right.inputIndex);
@@ -47,8 +44,4 @@ function fuzzyMatch(candidate: readonly string[], query: readonly string[]): { s
   }
   const contiguous = indices.every((index, position) => position === 0 || index === indices[position - 1]! + 1);
   return { score: contiguous ? indices[0]! : candidate.length + gaps, indices };
-}
-function basename(path: string): string {
-  const normalized = path.replaceAll("\\", "/").replace(/\/+$/u, "");
-  return normalized.slice(normalized.lastIndexOf("/") + 1);
 }

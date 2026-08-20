@@ -47,98 +47,86 @@ pub fn open_selected_path(
 }
 
 #[cfg(windows)]
-pub fn choose_pdf_file(window: &tauri::Window) -> Result<Option<PathBuf>, PdfSessionError> {
+pub fn choose_pdf_file(owner_hwnd: isize) -> Result<Option<PathBuf>, PdfSessionError> {
     use std::ffi::c_void;
-
-    #[repr(C)]
-    struct OpenFileNameW {
-        l_struct_size: u32,
-        hwnd_owner: isize,
-        h_instance: isize,
-        filter: *const u16,
-        custom_filter: *mut u16,
-        max_custom_filter: u32,
-        filter_index: u32,
-        file: *mut u16,
-        max_file: u32,
-        file_title: *mut u16,
-        max_file_title: u32,
-        initial_dir: *const u16,
-        title: *const u16,
-        flags: u32,
-        file_offset: u16,
-        file_extension: u16,
-        default_extension: *const u16,
-        custom_data: isize,
-        hook: *mut c_void,
-        template_name: *const u16,
-        reserved: *mut c_void,
-        reserved_dword: u32,
-        flags_ex: u32,
-    }
-
-    #[link(name = "comdlg32")]
-    unsafe extern "system" {
-        fn GetOpenFileNameW(open_file_name: *mut OpenFileNameW) -> i32;
-        fn CommDlgExtendedError() -> u32;
-    }
-
-    const OFN_EXPLORER: u32 = 0x0008_0000;
-    const OFN_FILEMUSTEXIST: u32 = 0x0000_1000;
-    const OFN_PATHMUSTEXIST: u32 = 0x0000_0800;
-    const OFN_NOCHANGEDIR: u32 = 0x0000_0008;
-    const OFN_DONTADDTORECENT: u32 = 0x0200_0000;
-
-    let hwnd = window.hwnd().map_err(|_| PdfSessionError::DialogFailed)?;
-    let filter: Vec<u16> = "PDF files (*.pdf)\0*.pdf\0\0".encode_utf16().collect();
-    let mut file = vec![0_u16; 32_768];
-    let mut open_file_name = OpenFileNameW {
-        l_struct_size: u32::try_from(std::mem::size_of::<OpenFileNameW>())
-            .map_err(|_| PdfSessionError::DialogFailed)?,
-        hwnd_owner: hwnd.0 as isize,
-        h_instance: 0,
-        filter: filter.as_ptr(),
-        custom_filter: std::ptr::null_mut(),
-        max_custom_filter: 0,
-        filter_index: 1,
-        file: file.as_mut_ptr(),
-        max_file: u32::try_from(file.len()).map_err(|_| PdfSessionError::DialogFailed)?,
-        file_title: std::ptr::null_mut(),
-        max_file_title: 0,
-        initial_dir: std::ptr::null(),
-        title: std::ptr::null(),
-        flags: OFN_EXPLORER
-            | OFN_FILEMUSTEXIST
-            | OFN_PATHMUSTEXIST
-            | OFN_NOCHANGEDIR
-            | OFN_DONTADDTORECENT,
-        file_offset: 0,
-        file_extension: 0,
-        default_extension: std::ptr::null(),
-        custom_data: 0,
-        hook: std::ptr::null_mut(),
-        template_name: std::ptr::null(),
-        reserved: std::ptr::null_mut(),
-        reserved_dword: 0,
-        flags_ex: 0,
+    use windows::core::w;
+    use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
     };
-    if unsafe { GetOpenFileNameW(&mut open_file_name) } == 0 {
-        return if unsafe { CommDlgExtendedError() } == 0 {
-            Ok(None)
-        } else {
-            Err(PdfSessionError::DialogFailed)
-        };
-    }
-    let length = file
-        .iter()
-        .position(|unit| *unit == 0)
-        .ok_or(PdfSessionError::DialogFailed)?;
-    Ok(Some(PathBuf::from(
-        String::from_utf16(&file[..length]).map_err(|_| PdfSessionError::DialogFailed)?,
-    )))
-}
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{
+        FileOpenDialog, IFileOpenDialog, FOS_DONTADDTORECENT, FOS_FILEMUSTEXIST,
+        FOS_FORCEFILESYSTEM, FOS_PATHMUSTEXIST, FOS_STRICTFILETYPES, SIGDN_FILESYSPATH,
+    };
 
+    if owner_hwnd == 0 {
+        return Err(PdfSessionError::DialogFailed);
+    }
+    let initialized =
+        unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) };
+    if initialized.is_err() {
+        return Err(PdfSessionError::DialogFailed);
+    }
+    struct ComGuard;
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
+            unsafe { CoUninitialize() };
+        }
+    }
+    let _com_guard = ComGuard;
+
+    let dialog: IFileOpenDialog = unsafe {
+        CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+            .map_err(|_| PdfSessionError::DialogFailed)?
+    };
+    let filters = [COMDLG_FILTERSPEC {
+        pszName: w!("PDF files (*.pdf)"),
+        pszSpec: w!("*.pdf"),
+    }];
+    unsafe {
+        dialog
+            .SetFileTypes(&filters)
+            .map_err(|_| PdfSessionError::DialogFailed)?;
+        dialog
+            .SetFileTypeIndex(1)
+            .map_err(|_| PdfSessionError::DialogFailed)?;
+        let options = dialog
+            .GetOptions()
+            .map_err(|_| PdfSessionError::DialogFailed)?;
+        dialog
+            .SetOptions(
+                options
+                    | FOS_FORCEFILESYSTEM
+                    | FOS_FILEMUSTEXIST
+                    | FOS_PATHMUSTEXIST
+                    | FOS_STRICTFILETYPES
+                    | FOS_DONTADDTORECENT,
+            )
+            .map_err(|_| PdfSessionError::DialogFailed)?;
+        if let Err(error) = dialog.Show(Some(HWND(owner_hwnd as *mut c_void))) {
+            return if error.code() == ERROR_CANCELLED.to_hresult() {
+                Ok(None)
+            } else {
+                Err(PdfSessionError::DialogFailed)
+            };
+        }
+        let item = dialog
+            .GetResult()
+            .map_err(|_| PdfSessionError::DialogFailed)?;
+        let display_name = item
+            .GetDisplayName(SIGDN_FILESYSPATH)
+            .map_err(|_| PdfSessionError::DialogFailed)?;
+        let decoded = display_name.to_string();
+        CoTaskMemFree(Some(display_name.0.cast()));
+        decoded
+            .map(PathBuf::from)
+            .map(Some)
+            .map_err(|_| PdfSessionError::DialogFailed)
+    }
+}
 #[cfg(not(windows))]
-pub fn choose_pdf_file(_: &tauri::Window) -> Result<Option<PathBuf>, PdfSessionError> {
+pub fn choose_pdf_file(_owner_hwnd: isize) -> Result<Option<PathBuf>, PdfSessionError> {
     Err(PdfSessionError::DialogFailed)
 }

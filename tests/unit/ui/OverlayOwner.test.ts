@@ -16,17 +16,17 @@ describe("OverlayOwner", () => {
     const stale = reduceOverlayOwner(initial, { type: "open", windowId: "window-a", overlay: "theme", focusedTarget: "removed" });
     expect(reduceOverlayOwner(stale.state, { type: "escape", windowId: "window-a" }, (target) => target !== "removed").effects.at(-1)).toEqual({ type: "focus", target: "reader-a" });
   });
-  it("replaces overlays while preserving the original return target and prompt", () => {
+  it("replaces rather than stacks overlays and restores the original owner", () => {
     const prompt = { kind: "search" as const, text: "résumé", selectionStart: 1, selectionEnd: 4 };
     const initial = createOverlayOwner("window-a", "reader-a");
     const help = reduceOverlayOwner(initial, { type: "open", windowId: "window-a", overlay: "help", focusedTarget: "search", suspendedPrompt: prompt });
     const update = reduceOverlayOwner(help.state, { type: "open", windowId: "window-a", overlay: "update", focusedTarget: "help-row" });
     expect(update.effects).toContainEqual({ type: "hide", overlay: "help" });
-    const resumed = reduceOverlayOwner(update.state, { type: "close", windowId: "window-a", overlay: "update" });
-    expect(resumed.effects).toEqual([{ type: "hide", overlay: "update" }, { type: "show", overlay: "help" }]);
-    const closed = reduceOverlayOwner(resumed.state, { type: "close", windowId: "window-a", overlay: "help" });
+    expect(update.state.active).not.toHaveProperty("prior");
+    const closed = reduceOverlayOwner(update.state, { type: "close", windowId: "window-a", overlay: "update" });
     expect(closed.effects).toContainEqual({ type: "restorePrompt", prompt });
-    expect(closed.effects.at(-1)).toEqual({ type: "focus", target: "search" });
+    expect(closed.effects.at(-1)).toEqual({ type: "focus", target: "help-row" });
+    expect(closed.state.active).toBeUndefined();
   });
   it("ignores stale overlay and other-window intents", () => {
     const initial = createOverlayOwner("window-a", "reader-a");

@@ -27,6 +27,7 @@ const VALID_THEMES: &[&str] = &[
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecentFile {
     pub absolute_path: String,
     pub last_opened_at: String,
@@ -80,6 +81,7 @@ pub enum RecentPruneOutcome {
 pub enum StateFileError {
     Absent,
     Invalid,
+    RecentInvalid,
     Io,
     LockTimeout,
     Fault,
@@ -121,6 +123,9 @@ impl StateFileStore {
     pub fn load(&self) -> Result<StateSnapshot, StateFileError> {
         Ok(decode_snapshot(&self.read_root()?))
     }
+    pub fn load_recents_strict(&self) -> Result<Vec<RecentFile>, StateFileError> {
+        decode_recents_strict(self.read_root()?.get("recent_files"))
+    }
     pub fn read_indicator(&self) -> Result<Option<LinkDestinationIndicator>, StateFileError> {
         match self.load() {
             Ok(snapshot) => Ok(snapshot.link_destination_indicator),
@@ -159,8 +164,8 @@ impl StateFileStore {
         if value.absolute_path.is_empty() {
             return Err(StateFileError::Invalid);
         }
-        self.update(|root| {
-            let mut recents = decode_recents(root.get("recent_files"));
+        self.update_recent(|root| {
+            let mut recents = decode_recents_strict(root.get("recent_files"))?;
             recents.retain(|item| item.absolute_path != value.absolute_path);
             recents.insert(0, value);
             recents.truncate(MAX_RECENT_FILES);
@@ -174,8 +179,8 @@ impl StateFileStore {
     /// Only confirmed absence is pruned; all other classifications are retained.
     pub fn remove_recent_path(&self, absolute_path: &str) -> Result<bool, StateFileError> {
         let mut removed = false;
-        self.update(|root| {
-            let mut recents = decode_recents(root.get("recent_files"));
+        self.update_recent(|root| {
+            let mut recents = decode_recents_strict(root.get("recent_files"))?;
             recents.retain(|item| {
                 let matches = item.absolute_path == absolute_path;
                 removed |= matches;
@@ -194,8 +199,8 @@ impl StateFileStore {
         classifier: &dyn RecentPathClassifier,
     ) -> Result<usize, StateFileError> {
         let mut removed = 0;
-        self.update(|root| {
-            let mut recents = decode_recents(root.get("recent_files"));
+        self.update_recent(|root| {
+            let mut recents = decode_recents_strict(root.get("recent_files"))?;
             recents.retain(|item| {
                 let missing = classifier.classify(Path::new(&item.absolute_path))
                     == RecentPruneOutcome::PrunedMissing;
@@ -209,6 +214,24 @@ impl StateFileStore {
             Ok(())
         })?;
         Ok(removed)
+    }
+    fn update_recent(
+        &self,
+        change: impl FnOnce(&mut Map<String, Value>) -> Result<(), StateFileError>,
+    ) -> Result<(), StateFileError> {
+        let _guard = SidecarLock::acquire(&self.path, self.lock_timeout).map_err(map_lock_error)?;
+        let mut root = match self.read_root() {
+            Ok(root) => root,
+            Err(StateFileError::Absent) => Map::new(),
+            Err(error) => return Err(error),
+        };
+        change(&mut root)?;
+        let bytes = serialize_stable(&root)?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            return Err(StateFileError::Invalid);
+        }
+        atomic_write::replace_with_faults(&self.path, &bytes, "state", AtomicWriteFaults::default())
+            .map_err(map_persistence_error)
     }
     fn update(
         &self,
@@ -314,6 +337,26 @@ fn decode_recents(value: Option<&Value>) -> Vec<RecentFile> {
         .filter(|item| seen.insert(item.absolute_path.clone()))
         .take(MAX_RECENT_FILES)
         .collect()
+}
+fn decode_recents_strict(value: Option<&Value>) -> Result<Vec<RecentFile>, StateFileError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let entries = value.as_array().ok_or(StateFileError::RecentInvalid)?;
+    if entries.len() > MAX_RECENT_FILES {
+        return Err(StateFileError::RecentInvalid);
+    }
+    let mut seen = HashSet::new();
+    let mut decoded = Vec::with_capacity(entries.len());
+    for value in entries {
+        let item = serde_json::from_value::<RecentFile>(value.clone())
+            .map_err(|_| StateFileError::RecentInvalid)?;
+        if item.absolute_path.is_empty() || !seen.insert(item.absolute_path.clone()) {
+            return Err(StateFileError::RecentInvalid);
+        }
+        decoded.push(item);
+    }
+    Ok(decoded)
 }
 fn sort_value(value: Value) -> Value {
     match value {
