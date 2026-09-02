@@ -345,7 +345,18 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 }
 .overlay-list-entry:disabled { color: color-mix(in srgb, var(--theme-muted-text) 45%, transparent); cursor: not-allowed; }
 .command-palette-entry-shortcut { color: var(--theme-muted-text); font-family: "Cascadia Mono", monospace; white-space: nowrap; }
-.file-opener-entry:first-child { font-weight: 650; }
+.file-opener-overlay { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 14px 16px; overflow: hidden; }
+.file-opener-overlay form { display: grid; min-height: 0; max-height: calc(100vh - 60px); gap: 7px; }
+.file-opener-overlay input { min-height: 36px; padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-inactive-tab); }
+.file-opener-overlay input:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: 1px; }
+.file-opener-list { max-height: min(48vh, 360px); padding: 1px; overscroll-behavior: contain; }
+.file-opener-entry { min-height: 30px; padding: 6px 9px; font-size: 13px; }
+.file-opener-browse { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; font-weight: 650; border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent); background: color-mix(in srgb, var(--theme-active-tab) 72%, transparent); }
+.file-opener-browse-glyph { color: var(--theme-accent); font-size: 15px; line-height: 1; }
+.file-opener-recents-heading { margin: 7px 0 1px; padding: 0 9px; color: var(--theme-muted-text); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
+.file-opener-recent { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-opener-entry[aria-selected="true"] { background: color-mix(in srgb, var(--theme-accent) 28%, transparent); box-shadow: inset 3px 0 var(--theme-accent); }
+.file-opener-footer { margin: 2px 1px 0; font-size: 11px; line-height: 1.35; white-space: normal; }
 .command-palette-list { scrollbar-width: none; }
 .command-palette-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .overlay-footer { margin: 5px 8px 0; color: var(--theme-muted-text); font-size: 12px; }
@@ -443,6 +454,10 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   }
   #search-dialog form { grid-template-columns: auto minmax(0, 1fr); gap: 6px; }
   .search-footer { grid-column: 1 / -1; font-size: 11px; white-space: normal; }
+  .file-opener-overlay { width: calc(100vw - 20px); max-height: calc(100vh - 20px); padding: 10px; }
+  .file-opener-overlay form { max-height: calc(100vh - 40px); }
+  .file-opener-list { max-height: min(42vh, 260px); }
+  .file-opener-footer { overflow-wrap: anywhere; }
 }
 @media (forced-colors: active) {
   .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
@@ -463,12 +478,18 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .toc-widget-row[data-current="true"] { background: Highlight; }
   .toc-widget-title { color: CanvasText; }
   .toc-widget-title:disabled { color: GrayText; }
+  .file-opener-overlay, .file-opener-overlay input { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
+  .file-opener-entry, .file-opener-diagnostic, .file-opener-overlay input::placeholder { color: CanvasText; }
+  .file-opener-entry[aria-selected="true"] { color: HighlightText; background: Highlight; box-shadow: inset 3px 0 HighlightText; }
+  .file-opener-entry:focus-visible, .file-opener-overlay input:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+  .file-opener-browse-glyph, .file-opener-recents-heading, .file-opener-footer { color: CanvasText; }
 }
-
 @media (min-resolution: 2dppx), (min-width: 1600px) {
   .app-shell { min-width: 0; }
   .tab-strip { min-height: 40px; }
   .reader-surface { padding: clamp(16px, 2vw, 28px); }
+  .file-opener-overlay { max-width: calc(100vw - 32px); }
+  .file-opener-footer { overflow-wrap: anywhere; }
 }
 
 .pdf-print-surface {
