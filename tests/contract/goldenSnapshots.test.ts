@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "3a4d103574332f6ab9a36c5ac29494ca69bc93e80709df99020ba1305d5b114c";
+  "7d04d2d4490ba82b0d5d1d27636cfbae3811b03f73a17f329d40c474d9505305";
 const ACTION_IDS = [
   "document.open",
   "document.close",

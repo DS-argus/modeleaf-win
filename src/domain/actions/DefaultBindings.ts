@@ -9,7 +9,7 @@ const raw: Record<ActionId, readonly string[]> = {
   "toc.toggle":["t"], "toc.scrollDown":["J"], "toc.scrollUp":["K"], "page.next":["n"], "page.previous":["p"], "page.first":["gg"], "page.last":["G"], "page.prompt":["g"],
   "history.back":["<A-Left>"], "history.forward":["<A-Right>"], "prompt.commit":["<Enter>"], "prompt.cancel":["<Esc>"],
   "search.prompt":["/"], "search.next":["<Enter>"], "search.previous":["<S-Enter>"], "search.cancel":["<Esc>"],
-  "view.zoomIn":["="], "view.zoomOut":["-"], "view.zoomReset":[], "view.fitWidth":["w"], "view.fitPage":["F"], "view.rotateLeft":["["], "view.rotateRight":["]"],
+  "view.zoomIn":["=","+"], "view.zoomOut":["-"], "view.zoomReset":[], "view.fitWidth":["w"], "view.fitPage":["F"], "view.rotateLeft":["["], "view.rotateRight":["]"],
   "link.hint":["f"], "config.reload":["<prefix>r"], "config.writeDefault":[], "config.resetDefault":[], "theme.picker":["T"], "indicator.picker":["I"], "update.show":["U"],
 };
 
