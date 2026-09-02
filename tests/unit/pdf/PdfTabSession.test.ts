@@ -31,8 +31,10 @@ type SessionInternals = {
     suspend: () => void;
     resumeInteractions: () => void;
     restoreEvictedSearch: () => Promise<void>;
+    applyQueuedDestinationToResidentPage: (pageNumber: number) => boolean;
     queueDestination: (page: number, destination: readonly unknown[]) => number | undefined;
-    cancelDestination: (intentId?: number) => void;
+    awaitDestinationScroll: (intentId: number) => Promise<void>;
+    cancelDestination: (intentId?: number, preserveLinkActivation?: boolean) => void;
     synchronizeResidentPages: (pages: readonly number[]) => Promise<void>;
     activateResidentPage: (page: number) => boolean;
     activateVisiblePages: (pages: readonly number[]) => number;
@@ -74,6 +76,8 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     restoreEvictedSearch: vi.fn(async () => undefined),
     queueDestination: vi.fn(() => 1),
     cancelDestination: vi.fn(),
+    awaitDestinationScroll: vi.fn(async () => undefined),
+    applyQueuedDestinationToResidentPage: vi.fn(() => true),
     takeDestinationLanding: vi.fn<(intentId: number) => { pageIndex: number; x: number; y: number } | undefined>(() => undefined),
     synchronizeResidentPages: vi.fn(async () => undefined),
     activateResidentPage: vi.fn(() => true),
@@ -865,11 +869,14 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       .mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
     vi.spyOn(session, "renderPage").mockResolvedValue(true);
     content.takeDestinationLanding.mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
+    let activationCurrent = true;
+    content.cancelDestination.mockImplementation((_intentId, preserveLinkActivation) => { if (!preserveLinkActivation) activationCurrent = false; });
 
-    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "link-hint")).resolves.toEqual({
-      kind: "verified", point: { pageNumber: 2, x: 20, y: 30 },
-    });
+    const result = await session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "link-hint", () => activationCurrent);
+    expect(result).toEqual({ kind: "verified", point: { pageNumber: 2, x: 20, y: 30 } });
     expect(content.queueDestination).toHaveBeenCalledOnce();
+    expect(activationCurrent).toBe(true);
+    expect(content.cancelDestination).toHaveBeenCalledWith(undefined, true);
     expect(session.canHistoryBack).toBe(true);
     expect(session.canHistoryForward).toBe(false);
   });

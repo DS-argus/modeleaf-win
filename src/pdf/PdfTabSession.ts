@@ -199,6 +199,7 @@ export class PdfTabSession {
   public async printCurrent(): Promise<boolean> {
     return this.closed || !this.isForegroundActive() ? false : this.pdfReader.printCurrent();
   }
+  public get navigationLandingInProgress(): boolean { return this.navigationLandingIntent !== undefined; }
   public async activate(): Promise<void> {
     const pendingActivity = this.activitySettlement;
     if (pendingActivity !== undefined) await pendingActivity;
@@ -498,6 +499,11 @@ export class PdfTabSession {
     return rendered;
   }
 
+  public async resolveDestinationPage(reference: unknown): Promise<number | null> {
+    if (this.closed || !this.isForegroundActive()) return null;
+    const activityGeneration = this.activityGeneration;
+    return this.pdfReader.resolvePageReference(reference, () => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration);
+  }
   public async navigateToDestination(
     page: number,
     destination: readonly unknown[],
@@ -509,7 +515,7 @@ export class PdfTabSession {
     const origin = this.captureNavigationSnapshot();
     if (content === undefined || origin === undefined) return { kind: "rejected" };
     this.invalidatePageStepQueue();
-    const navigationIntent = this.supersedeNavigation();
+    const navigationIntent = this.supersedeNavigation(false, true);
     const activityGeneration = this.activityGeneration;
     const sessionGuard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.navigationIntent === navigationIntent;
@@ -556,13 +562,19 @@ export class PdfTabSession {
     this.pendingRenderRollback = { intent: renderIntent, activityGeneration, ...rollbackSnapshot };
     this.reader.apply({ type: "page.goTo", page });
     this.reader.restoreView({ zoomMode: view.zoomMode, customScale: view.scale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
+    this.navigationLandingIntent = navigationIntent;
     let committed = false;
     try {
       committed = await this.renderPage(page, { scale: view.scale, rotation: snapshot.rotationQuarterTurns * 90, devicePixelRatio: this.devicePixelRatio() });
+      if (committed) {
+        content.applyQueuedDestinationToResidentPage(page);
+        await content.awaitDestinationScroll(intentId);
+      }
     } catch {
       committed = false;
     } finally {
       if (!committed) content.cancelDestination(intentId);
+      if (this.navigationLandingIntent === navigationIntent) this.navigationLandingIntent = undefined;
     }
     if (!committed) {
       this.navigationHistory.rollback(prepared.transaction);
@@ -864,9 +876,9 @@ export class PdfTabSession {
     };
   }
 
-  private supersedeNavigation(preserveCancellation = false): number {
+  private supersedeNavigation(preserveCancellation = false, preserveLinkActivation = false): number {
     if (!preserveCancellation) this.cancelledNavigation = undefined;
-    this.content?.cancelDestination();
+    this.content?.cancelDestination(undefined, preserveLinkActivation);
     return ++this.navigationIntent;
   }
 
