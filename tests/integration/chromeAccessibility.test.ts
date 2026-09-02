@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   AccessibilityController, focusRestoreTarget,
   readerAccessibilityName,
@@ -8,6 +10,9 @@ import {
 } from "../../src/ui/AccessibilityController";
 import { bindSearchPrompt } from "../../src/ui/SearchPromptController";
 import { THEME_PICKER_ROWS, commitThemePicker, openThemePicker, previewThemePickerRow, revertThemePicker, themePickerDialogKeyAction } from "../../src/ui/ThemePickerModel";
+
+const mainSource = readFileSync(join(process.cwd(), "src/main.ts"), "utf8");
+const styles = readFileSync(join(process.cwd(), "src/styles/app.css"), "utf8");
 
 describe("CP5 theme accessibility contract", () => {
   it("keeps all seven theme choices keyboard-addressable and makes preview reversible", () => {
@@ -19,7 +24,7 @@ describe("CP5 theme accessibility contract", () => {
     expect(revertThemePicker(preview.model).effect).toEqual({ kind: "revert", themeId: "tokyo-night" });
   });
 
-  it("handles arrows, Ctrl+J/K, Enter, and Escape from focused dialog controls", () => {
+  it("handles arrows, bare and Ctrl+J/K, Enter, and Escape from focused dialog controls", () => {
     const dialog = document.createElement("dialog");
     const option = document.createElement("button");
     const apply = document.createElement("button");
@@ -29,20 +34,38 @@ describe("CP5 theme accessibility contract", () => {
       const action = themePickerDialogKeyAction(event);
       if (action) actions.push(action);
     });
-    const press = (target: HTMLElement, key: string, ctrlKey = false): void => {
-      const event = new KeyboardEvent("keydown", { key, ctrlKey, bubbles: true, cancelable: true });
+    const press = (target: HTMLElement, key: string, ctrlKey = false, repeat = false): void => {
+      const event = new KeyboardEvent("keydown", { key, ctrlKey, repeat, bubbles: true, cancelable: true });
       target.dispatchEvent(event);
       expect(event.defaultPrevented).toBe(true);
     };
     press(option, "j", true);
     press(apply, "k", true);
+    press(option, "j");
+    press(apply, "k");
+    press(option, "j", false, true);
+    press(apply, "k", false, true);
     press(option, "ArrowDown");
     press(option, "ArrowRight");
     press(apply, "ArrowUp");
     press(apply, "ArrowLeft");
     press(apply, "Enter");
     press(option, "Escape");
-    expect(actions).toEqual(["next", "previous", "next", "next", "previous", "previous", "commit", "revert"]);
+    expect(actions).toEqual(["next", "previous", "next", "previous", "next", "previous", "next", "next", "previous", "previous", "commit", "revert"]);
+  });
+
+  it("ignores composing and modified theme navigation keys", () => {
+    const ignored = [
+      new KeyboardEvent("keydown", { key: "j", isComposing: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "j", altKey: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "j", metaKey: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "j", shiftKey: true, cancelable: true }),
+      new KeyboardEvent("keydown", { key: "x", ctrlKey: true, cancelable: true }),
+    ];
+    for (const event of ignored) {
+      expect(themePickerDialogKeyAction(event)).toBeUndefined();
+      expect(event.defaultPrevented).toBe(false);
+    }
   });
   it("uses atomic polite and assertive live regions without document data", () => {
     const polite = document.createElement("div");
@@ -154,6 +177,21 @@ describe("chrome accessibility contract", () => {
   });
 });
 describe("search prompt production binding", () => {
+  it("keeps the search prompt semantic and compact above the status bar", () => {
+    expect(mainSource).toContain('<dialog id="search-dialog" class="search-prompt" aria-labelledby="search-title">');
+    expect(mainSource).toContain('<form id="search-form" autocomplete="off">');
+    expect(mainSource).toContain('<label id="search-title" class="visually-hidden" for="search-input">Search PDF text</label>');
+    expect(mainSource).toContain('<input id="search-input" type="search"');
+    expect(mainSource).toContain('<span class="search-prefix" aria-hidden="true">/</span>');
+    expect(styles).toContain("inset: auto auto 44px 50%");
+    expect(styles).toContain("width: min(480px, calc(100vw - 32px))");
+    expect(styles).toContain("#search-dialog::backdrop { background: transparent; }");
+    expect(styles).toContain("overflow-wrap: anywhere;");
+    expect(styles).toContain("@media (max-width: 480px)");
+    expect(styles).toContain("@media (forced-colors: active)");
+    expect(styles).toContain("#search-dialog { color: CanvasText");
+    expect(styles).toContain("white-space: normal;");
+  });
   it("cancels the prompt on Escape without clearing active search or moving the reader", () => {
     const dialog = document.createElement("dialog");
     const form = document.createElement("form");

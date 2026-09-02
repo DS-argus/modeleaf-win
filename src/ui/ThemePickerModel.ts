@@ -47,10 +47,15 @@ export const THEME_PICKER_ROWS: readonly ThemePickerRow[] = Object.freeze(THEMES
 export const CLOSED_THEME_PICKER: ThemePickerClosedModel = Object.freeze({ status: "closed" });
 
 export type ThemePickerKeyAction = "next" | "previous" | "commit" | "revert";
+export const THEME_PICKER_FOOTER = Object.freeze([
+  Object.freeze({ key: "j/k", action: "move" }),
+  Object.freeze({ key: "Enter", action: "apply" }),
+  Object.freeze({ key: "Esc", action: "cancel" }),
+] as const);
 
 export function themePickerKeyAction(key: string): ThemePickerKeyAction | undefined {
-  if (key === "ArrowDown" || key === "ArrowRight") return "next";
-  if (key === "ArrowUp" || key === "ArrowLeft") return "previous";
+  if (key === "ArrowDown" || key === "ArrowRight" || key === "j" || key === "J") return "next";
+  if (key === "ArrowUp" || key === "ArrowLeft" || key === "k" || key === "K") return "previous";
   if (key === "Enter") return "commit";
   if (key === "Escape") return "revert";
   return undefined;
