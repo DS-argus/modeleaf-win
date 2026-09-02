@@ -36,6 +36,7 @@ import { AccessibilityController, readerAccessibilityName, tabAccessibilitySeman
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
+import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
 import { DEFAULT_INDICATOR_SETTINGS, type IndicatorSettings } from "./domain/links/IndicatorSettings";
 import { commitIndicatorPicker, indicatorPickerDialogKeyAction, INDICATOR_PICKER_ROWS, openIndicatorPicker, previewIndicatorPickerRow, revertIndicatorPicker, revertIndicatorPickerToDurable, CLOSED_INDICATOR_PICKER, type IndicatorPickerModel, type IndicatorPickerOpenModel } from "./ui/IndicatorPickerModel";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
@@ -172,7 +173,9 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
     else if (effect.type === "focus") restoreOwnedFocus(effect.target);
   }
 }
+const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu, onCommand: (actionId) => dispatchActionId(actionId as ActionId) });
 function claimOverlay(id: OverlayId): void {
+  applicationMenuOwner.close();
   active().toc.cancelPending();
   active().session.dismissLinkDecorations();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
@@ -451,7 +454,7 @@ function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): voi
       const button = document.createElement("button"); button.type = "button"; button.setAttribute("role", "menuitem"); button.disabled = !command.enabled;
       button.textContent = command.shortcuts.length === 0 ? command.title : `${command.title}  ${command.shortcuts.join(", ")}`;
       if (!command.enabled && command.disabledReason !== undefined) { button.title = command.disabledReason; button.setAttribute("aria-description", command.disabledReason); }
-      button.addEventListener("click", () => { group.open = false; dispatchActionId(command.id); });
+      button.dataset.menuCommand = command.id;
       return button;
     }));
     group.append(summary, commands); return group;
@@ -459,7 +462,7 @@ function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): voi
 }
 function renderHelpRows(): void {
   const groups = new Map<string, ReturnType<typeof buildHelpRows>>();
-  for (const row of buildHelpRows(commandAvailabilityContext())) {
+  for (const row of buildHelpRows(commandAvailabilityContext(), shellConfig, overlayOwner.active?.id === "help" ? { modalOwner: "help" } : {})) {
     groups.set(row.category, [...(groups.get(row.category) ?? []), row]);
   }
   helpRows.replaceChildren(...[...groups].map(([category, rows]) => {
@@ -470,7 +473,7 @@ function renderHelpRows(): void {
     const list = document.createElement("dl");
     for (const row of rows) {
       const description = document.createElement("dt");
-      description.textContent = row.enabled ? row.label : `${row.label} — ${row.disabledReason ?? "Unavailable"}`;
+      description.textContent = row.disabledReason === undefined ? row.label : `${row.label} — ${row.disabledReason}`;
       description.setAttribute("aria-disabled", String(!row.enabled));
       const shortcut = document.createElement("dd");
       shortcut.textContent = row.shortcut;
@@ -1030,7 +1033,7 @@ const initialRecentsReady = recentListenerReady.then(() => listRecentDocuments(i
   }
 });
 function paletteEntries(): readonly CommandPaletteCommandEntry[] {
-  return buildCommandPaletteEntries(commandAvailabilityContext(), [], paletteInput.value)
+  return buildCommandPaletteEntries(commandAvailabilityContext(), [], paletteInput.value, shellConfig, overlayOwner.active?.id === "commandPalette" ? { modalOwner: "palette" } : {})
     .filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
 }
 function openPalette(): void {
@@ -1203,6 +1206,7 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
       removedTabTeardown.dispose();
       disposeSearchPrompt();
       rootKeyboard.dispose();
+      applicationMenuOwner.dispose();
       disposeDprChange();
       resources.assertEmpty();
       rendererDrained = true;
@@ -1565,6 +1569,7 @@ window.addEventListener("beforeunload", () => {
   removedTabTeardown.dispose();
   rootKeyboard.dispose();
   for (const tab of workspace.snapshot.tabs) workspace.close(tab.id);
+  applicationMenuOwner.dispose();
   disposeDprChange();
 });
 paletteDialog.addEventListener("cancel", (event) => { event.preventDefault(); closePalette(); });

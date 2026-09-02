@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ACTION_DESCRIPTORS, getActionRuntimeAvailability, type ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
+import { BUILT_IN_CONFIG } from "../../../src/domain/config/ConfigValidator";
 import { buildHelpRows } from "../../../src/ui/HelpModel";
 
 const unavailableContext: ActionRuntimeContext = {
@@ -9,10 +10,14 @@ const unavailableContext: ActionRuntimeContext = {
 };
 
 describe("HelpModel", () => {
-  it("derives every help row from the authoritative registry", () => {
+  it("groups the nine registry tab selection rows into one presentation row", () => {
     const rows = buildHelpRows();
+    const selectionRows = rows.filter(({ label }) => label === "Select Tab 1–9");
     const visible = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
-    expect(rows.map(({ id }) => id)).toEqual(visible.map(({ id }) => id));
+
+    expect(selectionRows).toEqual([expect.objectContaining({ id: "tab.select.1", category: "Tabs", shortcut: "Ctrl+1 … Ctrl+9", enabled: true })]);
+    expect(rows).toHaveLength(visible.length - 8);
+    expect(rows.filter(({ id }) => /^tab\.select\.[2-9]$/u.test(id))).toEqual([]);
     expect(rows).toContainEqual(expect.objectContaining({ category: "Pages", id: "page.first", shortcut: "g g", label: "First Page", enabled: true }));
   });
   it("spells uppercase bindings as explicit Shift shortcuts", () => {
@@ -21,11 +26,15 @@ describe("HelpModel", () => {
     expect(rows.find(({ id }) => id === "theme.picker")?.shortcut).toBe("Shift+T");
     expect(rows.find(({ id }) => id === "page.next")?.shortcut).toBe("n");
   });
-  it("uses exact registry availability and reasons", () => {
-    const rows = buildHelpRows(unavailableContext);
-    for (const row of rows) expect(row.enabled).toBe(getActionRuntimeAvailability(row.id, unavailableContext).enabled);
-    expect(rows.find(({ id }) => id === "app.new")).toMatchObject({ enabled: false, disabledReason: "Close the current dialog" });
-    expect(rows.find(({ id }) => id === "document.open")).toMatchObject({ enabled: false, disabledReason: "Close the current dialog" });
+  it("keeps self-modal rows truthful without repeating the dialog reason", () => {
+    const rows = buildHelpRows(unavailableContext, BUILT_IN_CONFIG, { modalOwner: "help" });
+    expect(rows.find(({ id }) => id === "app.new")).toMatchObject({ enabled: false, disabledReason: "Window capacity unavailable" });
+    expect(rows.find(({ label }) => label === "Select Tab 1–9")).toMatchObject({ enabled: false, disabledReason: "No document open" });
     expect(rows.find(({ id }) => id === "app.quit")).toMatchObject({ enabled: true });
+  });
+  it("derives grouped availability from all nine tab selection projections", () => {
+    const rows = buildHelpRows({ ...unavailableContext, modalOpen: false });
+    expect(rows.find(({ label }) => label === "Select Tab 1–9")).toMatchObject({ enabled: false, disabledReason: "No document open" });
+    expect(getActionRuntimeAvailability("tab.select.1", { ...unavailableContext, modalOpen: false })).toMatchObject({ enabled: false, reason: "No document open" });
   });
 });
