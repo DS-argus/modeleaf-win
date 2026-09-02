@@ -525,6 +525,7 @@ function createTab(): TabPayload {
   });
   let session!: PdfTabSession;
   let announcedGeneration = -1;
+  let viewportSyncDocumentGeneration = -1;
   session = new PdfTabSession({
     native,
     pdf: { getDocument: (options) => getDocument(options as never) as unknown as PdfLoadingTask, annotationMode: AnnotationMode.DISABLE },
@@ -547,6 +548,7 @@ function createTab(): TabPayload {
         try { return await session.navigateToDestination(page, destination, cause, isActivationCurrent); }
         catch (error: unknown) { reportPresentationFailure(session, error); return { kind: "failed" }; }
       },
+      resolveDestinationPage: (reference) => session.resolveDestinationPage(reference),
       prepareExternalLinks: (entries, registryRevision) => invoke<void>("prepare_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, entries: entries.map((entry) => ({ annotation_id: entry.annotationId, target: entry.target })) }),
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
@@ -559,7 +561,10 @@ function createTab(): TabPayload {
       if (workspace === undefined || active().session !== session) return;
       const snapshot = session.snapshot;
       const reader = snapshot.reader;
-      if (reader.hasDocument) queueMicrotask(scheduleViewportSync);
+      if (reader.hasDocument && reader.documentGeneration !== viewportSyncDocumentGeneration) {
+        viewportSyncDocumentGeneration = reader.documentGeneration;
+        queueMicrotask(scheduleViewportSync);
+      }
       accessibility.activateTab(String(workspace.activeTabId), reader.documentGeneration);
       if (reader.hasDocument && reader.pageCount > 0) {
         accessibility.announce({ kind: "page", generation: reader.documentGeneration, page: reader.page, pageCount: reader.pageCount });
@@ -619,11 +624,12 @@ function createTab(): TabPayload {
     viewportFrameRequest = window.requestAnimationFrame(synchronizeContinuousViewport);
   };
   const onReaderScroll = (): void => {
+    if (session.navigationLandingInProgress) return;
     if (!session.indicatorPublicationPending) session.dismissLinkDecorations();
     session.clearVisibleLinkAuthority();
     session.invalidateViewportSynchronization();
     scheduleViewportSync();
-  }
+  };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
   queueMicrotask(scheduleViewportSync);
   const toc = new TocController({
