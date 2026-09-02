@@ -11,6 +11,10 @@ import { parseKeySequence, type CanonicalKeyToken } from "../../domain/input/Key
 export type CommandSurface = "menu" | "palette" | "help";
 export type CommandCategory = "application" | "tabs" | "navigation" | "search" | "view" | "document" | "settings";
 
+export interface CommandProjectionOptions {
+  readonly modalOwner?: "help" | "palette";
+}
+
 export interface CommandProjection {
   readonly id: ActionId;
   readonly title: string;
@@ -31,26 +35,30 @@ export function projectCommands(
   surface: CommandSurface,
   state: ActionRuntimeContext,
   config: ProductConfig,
+  options: CommandProjectionOptions = {},
 ): readonly CommandProjection[] {
   return Object.freeze(ACTION_DESCRIPTORS
     .filter((descriptor) => visibleOnSurface(descriptor, surface))
-    .map((descriptor) => projectCommand(descriptor, state, config)));
+    .map((descriptor) => projectCommand(descriptor, surface, state, config, options)));
 }
 
 export const projectMenuCommands = (state: ActionRuntimeContext, config: ProductConfig): readonly CommandProjection[] =>
   projectCommands("menu", state, config);
-export const projectPaletteCommands = (state: ActionRuntimeContext, config: ProductConfig): readonly CommandProjection[] =>
-  projectCommands("palette", state, config);
-export const projectHelpCommands = (state: ActionRuntimeContext, config: ProductConfig): readonly CommandProjection[] =>
-  projectCommands("help", state, config);
+export const projectPaletteCommands = (state: ActionRuntimeContext, config: ProductConfig, options: CommandProjectionOptions = {}): readonly CommandProjection[] =>
+  projectCommands("palette", state, config, options);
+export const projectHelpCommands = (state: ActionRuntimeContext, config: ProductConfig, options: CommandProjectionOptions = {}): readonly CommandProjection[] =>
+  projectCommands("help", state, config, options);
 
 function visibleOnSurface(descriptor: ActionDescriptor, surface: CommandSurface): boolean {
   if (descriptor.bindingConfiguration === "fixed") return false;
   if (surface === "menu") return descriptor.id !== "palette.open";
   return true;
 }
-function projectCommand(descriptor: ActionDescriptor, state: ActionRuntimeContext, config: ProductConfig): CommandProjection {
-  const availability = getActionRuntimeAvailability(descriptor.id, state);
+function projectCommand(descriptor: ActionDescriptor, surface: CommandSurface, state: ActionRuntimeContext, config: ProductConfig, options: CommandProjectionOptions): CommandProjection {
+  const availability = getActionRuntimeAvailability(
+    descriptor.id,
+    options.modalOwner === surface && state.modalOpen ? { ...state, modalOpen: false } : state,
+  );
   return Object.freeze({
     id: descriptor.id,
     title: descriptor.displayName,

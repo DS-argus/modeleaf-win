@@ -30,6 +30,19 @@ describe("CommandPaletteModel", () => {
     expect(enabled.slice(firstDisabled)).not.toContain(true);
     expect(new Set(entries.map((entry) => entry.kind === "command" ? `action:${entry.id}` : `recent:${entry.recentId}`)).size).toBe(entries.length);
   });
+  it("reports a foreign modal as the blocking reason", () => {
+    const command = buildCommandPaletteEntries(unavailableContext)
+      .find((entry): entry is CommandPaletteCommandEntry => entry.kind === "command" && entry.id === "document.open");
+
+    expect(command).toMatchObject({ enabled: false, disabledReason: "Close the current dialog" });
+  });
+  it("makes actions activatable when the palette explicitly owns the modal", () => {
+    const command = buildCommandPaletteEntries({ ...baseContext, modalOpen: true }, [], "", undefined, { modalOwner: "palette" })
+      .find((entry): entry is CommandPaletteCommandEntry => entry.kind === "command" && entry.id === "document.open");
+
+    expect(command).toMatchObject({ enabled: true });
+    expect(command).not.toHaveProperty("disabledReason");
+  });
   it("normalizes Korean composed and decomposed text before ranking", () => {
     const entries = buildCommandPaletteEntries(undefined, [
       recent("exact", "가"),

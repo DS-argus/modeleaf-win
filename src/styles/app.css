@@ -342,8 +342,10 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .windows-menu details { position: relative; }
 .windows-menu summary { cursor: default; list-style: none; padding: 0.4rem 0.55rem; }
 .windows-menu summary::-webkit-details-marker { display: none; }
-.windows-menu-commands { position: absolute; z-index: 40; display: grid; min-width: 17rem; padding: 0.25rem; border: 1px solid var(--theme-border); background: var(--theme-background); box-shadow: 0 0.5rem 1.2rem color-mix(in srgb, var(--theme-foreground) 18%, transparent); }
-.windows-menu-commands button { border: 0; background: transparent; color: var(--theme-foreground); padding: 0.35rem 0.5rem; text-align: left; white-space: pre; }
+.windows-menu-commands { position: absolute; z-index: 40; display: grid; inline-size: min(17rem, calc(100vw - 0.7rem)); max-inline-size: calc(100vw - 0.7rem); padding: 0.25rem; border: 1px solid var(--theme-border); background: var(--theme-background); box-shadow: 0 0.5rem 1.2rem color-mix(in srgb, var(--theme-foreground) 18%, transparent); }
+.windows-menu details:nth-child(n + 5) .windows-menu-commands { right: 0; }
+.windows-menu-commands button { min-inline-size: 0; overflow-wrap: anywhere; }
+.windows-menu-commands button { border: 0; background: transparent; color: var(--theme-foreground); padding: 0.35rem 0.5rem; text-align: left; white-space: pre-wrap; }
 .windows-menu-commands button:hover:not(:disabled), .windows-menu-commands button:focus-visible { background: var(--theme-active-tab); }
 .windows-menu-commands button:disabled { color: var(--theme-muted-text); }
 .tab-strip { display: flex; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; background: var(--theme-inactive-tab); border-bottom: 1px solid var(--theme-border); }
