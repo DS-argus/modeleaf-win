@@ -10,6 +10,12 @@ describe("OverlayKeyOwnership", () => {
   it("owns only keys implemented by each interactive overlay", () => {
     expect(key("theme-dialog", "ArrowDown")).toBe(true);
     expect(key("theme-dialog", "j", true)).toBe(true);
+    expect(key("theme-dialog", "j")).toBe(true);
+    expect(key("theme-dialog", "k")).toBe(true);
+    expect(key("theme-dialog", "ArrowLeft")).toBe(true);
+    expect(key("theme-dialog", "ArrowRight")).toBe(true);
+    expect(key("theme-dialog", "Home")).toBe(false);
+    expect(key("theme-dialog", "ArrowDown", true)).toBe(false);
     expect(key("command-palette-dialog", "ArrowUp")).toBe(true);
     expect(key("search-dialog", "Enter")).toBe(true);
     expect(key("search-dialog", "ArrowDown")).toBe(false);

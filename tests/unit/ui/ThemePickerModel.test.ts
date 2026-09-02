@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   CLOSED_THEME_PICKER,
   THEME_PICKER_ROWS,
+  THEME_PICKER_FOOTER,
+  themePickerKeyAction,
   commitThemePicker,
   openThemePicker,
   previewThemePickerRow,
@@ -29,6 +31,17 @@ describe("ThemePickerModel", () => {
     expect(Object.isFrozen(THEME_PICKER_ROWS)).toBe(true);
   });
 
+
+  it("exports footer tokens that describe the implemented theme picker keys", () => {
+    expect(THEME_PICKER_FOOTER).toEqual([
+      { key: "j/k", action: "move" },
+      { key: "Enter", action: "apply" },
+      { key: "Esc", action: "cancel" },
+    ]);
+    expect([themePickerKeyAction("j"), themePickerKeyAction("k"), themePickerKeyAction("Enter"), themePickerKeyAction("Escape")]).toEqual([
+      "next", "previous", "commit", "revert",
+    ]);
+  });
   it("snapshots durable id and revision when opening", () => {
     expect(openThemePicker("tokyo-night", 17)).toEqual({
       status: "open",
