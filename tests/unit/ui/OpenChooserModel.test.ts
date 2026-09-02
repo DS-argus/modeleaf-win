@@ -18,7 +18,7 @@ describe("OpenChooserModel", () => {
     expect(adoptChooserSnapshot(model, 3, { revision: "4", entries: [entry(2)] })).toBe(model);
     expect(adoptChooserSnapshot(model, 4, { revision: "2", entries: [entry(2)] })).toBe(model);
   });
-  it("normalizes queries without using input as a refresh trigger", () => {
+  it("selects the first filtered recent so Enter opens that exact match", () => {
     const model = createOpenChooser({ tag: "READY", snapshot: { revision: "1", entries: [entry(1, "résumé.pdf")] } });
     const matched = updateChooserQuery(model, "rés");
     expect(chooserRows(matched)).toHaveLength(2);
