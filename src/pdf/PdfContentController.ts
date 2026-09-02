@@ -11,7 +11,7 @@ export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: b
 export interface PdfContentTextContent { readonly items: readonly PdfContentTextItem[]; readonly styles?: Readonly<Record<string, unknown>>; readonly lang?: string; }
 export interface PdfContentAnnotation { readonly subtype?: string; readonly rect?: readonly number[]; readonly url?: string; readonly id?: string; readonly dest?: unknown; readonly action?: string; readonly color?: readonly number[] | Uint8ClampedArray; readonly borderStyle?: { readonly width?: number; readonly style?: number }; }
 export interface PdfContentPage { getTextContent(): Promise<PdfContentTextContent>; streamTextContent?(): ReadableStream<PdfContentTextContent>; getAnnotations(options?: { readonly intent?: "display" }): Promise<readonly PdfContentAnnotation[]>; }
-export interface PdfContentDocument { readonly numPages: number; getPage(pageNumber: number): Promise<PdfContentPage>; getDestination?(name: string): Promise<unknown>; getPageIndex?(reference: unknown): Promise<number>; }
+export interface PdfContentDocument { readonly numPages: number; getPage(pageNumber: number): Promise<PdfContentPage>; getDestination?(name: string): Promise<unknown>; getPageIndex?(reference: unknown): Promise<number>; cachedPageNumber?(reference: unknown): number | null; }
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
@@ -32,6 +32,7 @@ export interface PdfContentControllerOptions {
   readonly indicatorSettings?: () => IndicatorSettings;
   readonly navigateToPage: (pageNumber: number) => void;
   readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean) => Promise<PdfDestinationNavigationOutcome>;
+  readonly resolveDestinationPage?: (reference: unknown) => Promise<number | null>;
   readonly onSearchResults: (update: PdfSearchResultsUpdate) => void;
   readonly requestSearchLanding: (request: PdfSearchLandingRequest) => Promise<PdfSearchLandingOutcome>;
   readonly scheduleSearchWork?: () => Promise<void>;
@@ -304,12 +305,14 @@ export class PdfContentController {
     readonly preservedPoint: readonly [number, number] | undefined;
     readonly destination: readonly unknown[];
   } | undefined;
+  private destinationScrollSettlement: { readonly intentId: number; readonly promise: Promise<void>; readonly finish: () => void } | undefined;
   private indicatorElement: HTMLElement | undefined;
   private indicatorTimer: ReturnType<typeof setTimeout> | undefined;
   private indicatorPublishTimer: ReturnType<typeof setTimeout> | undefined;
   private indicatorGeneration = 0;
   private destinationSequence = 0;
   private linkActivationSequence = 0;
+  private readonly resolvedDestinationPages = new WeakMap<PdfContentAnnotation, number>();
   private renderSequence = 0;
   private sessionId: string | undefined;
   private externalDispatchSequence = 0;
@@ -887,18 +890,30 @@ export class PdfContentController {
     this.appliedDestinationLandings.delete(intentId);
     return landing;
   }
-  public cancelDestination(intentId?: number): void {
+  public cancelDestination(intentId?: number, preserveLinkActivation = false): void {
     if (intentId === undefined) {
       this.appliedDestinationLandings.clear();
-      this.linkActivationSequence += 1;
+      if (!preserveLinkActivation) this.linkActivationSequence += 1;
       this.pendingDestination = undefined;
+      this.destinationScrollSettlement?.finish();
       return;
     }
     if (this.pendingDestination?.intentId === intentId) this.pendingDestination = undefined;
     this.appliedDestinationLandings.delete(intentId);
+    if (this.destinationScrollSettlement?.intentId === intentId) this.destinationScrollSettlement.finish();
+  }
+  public applyQueuedDestinationToResidentPage(pageNumber: number): boolean {
+    if (this.pendingDestination?.pageNumber !== pageNumber) return false;
+    const entry = this.residentEntries.get(pageNumber);
+    if (entry === undefined) return false;
+    this.applyPendingDestination({ pageNumber, viewport: entry.viewport, canvas: entry.canvas });
+    return true;
+  }
+  public awaitDestinationScroll(intentId: number): Promise<void> {
+    return this.destinationScrollSettlement?.intentId === intentId ? this.destinationScrollSettlement.promise : Promise.resolve();
   }
 
-  private applyPendingDestination(request: PdfContentRenderRequest): void {
+  private applyPendingDestination(request: Pick<PdfContentRenderRequest, "pageNumber" | "viewport" | "canvas">): void {
     const intent = this.pendingDestination;
     if (intent === undefined) return;
     if (intent.document !== this.document || intent.generation !== this.generation) {
@@ -916,8 +931,22 @@ export class PdfContentController {
     const canvasOrigin = this.canvasScrollOrigin(request.canvas);
     const scrollTo = (point: readonly number[]): void => {
       if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
-      this.options.host.scrollLeft = Math.max(0, canvasOrigin[0] + point[0]!);
-      this.options.host.scrollTop = Math.max(0, canvasOrigin[1] + point[1]!);
+      const beforeLeft = this.options.host.scrollLeft;
+      const beforeTop = this.options.host.scrollTop;
+      const targetLeft = Math.max(0, canvasOrigin[0] + point[0]!);
+      const targetTop = Math.max(0, canvasOrigin[1] + point[1]!);
+      this.destinationScrollSettlement?.finish();
+      let resolveScroll!: () => void;
+      const promise = new Promise<void>((resolve) => { resolveScroll = resolve; });
+      const finish = (): void => {
+        this.options.host.removeEventListener("scroll", finish);
+        if (this.destinationScrollSettlement?.intentId === intent.intentId) this.destinationScrollSettlement = undefined;
+        resolveScroll();
+      };
+      this.destinationScrollSettlement = { intentId: intent.intentId, promise, finish };
+      this.options.host.addEventListener("scroll", finish, { once: true });
+      this.options.host.scrollLeft = targetLeft;
+      this.options.host.scrollTop = targetTop;
       const center = request.viewport.convertToPdfPoint(
         this.options.host.scrollLeft - canvasOrigin[0] + this.options.host.clientWidth / 2,
         this.options.host.scrollTop - canvasOrigin[1] + this.options.host.clientHeight / 2,
@@ -925,6 +954,7 @@ export class PdfContentController {
       if (Number.isFinite(center[0]) && Number.isFinite(center[1])) {
         this.appliedDestinationLandings.set(intent.intentId, { pageIndex: request.pageNumber - 1, x: center[0], y: center[1] });
       }
+      if (this.options.host.scrollLeft === beforeLeft && this.options.host.scrollTop === beforeTop) queueMicrotask(finish);
     };
 
     if (name === "FitR"
@@ -938,6 +968,10 @@ export class PdfContentController {
       return;
     }
 
+    if (name === "Fit" || name === "FitB") {
+      scrollTo([0, 0]);
+      return;
+    }
     const destinationX = name === "XYZ" && finite(intent.destination[2])
       ? intent.destination[2]
       : (name === "FitV" || name === "FitBV") && finite(intent.destination[2])
@@ -1382,10 +1416,12 @@ export class PdfContentController {
         this.markLinkOutcome(group, "unsupported");
         return;
       }
-      const pageNumber = await this.destinationPage(destination, document, awaitRaw);
+      const pageNumber = this.resolvedDestinationPages.get(annotation) ?? await this.destinationPage(destination, document, awaitRaw);
       if (!isActive()) return;
-      if (pageNumber === null) { this.options.onStatus("Unsupported PDF link destination."); this.markLinkOutcome(group, "unsupported"); }
-      else {
+      if (pageNumber === null) {
+        this.options.onStatus("Unsupported PDF link destination.");
+        this.markLinkOutcome(group, "unsupported");
+      } else {
         const outcome = await awaitRaw(this.options.navigateToDestination(pageNumber, destination, cause, isOwnerActive));
         if (isOwnerActive() && outcome.kind === "verified" && outcome.point !== undefined) {
           const point = outcome.point;
@@ -1393,6 +1429,9 @@ export class PdfContentController {
             this.indicatorPublishTimer = undefined;
             if (isOwnerActive()) this.showDestinationIndicator(point);
           }, 0);
+        } else if (isOwnerActive() && outcome.kind !== "verified" && outcome.kind !== "same-location" && outcome.kind !== "stale") {
+          this.options.onStatus("PDF link destination could not be reached.");
+          this.markLinkOutcome(group, `failed ${outcome.kind}`);
         }
       }
     } catch (error) {
@@ -1407,6 +1446,14 @@ export class PdfContentController {
     }
   }
 
+  private destinationReference(value: unknown): { readonly num: number; readonly gen: number } | undefined {
+    if (typeof value !== "object" || value === null) return undefined;
+    const { num, gen } = value as { readonly num?: unknown; readonly gen?: unknown };
+    return Number.isSafeInteger(num) && (num as number) >= 0 && Number.isSafeInteger(gen) && (gen as number) >= 0
+      ? { num: num as number, gen: gen as number }
+      : undefined;
+  }
+
   private async destinationPage(
     destination: readonly unknown[],
     document: PdfContentDocument,
@@ -1416,6 +1463,14 @@ export class PdfContentController {
     const reference = destination[0];
     if (typeof reference === "number") {
       return Number.isSafeInteger(reference) && reference >= 0 && reference < document.numPages ? reference + 1 : null;
+    }
+    const cachedPageNumber = document.cachedPageNumber?.(reference);
+    if (cachedPageNumber !== null && cachedPageNumber !== undefined
+      && Number.isSafeInteger(cachedPageNumber) && cachedPageNumber >= 1 && cachedPageNumber <= document.numPages) return cachedPageNumber;
+    if (this.options.resolveDestinationPage !== undefined) {
+      const resolvedByReader = await wait(this.options.resolveDestinationPage(reference));
+      return resolvedByReader !== null && Number.isSafeInteger(resolvedByReader)
+        && resolvedByReader >= 1 && resolvedByReader <= document.numPages ? resolvedByReader : null;
     }
     if (document.getPageIndex === undefined) return null;
     const index = await wait(document.getPageIndex(reference));
@@ -1428,9 +1483,13 @@ export class PdfContentController {
     try {
       const destination = typeof annotation.dest === "string" ? await document.getDestination?.(annotation.dest) : annotation.dest;
       if (!Array.isArray(destination) || !isValidPdfDestination(destination)) return `unsupported-dest:${JSON.stringify(this.destinationOperand(annotation.dest))}`;
+      const reference = this.destinationReference(destination[0]);
+      const suffix = JSON.stringify(destination.slice(1).map((operand) => this.destinationOperand(operand)));
+      if (reference !== undefined) return `goto-ref:${reference.num}:${reference.gen}:${suffix}`;
       const page = await this.destinationPage(destination, document);
       if (page === null) return `unsupported-dest:${JSON.stringify(this.destinationOperand(annotation.dest))}`;
-      return `goto:${page}:${JSON.stringify(destination.slice(1).map((operand) => this.destinationOperand(operand)))}`;
+      this.resolvedDestinationPages.set(annotation, page);
+      return `goto:${page}:${suffix}`;
     } catch {
       return `unsupported-dest:${JSON.stringify(this.destinationOperand(annotation.dest))}`;
     }

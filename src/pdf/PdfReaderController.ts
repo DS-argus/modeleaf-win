@@ -612,6 +612,21 @@ export class PdfReaderController {
       return undefined;
     }
   }
+  /** Resolves a worker-cloned PDF reference through reader-owned page proxies. */
+  public async resolvePageReference(reference: unknown, requestCommitGuard?: PdfRequestCommitGuard): Promise<number | null> {
+    const current = this.current;
+    if (current === undefined || current.document === undefined || this.disposed
+      || (requestCommitGuard !== undefined && !requestCommitGuard())) return null;
+    const cached = current.document.cachedPageNumber?.(reference);
+    if (cached !== null && cached !== undefined && Number.isSafeInteger(cached) && cached >= 1 && cached <= current.document.numPages) return cached;
+    try {
+      const pageIndex = await current.document.getPageIndex?.(reference);
+      if (this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) return null;
+      return pageIndex !== undefined && Number.isSafeInteger(pageIndex) && pageIndex >= 0 && pageIndex < current.document.numPages ? pageIndex + 1 : null;
+    } catch {
+      return null;
+    }
+  }
   /** Returns the target page's CSS size at unit scale and the requested rotation. */
   public async getPageNaturalSize(
     pageNumber: number,

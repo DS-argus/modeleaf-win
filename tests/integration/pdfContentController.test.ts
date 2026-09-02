@@ -65,6 +65,7 @@ const setup = (
   pages: PdfContentPage[],
   landing?: PdfContentControllerOptions["requestSearchLanding"],
   navigateDestination?: PdfContentControllerOptions["navigateToDestination"],
+  resolveDestinationPage?: PdfContentControllerOptions["resolveDestinationPage"],
 ) => {
   const host = document.createElement("div");
   const canvas = document.createElement("canvas");
@@ -84,6 +85,7 @@ const setup = (
     navigateToPage,
     navigateToDestination: navigateDestination ?? (async (pageNumber) => { navigateToPage(pageNumber); return { kind: "verified" }; }),
     onSearchResults: () => undefined,
+    ...(resolveDestinationPage === undefined ? {} : { resolveDestinationPage }),
     requestSearchLanding: landing ?? (async ({ result }) => { navigateToPage(result.pageNumber); return "displayedDistinct"; }),
     prepareExternalLinks,
     commitExternalLinks,
@@ -525,6 +527,7 @@ describe("PdfContentController", () => {
     expect(subject.controller.handleHintKey(labels[0]![1]!)).toBe(true);
     expect(subject.host.querySelector(".pdf-content-layer")?.classList.contains("pdf-link-hints-active")).toBe(false);
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
+    expect(subject.openExternal).toHaveBeenCalledOnce();
   });
   it("aggregates labels and activation across exact visible resident pages", async () => {
     const subject = setup([
@@ -779,6 +782,7 @@ describe("PdfContentController", () => {
     subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
     await vi.waitFor(() => expect(subject.host.querySelector(".pdf-destination-indicator")).not.toBeNull());
     const indicator = subject.host.querySelector<HTMLElement>(".pdf-destination-indicator")!;
+    expect(navigateDestination).toHaveBeenCalledOnce();
     expect(indicator.dataset).toMatchObject({ style: "pulse-ring", color: "red" });
     expect(indicator.style.pointerEvents).toBe("none");
     const overscanCanvas = document.createElement("canvas");
@@ -790,25 +794,22 @@ describe("PdfContentController", () => {
     await subject.controller.unmount();
     expect(subject.host.querySelector(".pdf-destination-indicator")).toBeNull();
   });
-  it("reports a valid internal destination whose page resolution stalls as timed out", async () => {
-    vi.useFakeTimers();
-    try {
-      let calls = 0;
-      let resolveIndex!: (value: number) => void;
-      const subject = setup([page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: [{ reference: "page-1" }, { name: "Fit" }] }])]);
-      Object.assign(subject.pdf, {
-        getPageIndex: vi.fn(() => ++calls === 1 ? Promise.resolve(0) : new Promise<number>((resolve) => { resolveIndex = resolve; })),
-      });
-      await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-      subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
-      await vi.advanceTimersByTimeAsync(10_001);
-      expect(subject.statuses).toContain("PDF link destination resolution timed out.");
-      expect(subject.statuses).not.toContain("Unsupported PDF link destination.");
-      resolveIndex(0);
-      await vi.runAllTimersAsync();
-    } finally {
-      vi.useRealTimers();
-    }
+  it("uses reader-owned page authority for worker-cloned indirect references", async () => {
+    const reference = { num: 12, gen: 0 };
+    const firstPage = page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: [reference, { name: "Fit" }] }]);
+    const secondPage = page("y");
+    const getPageIndex = vi.fn(async () => new Promise<number>(() => undefined));
+    const resolveDestinationPage = vi.fn(async () => 2);
+    const subject = setup([firstPage, secondPage], undefined, undefined, resolveDestinationPage);
+    Object.assign(subject.pdf, { getPageIndex });
+
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
+
+    await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(2));
+    expect(getPageIndex).not.toHaveBeenCalled();
+    expect(subject.statuses).not.toContain("PDF link destination resolution timed out.");
+    expect(resolveDestinationPage).toHaveBeenCalledOnce();
   });
   it("admits the latest internal activation while retaining prior raw settlement ownership", async () => {
     let resolveFirst!: (destination: readonly unknown[]) => void;
@@ -1806,6 +1807,28 @@ describe("PdfContentController", () => {
     });
     expect(subject.host.scrollLeft).toBe(90);
     expect(subject.host.scrollTop).toBe(120);
+  });
+  it("records a canonical landing for whole-page Fit destinations", async () => {
+    const subject = setup([page("one")]);
+    const fitViewport = {
+      ...viewport,
+      convertToPdfPoint: vi.fn((x: number, y: number) => [x, y] as const),
+    };
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport: fitViewport, canvas: subject.canvas });
+    const intent = subject.controller.queueDestination(1, [0, { name: "Fit" }]);
+    expect(intent).toBeDefined();
+    expect(subject.controller.applyQueuedDestinationToResidentPage(1)).toBe(true);
+    expect(subject.controller.takeDestinationLanding(intent!)).toEqual({ pageIndex: 0, x: 0, y: 0 });
+    const scrollSettlement = subject.controller.awaitDestinationScroll(intent!);
+    subject.host.dispatchEvent(new Event("scroll"));
+    await scrollSettlement;
+    subject.host.scrollTop = 10;
+    const cancelledIntent = subject.controller.queueDestination(1, [0, { name: "Fit" }]);
+    expect(cancelledIntent).toBeDefined();
+    expect(subject.controller.applyQueuedDestinationToResidentPage(1)).toBe(true);
+    const cancelledSettlement = subject.controller.awaitDestinationScroll(cancelledIntent!);
+    subject.controller.cancelDestination();
+    await cancelledSettlement;
   });
   it("maps partial destinations through the inverse viewport under rotation", async () => {
     const subject = setup([page("one")]);
