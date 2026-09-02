@@ -1,4 +1,4 @@
-import { projectPaletteCommands } from "../application/commands/CommandCatalog";
+import { projectPaletteCommands, type CommandProjectionOptions } from "../application/commands/CommandCatalog";
 import { filterCommandPalette, type PaletteEntry } from "../domain/actions/CommandPalette";
 import { type ActionId, type ActionRuntimeContext } from "../domain/actions/ActionRegistry";
 import { validateProductConfig, type ProductConfig } from "../domain/config/ConfigValidator";
@@ -14,9 +14,9 @@ export interface CommandPaletteCommandEntry { readonly kind: "command"; readonly
 export interface CommandPaletteRecentEntry extends RecentPaletteRecord { readonly kind: "recent" }
 export type CommandPaletteEntry = CommandPaletteCommandEntry | CommandPaletteRecentEntry;
 function exceedsCodePointCount(value: string, maximum: number): boolean { let count = 0; for (const _ of value) { count += 1; if (count > maximum) return true; } return false; }
-export function buildCommandPaletteEntries(context: ActionRuntimeContext = DEFAULT_RUNTIME_CONTEXT, recents: readonly RecentPaletteRecord[] = [], query = "", config: ProductConfig = DEFAULT_CONFIG): readonly CommandPaletteEntry[] {
+export function buildCommandPaletteEntries(context: ActionRuntimeContext = DEFAULT_RUNTIME_CONTEXT, recents: readonly RecentPaletteRecord[] = [], query = "", config: ProductConfig = DEFAULT_CONFIG, projectionOptions: CommandProjectionOptions = {}): readonly CommandPaletteEntry[] {
   if (query.length > MAX_RAW_QUERY_CODE_UNITS || exceedsCodePointCount(query, MAX_QUERY_CODE_POINTS)) return [];
-  const commands: readonly CommandPaletteCommandEntry[] = projectPaletteCommands(context, config).map((command) => ({ kind: "command", id: command.id, shortcut: command.shortcuts.join(", "), label: command.title, enabled: command.enabled, ...(!command.enabled ? { disabledReason: command.disabledReason } : {}) }));
+  const commands: readonly CommandPaletteCommandEntry[] = projectPaletteCommands(context, config, projectionOptions).map((command) => ({ kind: "command", id: command.id, shortcut: command.shortcuts.join(", "), label: command.title, enabled: command.enabled, ...(command.disabledReason === undefined ? {} : { disabledReason: command.disabledReason }) }));
   const recentEntries: readonly CommandPaletteRecentEntry[] = recents.slice(0, MAX_RECENT_ENTRIES).map((recent) => ({ kind: "recent", recentId: recent.recentId, displayName: recent.displayName }));
   const source: PaletteEntry[] = [
     ...commands.map((entry) => ({ id: entry.id, title: entry.label, enabled: entry.enabled, ...(entry.disabledReason === undefined ? {} : { disabledReason: entry.disabledReason }), kind: "action" as const })),

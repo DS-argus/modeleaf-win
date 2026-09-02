@@ -12,8 +12,8 @@ describe("W05 shell contract", () => {
     expect(catalog).toContain("ACTION_DESCRIPTORS");
     expect(catalog).toContain("getActionRuntimeAvailability");
     expect(main).toContain("buildWindowsMenuModel(commandAvailabilityContext(), shellConfig)");
-    expect(palette).toContain("projectPaletteCommands(context, config)");
-    expect(help).toContain("projectHelpCommands(context, config)");
+    expect(palette).toContain("projectPaletteCommands(context, config, projectionOptions)");
+    expect(help).toContain("projectHelpCommands(context, config, projectionOptions)");
     for (const runtimeSource of [main, palette, help]) expect(runtimeSource).not.toContain("defaultBindings.windows");
   });
   it("binds root routing, one overlay owner, empty semantics and all theme tokens", () => {
@@ -40,5 +40,13 @@ describe("W05 shell contract", () => {
     expect(main).not.toContain("ACTION_PENDING:");
     expect(closeBlock).not.toContain('window.label() == "main"');
     expect(closeBlock).not.toContain("begin_quit_application");
+  });
+  it("binds the durable application-menu owner before overlay claims and disposes it with the shell", () => {
+    expect(main).toContain('import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner"');
+    expect(main).toContain("const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu");
+    const claimOverlay = main.slice(main.indexOf("function claimOverlay"), main.indexOf("function releaseOverlay"));
+    expect(claimOverlay).toContain("applicationMenuOwner.close();");
+    expect(main).toContain("button.dataset.menuCommand = command.id;");
+    expect(main).toContain("applicationMenuOwner.dispose();");
   });
 });
