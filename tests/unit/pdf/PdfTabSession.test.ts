@@ -13,6 +13,7 @@ function createSession(onStatus?: (status: string) => void): PdfTabSession {
   });
   const reader = (session as unknown as SessionInternals).pdfReader;
   vi.spyOn(reader, "getPageTopLanding").mockImplementation(async (page) => ({ pageIndex: page - 1, x: 0, y: 0 }));
+  vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (_topology, page, transform, guard) => reader.renderPageWithTransform(page, transform, guard));
   return session;
 }
 
@@ -53,6 +54,7 @@ type SessionInternals = {
       | { kind: "preflightRejected" | "staleOrCancelled" }
       | { kind: "failed"; landing?: { pageIndex: number; x: number; y: number } }
     >;
+    setPresentationTopology: (topology: "continuous" | "single-page", page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
     invalidateViewportSynchronization: () => void;
     renderPageWithTransform: (page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
   };
@@ -1246,5 +1248,21 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(internals.contentBySession.has("retained:1")).toBe(false);
     expect(internals.content).toBeUndefined();
     expect(successor.unmount).not.toHaveBeenCalled();
+  });
+  it("selects reader single-page topology for Fit Page, retains it for rotation, and returns to continuous for zoom", async () => {
+    const session = createSession();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    session.reader.mountDocument(1);
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    await session.activate();
+    session.apply({ type: "view.fitPage" });
+    await session.renderCurrentView();
+    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("single-page", 1, expect.objectContaining({ scale: 1, rotation: 0 }), expect.any(Function));
+    session.apply({ type: "view.rotate", quarterTurns: 1 });
+    await session.renderCurrentView();
+    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("single-page", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));
+    session.apply({ type: "view.zoom", factor: 1.1 });
+    await session.renderCurrentView();
+    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("continuous", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));
   });
 });

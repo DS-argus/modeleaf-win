@@ -19,6 +19,7 @@ import {
   type PdfBoundary,
   type PdfReaderControllerOptions,
   type PdfViewTransform,
+  type PdfPresentationTopology,
   type PdfViewportRestoreOutcome,
   type ReaderNativeBoundary,
 } from "./PdfReaderController";
@@ -293,7 +294,8 @@ export class PdfTabSession {
         this.presentationDirty = true;
         return false;
       }
-      const committed = await this.pdfReader.renderPageWithTransform(page, effectiveTransform, guard);
+      const topology: PdfPresentationTopology = this.reader.snapshot.zoomMode === "fit-page" ? "single-page" : "continuous";
+      const committed = await this.pdfReader.setPresentationTopology(topology, page, effectiveTransform, guard);
       if (!committed) {
         if (guard()) {
           const failureStatus = this.readerStatusVersion === statusVersion ? undefined : this.reader.snapshot.status;
@@ -323,7 +325,7 @@ export class PdfTabSession {
   /** Production scroll entry point: materializes the bounded continuous window. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
     if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
-    if (this.navigationLandingIntent !== undefined) return false;
+    if (this.navigationLandingIntent !== undefined || this.reader.snapshot.zoomMode === "fit-page") return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
