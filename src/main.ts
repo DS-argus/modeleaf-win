@@ -94,7 +94,7 @@ root.innerHTML = `
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">j or k previews a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><p class="overlay-footer theme-footer">${THEME_PICKER_FOOTER.map(({ key, action }) => `<kbd>${key}</kbd> ${action}`).join(" · ")}</p><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" class="search-prompt" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><label id="search-title" class="visually-hidden" for="search-input">Search PDF text</label><span class="search-prefix" aria-hidden="true">/</span><input id="search-input" type="search" spellcheck="false" aria-label="Search PDF text" placeholder="Search PDF text"><p class="search-footer"><kbd>Enter</kbd> search · <kbd>Esc</kbd> close</p></form></dialog>
-  <dialog id="file-opener-dialog" class="mac-overlay list-overlay" aria-label="Open PDF"><form id="file-opener-form"><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type to search..." aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list"></ul><p class="overlay-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
+  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
   <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
@@ -1094,19 +1094,40 @@ function renderPalette(): void {
 }
 function renderFileOpener(): void {
   const rows = chooserRows(fileOpenerModel);
-  const projected = rows.map((row, index) => {
+  const projected: HTMLElement[] = [];
+  rows.forEach((row, index) => {
+    if (row.kind === "recent" && index === 1) {
+      const heading = document.createElement("li");
+      heading.className = "file-opener-recents-heading";
+      heading.textContent = "Recent";
+      heading.setAttribute("role", "heading"); heading.setAttribute("aria-level", "2");
+      projected.push(heading);
+    }
     const item = document.createElement("li");
     const button = document.createElement("button");
+    const selected = fileOpenerModel.activeIndex === index;
     button.type = "button";
-    button.className = "overlay-list-entry file-opener-entry";
-    button.textContent = row.kind === "browse" ? row.label : row.displayName;
-    button.setAttribute("aria-selected", String(fileOpenerModel.activeIndex === index));
+    button.className = `overlay-list-entry file-opener-entry file-opener-${row.kind}`;
+    button.setAttribute("aria-selected", String(selected));
+    button.setAttribute("aria-current", selected ? "true" : "false");
+    if (row.kind === "browse") {
+      button.setAttribute("aria-label", "Browse for a PDF");
+      const glyph = document.createElement("span");
+      glyph.className = "file-opener-browse-glyph";
+      glyph.setAttribute("aria-hidden", "true");
+      glyph.textContent = "▣";
+      const label = document.createElement("span");
+      label.textContent = row.label;
+      button.append(glyph, label);
+    } else {
+      button.textContent = row.displayName;
+    }
     button.addEventListener("click", () => {
       fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
       dispatchFileOpenerEntry();
     });
     item.append(button);
-    return item;
+    projected.push(item);
   });
   const diagnosticText = fileOpenerModel.diagnostic ?? (fileOpenerModel.prepared.tag === "STATE_UNAVAILABLE" ? fileOpenerModel.prepared.reason : undefined);
   const diagnostic = diagnosticText === undefined ? [] : [Object.assign(document.createElement("li"), { className: "file-opener-diagnostic", textContent: diagnosticText })];
