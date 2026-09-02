@@ -497,7 +497,7 @@ function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direc
   rootKeyboard.syncContext();
   render();
   void payload.session.renderPage(page).then((committed) => {
-    if (committed && direction < 0) {
+    if (committed && direction < 0 && payload.session.snapshot.reader.zoomMode !== "fit-page") {
       payload.host.scrollTop = Math.max(0, payload.host.scrollHeight - payload.host.clientHeight);
     }
   }).catch((error: unknown) => reportPresentationFailure(payload.session, error)).finally(() => {
@@ -584,7 +584,9 @@ function createTab(): TabPayload {
   host.addEventListener("wheel", (event) => {
     if (active().session !== session) return;
     const reader = session.snapshot.reader;
-    const direction = wheelPageDirection({
+    const direction = reader.zoomMode === "fit-page" && !event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0
+      ? (event.deltaY > 0 ? 1 : -1)
+      : wheelPageDirection({
       deltaX: event.deltaX,
       deltaY: event.deltaY,
       scrollTop: host.scrollTop,
@@ -606,6 +608,7 @@ function createTab(): TabPayload {
     viewportFrameRequest = undefined;
     viewportResyncRequested = false;
     if (viewportDisposed || active().session !== session || viewportSynchronization !== undefined) return;
+    if (session.snapshot.reader.zoomMode === "fit-page") return;
     viewportSynchronization = session.synchronizeViewport(host.scrollTop, host.clientHeight);
     const viewportSettlement = viewportSynchronization.catch((error: unknown) => {
       reportPresentationFailure(session, error);
@@ -615,7 +618,7 @@ function createTab(): TabPayload {
       viewportSynchronization = undefined;
       rootKeyboard.syncContext();
       render();
-      if (viewportResyncRequested && !viewportDisposed && active().session === session) scheduleViewportSync();
+      if (viewportResyncRequested && !viewportDisposed && active().session === session && session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
     });
   };
   const scheduleViewportSync = (): void => {
@@ -628,7 +631,7 @@ function createTab(): TabPayload {
     if (!session.indicatorPublicationPending) session.dismissLinkDecorations();
     session.clearVisibleLinkAuthority();
     session.invalidateViewportSynchronization();
-    scheduleViewportSync();
+    if (session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
   queueMicrotask(scheduleViewportSync);

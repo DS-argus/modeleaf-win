@@ -74,7 +74,7 @@
     "history.forward": ["<A-Right>"],
     "search.prompt": ["/"],
     "search.cancel": ["<Esc>"],
-    "view.zoomIn": ["="],
+    "view.zoomIn": ["=", "+"],
     "view.zoomOut": ["-"],
     "view.zoomReset": [],
     "view.fitWidth": ["w"],

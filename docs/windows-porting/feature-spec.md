@@ -117,7 +117,7 @@ Recent identity는 가능한 경우 Windows file identity를 ephemeral dedupe에
 - `w`: Fit Width, `F`: Fit Page, Actual Size는 menu/palette에 있지만 기본키는 없다.
 - zoom 범위는 `0.1...8`, 한 단계 factor 기본값은 `1.10`이다.
 - Fit Page에서 `j/k/d/u`는 페이지 단위로 이동한다.
-- Fit Page에서 `=`/`-`는 anchor를 유지하며 continuous manual zoom으로, `w`는 continuous Fit Width로 바뀐다.
+- Fit Page에서 `=`/`+`는 anchor를 유지하며 continuous manual zoom으로, `-`는 Zoom Out, `w`는 continuous Fit Width로 바뀐다.
 - `[`/`]` 회전은 90도 단위, pane-local, memory-only이며 file에 쓰지 않는다. 현재 fit mode를 다시 적용한다.
 
 근거:
@@ -186,8 +186,10 @@ Recent identity는 가능한 경우 Windows file identity를 ephemeral dedupe에
 | Vim reader keys | macOS와 동일 |
 | Pane prefix/focus | `Ctrl+B`, `Ctrl+H/J/K/L` |
 | TOC toggle / scroll | `t`, `J`, `K` |
+| Zoom | `=`, `+`: Zoom In; `-`: Zoom Out |
 
 Windows grammar는 `C=Ctrl`, `A=Alt`, `S=Shift`다. `D`는 macOS config migration error를 내고, Windows key는 OS가 소유하므로 `Win` modifier를 노출하지 않는다.
+Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action에 binding하며, `-`는 `view.zoomOut`이다.
 
 `app.quit`라는 stable ID는 61개 action parity를 위해 유지하지만 Windows 표시명과 동작은 `Close Window`다. 호출한 top-level window만 닫고 마지막 창에서 process가 끝난다. 같은 Tauri process의 모든 창을 닫는 `Exit All`은 v1 범위에 추가하지 않는다.
 

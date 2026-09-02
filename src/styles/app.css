@@ -54,14 +54,16 @@ body { overflow: hidden; }
 }
 
 .empty-state p { margin: 10px 0; }
+.reader-surface.pdf-reader-single-page { display: grid; place-items: center; overflow: hidden; }
+.reader-surface.pdf-reader-single-page .pdf-page-frame { margin: 0; }
+.reader-surface:not(.pdf-reader-single-page) .pdf-page-frame { margin: 0 auto 12px; }
 .pdf-page-frame {
   position: relative;
   width: max-content;
   height: max-content;
-  margin: 0 auto 24px;
   isolation: isolate;
 }
-.pdf-page-frame:last-child { margin-bottom: 0; }
+.reader-surface:not(.pdf-reader-single-page) .pdf-page-frame:last-child { margin-bottom: 0; }
 .pdf-page {
   display: block;
   margin: 0;

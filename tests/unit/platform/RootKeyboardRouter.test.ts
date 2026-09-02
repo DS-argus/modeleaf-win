@@ -48,6 +48,13 @@ describe("RootKeyboardRouter", () => {
     expect(palette.prevented()).toBe(true); expect(help.prevented()).toBe(true);
     expect(h.dispatched).toEqual(["palette.open", "help.show"]);
   });
+  it("routes canonical equals and physical plus through the default keymap", () => {
+    const h = harness();
+    const equals = keyboard("="); const plus = keyboard("+", { shiftKey: true });
+    expect(h.router.handleKeyDown(equals.event)).toBe(true); expect(h.router.handleKeyDown(plus.event)).toBe(true);
+    expect(equals.prevented()).toBe(true); expect(plus.prevented()).toBe(true);
+    expect(h.dispatched).toEqual(["view.zoomIn", "view.zoomIn"]);
+  });
   it("distinguishes configured Ctrl Alt from AltGraph", () => {
     const custom = validateProductConfig({ keymap: { "document.open": ["<C-A-o>"] } });
     if (!custom.ok) throw new Error("custom config invalid");

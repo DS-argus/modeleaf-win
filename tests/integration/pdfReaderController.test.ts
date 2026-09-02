@@ -2285,4 +2285,122 @@ describe("PdfReaderController", () => {
     expect(native.cancelSession).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
   });
+  it("commits Fit Page as a single-page topology and suppresses continuous viewport materialization", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-topology", 1))),
+      resources: new ResourceReservationManager(), pdf: { getDocument: vi.fn(() => task(documentWith(5))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    await expect(controller.setPresentationTopology("single-page", 1, { scale: 0.5, rotation: 0, devicePixelRatio: 1 })).resolves.toBe(true);
+    expect(controller.presentationTopology).toBe("single-page");
+    expect(controller.residentPageNumbers()).toEqual([1]);
+    expect(controller.visiblePageNumbers).toEqual([1]);
+    expect(host.querySelectorAll(":scope > .pdf-page-frame")).toHaveLength(1);
+    expect(host.querySelectorAll(":scope > .pdf-page-spacer")).toHaveLength(0);
+    expect(host.classList.contains("pdf-reader-single-page")).toBe(true);
+    await expect(controller.synchronizeViewport(84, 30)).resolves.toBe(false);
+    expect(controller.residentPageNumbers()).toEqual([1]);
+    await controller.dispose();
+  });
+  it("restores continuous topology after Fit Page zoom and retains the canonical anchor", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, { clientWidth: { value: 100 }, clientHeight: { value: 100 } });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-anchor", 1))), resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => task(documentWith(3))), annotationMode: 0 }, canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    const anchor = controller.captureViewportLanding();
+    await controller.setPresentationTopology("single-page", 1, { scale: 0.5, rotation: 0, devicePixelRatio: 1 });
+    await controller.setPresentationTopology("continuous", 1, { scale: 0.55, rotation: 0, devicePixelRatio: 1 });
+    expect(controller.presentationTopology).toBe("continuous");
+    expect(host.classList.contains("pdf-reader-single-page")).toBe(false);
+    expect(host.querySelectorAll(":scope > .pdf-page-spacer")).toHaveLength(2);
+    expect(controller.captureViewportLanding()).toEqual(anchor);
+    await controller.dispose();
+  });
+  it("retains single-page topology and residents when a stale or failed topology render cannot commit", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    let fail = false;
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-rollback", 1))), resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => task(documentWith(2, vi.fn(async (number) => page(number, fail ? Promise.reject(new Error("render failed")) : Promise.resolve()))))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    await controller.setPresentationTopology("single-page", 1, { scale: 0.5, rotation: 0, devicePixelRatio: 1 });
+    fail = true;
+    await expect(controller.setPresentationTopology("continuous", 1, { scale: 0.55, rotation: 0, devicePixelRatio: 1 })).resolves.toBe(false);
+    await expect(controller.setPresentationTopology("continuous", 1, { scale: 0.6, rotation: 0, devicePixelRatio: 1 }, () => false)).resolves.toBe(false);
+    expect(controller.presentationTopology).toBe("single-page");
+    expect(controller.residentPageNumbers()).toEqual([1]);
+    expect(host.querySelectorAll(":scope > .pdf-page-frame")).toHaveLength(1);
+    await controller.dispose();
+  });
+  it("keeps committed topology authoritative while a delayed Fit Page precommit is superseded", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const entered = deferred<void>(); const release = deferred<void>();
+    const host = document.createElement("div");
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-overlap", 1))), resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => task(documentWith(2))), annotationMode: 0 }, canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit) => { entered.resolve(); await release.promise; commit(); },
+    });
+    const opening = controller.open(1); await entered.promise; release.resolve(); await opening;
+    const delayed = deferred<void>();
+    (controller as unknown as { options: { onBeforeCommit: (rendered: unknown, commit: () => boolean) => Promise<void> } }).options.onBeforeCommit = async (_rendered, commit) => { await delayed.promise; commit(); };
+    const fit = controller.setPresentationTopology("single-page", 1, { scale: 0.5, rotation: 0, devicePixelRatio: 1 });
+    await Promise.resolve();
+    const latest = controller.setPresentationTopology("continuous", 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    delayed.resolve();
+    await expect(fit).resolves.toBe(false); await expect(latest).resolves.toBe(true);
+    expect(controller.presentationTopology).toBe("continuous");
+    expect(controller.residentPageNumbers()).toEqual([1]);
+    await controller.dispose();
+  });
+  it("uses bounded replacement for a full continuous-to-Fit-Page transition and restores it on failure", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    let failOnce = false;
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-capacity", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(5, vi.fn(async (number) => page(number, failOnce ? (failOnce = false, Promise.reject(new Error("fit failed"))) : Promise.resolve()))))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    await controller.synchronizeViewport(84, 30);
+    const residents = controller.residentPageNumbers();
+    failOnce = true;
+    await expect(controller.setPresentationTopology("single-page", 3, { scale: 0.5, rotation: 0, devicePixelRatio: 1 })).resolves.toBe(false);
+    expect(controller.presentationTopology).toBe("continuous");
+    expect(controller.residentPageNumbers()).toEqual(residents);
+    expect(host.classList.contains("pdf-reader-single-page")).toBe(false);
+    expect(host.querySelectorAll(":scope > .pdf-page-spacer")).toHaveLength(2);
+    await controller.dispose();
+  });
+  it("prioritizes a single-page topology change over an all-resident DPR replacement", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-dpr-topology", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(5))), annotationMode: 0 }, canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    await controller.synchronizeViewport(84, 30);
+    await expect(controller.setPresentationTopology("single-page", 3, { scale: 1, rotation: 0, devicePixelRatio: 2 })).resolves.toBe(true);
+    expect(controller.presentationTopology).toBe("single-page");
+    expect(controller.residentPageNumbers()).toEqual([3]);
+    expect(host.querySelectorAll(":scope > .pdf-page-frame")).toHaveLength(1);
+    expect(host.querySelectorAll(":scope > .pdf-page-spacer")).toHaveLength(0);
+    expect(host.classList.contains("pdf-reader-single-page")).toBe(true);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
 });

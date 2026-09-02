@@ -220,6 +220,7 @@ export type PdfViewportRestoreOutcome =
   | { readonly kind: "staleOrCancelled" }
   | { readonly kind: "failed"; readonly landing?: PdfViewportLanding };
 export type PdfScrollAnchor = PdfViewportAnchor;
+export type PdfPresentationTopology = "continuous" | "single-page";
 
 interface Candidate {
   readonly session: OpenPdfResult;
@@ -229,6 +230,7 @@ interface Candidate {
   window?: ContinuousPageWindow;
   topSpacer?: HTMLElement;
   bottomSpacer?: HTMLElement;
+  topology: PdfPresentationTopology;
   transportDestroyHandedOff?: boolean;
   readonly ownerGeneration: number;
   transportFailure?: Error;
@@ -436,6 +438,7 @@ export class PdfReaderController {
       ownedRenderSettlements: new Set(),
       ownedPrintSettlements: new Set(),
       residentRasters: new Map(),
+      topology: "continuous",
     };
     candidateRef = candidate;
     let rejectDocumentPolicy!: (error: Error) => void;
@@ -666,20 +669,24 @@ export class PdfReaderController {
     page: number,
     transform: PdfViewTransform,
     requestCommitGuard?: PdfRequestCommitGuard,
+    topology: PdfPresentationTopology = this.current?.topology ?? "continuous",
   ): Promise<boolean> {
     const normalized = this.normalizeViewTransform(transform);
     const current = this.current;
     if (current?.residentRasters.has(page)
+      && topology === current.topology
       && normalized.scale === this.viewTransform.scale
       && normalized.rotation === this.viewTransform.rotation
       && normalized.devicePixelRatio === this.viewTransform.devicePixelRatio) {
+      this.presentationRequestSequence += 1;
       return requestCommitGuard?.() ?? true;
     }
-    const rendered = await this.renderPage(page, normalized, requestCommitGuard);
-    if (!rendered) return false;
-    return true;
+    return this.renderPage(page, normalized, requestCommitGuard, topology);
   }
-
+  public get presentationTopology(): PdfPresentationTopology { return this.current?.topology ?? "continuous"; }
+  public async setPresentationTopology(topology: PdfPresentationTopology, page: number, transform: PdfViewTransform, guard?: PdfRequestCommitGuard): Promise<boolean> {
+    return this.renderPageWithTransform(page, transform, guard, topology);
+  }
 
   public residentPageNumbers(): readonly number[] {
     return Object.freeze([...(this.current?.residentRasters.keys() ?? [])].sort((a, b) => a - b));
@@ -740,6 +747,7 @@ export class PdfReaderController {
     if (requestSequence !== this.presentationRequestSequence) return false;
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
+    if (current.topology !== "continuous") return false;
     const window = current.window;
     if (window === undefined) return false;
     const range = window.visibleRangeForViewport(scrollTop, clientHeight);
@@ -1051,20 +1059,22 @@ export class PdfReaderController {
     }
   }
 
-  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor): Promise<boolean> {
+  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor, topology: PdfPresentationTopology = this.current?.topology ?? "continuous"): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const cssTransformChanged = transform.scale !== this.viewTransform.scale || transform.rotation !== this.viewTransform.rotation;
+    const topologyChanged = topology !== current.topology;
+    const presentationChanged = cssTransformChanged || topologyChanged;
     const retainedAnchor = this.evictedScrollAnchor?.pageNumber === page ? this.evictedScrollAnchor.anchor : undefined;
-    const anchor = preEvictionAnchor ?? retainedAnchor ?? (cssTransformChanged || current.activePageNumber === page ? this.captureScrollAnchor() : undefined);
-    const activePlan = !cssTransformChanged && this.activeViewportPlan?.candidate === current ? this.activeViewportPlan.plan : undefined;
-    const directPreview = !cssTransformChanged && activePlan === undefined ? current.window?.previewPlan(page) : undefined;
+    const anchor = preEvictionAnchor ?? retainedAnchor ?? (presentationChanged || current.activePageNumber === page ? this.captureScrollAnchor() : undefined);
+    const activePlan = !presentationChanged && this.activeViewportPlan?.candidate === current ? this.activeViewportPlan.plan : undefined;
+    const directPreview = !presentationChanged && activePlan === undefined ? current.window?.previewPlan(page) : undefined;
     let directPlan: PageWindowPlan | undefined;
     try {
       const rendered = await this.renderCandidatePage(current, page, transform);
       const commitSequence = this.renderSequence;
       if (this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) { this.releaseRaster(rendered); return false; }
-      const retainedPages = cssTransformChanged
+      const retainedPages = presentationChanged
         ? Object.freeze([page])
         : Object.freeze([...new Set([
           ...[...current.residentRasters.keys()].filter((resident) => !(directPreview ?? activePlan)?.evictPages.includes(resident)),
@@ -1080,7 +1090,7 @@ export class PdfReaderController {
           plan = directPlan;
           if (directPlan?.materializePages.includes(page)) current.window?.begin(page, directPlan.generation);
         }
-        if (cssTransformChanged) {
+        if (presentationChanged || topology === "single-page" || current.window === undefined) {
           const nextWindow = new ContinuousPageWindow({
             estimatedPageHeight: rendered.viewport.height,
             pageCount: current.document!.numPages,
@@ -1095,7 +1105,9 @@ export class PdfReaderController {
           for (const residentPage of [...current.residentRasters.keys()]) this.evictResidentPage(current, residentPage);
           current.topSpacer?.remove();
           current.bottomSpacer?.remove();
-          current.window = nextWindow;
+          if (topology === "continuous") current.window = nextWindow; else delete current.window;
+          current.topology = topology;
+          if (topology === "single-page") { current.topSpacer?.remove(); current.bottomSpacer?.remove(); delete current.topSpacer; delete current.bottomSpacer; this.options.canvasHost.classList.add("pdf-reader-single-page"); } else this.options.canvasHost.classList.remove("pdf-reader-single-page");
         } else if (plan !== undefined) {
           if (activePlan === undefined) for (const evicted of plan.evictPages) current.window?.unpublish(evicted);
           current.window?.updateMetric(page, { width: rendered.viewport.width, height: rendered.viewport.height });
@@ -1110,7 +1122,7 @@ export class PdfReaderController {
         this.viewTransform = transform;
         if (prior !== undefined) this.releaseRaster(prior);
         this.canvasReplace(rendered.canvas, accessory);
-        if (plan !== undefined) this.applyWindowSpacers(current, plan);
+        if (plan !== undefined && topology === "continuous") this.applyWindowSpacers(current, plan);
         if (directPlan !== undefined && anchor === undefined && current.window !== undefined) {
           this.options.canvasHost.scrollTop = current.window.offsetForPage(page);
         }
@@ -1138,7 +1150,7 @@ export class PdfReaderController {
       if (directPlan?.materializePages.includes(page)) current.window?.fail(page, directPlan.generation);
     }
   }
-  private async renderPageWithinResidentCapacity(page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard): Promise<boolean> {
+  private async renderPageWithinResidentCapacity(page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard, topology: PdfPresentationTopology): Promise<boolean> {
     const current = this.current;
     const window = current?.window;
     if (current === undefined || current.document === undefined || window === undefined || this.disposed) return false;
@@ -1146,7 +1158,7 @@ export class PdfReaderController {
     const priorActivePage = current.activePageNumber;
     const priorTransform = this.viewTransform;
     const preEvictionAnchor = page === priorActivePage ? this.captureScrollAnchor() : undefined;
-    const previewEvictions = transform.scale === priorTransform.scale && transform.rotation === priorTransform.rotation
+    const previewEvictions = topology === current.topology && transform.scale === priorTransform.scale && transform.rotation === priorTransform.rotation
       ? window.previewPlan(page).evictPages
       : checkpoint.residentPages;
     const victim = current.residentRasters.has(page) && page !== priorActivePage
@@ -1154,9 +1166,9 @@ export class PdfReaderController {
       : previewEvictions.find((candidate) => candidate !== priorActivePage && current.residentRasters.has(candidate))
         ?? [...current.residentRasters.keys()].find((candidate) => candidate !== priorActivePage)
         ?? [...current.residentRasters.keys()][0];
-    if (victim === undefined) return this.renderPageInternal(page, transform, guard);
+    if (victim === undefined) return this.renderPageInternal(page, transform, guard, undefined, topology);
     this.evictResidentPage(current, victim);
-    const committed = await this.renderPageInternal(page, transform, guard, preEvictionAnchor);
+    const committed = await this.renderPageInternal(page, transform, guard, preEvictionAnchor, topology);
     if (committed) return true;
     this.viewportRollback = true;
     try {
@@ -1286,26 +1298,27 @@ export class PdfReaderController {
       }
     }
   }
-  public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+  public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, topology: PdfPresentationTopology = this.current?.topology ?? "continuous"): Promise<boolean> {
     const requestSequence = ++this.presentationRequestSequence;
     await this.awaitViewportIdle();
     if (requestSequence !== this.presentationRequestSequence) return false;
     const ownerCurrent = (): boolean => requestSequence === this.presentationRequestSequence
       && (requestCommitGuard?.() ?? true);
-    const replacesResidentDpr = transform.scale === this.viewTransform.scale
+    const topologyChanged = topology !== this.current?.topology;
+    const replacesResidentDpr = !topologyChanged && transform.scale === this.viewTransform.scale
       && transform.rotation === this.viewTransform.rotation
       && transform.devicePixelRatio !== this.viewTransform.devicePixelRatio
       && (this.current?.residentRasters.size ?? 0) > 1;
     const plannedWindowSize = this.current?.window?.checkpoint().plannedPages.length ?? 0;
     const needsBoundedReplacement = plannedWindowSize > 0 && (this.current?.residentRasters.size ?? 0) >= plannedWindowSize;
-    if (!replacesResidentDpr && !needsBoundedReplacement) return this.renderPageInternal(page, transform, ownerCurrent);
+    if (!replacesResidentDpr && !needsBoundedReplacement) return this.renderPageInternal(page, transform, ownerCurrent, undefined, topology);
     let releaseSettlement!: () => void;
     const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
     this.viewportSettlement = settlement;
     try {
       return replacesResidentDpr
         ? await this.rerenderResidentBackingsForDpr(transform, ownerCurrent)
-        : await this.renderPageWithinResidentCapacity(page, transform, ownerCurrent);
+        : await this.renderPageWithinResidentCapacity(page, transform, ownerCurrent, topology);
     } finally {
       releaseSettlement();
       if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;
@@ -1513,7 +1526,6 @@ export class PdfReaderController {
     frame.dataset.page = canvas.dataset.page;
     frame.style.width = canvas.style.width;
     frame.style.height = canvas.style.height;
-    frame.style.marginBottom = "12px";
     canvas.classList.add("pdf-page-canvas-layer");
     const textLayer = document.createElement("div");
     textLayer.className = "pdf-page-text-layer";
