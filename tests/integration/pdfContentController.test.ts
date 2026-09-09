@@ -1359,15 +1359,25 @@ describe("PdfContentController", () => {
     }
   });
   it("searches every page without a page-limit disclosure", async () => {
-    const zeroHit = setup(Array.from({ length: 501 }, () => page("text")));
-    await zeroHit.controller.search("missing");
-    expect(zeroHit.statuses.at(-1)).toBe("No matches · “missing”");
-
-    const noText = setup(Array.from({ length: 501 }, () => page("")));
-    await noText.controller.search("missing");
-    expect(noText.statuses.at(-1)).toBe("No searchable text · “missing”");
+    vi.useFakeTimers();
+    try {
+      for (const [text, status] of [["text", "No matches · “missing”"], ["", "No searchable text · “missing”"]] as const) {
+        const subject = setup(Array.from({ length: 501 }, () => page(text)));
+        const getPage = vi.spyOn(subject.pdf, "getPage");
+        const searching = subject.controller.search("missing");
+        // Exercise every cooperative yield without depending on OS timer granularity.
+        await vi.runAllTimersAsync();
+        await searching;
+        expect(subject.statuses.at(-1)).toBe(status);
+        expect(getPage).toHaveBeenCalledTimes(501);
+        expect(getPage).toHaveBeenLastCalledWith(501);
+        await subject.controller.unmount();
+        subject.resources.assertEmpty();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
-
   it("retains search ownership until a timed-out raw page request settles", async () => {
     vi.useFakeTimers();
     try {

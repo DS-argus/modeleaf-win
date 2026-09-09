@@ -7,13 +7,14 @@ function createSession(onStatus?: (status: string) => void): PdfTabSession {
     native: {} as never,
     pdf: {} as never,
     resources: new ResourceReservationManager(),
-    canvasHost: { clientWidth: 200, clientHeight: 100 } as HTMLElement,
+    canvasHost: { clientWidth: 200, clientHeight: 100, scrollLeft: 0, scrollTop: 0 } as HTMLElement,
     ...(onStatus === undefined ? {} : { onStatus }),
     createContentOptions: () => ({}) as never,
   });
   const reader = (session as unknown as SessionInternals).pdfReader;
   vi.spyOn(reader, "getPageTopLanding").mockImplementation(async (page) => ({ pageIndex: page - 1, x: 0, y: 0 }));
   vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (_topology, page, transform, guard) => reader.renderPageWithTransform(page, transform, guard));
+  vi.spyOn(reader, "setOpeningPresentationAtTop").mockImplementation(async (_topology, page, transform, guard) => reader.renderPageWithTransform(page, transform, guard));
   return session;
 }
 
@@ -41,6 +42,7 @@ type SessionInternals = {
     activateVisiblePages: (pages: readonly number[]) => number;
     clearVisibleLinkAuthority: () => void;
     dismissLinkDecorations: () => void;
+    evictInactiveHeavyResources: () => boolean;
   };
   pdfReader: {
     evictInactiveCanvas: () => boolean;
@@ -55,6 +57,7 @@ type SessionInternals = {
       | { kind: "failed"; landing?: { pageIndex: number; x: number; y: number } }
     >;
     setPresentationTopology: (topology: "continuous" | "single-page", page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
+    setOpeningPresentationAtTop: (topology: "continuous" | "single-page", page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
     invalidateViewportSynchronization: () => void;
     renderPageWithTransform: (page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
   };
@@ -86,6 +89,7 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     activateVisiblePages: vi.fn(() => 0),
     clearVisibleLinkAuthority: vi.fn(),
     dismissLinkDecorations: vi.fn(),
+    evictInactiveHeavyResources: vi.fn(() => true),
   };
   (session as unknown as SessionInternals).content = content;
   return content;
@@ -480,6 +484,27 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(inactiveEviction).toHaveBeenCalledOnce();
   });
 
+  it("captures the inactive viewport anchor before content removes the shared page frame", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "match", results: [SEARCH_RESULT], searchPending: false, searchIncomplete: false });
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    await session.activate();
+    await session.deactivate();
+    const order: string[] = [];
+    vi.spyOn(reader, "evictInactiveCanvas").mockImplementation(() => {
+      order.push("canvas-anchor");
+      expect(content.evictInactiveHeavyResources).not.toHaveBeenCalled();
+      return true;
+    });
+    content.evictInactiveHeavyResources.mockImplementation(() => {
+      order.push("content-layer");
+      return true;
+    });
+
+    session.evictInactiveHeavyResources();
+
+    expect(order).toEqual(["canvas-anchor", "content-layer"]);
+  });
   it("cycles completed results but restarts every prompt query including the same query", async () => {
     const session = createSession();
     await session.activate();
@@ -1098,7 +1123,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     onStatus.mockClear();
     internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
     await vi.waitFor(() => expect(internals.pdfReader.renderPageWithTransform).toHaveBeenCalledWith(1, { scale: 1, rotation: 0, devicePixelRatio: 1 }, expect.any(Function)));
-    expect(onStatus).not.toHaveBeenCalled();
+    expect(onStatus).toHaveBeenCalledWith(session.snapshot.status);
 
     expect(internals.pendingRenderRollback).toMatchObject({ page: 1, devicePixelRatio: 1 });
   });
@@ -1187,6 +1212,64 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     }
   });
 
+  it.each([
+    { hostWidth: 785, hostHeight: 620, padding: { left: 12, right: 8, top: 10, bottom: 6 }, pageWidth: 640, pageHeight: 900 },
+    { hostWidth: 420, hostHeight: 260, padding: { left: 24, right: 16, top: 18, bottom: 12 }, pageWidth: 300, pageHeight: 180 },
+  ])("publishes a hidden opening before fitting its $pageWidth x $pageHeight page to the padded $hostWidth x $hostHeight host top", async ({ hostWidth, hostHeight, padding, pageWidth, pageHeight }) => {
+    let session!: PdfTabSession;
+    let published = false;
+    session = createSession(() => {
+      if (!session.snapshot.reader.hasDocument) return;
+      const host = (session as unknown as SessionInternals & { options: { canvasHost: { clientWidth: number; clientHeight: number } } }).options.canvasHost;
+      host.clientWidth = hostWidth;
+      host.clientHeight = hostHeight;
+      published = true;
+    });
+    const internals = session as unknown as SessionInternals & {
+      openingFitRenderPending: boolean;
+      options: { canvasHost: { clientWidth: number; clientHeight: number; scrollTop: number } };
+      pdfReader: SessionInternals["pdfReader"] & {
+        options: {
+          onCommitted: (pageCount: number, displayName: string) => void;
+          onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+        };
+      };
+    };
+    internals.options.canvasHost.clientWidth = 0;
+    internals.options.canvasHost.clientHeight = 0;
+    const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({
+      paddingLeft: `${padding.left}px`, paddingRight: `${padding.right}px`,
+      paddingTop: `${padding.top}px`, paddingBottom: `${padding.bottom}px`,
+    }) });
+    try {
+      await session.activate();
+      vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: pageWidth, height: pageHeight });
+      const opening = vi.mocked(internals.pdfReader.setOpeningPresentationAtTop).mockImplementation(async (_topology, _page, _transform, guard) => {
+        if (!guard()) return false;
+        internals.options.canvasHost.scrollTop = 0;
+        return true;
+      });
+
+      internals.pdfReader.options.onCommitted(3, "hidden.pdf");
+      expect(internals.openingFitRenderPending).toBe(true);
+      internals.options.canvasHost.scrollTop = 0;
+      internals.pdfReader.options.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+
+      await session.activate();
+      expect(opening).toHaveBeenCalledOnce();
+      expect(published).toBe(true);
+      expect(opening.mock.calls[0]?.[0]).toBe("continuous");
+      expect(opening.mock.calls[0]?.[1]).toBe(1);
+      expect((opening.mock.calls[0]?.[2] as { scale: number }).scale)
+        .toBeCloseTo((hostWidth - padding.left - padding.right) / pageWidth);
+      expect(internals.options.canvasHost.scrollTop).toBe(0);
+      expect(internals.openingFitRenderPending).toBe(false);
+    } finally {
+      if (styleDescriptor === undefined) delete (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
+      else Object.defineProperty(globalThis, "getComputedStyle", styleDescriptor);
+    }
+  });
   it("retries opening fit for a hidden empty adoption host after geometry returns", async () => {
     const session = createSession();
     const internals = session as unknown as SessionInternals & {
@@ -1203,7 +1286,8 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     const render = vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockResolvedValue(true);
 
     internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
-    await vi.waitFor(() => expect(internals.pdfReader.getPageNaturalSize).toHaveBeenCalledOnce());
+    await expect(session.renderCurrentView()).resolves.toBe(false);
+    expect(internals.pdfReader.getPageNaturalSize).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
     expect(internals.openingFitRenderPending).toBe(true);
 
@@ -1213,6 +1297,77 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.activate();
 
     expect(render).toHaveBeenCalledWith(1, { scale: 1, rotation: 0, devicePixelRatio: 1 }, expect.any(Function));
+    expect(internals.openingFitRenderPending).toBe(false);
+  });
+  it.each([
+    { action: { type: "page.next" } as const, committedPage: 2, committedScale: 1 },
+    { action: { type: "view.zoom", factor: 1.1 } as const, committedPage: 1, committedScale: 1.1 },
+  ])("does not let a delayed opening fit reset the viewport after newer $action.type intent", async ({ action, committedPage, committedScale }) => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      openingFitRenderPending: boolean;
+      openingFitRenderInFlight: boolean;
+      options: { canvasHost: { clientWidth: number; clientHeight: number; scrollTop: number } };
+    };
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.openingFitRenderPending = true;
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let openingGuard!: () => boolean;
+    const opening = vi.mocked(internals.pdfReader.setOpeningPresentationAtTop).mockImplementation(async (_topology, _page, _transform, guard) => {
+      openingGuard = guard;
+      entered.resolve();
+      await release.promise;
+      if (!guard()) return false;
+      internals.options.canvasHost.scrollTop = 0;
+      return true;
+    });
+
+    internals.options.canvasHost.scrollTop = 0;
+    internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
+    await entered.promise;
+    session.apply(action);
+    internals.options.canvasHost.scrollTop = 240;
+    expect(openingGuard()).toBe(false);
+    release.resolve();
+    await vi.waitFor(() => expect(internals.openingFitRenderInFlight).toBe(false));
+    internals.onPage(committedPage, { scale: committedScale, rotation: 0, devicePixelRatio: 1 });
+
+    expect(opening).toHaveBeenCalledOnce();
+    expect(internals.options.canvasHost.scrollTop).toBe(240);
+    expect(internals.openingFitRenderPending).toBe(false);
+  });
+  it("retires a pending opening fit when raw scrolling takes viewport ownership", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      openingFitRenderPending: boolean;
+      openingFitRenderInFlight: boolean;
+      options: { canvasHost: { scrollTop: number } };
+    };
+    session.reader.mountDocument(1);
+    await session.activate();
+    internals.openingFitRenderPending = true;
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.mocked(internals.pdfReader.setOpeningPresentationAtTop).mockImplementation(async (_topology, _page, _transform, guard) => {
+      entered.resolve();
+      await release.promise;
+      return guard() && internals.options.canvasHost.scrollTop === 0;
+    });
+
+    internals.options.canvasHost.scrollTop = 0;
+    internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
+    await entered.promise;
+    internals.options.canvasHost.scrollTop = 91;
+    release.resolve();
+    await vi.waitFor(() => expect(internals.openingFitRenderInFlight).toBe(false));
+
+    expect(internals.options.canvasHost.scrollTop).toBe(91);
     expect(internals.openingFitRenderPending).toBe(false);
   });
   it("retains the exact session controller after a rejected unmount and retries it once", async () => {

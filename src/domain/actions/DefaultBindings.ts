@@ -2,7 +2,7 @@ import { ACTION_IDS, getActionDescriptor, type ActionId, type InputContext } fro
 import { normalizeKeySequence } from "../input/KeyGrammar";
 
 const raw: Record<ActionId, readonly string[]> = {
-  "document.open":["<C-o>"], "document.close":["<C-w>"], "document.print":["<C-p>"], "app.quit":["<A-F4>"], "app.new":["<C-n>"],
+  "document.open":["<C-S-o>"], "document.close":["<C-w>"], "document.print":["<C-p>"], "app.quit":["<A-F4>"], "app.new":["<C-n>"],
   "palette.open":[":","<C-S-p>"], "help.show":["?"], "tab.next":["N"], "tab.previous":["P"],
   "tab.select.1":["<C-1>"], "tab.select.2":["<C-2>"], "tab.select.3":["<C-3>"], "tab.select.4":["<C-4>"], "tab.select.5":["<C-5>"], "tab.select.6":["<C-6>"], "tab.select.7":["<C-7>"], "tab.select.8":["<C-8>"], "tab.select.9":["<C-9>"],
   "scroll.left":["h","<Left>"], "scroll.down":["j","<Down>"], "scroll.up":["k","<Up>"], "scroll.right":["l","<Right>"], "scroll.largeDown":["d"], "scroll.largeUp":["u"],

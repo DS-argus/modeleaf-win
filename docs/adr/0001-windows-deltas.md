@@ -37,6 +37,8 @@ Configuration is stored at `appConfigDir()/config.toml`; state is stored at `app
 
 The key grammar uses `C=Ctrl`, `A=Alt`, and `S=Shift`; `Win` is not a configurable modifier. A macOS `D` modifier is a migration error, not a silent conversion to Ctrl. The default templates use Ctrl for Open/Close/Print/New, palette, and tab selection; `Alt+Left`/`Alt+Right` for app-owned history; `Alt+F4` for current-window close; and `<C-b>` as the command prefix. The four fixed prompt/search bindings remain non-configurable.
 
+Owner amendment, Issue #53 (2026-09-09): default `document.open` is `Ctrl+Shift+O` (`<C-S-o>`), replacing `Ctrl+O` without a default alias. Explicit user keymap overrides remain authoritative; no user config/state migration is performed. History remains `Alt+Left`/`Alt+Right`. The Open chooser removes its Browse glyph and separates Browse from Recent with a theme-aware divider. Regular window tabs use equal 184px slots and 26px height, with filename ellipsis and accessible full names rather than filename-dependent widths.
+
 ### Opaque PDF transport remains pending W02 evidence
 
 The target design is a Rust-owned read-only opaque document handle exposed through a Range-capable custom protocol. No production transport is selected by this ADR. W02 must measure packaged WebView2 Range/CORS/worker behavior, first-page latency, memory, and geometry. Only if the custom protocol fails those gates may W02 evaluate Tauri optimized binary response with a one-shot `ArrayBuffer`; JSON/base64 transport is prohibited. The resulting evidence and final selection belong in ADR 0002.

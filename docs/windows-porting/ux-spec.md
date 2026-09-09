@@ -50,7 +50,7 @@ CSS root는 `grid-template-rows: auto minmax(0, 1fr) 26px`를 기준으로 한�
 ## 3. Empty state
 
 - PDF가 하나도 없을 때 content 중앙에 `Open PDF` action pill 하나를 보인다.
-- shortcut badge는 Windows active keymap의 `Ctrl+O`를 표시한다.
+- shortcut badge는 Windows active keymap에서 파생하며 기본값은 `Ctrl+Shift+O`다 (Issue #53 owner amendment).
 - Tab으로 focus 가능하고 Enter/Space/click이 모두 `document.open`을 dispatch한다.
 - 별도 recent cards, onboarding carousel, 광고성 문구를 추가하지 않는다.
 - config/update diagnostic이 있으면 status bar에서만 표시한다.
@@ -70,6 +70,7 @@ Acceptance:
 - active tab은 title과 position을 보이고 selected state를 갖는다.
 - inactive close button은 hover/focus에서 강해지고 active tab close는 항상 발견 가능해야 한다.
 - active tab이 overflow 밖이면 layout 후 scroll into view한다.
+- Regular tab slot은 파일명 길이와 관계없이 `184px × 26px`로 통일한다. 긴 이름은 ellipsis로 줄이고 accessible name/tooltip에는 전체 filename을 유지한다. 좁은 창은 수평 overflow를 사용하며 close button은 줄어들지 않는다.
 
 ### Multi-pane
 
@@ -189,10 +190,11 @@ Palette 자체가 독자 action list를 가지면 안 된다. action registry de
 
 - content top에서 72px, centered
 - 첫 frame부터 첫 row `Browse…`와 startup에 준비된 recents 최대 15개를 native 순서로 표시한다. loading/false-empty frame은 없다.
+- Issue #53 owner amendment: Browse 앞 glyph는 표시하지 않는다. Recent heading이 있을 때만 그 위에 theme/forced-colors를 따르는 구분선을 표시한다.
 - 정상 창에서는 15개가 모두 보이되 작은 창에서는 내부 scroll한다.
 - renderer에는 opaque recent ID와 Unicode filename만 전달하며 path는 표시하거나 전달하지 않는다.
 - query는 Unicode NFC filename fuzzy search이며 입력 자체가 refresh trigger가 아니다.
-- `Ctrl+C` clear, arrows/`Ctrl+J/K`, Enter, Esc를 지원한다.
+- `Ctrl+Shift+C` clear history, arrows/`Ctrl+J/K`, Enter, Esc를 지원한다.
 - Browse는 app chooser overlay를 먼저 닫은 뒤 HWND-owned Windows dialog를 연다. native dialog는 app overlay owner에 포함하지 않는다.
 - missing entry는 durable prune 성공 후에만 row를 제거한다. stale selection은 최신 snapshot으로 갱신하고 chooser/focus를 유지한다.
 - permission/locked/network/state/persistence error는 typed inline error로 남기며 prune하거나 `Could not read this PDF`로 오진하지 않는다.

@@ -178,7 +178,7 @@ Recent identity는 가능한 경우 Windows file identity를 ephemeral dedupe에
 
 | 종류 | 기본값 |
 |---|---|
-| Open / Close / Print / New | `Ctrl+O`, `Ctrl+W`, `Ctrl+P`, `Ctrl+N` |
+| Open / Close / Print / New | `Ctrl+Shift+O` (Issue #53 owner amendment), `Ctrl+W`, `Ctrl+P`, `Ctrl+N` |
 | 현재 창 닫기 (`app.quit`) | `Alt+F4` |
 | Palette | `:`, `Ctrl+Shift+P` |
 | Tab 1–9 | `Ctrl+1` … `Ctrl+9` |
@@ -206,7 +206,7 @@ Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action
 
 ### 실패 모드
 
-- `Ctrl+O`를 Open과 History Back에 동시에 배정
+- Open과 History Back을 사용자 설정에서 같은 sequence에 동시에 배정
 - `Ctrl+I`가 Tab으로 collapse
 - `AltGraph` 입력을 `Ctrl+Alt` shortcut으로 잘못 실행
 - IME composition 중 `j/k` navigation 실행

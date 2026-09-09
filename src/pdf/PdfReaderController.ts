@@ -220,6 +220,7 @@ export type PdfViewportRestoreOutcome =
   | { readonly kind: "failed"; readonly landing?: PdfViewportLanding };
 export type PdfScrollAnchor = PdfViewportAnchor;
 export type PdfPresentationTopology = "continuous" | "single-page";
+type PdfRenderViewportPolicy = "preserve-anchor" | "opening-top";
 
 interface Candidate {
   readonly session: OpenPdfResult;
@@ -690,6 +691,12 @@ export class PdfReaderController {
   public async setPresentationTopology(topology: PdfPresentationTopology, page: number, transform: PdfViewTransform, guard?: PdfRequestCommitGuard): Promise<boolean> {
     return this.renderPageWithTransform(page, transform, guard, topology);
   }
+  public async setOpeningPresentationAtTop(topology: PdfPresentationTopology, page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard): Promise<boolean> {
+    const host = this.options.canvasHost;
+    if (!guard() || host.scrollLeft !== 0 || host.scrollTop !== 0) return false;
+    const openingViewportCurrent = (): boolean => guard() && host.scrollLeft === 0 && host.scrollTop === 0;
+    return this.renderPageRequest(page, this.normalizeViewTransform(transform), openingViewportCurrent, topology, "opening-top");
+  }
 
   public residentPageNumbers(): readonly number[] {
     return Object.freeze([...(this.current?.residentRasters.keys() ?? [])].sort((a, b) => a - b));
@@ -1081,14 +1088,16 @@ export class PdfReaderController {
     }
   }
 
-  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor, topology: PdfPresentationTopology = this.current?.topology ?? "continuous"): Promise<boolean> {
+  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor, topology: PdfPresentationTopology = this.current?.topology ?? "continuous", viewportPolicy: PdfRenderViewportPolicy = "preserve-anchor"): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const cssTransformChanged = transform.scale !== this.viewTransform.scale || transform.rotation !== this.viewTransform.rotation;
     const topologyChanged = topology !== current.topology;
     const presentationChanged = cssTransformChanged || topologyChanged;
     const retainedAnchor = this.evictedScrollAnchor?.pageNumber === page ? this.evictedScrollAnchor.anchor : undefined;
-    const anchor = preEvictionAnchor ?? retainedAnchor ?? (this.activeViewportPlan === undefined && (presentationChanged || current.activePageNumber === page) ? this.captureScrollAnchor() : undefined);
+    const anchor = viewportPolicy === "preserve-anchor"
+      ? preEvictionAnchor ?? retainedAnchor ?? (this.activeViewportPlan === undefined && (presentationChanged || current.activePageNumber === page) ? this.captureScrollAnchor() : undefined)
+      : undefined;
     const activePlan = !presentationChanged && this.activeViewportPlan?.candidate === current ? this.activeViewportPlan.plan : undefined;
     const directPreview = !presentationChanged && activePlan === undefined ? current.window?.previewPlan(page) : undefined;
     let directPlan: PageWindowPlan | undefined;
@@ -1146,10 +1155,15 @@ export class PdfReaderController {
         if (prior !== undefined) this.releaseRaster(prior);
         this.canvasReplace(rendered.canvas, accessory, undefined, false, activePlan === undefined);
         if (plan !== undefined && topology === "continuous") this.applyWindowSpacers(current, plan);
-        if (directPlan !== undefined && anchor === undefined && current.window !== undefined) {
-          this.options.canvasHost.scrollTop = current.window.offsetForPage(page);
+        if (viewportPolicy === "opening-top") {
+          this.options.canvasHost.scrollLeft = 0;
+          this.options.canvasHost.scrollTop = 0;
+        } else {
+          if (directPlan !== undefined && anchor === undefined && current.window !== undefined) {
+            this.options.canvasHost.scrollTop = current.window.offsetForPage(page);
+          }
+          if (anchor !== undefined) this.restoreScrollAnchor(anchor);
         }
-        if (anchor !== undefined) this.restoreScrollAnchor(anchor);
         if (retainedAnchor !== undefined) this.evictedScrollAnchor = undefined;
         committed = true;
         if (activePlan === undefined) this.notifyObserver(() => this.options.onPage(page, transform));
@@ -1173,7 +1187,7 @@ export class PdfReaderController {
       if (directPlan?.materializePages.includes(page)) current.window?.fail(page, directPlan.generation);
     }
   }
-  private async renderPageWithinResidentCapacity(page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard, topology: PdfPresentationTopology): Promise<boolean> {
+  private async renderPageWithinResidentCapacity(page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard, topology: PdfPresentationTopology, viewportPolicy: PdfRenderViewportPolicy): Promise<boolean> {
     const current = this.current;
     const window = current?.window;
     if (current === undefined || current.document === undefined || window === undefined || this.disposed) return false;
@@ -1189,9 +1203,10 @@ export class PdfReaderController {
       : previewEvictions.find((candidate) => candidate !== priorActivePage && current.residentRasters.has(candidate))
         ?? [...current.residentRasters.keys()].find((candidate) => candidate !== priorActivePage)
         ?? [...current.residentRasters.keys()][0];
-    if (victim === undefined) return this.renderPageInternal(page, transform, guard, undefined, topology);
+    if (victim === undefined) return this.renderPageInternal(page, transform, guard, undefined, topology, viewportPolicy);
     this.evictResidentPage(current, victim);
-    const committed = await this.renderPageInternal(page, transform, guard, preEvictionAnchor, topology);
+    const committed = await this.renderPageInternal(page, transform, guard,
+      viewportPolicy === "preserve-anchor" ? preEvictionAnchor : undefined, topology, viewportPolicy);
     if (committed) return true;
     this.viewportRollback = true;
     try {
@@ -1321,27 +1336,31 @@ export class PdfReaderController {
       }
     }
   }
-  public async renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, topology: PdfPresentationTopology = this.current?.topology ?? "continuous"): Promise<boolean> {
+  public renderPage(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, topology: PdfPresentationTopology = this.current?.topology ?? "continuous"): Promise<boolean> {
+    return this.renderPageRequest(page, transform, requestCommitGuard, topology, "preserve-anchor");
+  }
+
+  private async renderPageRequest(page: number, transform: PdfViewTransform, requestCommitGuard: PdfRequestCommitGuard | undefined, topology: PdfPresentationTopology, viewportPolicy: PdfRenderViewportPolicy): Promise<boolean> {
     const requestSequence = ++this.presentationRequestSequence;
     await this.awaitViewportIdle();
     if (requestSequence !== this.presentationRequestSequence) return false;
     const ownerCurrent = (): boolean => requestSequence === this.presentationRequestSequence
       && (requestCommitGuard?.() ?? true);
     const topologyChanged = topology !== this.current?.topology;
-    const replacesResidentDpr = !topologyChanged && transform.scale === this.viewTransform.scale
+    const replacesResidentDpr = viewportPolicy === "preserve-anchor" && !topologyChanged && transform.scale === this.viewTransform.scale
       && transform.rotation === this.viewTransform.rotation
       && transform.devicePixelRatio !== this.viewTransform.devicePixelRatio
       && (this.current?.residentRasters.size ?? 0) > 1;
     const plannedWindowSize = this.current?.window?.checkpoint().plannedPages.length ?? 0;
     const needsBoundedReplacement = plannedWindowSize > 0 && (this.current?.residentRasters.size ?? 0) >= plannedWindowSize;
-    if (!replacesResidentDpr && !needsBoundedReplacement) return this.renderPageInternal(page, transform, ownerCurrent, undefined, topology);
+    if (!replacesResidentDpr && !needsBoundedReplacement) return this.renderPageInternal(page, transform, ownerCurrent, undefined, topology, viewportPolicy);
     let releaseSettlement!: () => void;
     const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
     this.viewportSettlement = settlement;
     try {
       return replacesResidentDpr
         ? await this.rerenderResidentBackingsForDpr(transform, ownerCurrent)
-        : await this.renderPageWithinResidentCapacity(page, transform, ownerCurrent, topology);
+        : await this.renderPageWithinResidentCapacity(page, transform, ownerCurrent, topology, viewportPolicy);
     } finally {
       releaseSettlement();
       if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;

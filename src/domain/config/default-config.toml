@@ -2,7 +2,7 @@
 # Copy this file to the application config directory before editing.
 
 [keymap]
-"document.open" = ["<C-o>"]
+"document.open" = ["<C-S-o>"]
 "document.close" = ["<C-w>"]
 "document.print" = ["<C-p>"]
 "app.quit" = ["<A-F4>"]

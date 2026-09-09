@@ -31,7 +31,7 @@ describe("CommandCatalog", () => {
     const projections = [projectMenuCommands(state(), config), projectPaletteCommands(state(), config), projectHelpCommands(state(), config)];
     const openRows = projections.map((rows) => rows.find(({ id }) => id === "document.open"));
     expect(openRows).toEqual([openRows[0], openRows[0], openRows[0]]);
-    expect(openRows[0]?.shortcuts).toEqual(["Ctrl+O"]);
+    expect(openRows[0]?.shortcuts).toEqual(["Ctrl+Shift+O"]);
   });
   it("keeps foreign modals and menu projection blocked", () => {
     const modalState = state({ modalOpen: true });

@@ -11,7 +11,7 @@ describe("initial open flow contract", () => {
 
   it("has one canonical centered empty action with a live shortcut badge", () => {
     expect(main.match(/id="empty-reader-open"/gu)).toHaveLength(1);
-    expect(main).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd>');
+    expect(main).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd>');
     expect(main).not.toContain("No PDF open");
     expect(main).toContain("emptyReaderShortcut.textContent = shortcut");
     expect(main).toContain("tabStrip.hidden = documentTabs.length === 0");

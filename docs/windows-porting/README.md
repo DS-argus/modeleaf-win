@@ -61,8 +61,8 @@
 | config | Tauri `appConfigDir()/config.toml` | `~/.config/modeleaf/config.toml`을 사용하지 않음 |
 | state | Tauri `appLocalDataDir()/state.json` | 로컬 파일 경로를 roaming profile에 저장하지 않음 |
 | 키 문법 | `C=Ctrl`, `A=Alt`, `S=Shift`; `D`와 `Win` modifier 없음 | `D=Command` 문법 제거 |
-| 앱 단축키 | `Ctrl+O/W/P/N`, `Ctrl+Shift+P`, `Ctrl+1..9`, `Alt+F4` | macOS `Cmd` 계열을 Windows 표준으로 번역 |
-| 히스토리 | 기본 `Alt+Left`, `Alt+Right` | macOS `Ctrl+O/I`는 `Ctrl+O` Open과 충돌하므로 변경 |
+| 앱 단축키 | Open `Ctrl+Shift+O`, `Ctrl+W/P/N`, `Ctrl+Shift+P`, `Ctrl+1..9`, `Alt+F4` | Issue #53 owner 결정으로 Open을 변경; 명시적 사용자 keymap은 유지 |
+| 히스토리 | 기본 `Alt+Left`, `Alt+Right` | macOS `Ctrl+O/I` 대신 Windows history 키를 유지. Open 기본키 변경 후에도 재배정하지 않음 |
 | TOC | PDF.js `getOutline()` 기반 pane-local floating overlay, `t`/`J`/`K`와 400ms 숫자 선택 | PDF.js generic sidebar·thumbnail·bookmark UI를 켜지 않음 |
 | 파일 연결 | 설치 시 `.pdf` Viewer/Open With 등록, 기본 앱 강제 변경 금지 | Finder document role을 Windows installer 등록으로 치환 |
 | 업데이트 | 새 버전 확인·알림·다운로드 안내만; 자동 설치 없음 | Homebrew 안내 제거; 명시적 Windows installer 경로 사용 |

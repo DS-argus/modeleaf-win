@@ -124,7 +124,7 @@ Port source suites:
 
 - `D` migration error
 - `C-A-S` canonical order
-- `Ctrl+O` Open vs `Alt+Left` history
+- `Ctrl+Shift+O` Open vs `Alt+Left` history
 - AltGraph/composition/dead keys
 - WebView accelerator interception
 - physical `Ctrl+I` distinct from Tab when user-bound
@@ -336,7 +336,7 @@ markdown-links-and-diff-check
 ### Keyboard/focus
 
 - all default bindings
-- `Ctrl+O/W/P/N`, `Alt+Left/Right`, `Alt+F4`
+- Open `Ctrl+Shift+O`, `Ctrl+W/P/N`, `Alt+Left/Right`, `Alt+F4`
 - Korean IME, dead keys, AltGraph
 - prefix timeout and status
 - every overlay Esc/restore
@@ -396,6 +396,13 @@ The development-only `tools/qa/reader-stability.html` harness runs the real PDF.
 - `await window.readerHarness.runNavigation()`: 30 adjacent requests (at most active plus latest pending), mixed first/last/opposite commands, one-page Fit, eight alternating zoom changes, and teardown.
 - `await window.readerHarness.runSearch()`: first result before whole-document completion, three cross-page result moves, all 300 matches, retained user selection after completion, and teardown.
 
+Follow-up scenarios additionally cover the previously missed shell transition:
+
+- Load the harness with `?hidden=true`. It asserts zero initial host width/height using the production `.tab-host[hidden]` CSS, then uses the adoption/status publication flow to expose the host. Final first-page top must remain zero after Fit settles; the visible-from-start case alone is insufficient.
+- `await window.readerHarness.runTabClose()`: two real PDF.js sessions, eviction of the inactive first tab, closure of the active second tab through `performTabClose`, visible successor geometry before activation, restored raster, and empty-resource teardown.
+- `await window.readerHarness.runChrome()`: dev-transformed production chooser/tab renderer fragments, filenames of different lengths, exact 184×26 tab slots, long-name ellipsis, selected-tab horizontal visibility, Browse without glyph, conditional Recent divider, and dialog containment at normal/minimum viewports. This is isolated component layout evidence, not full native shell automation.
+- Inject a final presentation failure after initial adoption commits. `OpenAdoptionOwnership.test.ts` executes the production adoption/terminal function bodies with the real workspace queue: retain the candidate descriptor until rejection, close it once on terminal rollback, publish the replacement before activation, and preserve the sanitized diagnostic.
+
 Fixture SHA-256: `91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab`. Keep source bytes unchanged. The harness is not a packaged transport benchmark or a substitute for the Windows matrix above.
 
-Before restoring parity for the revised reader, separately authorize and retain packaged Windows evidence for: initial top/fit and mixed keyboard input, wheel/d/u at both edges, F then repeated +/- at supported DPI/rotation, cross-page search and query cancellation, and Ctrl+O → Ctrl+Shift+C with recent-state broadcast/restart behavior. Use disposable state for recent clearing; it must not erase PDFs, theme, indicator settings, or unknown state siblings. Rust fault tests additionally cover malformed state and pre-replace failure with durable/cache/revision rollback. Do not launch/stop an existing application or claim these native checks passed from Chromium/JSDOM results.
+Before restoring parity for the revised reader, separately authorize and retain packaged Windows evidence for: initial top/fit and mixed keyboard input, wheel/d/u at both edges, F then repeated +/- at supported DPI/rotation, cross-page search and query cancellation, and Ctrl+Shift+O → Ctrl+Shift+C with recent-state broadcast/restart behavior. Use disposable state for recent clearing; it must not erase PDFs, theme, indicator settings, or unknown state siblings. Rust fault tests additionally cover malformed state and pre-replace failure with durable/cache/revision rollback. Do not launch/stop an existing application or claim these native checks passed from Chromium/JSDOM results.

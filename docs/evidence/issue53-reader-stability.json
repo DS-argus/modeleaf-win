@@ -45,6 +45,76 @@
     "selectedIndexAfterCompletion": 3,
     "resourcesEmptyAfterClose": true
   },
+  "followup": {
+    "sourceBase": "1f8b818936ea506f9c09d47f4677a7e1d13572a7",
+    "hiddenOpening": {
+      "urlQuery": "hidden=true",
+      "zeroInitialClientSizeAsserted": true,
+      "topBeforeRepair": 52,
+      "finalTop": 0,
+      "page": 1,
+      "mode": "fit-width",
+      "scale": 1.1911764705882353,
+      "residentCanvases": 3
+    },
+    "closeActiveTab": {
+      "command": "await window.readerHarness.runTabClose()",
+      "evictedSuccessor": true,
+      "page": 12,
+      "mode": "custom",
+      "scale": 1.3102941176470588,
+      "topBeforeClose": 11605,
+      "topWithContentFirstEviction": 11547,
+      "topAfterRepair": 11605,
+      "residentCanvasesBefore": 5,
+      "residentCanvasesRestored": 1,
+      "resourcesEmptyAfterClose": true
+    },
+    "regressions": {
+      "scrollHeight": 286668,
+      "scrollEnd": { "page": 300, "top": 286068 },
+      "scrollReverseFinal": { "page": 294, "top": 280308 },
+      "adjacentRequests": 30,
+      "verifiedSteps": 2,
+      "supersededSteps": 28,
+      "fitPageFrames": 1,
+      "alternatingZoomCommits": 8,
+      "firstSearchResultMillisecondsObserved": 11.900000005960464,
+      "firstSearchResultWhilePending": true,
+      "searchResults": 300,
+      "selectedSearchIndex": 3,
+      "resourcesEmptyAfterEveryScenario": true
+    },
+    "chrome": {
+      "command": "await window.readerHarness.runChrome()",
+      "productionRendererFragments": true,
+      "tabWidths": [184, 184, 184],
+      "tabHeights": [26, 26, 26],
+      "longTitleClientWidth": 158,
+      "longTitleScrollWidth": 342,
+      "minimumViewport": { "width": 480, "height": 360 },
+      "minimumStripScrollWidth": 572,
+      "minimumStripScrollLeft": 84,
+      "chooserAtMinimumViewport": { "x": 19, "y": 56.625, "width": 442, "height": 246.75 },
+      "browseHasNoChildGlyph": true,
+      "recentDividerPixels": 1,
+      "emptyRecentDividerAbsent": true,
+      "forcedColorsLayoutVerified": true,
+      "screenshot": "docs/evidence/issue53-chooser-followup.png",
+      "finalForcedColorHintRefinement": "CanvasText source regression passed; screenshot recheck blocked by headless browser worker startup failure. Pre-refinement contrast screenshot is not presented as final evidence."
+    },
+    "localGate": {
+      "frontendFiles": 86,
+      "frontendTests": 878,
+      "rustTests": 147,
+      "build": "passed",
+      "rustFmt": "passed",
+      "rustClippy": "passed",
+      "diffCheck": "passed",
+      "postCommitPresentationFault": "Production adoption/terminal bodies retain descriptor, close rejected candidate once, and preserve diagnostic.",
+      "independentLifecycleReview": "APPROVE; committed-adoption rollback P1 resolved"
+    }
+  },
   "limitations": [
     "Observed timing is one local run, not a guaranteed latency bound.",
     "No packaged WebView2, native input, native state-event, DPI/rotation matrix, or OS integration result is claimed.",

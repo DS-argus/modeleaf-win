@@ -338,7 +338,7 @@ type NavigationSnapshot = {
 
 | Action | Windows default |
 |---|---|
-| `document.open` | `<C-o>` |
+| `document.open` | `<C-S-o>` (Issue #53 owner amendment) |
 | `document.close` | `<C-w>` |
 | `document.print` | `<C-p>` |
 | `app.new` | `<C-n>` |

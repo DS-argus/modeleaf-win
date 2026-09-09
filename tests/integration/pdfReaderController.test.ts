@@ -1011,6 +1011,153 @@ describe("PdfReaderController", () => {
     await fitted.dispose();
     resources.assertEmpty();
   });
+  it.each([
+    { hostWidth: 785, hostHeight: 620, padding: { left: 12, right: 8, top: 10, bottom: 6 }, pageWidth: 640, pageHeight: 900 },
+    { hostWidth: 420, hostHeight: 260, padding: { left: 24, right: 16, top: 18, bottom: 12 }, pageWidth: 300, pageHeight: 180 },
+  ])("re-fits a zero-size $pageWidth x $pageHeight opening at the padded $hostWidth x $hostHeight host top", async ({ hostWidth, hostHeight, padding, pageWidth, pageHeight }) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    let clientWidth = 0;
+    let clientHeight = 0;
+    const host = document.createElement("div");
+    host.style.paddingLeft = `${padding.left}px`;
+    host.style.paddingRight = `${padding.right}px`;
+    host.style.paddingTop = `${padding.top}px`;
+    host.style.paddingBottom = `${padding.bottom}px`;
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, get: () => clientWidth },
+      clientHeight: { configurable: true, get: () => clientHeight },
+      scrollWidth: { configurable: true, value: 4_000 },
+      scrollHeight: { configurable: true, value: 4_000 },
+    });
+    const scalablePage: PdfPage = {
+      getViewport: ({ scale, rotation }) => ({ ...pdfViewport(pageWidth * scale, pageHeight * scale, scale), rotation,
+        convertToPdfPoint: (x: number, y: number) => [x / scale, y / scale] as const,
+        convertToViewportPoint: (x: number, y: number) => [x * scale, y * scale] as const }),
+      getTextContent: async () => ({ items: [] }), getAnnotations: async () => [],
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+    };
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("hidden-opening-top", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, vi.fn(async () => scalablePage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(publishedCanvas(host).dataset.scale).toBe("1");
+    expect(host.scrollTop).toBe(0);
+    clientWidth = hostWidth;
+    clientHeight = hostHeight;
+    host.scrollLeft = 0;
+    host.scrollTop = 0;
+    const scale = (hostWidth - padding.left - padding.right) / pageWidth;
+
+    await expect(controller.setOpeningPresentationAtTop("continuous", 1,
+      { scale, rotation: 0, devicePixelRatio: 1 }, () => true)).resolves.toBe(true);
+
+    expect(publishedCanvas(host).dataset.scale).toBe(String(scale));
+    expect(host.scrollLeft).toBe(0);
+    expect(host.scrollTop).toBe(0);
+    expect(controller.presentationTopology).toBe("continuous");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+
+  it("does not apply a delayed opening-top reset after a newer guarded view render", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 100 }, clientHeight: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const scalablePage: PdfPage = {
+      getViewport: ({ scale, rotation }) => ({ ...pdfViewport(20 * scale, 30 * scale, scale), rotation,
+        convertToPdfPoint: (x: number, y: number) => [x / scale, y / scale] as const,
+        convertToViewportPoint: (x: number, y: number) => [x * scale, y * scale] as const }),
+      getTextContent: async () => ({ items: [] }), getAnnotations: async () => [],
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+    };
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let stallNextCommit = false;
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("stale-opening-top", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => scalablePage)))), annotationMode: 0 },
+      canvasHost: host, availableContentSize: () => ({ width: 20, height: 30 }),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit) => {
+        if (stallNextCommit) {
+          stallNextCommit = false;
+          entered.resolve();
+          await release.promise;
+        }
+        commit();
+      },
+    });
+    await controller.open(1);
+    host.scrollTop = 0;
+    let openingCurrent = true;
+    stallNextCommit = true;
+    const openingFit = controller.setOpeningPresentationAtTop("continuous", 1,
+      { scale: 2, rotation: 0, devicePixelRatio: 1 }, () => openingCurrent);
+    await entered.promise;
+
+    openingCurrent = false;
+    host.scrollTop = 240;
+    const newerRender = controller.setViewTransform({ scale: 3, rotation: 0, devicePixelRatio: 1 });
+    // Real replacements wait for the obsolete render's settlement barrier.
+    release.resolve();
+    await expect(newerRender).resolves.toBe(true);
+    const newerViewportTop = host.scrollTop;
+    expect(newerViewportTop).not.toBe(0);
+
+    await expect(openingFit).resolves.toBe(false);
+    expect(host.scrollTop).toBe(newerViewportTop);
+    expect(publishedCanvas(host).dataset.scale).toBe("3");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("treats a raw scroll during opening fit as newer viewport ownership", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 100 }, clientHeight: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let stallNextCommit = false;
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("opening-scroll-owner", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1))), annotationMode: 0 }, canvasHost: host,
+      availableContentSize: () => ({ width: 20, height: 30 }),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit) => {
+        if (stallNextCommit) {
+          stallNextCommit = false;
+          entered.resolve();
+          await release.promise;
+        }
+        commit();
+      },
+    });
+    await controller.open(1);
+    stallNextCommit = true;
+    const openingFit = controller.setOpeningPresentationAtTop("continuous", 1,
+      { scale: 2, rotation: 0, devicePixelRatio: 1 }, () => true);
+    await entered.promise;
+
+    host.scrollTop = 91;
+    release.resolve();
+
+    await expect(openingFit).resolves.toBe(false);
+    expect(host.scrollTop).toBe(91);
+    expect(publishedCanvas(host).dataset.scale).toBe("1");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("positions the host explicitly after direct far-page navigation", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
@@ -1229,6 +1376,7 @@ describe("PdfReaderController", () => {
     host.scrollTop = 200;
     const anchor = controller.captureScrollAnchor()!;
     expect(await controller.setViewTransform({ scale: 2, rotation: 90, devicePixelRatio: 1 })).toBe(true);
+    expect(host.scrollTop).not.toBe(0);
     installOffsets();
     controller.restoreScrollAnchor(anchor);
     const restored = controller.captureScrollAnchor()!;

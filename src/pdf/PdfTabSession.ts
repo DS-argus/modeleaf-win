@@ -104,6 +104,9 @@ export class PdfTabSession {
   private searchLandingGeneration = -1;
   private searchLandingSelection = -1;
   private openingFitRenderInFlight = false;
+  private openingFitRenderRevision = 0;
+  private openingFitRenderIntent: number | undefined;
+  private openingFitRenderSettlement: Promise<boolean> | undefined;
   private activityGeneration = 0;
   private renderIntent = 0;
   private pendingPresentationRenders = 0;
@@ -153,6 +156,9 @@ export class PdfTabSession {
         const available = this.availableContentSize();
         this.openingFitRenderPending = !(available.width > 0 && available.height > 0);
         this.openingFitRenderInFlight = false;
+        this.openingFitRenderRevision += 1;
+        this.openingFitRenderIntent = undefined;
+        this.openingFitRenderSettlement = undefined;
         this.navigationIntent += 1;
       },
       onBeforeCommit: async (rendered, commitCanvas, context) => {
@@ -210,7 +216,13 @@ export class PdfTabSession {
   public async activate(): Promise<void> {
     const pendingActivity = this.activitySettlement;
     if (pendingActivity !== undefined) await pendingActivity;
-    if (this.closed || this.active) return;
+    if (this.closed) return;
+    if (this.active) {
+      if (!this.openingFitRenderPending) return;
+      const fitted = await this.renderOpeningFitPage();
+      if (!fitted && this.openingFitRenderPending) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
+      return;
+    }
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
     this.active = true;
     this.foregroundSuspended = false;
@@ -220,8 +232,9 @@ export class PdfTabSession {
       await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
       if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       if (this.openingFitRenderPending) {
-        await this.renderOpeningFitPage();
+        const fitted = await this.renderOpeningFitPage();
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
+        if (!fitted && this.openingFitRenderPending) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
         this.finishActivation(activityGeneration);
         this.content?.resumeInteractions();
         return;
@@ -249,8 +262,8 @@ export class PdfTabSession {
   }
   public evictInactiveHeavyResources(): void {
     if (this.closed || this.active || !this.foregroundSuspended) return;
-    const contentEvicted = this.content?.evictInactiveHeavyResources() ?? false;
     const canvasEvicted = this.pdfReader.evictInactiveCanvas();
+    const contentEvicted = this.content?.evictInactiveHeavyResources() ?? false;
     this.presentationEvicted ||= contentEvicted || canvasEvicted;
   }
   public async close(): Promise<void> {
@@ -280,14 +293,20 @@ export class PdfTabSession {
       throw error;
     }
   }
-  public async renderPage(page: number, transform?: PdfViewTransform): Promise<boolean> {
+  public renderPage(page: number, transform?: PdfViewTransform): Promise<boolean> {
+    return this.renderPageRequest(page, transform);
+  }
+  private async renderPageRequest(page: number, transform?: PdfViewTransform, openingFitRevision?: number, requestGuard: () => boolean = () => true): Promise<boolean> {
     if (this.closed || !this.isForegroundActive()) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const intent = this.renderIntent;
     const navigationIntent = this.navigationIntent;
     const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
-      && this.navigationIntent === navigationIntent && this.renderIntent === intent;
+      && this.navigationIntent === navigationIntent && this.renderIntent === intent
+      && (openingFitRevision === undefined
+        || (this.openingFitRenderPending && this.openingFitRenderRevision === openingFitRevision))
+      && requestGuard();
     this.pendingPresentationRenders += 1;
     try {
       const effectiveTransform = transform ?? await this.viewTransformFor(page, guard);
@@ -301,7 +320,9 @@ export class PdfTabSession {
         return false;
       }
       const topology: PdfPresentationTopology = this.reader.snapshot.zoomMode === "fit-page" ? "single-page" : "continuous";
-      const committed = await this.pdfReader.setPresentationTopology(topology, page, effectiveTransform, guard);
+      const committed = openingFitRevision === undefined
+        ? await this.pdfReader.setPresentationTopology(topology, page, effectiveTransform, guard)
+        : await this.pdfReader.setOpeningPresentationAtTop(topology, page, effectiveTransform, guard);
       if (!committed) {
         if (guard()) {
           const failureStatus = this.readerStatusVersion === statusVersion ? undefined : this.reader.snapshot.status;
@@ -481,6 +502,7 @@ export class PdfTabSession {
   }
   public apply(action: Parameters<ReaderState["apply"]>[0]): void {
     if (this.closed || !this.isForegroundActive()) return;
+    if (action.type.startsWith("scroll.") || action.type.startsWith("page.") || action.type.startsWith("view.")) this.invalidateOpeningFitRender();
     if (action.type.startsWith("scroll.")) {
       this.invalidatePageStepQueue();
       if (this.navigationLandingInProgress || this.pageStepActive) this.supersedeNavigation();
@@ -519,16 +541,17 @@ export class PdfTabSession {
   public get linkDecorationsVisible(): boolean { return this.content?.linkDecorationsVisible ?? false; }
   public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
   public dismissLinkDecorations(): void { if (!this.closed && this.isForegroundActive()) this.content?.dismissLinkDecorations(); }
-  public async renderCurrentView(): Promise<boolean> {
+  public renderCurrentView(): Promise<boolean> {
+    return this.openingFitRenderPending ? this.renderOpeningFitPage() : this.renderCurrentViewPreservingAnchor();
+  }
+  private async renderCurrentViewPreservingAnchor(): Promise<boolean> {
     const navigationIntent = this.navigationIntent;
     const rendered = await this.renderPage(this.reader.snapshot.page);
-    if (rendered && this.openingFitRenderPending) this.openingFitRenderPending = false;
     if (rendered && navigationIntent === this.navigationIntent && this.reader.snapshot.zoomMode !== "fit-page") {
       await this.synchronizeViewport(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight);
     }
     return rendered;
   }
-
   public async resolveDestinationPage(reference: unknown): Promise<number | null> {
     if (this.closed || !this.isForegroundActive()) return null;
     const activityGeneration = this.activityGeneration;
@@ -910,15 +933,70 @@ export class PdfTabSession {
     };
   }
 
+  private invalidateOpeningFitRender(): void {
+    if (!this.openingFitRenderPending) return;
+    this.openingFitRenderPending = false;
+    this.openingFitRenderRevision += 1;
+    if (this.openingFitRenderIntent !== undefined && this.pendingRenderRollback?.intent === this.openingFitRenderIntent) {
+      this.pendingRenderRollback = undefined;
+    }
+  }
+
   private supersedeNavigation(preserveCancellation = false, preserveLinkActivation = false): number {
+    this.invalidateOpeningFitRender();
     if (!preserveCancellation) this.cancelledNavigation = undefined;
     this.content?.cancelDestination(undefined, preserveLinkActivation);
     return ++this.navigationIntent;
   }
 
-  private async renderOpeningFitPage(): Promise<void> {
-    const rendered = await this.renderCurrentView();
-    if (!rendered && this.isForegroundActive()) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
+  private renderOpeningFitPage(): Promise<boolean> {
+    if (!this.openingFitRenderPending) return Promise.resolve(false);
+    if (this.openingFitRenderSettlement !== undefined) return this.openingFitRenderSettlement;
+    const available = this.availableContentSize();
+    if (!(available.width > 0 && available.height > 0)) return Promise.resolve(false);
+    const openingViewportAtTop = (): boolean => this.options.canvasHost.scrollLeft === 0 && this.options.canvasHost.scrollTop === 0;
+    if (!openingViewportAtTop()) {
+      this.invalidateOpeningFitRender();
+      return Promise.resolve(false);
+    }
+    const revision = this.openingFitRenderRevision;
+    const activityGeneration = this.activityGeneration;
+    const documentGeneration = this.reader.snapshot.documentGeneration;
+    const page = this.reader.snapshot.page;
+    const navigationIntent = this.navigationIntent;
+    const fallbackOrigin = this.lastCommittedRender;
+    const intent = ++this.renderIntent;
+    this.openingFitRenderIntent = intent;
+    if (fallbackOrigin !== undefined && fallbackOrigin.documentGeneration === documentGeneration) {
+      this.pendingRenderRollback = { intent, activityGeneration, ...fallbackOrigin };
+    }
+    this.openingFitRenderInFlight = true;
+    const current = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
+      && this.openingFitRenderPending && this.openingFitRenderRevision === revision
+      && this.reader.snapshot.documentGeneration === documentGeneration && this.navigationIntent === navigationIntent
+      && this.renderIntent === intent;
+    const settlement = (async (): Promise<boolean> => {
+      const rendered = await this.renderPageRequest(page, undefined, revision, openingViewportAtTop);
+      if (!rendered) {
+        if (current() && !openingViewportAtTop()) this.invalidateOpeningFitRender();
+        return false;
+      }
+      if (!current()) return false;
+      this.openingFitRenderPending = false;
+      if (this.reader.snapshot.zoomMode !== "fit-page" && this.navigationIntent === navigationIntent) {
+        await this.synchronizeViewport(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight);
+      }
+      return true;
+    })();
+    this.openingFitRenderSettlement = settlement;
+    const clear = (): void => {
+      if (this.openingFitRenderSettlement !== settlement) return;
+      this.openingFitRenderSettlement = undefined;
+      this.openingFitRenderInFlight = false;
+      if (this.openingFitRenderIntent === intent) this.openingFitRenderIntent = undefined;
+    };
+    void settlement.then(clear, clear);
+    return settlement;
   }
 
   private recoverFailedPresentation(intent: number, activityGeneration: number, failureStatus?: string): void {
@@ -962,20 +1040,25 @@ export class PdfTabSession {
       devicePixelRatio: Math.min(2, transform.devicePixelRatio),
     };
     this.pendingRenderRollback = undefined;
+    this.options.onStatus?.(this.reader.snapshot.status);
     if (this.openingFitRenderPending && !this.openingFitRenderInFlight) {
-      this.openingFitRenderInFlight = true;
-      const intent = ++this.renderIntent;
-      this.pendingRenderRollback = { intent, activityGeneration: this.activityGeneration, ...this.lastCommittedRender };
+      const revision = this.openingFitRenderRevision;
       const documentGeneration = committed.documentGeneration;
       const fallbackOrigin = this.lastCommittedRender;
-      void this.renderOpeningFitPage().catch((error: unknown) => {
-        if (!isAuthorityIncomplete(error) && this.lastCommittedRender === fallbackOrigin) this.setStatus("PDF presentation could not be updated.");
-      }).finally(() => {
-        if (this.reader.snapshot.documentGeneration === documentGeneration) this.openingFitRenderInFlight = false;
+      void this.renderOpeningFitPage().then((rendered) => {
+        const available = this.availableContentSize();
+        if (!rendered && this.openingFitRenderPending && this.openingFitRenderRevision === revision
+          && this.reader.snapshot.documentGeneration === documentGeneration && this.lastCommittedRender === fallbackOrigin
+          && available.width > 0 && available.height > 0) {
+          this.setStatus("PDF presentation could not be updated.");
+        }
+      }, (error: unknown) => {
+        if (!isAuthorityIncomplete(error) && this.openingFitRenderRevision === revision
+          && this.reader.snapshot.documentGeneration === documentGeneration && this.lastCommittedRender === fallbackOrigin) {
+          this.setStatus("PDF presentation could not be updated.");
+        }
       });
-      return;
     }
-    this.options.onStatus?.(this.reader.snapshot.status);
   }
 
   private setReaderStatus(status: string): void {

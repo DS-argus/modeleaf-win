@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "7d04d2d4490ba82b0d5d1d27636cfbae3811b03f73a17f329d40c474d9505305";
+  "736bfa57ce846a2cf6d0099012c6aa43fe18f37d4e60f670b4ea0b6e26434ef2";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -128,6 +128,8 @@ describe("v0.10.0 golden snapshots", () => {
     ]);
     expect(configurable).toHaveLength(50);
     expect(new Set([...configurable, ...fixed])).toEqual(new Set(ACTION_IDS));
+    expect(defaults.configurableKeyTemplates["document.open"]).toEqual(["<C-S-o>"]);
+    expect(defaults.configurableKeyTemplates["document.open"]).not.toContain("<C-o>");
     expect(defaults.configurableKeyTemplates["app.quit"]).toEqual(["<A-F4>"]);
     expect(defaults.configurableKeyTemplates["history.back"]).toEqual([
       "<A-Left>",

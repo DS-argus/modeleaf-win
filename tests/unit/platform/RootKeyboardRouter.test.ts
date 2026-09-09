@@ -33,7 +33,7 @@ function harness(overrides: Partial<RootKeyboardContext> = {}) {
 
 describe("RootKeyboardRouter", () => {
   it("prevents only handled bindings", () => {
-    const h = harness(); const open = keyboard("o", { ctrlKey: true }); h.router.handleKeyDown(open.event);
+    const h = harness(); const open = keyboard("O", { ctrlKey: true, shiftKey: true }); h.router.handleKeyDown(open.event);
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual(["document.open"]);
     const unknown = keyboard("q"); h.router.handleKeyDown(unknown.event); expect(unknown.prevented()).toBe(false);
   });
@@ -169,7 +169,7 @@ describe("RootKeyboardRouter", () => {
     expect(h.dispatched).toEqual([]);
   });
   it("consumes unavailable modal bindings without dispatch", () => {
-    const h = harness({ runtime: { ...runtime, modalOpen: true } }); const open = keyboard("o", { ctrlKey: true }); h.router.handleKeyDown(open.event);
+    const h = harness({ runtime: { ...runtime, modalOpen: true } }); const open = keyboard("O", { ctrlKey: true, shiftKey: true }); h.router.handleKeyDown(open.event);
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual([]); expect(h.disabled).toEqual(["document.open:Close the current dialog"]);
   });
   it("claims unbound decimal and backspace input only for page-prompt ownership", () => {
@@ -229,5 +229,22 @@ describe("RootKeyboardRouter", () => {
     const event = keyboard("ArrowLeft", { altKey: true, ...overrides });
     h.router.handleKeyDown(event.event);
     expect(event.prevented()).toBe(true); expect(h.dispatched).toEqual([]);
+  });
+  it("does not dispatch Open for the obsolete default Ctrl+O chord", () => {
+    const h = harness();
+    const old = keyboard("o", { ctrlKey: true });
+    expect(h.router.handleKeyDown(old.event)).toBe(false);
+    expect(old.prevented()).toBe(false);
+    expect(h.dispatched).toEqual([]);
+  });
+  it("keeps an explicit user Open override authoritative", () => {
+    const custom = validateProductConfig({ keymap: { "document.open": ["<C-o>"] } });
+    if (!custom.ok) throw new Error("custom config invalid");
+    const dispatched: string[] = [];
+    const router = createRootKeyboardRouter({ config: custom.value, getContext: () => ({ windowId: "a", routeRevision: "a", generation: 1, inputContext: "navigation", runtime }), onDispatch: id => dispatched.push(id) });
+    expect(router.handleKeyDown(keyboard("O", { ctrlKey: true, shiftKey: true }).event)).toBe(false);
+    expect(router.handleKeyDown(keyboard("o", { ctrlKey: true }).event)).toBe(true);
+    expect(dispatched).toEqual(["document.open"]);
+    router.dispose();
   });
 });

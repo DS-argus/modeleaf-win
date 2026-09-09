@@ -5,15 +5,22 @@ const mainSource = readFileSync(new URL("../../src/main.ts", import.meta.url), "
 const styles = readFileSync(new URL("../../src/styles/app.css", import.meta.url), "utf8");
 
 describe("Open chooser presentation", () => {
-  it("presents Browse as the distinct first choice and recents as path-free filenames", () => {
+  it("presents glyph-free Browse as the distinct first choice and recents as path-free filenames", () => {
     const render = mainSource.slice(mainSource.indexOf("function renderFileOpener"), mainSource.indexOf("function closeFileOpener"));
-    expect(render).toContain('if (row.kind === "recent" && index === 1)');
-    expect(render).toContain('heading.textContent = "Recent"');
+    const conditionalHeading = render.slice(
+      render.indexOf('if (row.kind === "recent" && index === 1)'),
+      render.indexOf('const item = document.createElement("li")'),
+    );
+    expect(conditionalHeading).toContain('heading.className = "file-opener-recents-heading"');
+    expect(conditionalHeading).toContain('heading.textContent = "Recent"');
     expect(render).toContain('button.className = `overlay-list-entry file-opener-entry file-opener-${row.kind}`');
     expect(render).toContain('button.setAttribute("aria-label", "Browse for a PDF")');
-    expect(render).toContain('glyph.className = "file-opener-browse-glyph"');
+    expect(render).toContain("button.textContent = row.label");
     expect(render).toContain("button.textContent = row.displayName");
+    expect(render).not.toContain("file-opener-browse-glyph");
     expect(render).not.toContain("path");
+    expect(styles).not.toContain(".file-opener-browse-glyph");
+    expect(styles).toContain(".file-opener-recents-heading { margin: 7px 0 1px; padding: 7px 9px 0; color: var(--theme-muted-text); border-top: 1px solid var(--theme-border);");
   });
 
   it("keeps the filter, selected state, truthful footer, and diagnostic announcement", () => {
@@ -42,6 +49,8 @@ describe("Open chooser presentation", () => {
     expect(styles).toContain(".file-opener-entry, .file-opener-diagnostic, .file-opener-overlay input::placeholder { color: CanvasText; }");
     expect(styles.indexOf(".file-opener-entry, .file-opener-diagnostic")).toBeLessThan(styles.indexOf(".file-opener-entry[aria-selected=\"true\"] { color: HighlightText"));
     expect(styles).toContain("@media (min-resolution: 2dppx)");
+    expect(styles).toContain(".file-opener-recents-heading { border-color: CanvasText; }");
+    expect(styles).toContain(".file-opener-recents-heading, .file-opener-footer, .file-opener-footer kbd { color: CanvasText; }");
     expect(styles).toContain(".file-opener-overlay { max-width: calc(100vw - 32px); }");
   });
 });

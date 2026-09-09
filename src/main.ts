@@ -18,8 +18,8 @@ import { buildWindowsMenuModel } from "./application/commands/WindowsMenuModel";
 import { createShellOpenCoordinator } from "./platform/ShellOpenCoordinator";
 import { beginPagePromptCommit, editPagePrompt, navigationFailureStatus, openPagePrompt, revokePagePromptOwnership, settlePagePromptCommit, type PagePromptNavigationKind, type PagePromptState } from "./application/PagePromptTransaction";
 import type { InitiatedTerminal } from "./application/OpenFlowCoordinator";
-import { performTabActivation, queueRelativeTabActivation } from "./application/TabActivationCoordinator";
-import { rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
+import { performTabActivation, performTabClose, queueRelativeTabActivation } from "./application/TabActivationCoordinator";
+import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
 import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "./application/WorkspaceTransitionQueue";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
 import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
@@ -89,7 +89,7 @@ root.innerHTML = `
 <section id="app-shell" data-testid="app-shell" class="app-shell" tabindex="-1" role="application" aria-label="Modeleaf PDF reader">
   <nav id="windows-menu" data-testid="windows-menu" class="windows-menu" aria-label="Application menu"></nav>
   <div id="tab-strip" data-testid="tab-strip" class="tab-strip" role="tablist" aria-label="Open PDFs"></div>
-  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd></button></section></main>
+  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd></button></section></main>
   <section id="prompt" class="prompt" role="group" aria-label="Go to page" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">j or k previews a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><p class="overlay-footer theme-footer">${THEME_PICKER_FOOTER.map(({ key, action }) => `<kbd>${key}</kbd> ${action}`).join(" · ")}</p><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
@@ -397,6 +397,7 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
   render();
 }
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
+  "PDF presentation could not be updated.",
   "Could not read this PDF.",
   "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
   "This PDF path cannot be opened safely.",
@@ -827,10 +828,18 @@ function render(): void {
     const button = document.createElement("button");
     button.type = "button"; button.className = "workspace-tab"; button.id = `reader-tab-${String(tab.id)}`;
     button.role = semantics.role; button.setAttribute("aria-label", semantics.ariaLabel); button.setAttribute("aria-selected", semantics.ariaSelected); button.setAttribute("aria-setsize", String(semantics.ariaSetSize)); button.setAttribute("aria-posinset", String(semantics.ariaPosInSet)); button.setAttribute("aria-controls", `reader-panel-${String(tab.id)}`); button.tabIndex = semantics.tabIndex; button.textContent = tab.payload.session.snapshot.title;
+    button.title = tab.payload.session.snapshot.title;
     button.addEventListener("click", () => void switchTab(tab.id));
     const close = document.createElement("button"); close.type = "button"; close.className = "workspace-tab-close"; close.setAttribute("aria-label", "Close tab"); close.textContent = "×"; close.addEventListener("click", (event) => { event.stopPropagation(); closeTab(tab.id); });
     const item = document.createElement("div"); item.className = "workspace-tab-item"; item.append(button, close); item.dataset.index = String(index); return item;
   }));
+  const selectedTab = tabStrip.querySelector<HTMLElement>('[aria-selected="true"]')?.parentElement;
+  if (selectedTab !== null && selectedTab !== undefined) {
+    const stripBounds = tabStrip.getBoundingClientRect();
+    const selectedBounds = selectedTab.getBoundingClientRect();
+    if (selectedBounds.left < stripBounds.left) tabStrip.scrollLeft += selectedBounds.left - stripBounds.left;
+    else if (selectedBounds.right > stripBounds.right) tabStrip.scrollLeft += selectedBounds.right - stripBounds.right;
+  }
 }
 function cancelPagePromptOwnership(): void {
   const revoked = revokePagePromptOwnership(pagePromptTransaction, suspendedPagePrompt);
@@ -862,17 +871,19 @@ function switchAdjacentTab(direction: -1 | 1): Promise<void> {
   return queueRelativeTabActivation(direction, queueWorkspaceActivation, (step) => workspace.adjacentId(step), switchTabNow);
 }
 function closeTab(id: TabId): void {
-  void queueWorkspaceTransition(async () => {
-    const wasActive = id === workspace.activeTabId;
-    if (wasActive) cancelPagePromptOwnership();
-    if (!workspace.close(id)) return;
-    if (wasActive) await activateCurrentTab(); else render();
-  }).catch(() => {
+  void queueWorkspaceTransition(() => performTabClose(id, {
+    activeId: () => workspace.activeTabId,
+    cancelPending: cancelPagePromptOwnership,
+    closeWorkspace: (tabId) => workspace.close(tabId),
+    publish: render,
+    activateCurrent: () => activateCurrentTab(),
+  })).catch(() => {
     active().session.reader.setStatus("Could not activate the tab after closing.");
     render();
   });
 }
 interface PendingOpenAdoption {
+  readonly failureStatus?: string;
   readonly request: OpenRequestAdoption;
   readonly id?: TabId;
   readonly payload?: TabPayload;
@@ -906,17 +917,27 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
       }
       pendingOpenAdoptions.set(request.requestId, { request, id, payload, priorActiveId });
       try {
-        await publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration));
-        if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
-        await activateCurrentTab(true);
+        await adoptWithCommittedPresentation(
+          () => publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration)),
+          async () => {
+            if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
+            await activateCurrentTab(true);
+          },
+        );
       } catch (error) {
         const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status);
+        if (error instanceof OpenAdoptionPresentationError) {
+          const pending = pendingOpenAdoptions.get(request.requestId);
+          if (pending !== undefined) pendingOpenAdoptions.set(request.requestId, { ...pending, failureStatus: candidateStatus });
+          throw error;
+        }
         pendingOpenAdoptions.delete(request.requestId);
         if (staged) workspace.rollbackAdoption(id);
         else if (id !== priorActiveId) {
           await payload.session.deactivate();
           workspace.activate(priorActiveId);
         }
+        render();
         await activateCurrentTab();
         active().session.reader.setStatus(candidateStatus);
         render();
@@ -924,7 +945,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
       }
     }));
   } catch (error) {
-    pendingOpenAdoptions.delete(request.requestId);
+    if (!(error instanceof OpenAdoptionPresentationError)) pendingOpenAdoptions.delete(request.requestId);
     throw error;
   }
 }
@@ -972,9 +993,10 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
       has: (id) => workspace.getPayload(id) !== undefined,
       activate: (id) => { workspace.activate(id); },
     });
+    render();
     await activateCurrentTab(terminal.tag !== "DISPOSED");
     if (terminal.tag !== "DISPOSED") {
-      active().session.reader.setStatus("The PDF open transaction was rolled back.");
+      active().session.reader.setStatus(pending.failureStatus ?? "The PDF open transaction was rolled back.");
       render();
     }
   }).then(() => {
@@ -1107,13 +1129,7 @@ function renderFileOpener(): void {
     button.setAttribute("aria-current", selected ? "true" : "false");
     if (row.kind === "browse") {
       button.setAttribute("aria-label", "Browse for a PDF");
-      const glyph = document.createElement("span");
-      glyph.className = "file-opener-browse-glyph";
-      glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = "▣";
-      const label = document.createElement("span");
-      label.textContent = row.label;
-      button.append(glyph, label);
+      button.textContent = row.label;
     } else {
       button.textContent = row.displayName;
     }

@@ -38,7 +38,7 @@
     "prefixTemplate": "<prefix>"
   },
   "configurableKeyTemplates": {
-    "document.open": ["<C-o>"],
+    "document.open": ["<C-S-o>"],
     "document.close": ["<C-w>"],
     "document.print": ["<C-p>"],
     "app.quit": ["<A-F4>"],

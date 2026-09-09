@@ -93,7 +93,7 @@ describe("shortcut workflow", () => {
     expect(visiblePaletteTabRows.length).toBeGreaterThan(0);
     for (const entry of visiblePaletteTabRows) expect(entry).toMatchObject({ label: expect.stringMatching(/^Select Tab [1-9]$/u), shortcut: expect.stringMatching(/^Ctrl\+[1-9]$/u) });
     expect(helpById.get("tab.select.1")).toMatchObject({ label: "Select Tab 1–9", shortcut: "Ctrl+1 … Ctrl+9" });
-    expect(help.map(({ shortcut }) => shortcut)).toEqual(expect.arrayContaining(["Ctrl+O", "Alt+F4", ":, Ctrl+Shift+P", "Shift+N", "g g", "Shift+G"]));
+    expect(help.map(({ shortcut }) => shortcut)).toEqual(expect.arrayContaining(["Ctrl+Shift+O", "Alt+F4", ":, Ctrl+Shift+P", "Shift+N", "g g", "Shift+G"]));
   });
   it("projects exact no-document current-window and theme behavior", () => {
     const empty = { ...runtime, hasDocument: false, modalOpen: true, linkCount: 0 };
