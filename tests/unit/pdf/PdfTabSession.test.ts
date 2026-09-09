@@ -1265,4 +1265,54 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.renderCurrentView();
     expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("continuous", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));
   });
+  it("bounds held adjacent input to an active step and the latest pending direction", async () => {
+    const session = createSession();
+    session.reader.mountDocument(50);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    let location = { pageIndex: 0, x: 0, y: 0 };
+    vi.spyOn(reader, "captureViewportLanding").mockImplementation(() => location);
+    const gate = deferred<void>();
+    let calls = 0;
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockImplementation(async (target, guard) => {
+      if (++calls === 1) await gate.promise;
+      if (!guard()) return { kind: "staleOrCancelled" };
+      location = target;
+      return { kind: "verified", landing: target };
+    });
+    const first = session.navigateAdjacentPage(1);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledTimes(1));
+    const pending = Array.from({ length: 29 }, (_unused, index) => session.navigateAdjacentPage(index === 28 ? -1 : 1));
+    gate.resolve();
+    const outcomes = await Promise.all([first, ...pending]);
+    expect(outcomes.filter(result => result.kind === "stale")).toHaveLength(28);
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(location.pageIndex).toBe(0);
+    await expect(session.navigateAdjacentPage(1)).resolves.toEqual({ kind: "verifiedLanding" });
+  });
+
+  it("does not cancel passive rendering on ordinary scroll or let stale renders undo newer zoom", async () => {
+    const session = createSession();
+    session.reader.mountDocument(3);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let current!: () => boolean;
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (_page, _transform, guard) => {
+      current = guard; entered.resolve(); await release.promise; return guard();
+    });
+    const rendering = session.renderPage(1);
+    await entered.promise;
+    session.apply({ type: "scroll.byViewport", factor: 0.8 });
+    expect(current()).toBe(true);
+    session.apply({ type: "view.zoom", factor: 1.1 });
+    const intendedScale = session.snapshot.reader.customScale;
+    expect(current()).toBe(false);
+    release.resolve();
+    await expect(rendering).resolves.toBe(false);
+    expect(session.snapshot.reader.customScale).toBe(intendedScale);
+  });
 });

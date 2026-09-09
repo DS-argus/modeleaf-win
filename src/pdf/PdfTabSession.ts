@@ -88,7 +88,13 @@ export class PdfTabSession {
   private activationGeneration?: number;
   private openingFitRenderPending = false;
   private readonly navigationHistory = new NavigationHistory();
-  private pageStepQueue: Promise<void> = Promise.resolve();
+  private pageStepActive = false;
+  private pendingPageStep: {
+    readonly direction: -1 | 1;
+    readonly generation: number;
+    readonly resolve: (result: PdfTabNavigationDecision) => void;
+    readonly reject: (error: unknown) => void;
+  } | undefined;
   private searchLandingEpoch = 0;
   private pageStepGeneration = 0;
   private searchLandingEpochActive = false;
@@ -281,7 +287,7 @@ export class PdfTabSession {
     const intent = this.renderIntent;
     const navigationIntent = this.navigationIntent;
     const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
-      && this.navigationIntent === navigationIntent;
+      && this.navigationIntent === navigationIntent && this.renderIntent === intent;
     this.pendingPresentationRenders += 1;
     try {
       const effectiveTransform = transform ?? await this.viewTransformFor(page, guard);
@@ -325,6 +331,7 @@ export class PdfTabSession {
   /** Production scroll entry point: materializes the bounded continuous window. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
     if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    if (this.pendingPresentationRenders > 0) return false;
     if (this.navigationLandingIntent !== undefined || this.reader.snapshot.zoomMode === "fit-page") return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
@@ -394,7 +401,7 @@ export class PdfTabSession {
   public cycleSearch(reverse = false): PdfTabSearchDecision {
     if (this.closed || !this.isForegroundActive()) return { kind: "ignore" };
     const content = this.content;
-    if (content === undefined || content.snapshot.searchPending || content.snapshot.searchIncomplete || content.snapshot.results.length === 0) return { kind: "ignore" };
+    if (content === undefined || content.snapshot.searchIncomplete || content.snapshot.results.length === 0) return { kind: "ignore" };
     this.invalidatePageStepQueue();
     this.supersedeNavigation();
     void content.nextMatch(reverse);
@@ -423,12 +430,23 @@ export class PdfTabSession {
     return this.navigateHistoryJump(this.reader.snapshot.pageCount, "page-last");
   }
   public navigateAdjacentPage(direction: -1 | 1): Promise<PdfTabNavigationDecision> {
-    const queueGeneration = this.pageStepGeneration;
-    const scheduled = this.pageStepQueue.then(() => queueGeneration === this.pageStepGeneration
-      ? this.navigateAdjacentPageNow(direction, queueGeneration)
-      : { kind: "stale" } as const);
-    this.pageStepQueue = scheduled.then(() => undefined, () => undefined);
-    return scheduled;
+    return new Promise((resolve, reject) => {
+      this.pendingPageStep?.resolve({ kind: "stale" });
+      this.pendingPageStep = { direction, generation: this.pageStepGeneration, resolve, reject };
+      if (!this.pageStepActive) void this.drainPageSteps();
+    });
+  }
+  private async drainPageSteps(): Promise<void> {
+    this.pageStepActive = true;
+    try {
+      while (this.pendingPageStep !== undefined) {
+        const request = this.pendingPageStep;
+        this.pendingPageStep = undefined;
+        try {
+          request.resolve(await this.navigateAdjacentPageNow(request.direction, request.generation));
+        } catch (error) { request.reject(error); }
+      }
+    } finally { this.pageStepActive = false; }
   }
   public cancelPendingNavigation(): void {
     this.recoverFailedPresentation(this.renderIntent, this.activityGeneration);
@@ -463,7 +481,13 @@ export class PdfTabSession {
   }
   public apply(action: Parameters<ReaderState["apply"]>[0]): void {
     if (this.closed || !this.isForegroundActive()) return;
-    if (action.type.startsWith("page.") || action.type.startsWith("view.") || action.type.startsWith("scroll.")) {
+    if (action.type.startsWith("scroll.")) {
+      this.invalidatePageStepQueue();
+      if (this.navigationLandingInProgress || this.pageStepActive) this.supersedeNavigation();
+      else this.content?.cancelDestination();
+      this.content?.dismissLinkDecorations();
+    }
+    if (action.type.startsWith("page.") || action.type.startsWith("view.")) {
       this.invalidatePageStepQueue();
       this.supersedeNavigation();
       this.content?.dismissLinkDecorations();
@@ -496,8 +520,12 @@ export class PdfTabSession {
   public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
   public dismissLinkDecorations(): void { if (!this.closed && this.isForegroundActive()) this.content?.dismissLinkDecorations(); }
   public async renderCurrentView(): Promise<boolean> {
+    const navigationIntent = this.navigationIntent;
     const rendered = await this.renderPage(this.reader.snapshot.page);
     if (rendered && this.openingFitRenderPending) this.openingFitRenderPending = false;
+    if (rendered && navigationIntent === this.navigationIntent && this.reader.snapshot.zoomMode !== "fit-page") {
+      await this.synchronizeViewport(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight);
+    }
     return rendered;
   }
 
@@ -861,7 +889,11 @@ export class PdfTabSession {
         && this.navigationIntent === intent && this.activityGeneration === activityGeneration,
     };
   }
-  private invalidatePageStepQueue(): void { this.pageStepGeneration += 1; }
+  private invalidatePageStepQueue(): void {
+    this.pageStepGeneration += 1;
+    this.pendingPageStep?.resolve({ kind: "stale" });
+    this.pendingPageStep = undefined;
+  }
   private isForegroundActive(): boolean {
     return this.active && !this.activitySettling && !this.activityQuarantined;
   }
@@ -890,6 +922,7 @@ export class PdfTabSession {
   }
 
   private recoverFailedPresentation(intent: number, activityGeneration: number, failureStatus?: string): void {
+    if (intent !== this.renderIntent || activityGeneration !== this.activityGeneration || this.closed) return;
     this.rollbackPendingRender(intent, activityGeneration, failureStatus);
     const activePage = this.pdfReader.activePageNumber;
     if (activePage === undefined) {

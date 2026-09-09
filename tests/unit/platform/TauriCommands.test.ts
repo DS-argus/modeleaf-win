@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_DEFAULT_CONFIG_TOML } from "../../../src/domain/config/ConfigFile";
-import { commitIndicatorState, listRecentDocuments, recordRecentDocument, openNativePdfDialog, openRecentDocument, readIndicatorState, readProductConfig, resetProductConfig, writeDefaultProductConfig, type NativeInvoke } from "../../../src/platform/tauri-commands";
+import { clearRecentDocuments, commitIndicatorState, listRecentDocuments, recordRecentDocument, openNativePdfDialog, openRecentDocument, readIndicatorState, readProductConfig, resetProductConfig, writeDefaultProductConfig, type NativeInvoke } from "../../../src/platform/tauri-commands";
 
 const invoke = (value: unknown): NativeInvoke => vi.fn(async () => value) as unknown as NativeInvoke;
 
@@ -47,6 +47,14 @@ describe("tauri-commands", () => {
     await expect(recordRecentDocument(invoke({ tag: "COMMITTED", revision: "5", entries: [] }), "c".repeat(64), 1, 0)).rejects.toThrow("NATIVE_CONTRACT_INVALID");
   });
 
+  it("clears recent history through native authority and preserves typed failures", async () => {
+    const native = invoke({ tag: "COMMITTED", revision: "6", entries: [] });
+    await expect(clearRecentDocuments(native)).resolves.toEqual({ tag: "COMMITTED", revision: "6", entries: [] });
+    expect(native).toHaveBeenCalledWith("clear_recent_documents");
+    await expect(clearRecentDocuments(invoke({ tag: "STORAGE_FAILED", reason: "STATE_WRITE_FAILED" }))).resolves.toEqual({ tag: "STORAGE_FAILED", reason: "STATE_WRITE_FAILED" });
+    await expect(clearRecentDocuments(invoke({ tag: "STATE_UNAVAILABLE", reason: "STATE_INVALID_ROOT" }))).resolves.toEqual({ tag: "STATE_UNAVAILABLE", reason: "STATE_INVALID_ROOT" });
+    await expect(clearRecentDocuments(invoke({ tag: "COMMITTED", revision: "6", entries: [], path: "C:/secret" }))).rejects.toThrow("NATIVE_CONTRACT_INVALID");
+  });
   it("rejects paths, extra keys, unsafe IDs and overflowing revisions", async () => {
     const recentId = `recent-${"a".repeat(32)}`;
     await expect(listRecentDocuments(invoke({ tag: "READY", revision: "1", entries: [{ recentId, displayName: "a.pdf", path: "C:/secret" }] }))).rejects.toThrow("NATIVE_CONTRACT_INVALID");

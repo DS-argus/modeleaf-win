@@ -1,4 +1,5 @@
 use modeleaf_lib::local_path::{DriveKind, LocalPathPolicy, PathPolicyError};
+use modeleaf_lib::persistence::lock::lock_path;
 use modeleaf_lib::recent::{
     RecentListOutcome, RecentStateReason, RecentStore, RecentStoreError, MAX_RECENT_DOCUMENTS,
 };
@@ -244,5 +245,136 @@ fn remote_and_non_pdf_paths_are_rejected_without_state_mutation() {
         Err(RecentStoreError::NotPdf)
     ));
     assert!(!state.exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn clear_recents_is_durable_repeatable_and_keeps_cache_and_state_in_agreement() {
+    let directory = temp_dir("clear");
+    let state = directory.join("state.json");
+    fs::write(
+        &state,
+        br##"{"future":{"keep":true},"selected_theme":"nord","link_destination_indicator":{"style":"target","color":"#12abcf","size":28.5,"duration_ms":1500}}"##,
+    )
+    .unwrap();
+    let policy = Policy(DriveKind::Fixed);
+    let first_pdf = pdf(&directory, 0);
+    let second_pdf = pdf(&directory, 1);
+    let mut store = RecentStore::load(&state, &policy).unwrap();
+    store
+        .debug_record_opened_and_save(&first_pdf, &policy)
+        .unwrap();
+    store
+        .debug_record_opened_and_save(&second_pdf, &policy)
+        .unwrap();
+    let (before_revision, before_entries) = store.snapshot();
+    let cleared_ids: Vec<_> = before_entries
+        .iter()
+        .map(|entry| entry.recent_id().to_owned())
+        .collect();
+
+    assert!(store.clear_all_and_save().unwrap());
+    let (cleared_revision, cleared_entries) = store.snapshot();
+    assert_eq!(
+        cleared_revision.parse::<u64>().unwrap(),
+        before_revision.parse::<u64>().unwrap() + 1
+    );
+    assert!(cleared_entries.is_empty());
+    assert_eq!(
+        store.list_outcome(),
+        RecentListOutcome::Ready {
+            revision: cleared_revision.clone(),
+            entries: cleared_entries
+        }
+    );
+    for recent_id in cleared_ids {
+        assert!(matches!(
+            store.resolve_for_open(&recent_id, &policy),
+            Err(RecentStoreError::MissingRecentId)
+        ));
+    }
+    let root: Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
+    assert!(root["recent_files"].as_array().unwrap().is_empty());
+    assert_eq!(root["selected_theme"], "nord");
+    assert_eq!(root["link_destination_indicator"]["style"], "target");
+    assert_eq!(root["future"]["keep"], true);
+    assert!(first_pdf.exists());
+    assert!(second_pdf.exists());
+
+    let after_first_clear = fs::read(&state).unwrap();
+    assert!(!store.clear_all_and_save().unwrap());
+    assert_eq!(store.snapshot().0, cleared_revision);
+    assert!(store.snapshot().1.is_empty());
+    assert_eq!(fs::read(&state).unwrap(), after_first_clear);
+    let reloaded = RecentStore::load(&state, &policy).unwrap();
+    assert!(matches!(
+        reloaded.list_outcome(),
+        RecentListOutcome::Ready { entries, .. } if entries.is_empty()
+    ));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn clear_recents_reports_malformed_state_without_replacing_it() {
+    let directory = temp_dir("clear-malformed");
+    let state = directory.join("state.json");
+    let policy = Policy(DriveKind::Fixed);
+    let source = pdf(&directory, 0);
+    let mut store = RecentStore::load(&state, &policy).unwrap();
+    store
+        .debug_record_opened_and_save(&source, &policy)
+        .unwrap();
+    fs::write(&state, br#"{"selected_theme":"dracula","recent_files":{}}"#).unwrap();
+    let malformed = fs::read(&state).unwrap();
+
+    assert!(matches!(
+        store.clear_all_and_save(),
+        Err(RecentStoreError::StateUnavailable(
+            RecentStateReason::RecentFieldInvalid
+        ))
+    ));
+    assert_eq!(
+        store.list_outcome(),
+        RecentListOutcome::StateUnavailable {
+            reason: RecentStateReason::RecentFieldInvalid
+        }
+    );
+    assert_eq!(fs::read(&state).unwrap(), malformed);
+    assert!(source.exists());
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn failed_clear_retains_durable_state_cache_ids_and_revision() {
+    let directory = temp_dir("clear-failure");
+    let state = directory.join("state.json");
+    let policy = Policy(DriveKind::Fixed);
+    let source = pdf(&directory, 0);
+    let mut store = RecentStore::load(&state, &policy).unwrap();
+    let recent = store
+        .debug_record_opened_and_save(&source, &policy)
+        .unwrap();
+    let original = fs::read(&state).unwrap();
+    let original_snapshot = store.snapshot();
+    let sidecar = lock_path(&state);
+    fs::remove_file(&sidecar).unwrap();
+    fs::create_dir(&sidecar).unwrap();
+
+    assert!(matches!(
+        store.clear_all_and_save(),
+        Err(RecentStoreError::Io(_))
+    ));
+    assert_eq!(store.snapshot(), original_snapshot);
+    assert_eq!(fs::read(&state).unwrap(), original);
+    assert_eq!(
+        store
+            .resolve_for_open(recent.recent_id(), &policy)
+            .unwrap()
+            .file_name(),
+        source.file_name()
+    );
+
+    fs::remove_dir(&sidecar).unwrap();
+    assert!(store.clear_all_and_save().unwrap());
     fs::remove_dir_all(directory).unwrap();
 }

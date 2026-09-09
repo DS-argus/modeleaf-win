@@ -387,3 +387,15 @@ markdown-links-and-diff-check
 ### Remaining risk
 - none / linked issue:
 ```
+
+## 12. Issue #53 reader-stability revalidation
+
+The development-only `tools/qa/reader-stability.html` harness runs the real PDF.js loader, raster/text layers, `PdfTabSession`, navigation, and search against `fixture-L-text-300.pdf`. Its native boundary is in memory, external activation is refused, and it neither starts Modeleaf nor accesses durable user state. Serve the worktree with `npm run dev -- --host 127.0.0.1 --port 1433 --strictPort`; in hidden Chromium open `/tools/qa/reader-stability.html` and call one scenario per fresh page load:
+
+- `await window.readerHarness.run()`: initial top, 12 forward movements, repeated end-of-document movements, 12 reverse movements, stable document extent, and empty-resource teardown.
+- `await window.readerHarness.runNavigation()`: 30 adjacent requests (at most active plus latest pending), mixed first/last/opposite commands, one-page Fit, eight alternating zoom changes, and teardown.
+- `await window.readerHarness.runSearch()`: first result before whole-document completion, three cross-page result moves, all 300 matches, retained user selection after completion, and teardown.
+
+Fixture SHA-256: `91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab`. Keep source bytes unchanged. The harness is not a packaged transport benchmark or a substitute for the Windows matrix above.
+
+Before restoring parity for the revised reader, separately authorize and retain packaged Windows evidence for: initial top/fit and mixed keyboard input, wheel/d/u at both edges, F then repeated +/- at supported DPI/rotation, cross-page search and query cancellation, and Ctrl+O → Ctrl+Shift+C with recent-state broadcast/restart behavior. Use disposable state for recent clearing; it must not erase PDFs, theme, indicator settings, or unknown state siblings. Rust fault tests additionally cover malformed state and pre-replace failure with durable/cache/revision rollback. Do not launch/stop an existing application or claim these native checks passed from Chromium/JSDOM results.

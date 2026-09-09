@@ -19,7 +19,7 @@ vi.mock("pdfjs-dist", () => ({
   },
 }));
 
-import { addPdfTextUtf8Bytes, normalizePdfSearchQuery, PdfContentController, type PdfContentAnnotation, type PdfContentControllerOptions, type PdfContentDocument, type PdfContentPage } from "../../src/pdf/PdfContentController";
+import { addPdfTextUtf8Bytes, normalizePdfSearchQuery, PdfContentController, type PdfContentAnnotation, type PdfContentControllerOptions, type PdfContentDocument, type PdfContentPage, type PdfContentTextContent, type PdfSearchResultsUpdate } from "../../src/pdf/PdfContentController";
 import { RESOURCE_LIMITS, ResourceReservationManager } from "../../src/pdf/ResourceBudget";
 
 function deferred<T>() {
@@ -42,8 +42,8 @@ const page = (text: string, annotations: readonly PdfContentAnnotation[] = []): 
   getAnnotations: async () => annotations,
 });
 const streamText = (
-  load: () => Promise<{ readonly items: readonly { readonly str?: string; readonly hasEOL?: boolean }[] }>,
-): ReadableStream<{ readonly items: readonly { readonly str?: string; readonly hasEOL?: boolean }[] }> => {
+  load: () => Promise<PdfContentTextContent>,
+): ReadableStream<PdfContentTextContent> => {
   let cancelled = false;
   return new ReadableStream({
     start(controller) {
@@ -71,6 +71,7 @@ const setup = (
   const canvas = document.createElement("canvas");
   host.append(canvas);
   const statuses: string[] = [];
+  const searchUpdates: PdfSearchResultsUpdate[] = [];
   const navigateToPage = vi.fn();
   const openExternal = vi.fn<PdfContentControllerOptions["openExternal"]>(async (_annotationId, _registryRevision, _operationId, operationSequence) => operationSequence);
   const prepareExternalLinks = vi.fn(async () => undefined);
@@ -84,7 +85,7 @@ const setup = (
     onStatus: (message) => statuses.push(message),
     navigateToPage,
     navigateToDestination: navigateDestination ?? (async (pageNumber) => { navigateToPage(pageNumber); return { kind: "verified" }; }),
-    onSearchResults: () => undefined,
+    onSearchResults: (update) => searchUpdates.push(update),
     ...(resolveDestinationPage === undefined ? {} : { resolveDestinationPage }),
     requestSearchLanding: landing ?? (async ({ result }) => { navigateToPage(result.pageNumber); return "displayedDistinct"; }),
     prepareExternalLinks,
@@ -99,6 +100,7 @@ const setup = (
     canvas,
     controller,
     host,
+    searchUpdates,
     statuses,
     navigateToPage,
     prepareExternalLinks,
@@ -175,6 +177,187 @@ describe("PdfContentController", () => {
     } finally {
       Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: originalGetClientRects });
     }
+  });
+  it("publishes a located result and lands before deferred later-page extraction completes", async () => {
+    const laterText = deferred<PdfContentTextContent>();
+    const laterPage: PdfContentPage = {
+      getTextContent: () => laterText.promise,
+      streamTextContent: () => streamText(() => laterText.promise),
+      getAnnotations: async () => [],
+    };
+    const landing = vi.fn<PdfContentControllerOptions["requestSearchLanding"]>(async () => "displayedDistinct");
+    const subject = setup([page("match first"), laterPage], landing);
+
+    let searchSettled = false;
+    const searching = subject.controller.search("match").then(() => { searchSettled = true; });
+    await vi.waitFor(() => expect(subject.controller.snapshot).toMatchObject({ currentResult: 0, searchPending: true }));
+
+    const early = subject.searchUpdates.find((update) => update.results.length === 1);
+    expect(early).toMatchObject({
+      query: "match",
+      results: [{ pageNumber: 1, index: 0, length: 5 }],
+      hasSearchableText: true,
+      searchPending: true,
+      searchIncomplete: false,
+    });
+    expect(landing).toHaveBeenCalledTimes(1);
+    expect(subject.statuses.at(-1)).toBe("1 / 1 · “match” · Searching…");
+    expect(searchSettled).toBe(false);
+
+    laterText.resolve({ items: [{ str: "later match", transform: [1, 0, 0, 1, 0, 0], width: 11, height: 1 }] });
+    await searching;
+
+    expect(subject.controller.snapshot).toMatchObject({ currentResult: 0, searchPending: false, searchIncomplete: false });
+    expect(subject.controller.snapshot.results).toHaveLength(2);
+    expect(subject.searchUpdates.at(-1)).toMatchObject({
+      query: "match",
+      results: [
+        { pageNumber: 1, index: 0, length: 5 },
+        { pageNumber: 2, index: 6, length: 5 },
+      ],
+      hasSearchableText: true,
+      searchPending: false,
+      searchIncomplete: false,
+    });
+    expect(subject.statuses.at(-1)).toBe("1 / 2 · “match”");
+  });
+  it("bounds incremental publication growth while preserving the final all-page result set", async () => {
+    const subject = setup(Array.from({ length: 32 }, (_, index) => page(`match ${index}`)));
+
+    await subject.controller.search("match");
+
+    expect(subject.controller.snapshot.results).toHaveLength(32);
+    expect(subject.searchUpdates.map((update) => update.results.length)).toEqual([0, 1, 2, 4, 8, 16, 32, 32]);
+    expect(subject.searchUpdates.at(-1)).toMatchObject({ searchPending: false, searchIncomplete: false });
+  });
+  it("cancels deferred extraction after early publication without a stale final update", async () => {
+    let extractionStarted = 0;
+    let cancellations = 0;
+    const blockedPage: PdfContentPage = {
+      getTextContent: async () => ({ items: [] }),
+      streamTextContent: () => new ReadableStream<PdfContentTextContent>({
+        start() { extractionStarted += 1; },
+        cancel() { cancellations += 1; },
+      }),
+      getAnnotations: async () => [],
+    };
+    const subject = setup([page("match first"), blockedPage]);
+    const searching = subject.controller.search("match");
+    await vi.waitFor(() => {
+      expect(extractionStarted).toBe(1);
+      expect(subject.searchUpdates.some((update) => update.searchPending && update.results.length === 1)).toBe(true);
+    });
+    const publishedGeneration = subject.searchUpdates.find((update) => update.results.length === 1)!.searchGeneration;
+
+    subject.controller.invalidateSearch();
+    await searching;
+
+    expect(cancellations).toBe(1);
+    expect(subject.controller.snapshot).toMatchObject({ query: "", results: [], currentResult: -1, searchPending: false, searchIncomplete: false });
+    expect(subject.searchUpdates.at(-1)).toMatchObject({
+      searchGeneration: publishedGeneration + 1,
+      query: "",
+      results: [],
+      hasSearchableText: false,
+      searchPending: false,
+      searchIncomplete: false,
+    });
+    subject.resources.assertEmpty();
+  });
+  it("isolates incremental publications and landings from a replaced query", async () => {
+    const tailText = deferred<PdfContentTextContent>();
+    let tailStreams = 0;
+    const delayedPage: PdfContentPage = {
+      getTextContent: () => tailText.promise,
+      streamTextContent: () => {
+        tailStreams += 1;
+        return streamText(() => tailText.promise);
+      },
+      getAnnotations: async () => [],
+    };
+    const staleLanding = deferred<"displayedDistinct">();
+    const landing = vi.fn<PdfContentControllerOptions["requestSearchLanding"]>(async () => "displayedDistinct");
+    landing.mockImplementationOnce(() => staleLanding.promise);
+    const subject = setup([page("old fresh"), delayedPage], landing);
+
+    const staleSearch = subject.controller.search("old");
+    await vi.waitFor(() => {
+      expect(tailStreams).toBe(1);
+      expect(subject.searchUpdates.some((update) => update.query === "old" && update.results.length === 1 && update.searchPending)).toBe(true);
+    });
+    const staleGeneration = subject.searchUpdates.find((update) => update.query === "old" && update.results.length === 1)!.searchGeneration;
+
+    const currentSearch = subject.controller.search("fresh");
+    await vi.waitFor(() => {
+      expect(tailStreams).toBe(2);
+      expect(subject.searchUpdates.some((update) => update.searchGeneration > staleGeneration && update.results.length === 1)).toBe(true);
+    });
+    const replacement = subject.searchUpdates.find((update) => update.searchGeneration > staleGeneration);
+    expect(replacement).toBeDefined();
+    const currentGeneration = replacement!.searchGeneration;
+
+    staleLanding.resolve("displayedDistinct");
+    tailText.resolve({ items: [{ str: "tail" }] });
+    await Promise.all([staleSearch, currentSearch]);
+    await vi.waitFor(() => expect(subject.controller.snapshot).toMatchObject({
+      query: "fresh",
+      results: [{ pageNumber: 1, index: 4, length: 5 }],
+      currentResult: 0,
+      searchPending: false,
+      searchIncomplete: false,
+    }));
+
+    const replacementIndex = subject.searchUpdates.findIndex((update) => update.searchGeneration === currentGeneration);
+    expect(subject.searchUpdates.slice(replacementIndex).every((update) => update.searchGeneration === currentGeneration && update.query === "fresh")).toBe(true);
+    expect(subject.searchUpdates.filter((update) => update.searchGeneration === staleGeneration).every((update) => update.searchPending && !update.searchIncomplete)).toBe(true);
+    expect(landing.mock.calls.map(([request]) => request.searchGeneration)).toEqual([staleGeneration, currentGeneration]);
+    expect(subject.searchUpdates.at(-1)).toMatchObject({ query: "fresh", searchPending: false, searchIncomplete: false });
+  });
+  it("cycles across discovered pages while searching and ignores a stale landing after page authority changes", async () => {
+    const finalText = deferred<PdfContentTextContent>();
+    const stalePageTwo = deferred<"displayedDistinct">();
+    const pages = [
+      page("match one"),
+      page("match two"),
+      page("match three"),
+      {
+        getTextContent: () => finalText.promise,
+        streamTextContent: () => streamText(() => finalText.promise),
+        getAnnotations: async () => [],
+      } satisfies PdfContentPage,
+    ];
+    let subject!: ReturnType<typeof setup>;
+    let evictedPriorPage = false;
+    const landing = vi.fn<PdfContentControllerOptions["requestSearchLanding"]>(async (request) => {
+      if (request.provenance === "initial") return "displayedSame";
+      if (request.result.pageNumber === 2) return stalePageTwo.promise;
+      await subject.controller.renderPage({ pageNumber: 3, page: pages[2]!, viewport, canvas: subject.canvas, retainedPages: [3] });
+      evictedPriorPage = subject.controller.evictPage(1);
+      return "displayedDistinct";
+    });
+    subject = setup(pages, landing);
+    await subject.controller.renderPage({ pageNumber: 1, page: pages[0]!, viewport, canvas: subject.canvas, retainedPages: [1] });
+
+    const searching = subject.controller.search("match");
+    await vi.waitFor(() => expect(subject.controller.snapshot).toMatchObject({ currentResult: 0, searchPending: true, results: expect.any(Array) }));
+    await vi.waitFor(() => expect(subject.controller.snapshot.results).toHaveLength(3));
+
+    const pageTwoLanding = subject.controller.nextMatch();
+    const pageThreeLanding = subject.controller.nextMatch();
+    expect(landing.mock.calls.slice(-2).map(([request]) => request.result.pageNumber)).toEqual([2, 3]);
+    await expect(pageThreeLanding).resolves.toMatchObject({ pageNumber: 3 });
+    expect(evictedPriorPage).toBe(true);
+    expect(subject.controller.snapshot).toMatchObject({ currentResult: 2, searchPending: true, searchIncomplete: false });
+
+    stalePageTwo.resolve("displayedDistinct");
+    await expect(pageTwoLanding).resolves.toBeNull();
+    expect(subject.controller.snapshot.currentResult).toBe(2);
+
+    finalText.resolve({ items: [{ str: "tail" }] });
+    await searching;
+    expect(subject.controller.snapshot).toMatchObject({ currentResult: 2, searchPending: false, searchIncomplete: false });
+    expect(subject.controller.snapshot.results).toHaveLength(3);
+    expect(subject.statuses.at(-1)).toBe("3 / 3 · “match”");
   });
   it("applies rapid navigation offsets to the pending candidate cursor", async () => {
     const landing = vi.fn<PdfContentControllerOptions["requestSearchLanding"]>(async () => "displayedDistinct");
@@ -472,6 +655,8 @@ describe("PdfContentController", () => {
     expect(resultLimited.controller.snapshot.searchIncomplete).toBe(true);
     expect(resultLimited.controller.snapshot.currentResult).toBe(-1);
     expect(resultLimited.navigateToPage).not.toHaveBeenCalled();
+    expect(resultLimited.searchUpdates.at(-1)).toMatchObject({ query: "x", searchPending: false, searchIncomplete: true });
+    expect(resultLimited.searchUpdates.at(-1)?.results).toHaveLength(10_000);
     expect(resultLimited.statuses.at(-1)).toMatch(/Search results are partial:.*result limit/i);
   });
   it("streams bounded extraction, cancels the reader, respects EOL boundaries, and maps expanding folds", async () => {
@@ -1206,7 +1391,7 @@ describe("PdfContentController", () => {
       vi.useRealTimers();
     }
   });
-  it("keeps early matches incomplete when a later page times out", async () => {
+  it("keeps an early landed match disclosed as incomplete when a later page times out", async () => {
     vi.useFakeTimers();
     try {
       let resolvePage!: (value: PdfContentPage) => void;
@@ -1219,10 +1404,11 @@ describe("PdfContentController", () => {
       await vi.advanceTimersByTimeAsync(30_001);
       await searching;
 
-      expect(subject.controller.snapshot).toMatchObject({ searchIncomplete: true, currentResult: -1 });
+      expect(subject.controller.snapshot).toMatchObject({ searchIncomplete: true, currentResult: 0 });
       expect(subject.controller.snapshot.results).toHaveLength(1);
       await expect(subject.controller.nextMatch()).resolves.toBeNull();
-      expect(subject.navigateToPage).not.toHaveBeenCalled();
+      expect(subject.navigateToPage).toHaveBeenCalledWith(1);
+      expect(subject.searchUpdates.at(-1)).toMatchObject({ query: "match", searchPending: false, searchIncomplete: true });
 
       resolvePage(page("late"));
       await vi.waitFor(() => expect(subject.resources.snapshot().totals["search-extractor"] ?? 0).toBe(0));
@@ -1397,6 +1583,8 @@ describe("PdfContentController", () => {
 
     await subject.controller.search("blocked");
     expect(materializedCalls).toBe(0);
+    expect(subject.controller.snapshot.searchIncomplete).toBe(true);
+    expect(subject.searchUpdates.at(-1)).toMatchObject({ query: "blocked", results: [], searchPending: false, searchIncomplete: true });
     expect(subject.statuses.at(-1)).toBe("Search streaming is unavailable.");
     expect(subject.resources.snapshot().totals["search-extractor"]).toBe(0);
     expect(subject.resources.snapshot().totals["text-document-bytes"]).toBe(0);

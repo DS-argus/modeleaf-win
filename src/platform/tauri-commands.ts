@@ -90,6 +90,9 @@ export function decodeRecentStateChanged(value: unknown): Extract<RecentListOutc
   if (outcome.tag !== "READY") throw contractError();
   return outcome;
 }
+export async function clearRecentDocuments(invoke: NativeInvoke): Promise<RecentRecordOutcome> {
+  return decodeRecentRecord(await invoke<unknown>("clear_recent_documents"));
+}
 export async function recordRecentDocument(invoke: NativeInvoke, sessionId: string, documentGeneration: number, ownerGeneration: number): Promise<RecentRecordOutcome> {
   if (!REQUEST_ID.test(sessionId) || !Number.isSafeInteger(documentGeneration) || documentGeneration < 1 || !Number.isSafeInteger(ownerGeneration) || ownerGeneration < 1) throw contractError();
   return decodeRecentRecord(await invoke<unknown>("record_recent", { sessionId, documentGeneration, ownerGeneration }));

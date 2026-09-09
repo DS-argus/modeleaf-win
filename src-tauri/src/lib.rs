@@ -918,6 +918,31 @@ fn record_recent(
     }
 }
 #[tauri::command]
+fn clear_recent_documents(
+    window: Window,
+    recents: State<'_, Mutex<RecentStore>>,
+) -> RecentRecordOutcome {
+    let mut recents = recents.lock().expect("recent store state poisoned");
+    match recents.clear_all_and_save() {
+        Ok(_) => {
+            let (revision, entries) = recents.snapshot();
+            let event = RecentListOutcome::Ready {
+                revision: revision.clone(),
+                entries: entries.clone(),
+            };
+            drop(recents);
+            publish_recent_snapshot(&window, &event);
+            RecentRecordOutcome::Committed { revision, entries }
+        }
+        Err(RecentStoreError::StateUnavailable(reason)) => {
+            RecentRecordOutcome::StateUnavailable { reason }
+        }
+        Err(_) => RecentRecordOutcome::StorageFailed {
+            reason: RecentStorageReason::StateWriteFailed,
+        },
+    }
+}
+#[tauri::command]
 fn list_recents(recents: State<'_, Mutex<RecentStore>>) -> RecentListOutcome {
     recents
         .lock()
@@ -1429,6 +1454,7 @@ pub fn run() {
             open_pdf_dialog,
             record_recent,
             list_recents,
+            clear_recent_documents,
             open_recent,
             list_pending_open_ingress,
             ack_open_failure,

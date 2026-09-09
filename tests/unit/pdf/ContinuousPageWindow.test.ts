@@ -98,7 +98,7 @@ describe("ContinuousPageWindow", () => {
   });
 
   it("clears stale metrics for scale or rotation changes while retaining CSS metrics for DPR-only changes", () => {
-    const model = windowModel({ maxRememberedMetrics: 5 });
+    const model = windowModel();
     model.updateMetric(1, { width: 80, height: 150 });
     model.updateMetric(2, { width: 80, height: 120 });
 
@@ -113,8 +113,8 @@ describe("ContinuousPageWindow", () => {
     expect(model.offsetForPage(3)).toBe(220);
   });
 
-  it("uses bounded measured metrics for stable spacer and far-page offsets", () => {
-    const model = windowModel({ maxRememberedMetrics: 5 });
+  it("uses retained document metrics for stable spacer and far-page offsets", () => {
+    const model = windowModel();
     model.updateMetric(1, { width: 80, height: 150 });
     model.updateMetric(2, { width: 80, height: 120 });
 
@@ -183,5 +183,18 @@ describe("ContinuousPageWindow", () => {
     expect(() => model.updateMetric(21, { width: 10, height: 10 })).toThrow(/outside/i);
     expect(() => model.begin(20, wide.generation)).toThrow(/not in the current plan/i);
     expect(() => model.publish(1, 0)).toThrow(/stale/i);
+  });
+  it("retains measured page geometry after more than 256 raster windows", () => {
+    const model = windowModel({ pageCount: 300 });
+    model.updateMetric(1, { width: 80, height: 150 });
+    const offset = model.offsetForPage(300);
+    const height = model.documentGeometry().height;
+    for (let page = 2; page <= 299; page += 1) {
+      model.updateMetric(page, { width: 80, height: 100 });
+      model.plan(page);
+    }
+    expect(model.offsetForPage(300)).toBe(offset);
+    expect(model.documentGeometry().height).toBe(height);
+    expect(model.pageGeometry(1).height).toBe(150);
   });
 });

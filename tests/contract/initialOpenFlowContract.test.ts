@@ -72,4 +72,27 @@ describe("initial open flow contract", () => {
     expect(main).toContain("pending.request.ownerGeneration");
     expect(source("src/platform/OpenRequestClient.ts")).toContain("if (!active) return true;");
   });
+  it("does not block initial reading on optional outline parsing", () => {
+    const adoption = main.slice(main.indexOf("async function adoptRequest"), main.indexOf("function restoreOpenFocus"));
+    expect(adoption).not.toContain("loadOutline(");
+    expect(main).toContain("void loadOutline(payload.session, payload)");
+  });
+
+  it("clears durable recents instead of only resetting the filter", () => {
+    const clear = main.slice(main.indexOf("async function clearFileOpenerHistory"), main.indexOf("function closeFileOpener"));
+    expect(clear).toContain("await clearRecentDocuments(invoke)");
+    expect(clear).toContain('outcome.tag === "COMMITTED"');
+    expect(clear).toContain("retainChooserFailure");
+    expect(clear).not.toContain("updateChooserQuery");
+    expect(main).toContain("void clearFileOpenerHistory()");
+  });
+
+  it("never jumps to the whole continuous document bottom at a page boundary", () => {
+    expect(main).not.toContain("payload.host.scrollTop = Math.max");
+    expect(main).toContain('behavior: "instant"');
+    const scroll = main.slice(main.indexOf('if (type.startsWith("scroll."))'), main.indexOf("const rootKeyboard ="));
+    expect(scroll).not.toContain("wheelPageDirection");
+    expect(scroll).toContain('reader.zoomMode === "fit-page"');
+    expect(main).toContain('overlayOwner.active === undefined && result.kind === "verifiedLanding"');
+  });
 });

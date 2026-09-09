@@ -275,6 +275,29 @@ impl RecentStore {
         })
     }
 
+    pub fn clear_all_and_save(&mut self) -> Result<bool, RecentStoreError> {
+        self.ensure_writable()?;
+        let persisted_changed = match self.state.clear_recents() {
+            Ok(changed) => changed,
+            Err(StateFileError::Invalid) => {
+                let reason = RecentStateReason::StateInvalidRoot;
+                self.health = Some(reason);
+                return Err(RecentStoreError::StateUnavailable(reason));
+            }
+            Err(StateFileError::RecentInvalid) => {
+                let reason = RecentStateReason::RecentFieldInvalid;
+                self.health = Some(reason);
+                return Err(RecentStoreError::StateUnavailable(reason));
+            }
+            Err(error) => return Err(state_error(error)),
+        };
+        let changed = persisted_changed || !self.records.is_empty();
+        self.records.clear();
+        if changed {
+            self.committed();
+        }
+        Ok(changed)
+    }
     pub fn prune_missing_id(&mut self, recent_id: &str) -> Result<bool, RecentStoreError> {
         self.ensure_writable()?;
         let Some(index) = self

@@ -24,7 +24,7 @@ interface PdfSearchGeometryRange { readonly start: number; readonly end: number;
 export interface PdfSearchResult { readonly pageNumber: number; readonly index: number; readonly length: number; readonly geometry?: PdfSearchGeometry; }
 export type PdfSearchLandingOutcome = "displayedDistinct" | "displayedSame" | "failedWithoutMovement" | "displayedAfterUnverifiedMovement" | "stale";
 export interface PdfSearchLandingRequest { readonly searchGeneration: number; readonly selectionSequence: number; readonly resultIndex: number; readonly result: PdfSearchResult; readonly provenance: "initial" | "next" | "previous" | "restore"; }
-export interface PdfSearchResultsUpdate { readonly searchGeneration: number; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly hasSearchableText: boolean; }
+export interface PdfSearchResultsUpdate { readonly searchGeneration: number; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly hasSearchableText: boolean; readonly searchPending: boolean; readonly searchIncomplete: boolean; }
 export interface PdfContentControllerOptions {
   readonly host: HTMLElement;
   readonly resources: ResourceReservationManager;
@@ -99,6 +99,7 @@ interface PublishedRegistryFinalizer {
   reason: unknown;
 }
 const MAX_RESULTS = 10_000;
+const SEARCH_RESULT_PUBLICATION_GROWTH = 2;
 const SEARCH_HIGHLIGHT_NAME = "modeleaf-pdf-search-hits";
 const CURRENT_SEARCH_HIGHLIGHT_NAME = "modeleaf-pdf-search-current";
 type HighlightRegistry = {
@@ -823,7 +824,7 @@ export class PdfContentController {
     transaction.finalize();
   }
   public invalidateSearch(): void {
-    this.searchSequence += 1;
+    const sequence = ++this.searchSequence;
     this.cancelActiveSearch();
     this.releaseResultReservations();
     this.query = "";
@@ -835,7 +836,8 @@ export class PdfContentController {
     this.evictedPage = undefined;
     this.evictedCurrentResult = undefined;
     this.partialSearchReason = undefined;
-    this.applyHighlights();
+    this.publishSearchResults(sequence, false);
+    this.clearHighlights();
   }
 
   private canvasScrollOrigin(canvas: HTMLCanvasElement): readonly [number, number] {
@@ -1009,7 +1011,7 @@ export class PdfContentController {
     this.searchIncomplete = false;
     if (!restoreEvictedResult) this.evictedCurrentResult = undefined;
     this.partialSearchReason = undefined;
-    this.applyHighlights(deadline);
+    this.clearHighlights();
     if (encoder.encode(source).byteLength > RESOURCE_LIMITS.maxTextPageBytes) {
       this.options.onStatus("TEXT_LIMIT");
       return;
@@ -1017,35 +1019,50 @@ export class PdfContentController {
     const normalized = normalizePdfSearchQuery(query);
     if (normalized.length === 0) return;
     this.query = normalized;
+    this.searchPending = true;
     this.options.onStatus(`Searching “${normalized}”…`);
+    this.publishSearchResults(sequence, false);
+    const failBeforeExtraction = (message: string): void => {
+      if (sequence !== this.searchSequence) return;
+      this.searchPending = false;
+      this.searchIncomplete = true;
+      this.publishSearchResults(sequence, false);
+      this.options.onStatus(message);
+    };
     const previous = this.activeSearchSettlement;
     if (previous !== undefined) {
       try {
         await this.withDeadline(previous, Math.max(1, deadline - Date.now()));
       } catch {
-        if (sequence === this.searchSequence) this.options.onStatus("Search cleanup timed out.");
+        failBeforeExtraction("Search cleanup timed out.");
         return;
       }
     }
     if (sequence !== this.searchSequence) return;
     const cleanupFailure = this.searchCleanupFailure;
     if (cleanupFailure !== undefined && cleanupFailure.document === this.document && cleanupFailure.generation === this.generation) {
-      this.options.onStatus(cleanupFailure.message);
+      failBeforeExtraction(cleanupFailure.message);
       return;
     }
     const generation = this.generation;
     const document = this.document;
     const sessionId = this.sessionId;
-    assertDeadline(deadline);
-    this.applyHighlights(deadline);
-    if (generation === undefined || document === undefined || sessionId === undefined) return;
+    if (Date.now() >= deadline) {
+      failBeforeExtraction("Search timed out.");
+      return;
+    }
+    this.clearHighlights();
+    if (generation === undefined || document === undefined || sessionId === undefined) {
+      failBeforeExtraction("Search is unavailable.");
+      return;
+    }
     const extractor = this.options.resources.reserve({ kind: "search-extractor", amount: 1, sessionId });
     const documentText = this.options.resources.reserve({ kind: "text-document-bytes", amount: RESOURCE_LIMITS.maxTextDocumentBytes, sessionId });
     const reservationFailure = !extractor.ok ? extractor.tag : !documentText.ok ? documentText.tag : undefined;
     if (reservationFailure !== undefined) {
       if (extractor.ok) this.options.resources.release(extractor.reservation);
       if (documentText.ok) this.options.resources.release(documentText.reservation);
-      this.options.onStatus(reservationFailure);
+      failBeforeExtraction(reservationFailure);
       return;
     }
     if (!extractor.ok || !documentText.ok) return;
@@ -1054,8 +1071,46 @@ export class PdfContentController {
     this.activeSearchSettlement = settlement;
     const documentBytes = { value: 0 };
     let hasExtractedText = false;
-    this.searchPending = true;
     let deferredSearchCleanup: Promise<void> | undefined;
+    let lastPublishedResultCount = 0;
+    let lastPublishedHasText = false;
+    let lastPublishedPending = true;
+    let lastPublishedIncomplete = false;
+    let nextPublicationResultCount = 1;
+    let initialLandingStarted = false;
+    const publishDiscoveredResults = (force: boolean): void => {
+      if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+      const changed = this.results.length !== lastPublishedResultCount
+        || hasExtractedText !== lastPublishedHasText
+        || this.searchPending !== lastPublishedPending
+        || this.searchIncomplete !== lastPublishedIncomplete;
+      if (!changed || (!force && this.results.length < nextPublicationResultCount)) return;
+      this.publishSearchResults(sequence, hasExtractedText);
+      lastPublishedResultCount = this.results.length;
+      lastPublishedHasText = hasExtractedText;
+      lastPublishedPending = this.searchPending;
+      lastPublishedIncomplete = this.searchIncomplete;
+      if (this.results.length > 0) {
+        nextPublicationResultCount = Math.min(
+          MAX_RESULTS + 1,
+          Math.max(this.results.length + 1, this.results.length * SEARCH_RESULT_PUBLICATION_GROWTH),
+        );
+      }
+    };
+    const beginInitialLanding = (): void => {
+      if (restoreEvictedResult || initialLandingStarted || this.currentResult >= 0 || this.pendingResultIndex !== undefined) return;
+      const index = this.results.findIndex((result) => result.geometry !== undefined);
+      if (index < 0) return;
+      initialLandingStarted = true;
+      publishDiscoveredResults(true);
+      if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+      const landing = this.selectMatch(index, "initial", generation, document, sequence);
+      void landing.catch((error: unknown) => {
+        if (this.isCurrent(generation, document) && sequence === this.searchSequence) {
+          this.options.onStatus(`Search result landing failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      });
+    };
     const awaitPageOwned = async <T>(operation: Promise<T>): Promise<T> => {
       let settled = false;
       const tracked = operation.finally(() => { settled = true; });
@@ -1089,23 +1144,46 @@ export class PdfContentController {
           this.results.push({ pageNumber, index: originalStart, length: originalEnd - originalStart, ...(geometry === undefined ? {} : { geometry }) });
           index = folded.value.indexOf(normalized, index + Math.max(1, normalized.length));
         }
+        beginInitialLanding();
+        publishDiscoveredResults(false);
         await (this.options.scheduleSearchWork?.() ?? new Promise<void>((resolve) => setTimeout(resolve, 0)));
         if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
       }
       assertDeadline(deadline);
       if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
-      this.options.onSearchResults({ searchGeneration: sequence, query: this.query, results: [...this.results], hasSearchableText: hasExtractedText });
+      this.searchPending = false;
       if (this.results.length === 0) {
+        publishDiscoveredResults(true);
         this.options.onStatus(hasExtractedText ? `No matches · “${this.query}”` : `No searchable text · “${this.query}”`);
       } else {
-        if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
         this.applyHighlights(deadline);
-        const preferredIndex = restoreEvictedResult && this.evictedCurrentResult !== undefined ? Math.min(this.evictedCurrentResult, this.results.length - 1) : 0;
-        const index = this.results[preferredIndex]?.geometry !== undefined ? preferredIndex : this.results.findIndex((result) => result.geometry !== undefined);
-        if (index < 0) { this.options.onStatus("Search result location unavailable."); return; }
-        const selected = await this.selectMatch(index, restoreEvictedResult ? "restore" : "initial", generation, document, sequence);
-        if (restoreEvictedResult && selected !== null) this.evictedCurrentResult = undefined;
-        else if (restoreEvictedResult) { this.evictedCurrentResult = preferredIndex; this.searchIncomplete = true; }
+        if (restoreEvictedResult) {
+          const preferredIndex = this.evictedCurrentResult === undefined ? 0 : Math.min(this.evictedCurrentResult, this.results.length - 1);
+          const index = this.results[preferredIndex]?.geometry !== undefined ? preferredIndex : this.results.findIndex((result) => result.geometry !== undefined);
+          if (index < 0) {
+            publishDiscoveredResults(true);
+            this.options.onStatus("Search result location unavailable.");
+            return;
+          }
+          const selected = await this.selectMatch(index, "restore", generation, document, sequence);
+          if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+          if (selected !== null) this.evictedCurrentResult = undefined;
+          else {
+            this.evictedCurrentResult = preferredIndex;
+            this.searchIncomplete = true;
+          }
+          publishDiscoveredResults(true);
+          if (selected === null) this.options.onStatus("Search result location unavailable.");
+        } else {
+          publishDiscoveredResults(true);
+          if (this.pendingResultIndex !== undefined) {
+            this.options.onStatus(`Search complete · ${this.results.length} ${this.results.length === 1 ? "match" : "matches"} · “${this.query}”`);
+          } else if (this.currentResult >= 0) {
+            this.reportCurrentMatch("");
+          } else {
+            this.options.onStatus("Search result location unavailable.");
+          }
+        }
       }
     } catch (error) {
       let cause = error instanceof Error ? error.message : "Search could not be completed.";
@@ -1115,11 +1193,14 @@ export class PdfContentController {
         deferredSearchCleanup = this.unsettledSearchCleanup;
       }
       if (this.isCurrent(generation, document) && sequence === this.searchSequence) {
+        this.searchPending = false;
+        this.searchIncomplete = true;
+        if (this.results.length > 0) this.partialSearchReason = cause;
+        publishDiscoveredResults(true);
         if (this.results.length > 0) {
-          this.options.onSearchResults({ searchGeneration: sequence, query: this.query, results: [...this.results], hasSearchableText: hasExtractedText });
-          this.partialSearchReason = cause;
-          this.searchIncomplete = true;
-          if (Date.now() < deadline) this.applyHighlights(deadline);
+          if (Date.now() < deadline) {
+            try { this.applyHighlights(deadline); } catch { /* The primary search failure remains authoritative. */ }
+          }
           this.options.onStatus(`Search results are partial: ${cause}`);
         } else {
           this.options.onStatus(cause);
@@ -1141,8 +1222,9 @@ export class PdfContentController {
   }
   public async nextMatch(reverse = false): Promise<PdfSearchResult | null> {
     const generation = this.generation; const document = this.document; const sequence = this.searchSequence;
-    if (this.results.length === 0 || generation === undefined || document === undefined || this.searchPending || this.searchIncomplete) return null;
-    const baseIndex = this.pendingResultIndex ?? this.currentResult;
+    if (this.results.length === 0 || generation === undefined || document === undefined || this.searchIncomplete) return null;
+    const cursor = this.pendingResultIndex ?? this.currentResult;
+    const baseIndex = cursor >= 0 ? cursor : reverse ? 0 : -1;
     let index = baseIndex;
     for (let offset = 0; offset < this.results.length; offset += 1) {
       index = (index + (reverse ? -1 : 1) + this.results.length) % this.results.length;
@@ -1717,10 +1799,22 @@ export class PdfContentController {
       rollback,
     };
   }
+  private publishSearchResults(searchGeneration: number, hasSearchableText: boolean): void {
+    if (searchGeneration !== this.searchSequence) return;
+    this.options.onSearchResults({
+      searchGeneration,
+      query: this.query,
+      results: [...this.results],
+      hasSearchableText,
+      searchPending: this.searchPending,
+      searchIncomplete: this.searchIncomplete,
+    });
+  }
   private reportCurrentMatch(suffix: string): void {
+    const progress = this.searchPending ? " · Searching…" : "";
     const disclosure = suffix || (this.partialSearchReason === undefined ? "" : ` Search results are partial: ${this.partialSearchReason}`);
     this.options.onStatus(
-      `${this.currentResult + 1} / ${this.results.length} · “${this.query}”${disclosure}`,
+      `${this.currentResult + 1} / ${this.results.length} · “${this.query}”${progress}${disclosure}`,
     );
   }
   private clearHighlights(): void {

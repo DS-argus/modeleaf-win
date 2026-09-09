@@ -176,6 +176,22 @@ impl StateFileStore {
             Ok(())
         })
     }
+    /// Clears only the recent-files sibling through the shared state transaction.
+    pub fn clear_recents(&self) -> Result<bool, StateFileError> {
+        self.clear_recents_with_faults(AtomicWriteFaults::default())
+    }
+    fn clear_recents_with_faults(&self, faults: AtomicWriteFaults) -> Result<bool, StateFileError> {
+        let mut changed = false;
+        self.update_recent_with_faults(
+            |root| {
+                changed = !decode_recents_strict(root.get("recent_files"))?.is_empty();
+                root.insert("recent_files".into(), Value::Array(Vec::new()));
+                Ok(())
+            },
+            faults,
+        )?;
+        Ok(changed)
+    }
     /// Only confirmed absence is pruned; all other classifications are retained.
     pub fn remove_recent_path(&self, absolute_path: &str) -> Result<bool, StateFileError> {
         let mut removed = false;
@@ -219,6 +235,13 @@ impl StateFileStore {
         &self,
         change: impl FnOnce(&mut Map<String, Value>) -> Result<(), StateFileError>,
     ) -> Result<(), StateFileError> {
+        self.update_recent_with_faults(change, AtomicWriteFaults::default())
+    }
+    fn update_recent_with_faults(
+        &self,
+        change: impl FnOnce(&mut Map<String, Value>) -> Result<(), StateFileError>,
+        faults: AtomicWriteFaults,
+    ) -> Result<(), StateFileError> {
         let _guard = SidecarLock::acquire(&self.path, self.lock_timeout).map_err(map_lock_error)?;
         let mut root = match self.read_root() {
             Ok(root) => root,
@@ -230,7 +253,7 @@ impl StateFileStore {
         if bytes.len() as u64 > MAX_STATE_BYTES {
             return Err(StateFileError::Invalid);
         }
-        atomic_write::replace_with_faults(&self.path, &bytes, "state", AtomicWriteFaults::default())
+        atomic_write::replace_with_faults(&self.path, &bytes, "state", faults)
             .map_err(map_persistence_error)
     }
     fn update(
@@ -643,6 +666,34 @@ mod tests {
             Err(StateFileError::Invalid)
         );
         assert_eq!(fs::read(store.path()).unwrap(), original);
+        fs::remove_dir_all(directory).unwrap();
+    }
+    #[test]
+    fn clear_recents_pre_replace_fault_retains_the_complete_prior_state() {
+        let (directory, store) = store("clear-fault");
+        fs::create_dir_all(store.path().parent().unwrap()).unwrap();
+        fs::write(
+            store.path(),
+            r#"{"future":{"keep":true},"selected_theme":"nord","recent_files":[{"absolute_path":"C:/문서/keep.pdf","last_opened_at":"1"}]}"#,
+        )
+        .unwrap();
+        let original = fs::read(store.path()).unwrap();
+        let fault = AtomicWriteFaults {
+            fail_before_replace: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            store.clear_recents_with_faults(fault),
+            Err(StateFileError::Fault)
+        );
+        assert_eq!(fs::read(store.path()).unwrap(), original);
+        assert_eq!(store.load().unwrap().recent_files.len(), 1);
+        assert!(store.clear_recents().unwrap());
+        let root: Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert!(root["recent_files"].as_array().unwrap().is_empty());
+        assert_eq!(root["selected_theme"], "nord");
+        assert_eq!(root["future"]["keep"], true);
         fs::remove_dir_all(directory).unwrap();
     }
 }

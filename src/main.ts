@@ -41,7 +41,7 @@ import { DEFAULT_INDICATOR_SETTINGS, type IndicatorSettings } from "./domain/lin
 import { commitIndicatorPicker, indicatorPickerDialogKeyAction, INDICATOR_PICKER_ROWS, openIndicatorPicker, previewIndicatorPickerRow, revertIndicatorPicker, revertIndicatorPickerToDurable, CLOSED_INDICATOR_PICKER, type IndicatorPickerModel, type IndicatorPickerOpenModel } from "./ui/IndicatorPickerModel";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
-import { commitIndicatorState, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readIndicatorState, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
+import { clearRecentDocuments, commitIndicatorState, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readIndicatorState, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
@@ -94,7 +94,7 @@ root.innerHTML = `
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">j or k previews a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><p class="overlay-footer theme-footer">${THEME_PICKER_FOOTER.map(({ key, action }) => `<kbd>${key}</kbd> ${action}`).join(" · ")}</p><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" class="search-prompt" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><label id="search-title" class="visually-hidden" for="search-input">Search PDF text</label><span class="search-prefix" aria-hidden="true">/</span><input id="search-input" type="search" spellcheck="false" aria-label="Search PDF text" placeholder="Search PDF text"><p class="search-footer"><kbd>Enter</kbd> search · <kbd>Esc</kbd> close</p></form></dialog>
-  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
+  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
   <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
@@ -489,22 +489,18 @@ function reportPresentationFailure(session: PdfTabSession, error: unknown): void
   }
   render();
 }
-const boundaryPageTurns = new WeakSet<HTMLElement>();
-function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
-  if (boundaryPageTurns.has(payload.host)) return true;
-  const previousPage = payload.session.snapshot.reader.page;
-  payload.session.apply({ type: direction > 0 ? "page.next" : "page.previous" });
-  const page = payload.session.snapshot.reader.page;
-  if (page === previousPage) return false;
-  boundaryPageTurns.add(payload.host);
-  rootKeyboard.syncContext();
-  render();
-  void payload.session.renderPage(page).then((committed) => {
-    if (committed && direction < 0 && payload.session.snapshot.reader.zoomMode !== "fit-page") {
-      payload.host.scrollTop = Math.max(0, payload.host.scrollHeight - payload.host.clientHeight);
+const fittedPageTurns = new WeakSet<HTMLElement>();
+function turnFittedPage(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
+  if (fittedPageTurns.has(payload.host)) return true;
+  const reader = payload.session.snapshot.reader;
+  if ((direction < 0 && reader.page <= 1) || (direction > 0 && reader.page >= reader.pageCount)) return false;
+  fittedPageTurns.add(payload.host);
+  void payload.session.navigateAdjacentPage(direction).then((result) => {
+    if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") {
+      payload.session.reader.setStatus(navigationFailureStatus(result.kind));
     }
   }).catch((error: unknown) => reportPresentationFailure(payload.session, error)).finally(() => {
-    boundaryPageTurns.delete(payload.host);
+    fittedPageTurns.delete(payload.host);
     rootKeyboard.syncContext();
     render();
   });
@@ -587,21 +583,17 @@ function createTab(): TabPayload {
   host.addEventListener("wheel", (event) => {
     if (active().session !== session) return;
     const reader = session.snapshot.reader;
-    const direction = reader.zoomMode === "fit-page" && !event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0
-      ? (event.deltaY > 0 ? 1 : -1)
-      : wheelPageDirection({
+    const direction = wheelPageDirection({
+      zoomMode: reader.zoomMode,
       deltaX: event.deltaX,
       deltaY: event.deltaY,
-      scrollTop: host.scrollTop,
-      scrollHeight: host.scrollHeight,
-      clientHeight: host.clientHeight,
       page: reader.page,
       pageCount: reader.pageCount,
       ctrlKey: event.ctrlKey,
     });
     if (direction === 0) return;
     event.preventDefault();
-    turnPageAtBoundary({ host, session }, direction);
+    turnFittedPage({ host, session }, direction);
   }, { passive: false });
   let viewportFrameRequest: number | undefined;
   let viewportSynchronization: Promise<boolean> | undefined;
@@ -633,7 +625,6 @@ function createTab(): TabPayload {
     if (session.navigationLandingInProgress) return;
     if (!session.indicatorPublicationPending) session.dismissLinkDecorations();
     session.clearVisibleLinkAuthority();
-    session.invalidateViewportSynchronization();
     if (session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
@@ -676,15 +667,20 @@ function renderToc(): void {
  * A PDF without an outline yields an empty list and the widget shows its empty
  * state; no outline is ever inferred.
  */
+const outlineLoadGenerations = new WeakMap<TabPayload, number>();
 async function loadOutline(session: PdfTabSession, payload: TabPayload): Promise<void> {
+  const generation = session.snapshot.reader.documentGeneration;
+  if (!session.snapshot.reader.hasDocument || outlineLoadGenerations.get(payload) === generation) return;
+  outlineLoadGenerations.set(payload, generation);
+  const current = (): boolean => session.snapshot.reader.hasDocument && session.snapshot.reader.documentGeneration === generation
+    && workspace.snapshot.tabs.some((tab) => tab.payload === payload);
   try {
-    payload.toc.setOutline(normalizeOutline(await session.readOutlineTreeNodes()));
+    const outline = normalizeOutline(await session.readOutlineTreeNodes());
+    if (current()) payload.toc.setOutline(outline);
   } catch {
-    // An unreadable outline is not a document failure; the TOC degrades to empty.
-    payload.toc.setOutline([]);
+    if (current()) { payload.toc.setOutline([]); outlineLoadGenerations.delete(payload); }
   }
 }
-
 /** Activates one outline row through the app-owned verified navigation transaction. */
 async function activateOutlineRow(session: PdfTabSession, row: OutlineRow): Promise<void> {
   const destination = row.destination;
@@ -911,7 +907,6 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
       pendingOpenAdoptions.set(request.requestId, { request, id, payload, priorActiveId });
       try {
         await publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration));
-        await loadOutline(payload.session, payload);
         if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
         await activateCurrentTab(true);
       } catch (error) {
@@ -1134,6 +1129,26 @@ function renderFileOpener(): void {
   if (diagnostic[0] !== undefined) { diagnostic[0].setAttribute("role", "status"); diagnostic[0].setAttribute("aria-live", "polite"); }
   fileOpenerList.replaceChildren(...projected, ...diagnostic);
   fileOpenerList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
+}
+let clearingRecents = false;
+async function clearFileOpenerHistory(): Promise<void> {
+  if (clearingRecents || nativeOpenPending || overlayOwner.active?.id !== "recent") return;
+  clearingRecents = true;
+  const generation = fileOpenerModel.generation;
+  try {
+    const outcome = await clearRecentDocuments(invoke);
+    if (outcome.tag === "COMMITTED") {
+      fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries });
+    } else if (fileOpenerModel.generation === generation) {
+      fileOpenerModel = retainChooserFailure(fileOpenerModel, generation,
+        outcome.tag === "STATE_UNAVAILABLE" ? RECENT_STATE_UNAVAILABLE : "Recent history could not be cleared because application state could not be saved.");
+    }
+  } catch {
+    if (fileOpenerModel.generation === generation) fileOpenerModel = retainChooserFailure(fileOpenerModel, generation, "Recent history could not be cleared.");
+  } finally {
+    clearingRecents = false;
+    if (!shellDisposing && overlayOwner.active?.id === "recent") renderFileOpener();
+  }
 }
 function closeFileOpener(): void {
   releaseOverlay("recent");
@@ -1361,7 +1376,7 @@ function dispatch(action: Action): void {
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
   if (type === "application.new") { void invoke<void>("create_app_window").catch(() => { active().session.reader.setStatus("WINDOW_CREATE_FAILED"); render(); }); return; }
-  if (type === "toc.toggle") { active().toc.toggle(); render(); return; }
+  if (type === "toc.toggle") { const payload = active(); payload.toc.toggle(); void loadOutline(payload.session, payload).then(() => { if (active() === payload) renderToc(); }); render(); return; }
   if (type === "toc.scrollDown") { active().toc.scrollRows(1); render(); return; }
   if (type === "toc.scrollUp") { active().toc.scrollRows(-1); render(); return; }
   if (type === "palette.toggle") { openPalette(); return; }
@@ -1371,9 +1386,9 @@ function dispatch(action: Action): void {
     const payload = active();
     const direction = type === "page.next" ? 1 : -1;
     void payload.session.navigateAdjacentPage(direction).then((result) => {
-      if (result.kind !== "verifiedLanding" && result.kind !== "noOp") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
+      if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
       render();
-      if (active().session === payload.session) payload.host.focus({ preventScroll: true });
+      if (active().session === payload.session && overlayOwner.active === undefined && result.kind === "verifiedLanding") payload.host.focus({ preventScroll: true });
     }, (error: unknown) => reportPresentationFailure(payload.session, error));
     return;
   }
@@ -1381,9 +1396,9 @@ function dispatch(action: Action): void {
     const payload = active();
     const navigation = type === "page.first" ? payload.session.navigateFirstPage() : payload.session.navigateLastPage();
     void navigation.then((result) => {
-      if (result.kind !== "verifiedLanding" && result.kind !== "noOp") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
+      if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
       render();
-      if (active().session === payload.session) payload.host.focus({ preventScroll: true });
+      if (active().session === payload.session && overlayOwner.active === undefined && result.kind === "verifiedLanding") payload.host.focus({ preventScroll: true });
     }, (error: unknown) => reportPresentationFailure(payload.session, error));
     return;
   }
@@ -1401,22 +1416,11 @@ function dispatch(action: Action): void {
     const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
     const fitPageDirection = reader.zoomMode === "fit-page" && verticalCssPixels !== 0 ? (verticalCssPixels > 0 ? 1 : -1) : 0;
     if (fitPageDirection !== 0) {
-      turnPageAtBoundary(payload, fitPageDirection);
+      turnFittedPage(payload, fitPageDirection);
       rootKeyboard.syncContext(); render();
       return;
     }
-    const direction = wheelPageDirection({
-      deltaX: intent.horizontalCssPixels,
-      deltaY: verticalCssPixels,
-      scrollTop: payload.host.scrollTop,
-      scrollHeight: payload.host.scrollHeight,
-      clientHeight: payload.host.clientHeight,
-      page: reader.page,
-      pageCount: reader.pageCount,
-    });
-    if (direction === 0 || !turnPageAtBoundary(payload, direction)) {
-      payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels });
-    }
+    payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels, behavior: "instant" });
   }
   rootKeyboard.syncContext(); render();
 }
@@ -1549,9 +1553,7 @@ fileOpenerDialog.addEventListener("keydown", (event) => {
   if (isPaletteClearShortcut(event)) {
     event.preventDefault();
     event.stopPropagation();
-    fileOpenerModel = updateChooserQuery(fileOpenerModel, "");
-    fileOpenerInput.value = "";
-    renderFileOpener();
+    void clearFileOpenerHistory();
     return;
   }
   const action = commandPaletteKeyAction(event);
