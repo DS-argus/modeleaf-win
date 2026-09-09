@@ -143,10 +143,11 @@ Object.assign(window, { readerHarness: {
     return { firstMilliseconds, firstPending, landings, results: content.results.length, selected: content.currentResult, disposed: true };
   },
   async runChrome() {
-    // Execute the dev-transformed production renderer fragments, not copied UI markup.
+    // Execute the dev-transformed production renderer fragments and pure fitter, not copied UI layout logic.
     const code = await (await fetch("/src/main.ts")).text();
     const raw = (await import("../../src/main.ts?raw")).default as string;
     const chooser = await import("../../src/ui/OpenChooserModel");
+    const recentPathPresentation = await import("../../src/ui/RecentPathPresentation");
     const accessibility = await import("../../src/ui/AccessibilityController");
     const strip = document.createElement("div");
     strip.className = "tab-strip";
@@ -178,25 +179,112 @@ Object.assign(window, { readerHarness: {
     const chooserStart = code.indexOf("function renderFileOpener()");
     const chooserEnd = code.indexOf("let clearingRecents", chooserStart);
     requireInvariant(chooserStart >= 0 && chooserEnd > chooserStart, "Production chooser renderer was not found");
-    const renderChooser = (entries: { recentId: string; displayName: string }[]) => {
-      const model = chooser.createOpenChooser({ tag: "READY", snapshot: { revision: "1", entries } });
-      const render = new Function("fileOpenerModel", "fileOpenerList", "chooserRows", "selectChooserIndex", "dispatchFileOpenerEntry", code.slice(chooserStart, chooserEnd) + ";return renderFileOpener;")(model, list, chooser.chooserRows, chooser.selectChooserIndex, unusedAction);
-      render();
+    const chooserRenderer = new Function(
+      "fileOpenerList", "chooserRows", "selectChooserIndex", "dispatchFileOpenerEntry", "fitRecentPath",
+      `let fileOpenerModel;${code.slice(chooserStart, chooserEnd)};return {render(model){fileOpenerModel=model;renderFileOpener();},dispose(){stopFileOpenerPathFitting();}};`,
+    )(list, chooser.chooserRows, chooser.selectChooserIndex, unusedAction, recentPathPresentation.fitRecentPath) as {
+      render(model: ReturnType<typeof chooser.createOpenChooser>): void;
+      dispose(): void;
+    };
+    const renderChooser = (entries: { recentId: string; displayName: string; displayPath: string }[]) => {
+      chooserRenderer.render(chooser.createOpenChooser({ tag: "READY", snapshot: { revision: "1", entries } }));
     };
     renderChooser([]);
     requireInvariant(list.querySelector(".file-opener-recents-heading") === null, "Empty recents has an orphan divider");
-    renderChooser(names.map((displayName, index) => ({ recentId: `qa-${index}`, displayName })));
+    const longDirectoryEntry = {
+      recentId: "qa-directory",
+      displayName: "research-report.pdf",
+      displayPath: `C:\\Research\\${"Long directory\\".repeat(18)}research-report.pdf`,
+    };
+    const longFilenameEntry = {
+      recentId: "qa-filename",
+      displayName: `${"긴보고서".repeat(30)}.pdf`,
+      displayPath: `D:\\Documents\\${"긴보고서".repeat(30)}.pdf`,
+    };
+    const resizeEntry = {
+      recentId: "qa-resize",
+      displayName: "moderately-long-filename-for-resize-check.pdf",
+      displayPath: "E:\\QA\\moderately-long-filename-for-resize-check.pdf",
+    };
+    const entries = [longDirectoryEntry, longFilenameEntry, resizeEntry];
+    renderChooser(entries);
+    dialog.style.width = "270px";
     dialog.showModal();
-    await frame();
+    const settleLayout = async () => { await frame(); await frame(); await frame(); };
+    await settleLayout();
+    const buttonFor = (entry: typeof entries[number]) => {
+      const button = [...list.querySelectorAll<HTMLButtonElement>(".file-opener-recent")].find(candidate => candidate.title === entry.displayPath);
+      requireInvariant(button !== undefined, `Recent row was not rendered: ${entry.recentId}`);
+      return button!;
+    };
+    const narrowResizeFont = Number.parseFloat(getComputedStyle(buttonFor(resizeEntry)).fontSize);
+    requireInvariant(narrowResizeFont < 13, "Narrow recent row did not shrink from its base font");
+    // 460px is the production dialog width at the 480px viewport breakpoint.
+    dialog.style.width = "min(460px, calc(100vw - 20px))";
+    await settleLayout();
     const browse = list.querySelector<HTMLElement>(".file-opener-browse")!;
     const heading = list.querySelector<HTMLElement>(".file-opener-recents-heading")!;
     requireInvariant(browse.childElementCount === 0 && browse.textContent === "Browse...", "Browse glyph was not removed");
-    requireInvariant(parseFloat(getComputedStyle(heading).borderTopWidth) >= 1, "Recent divider is not visible");
+    const browseStyle = getComputedStyle(browse);
+    requireInvariant([browseStyle.borderTopWidth, browseStyle.borderRightWidth, browseStyle.borderBottomWidth, browseStyle.borderLeftWidth].every(width => Number.parseFloat(width) === 0), "Browse retained a visible border");
+    browse.focus();
+    await frame();
+    requireInvariant(Number.parseFloat(getComputedStyle(browse).outlineWidth) >= 2, "Browse keyboard focus outline is missing");
+    requireInvariant(Number.parseFloat(getComputedStyle(heading).borderTopWidth) >= 1, "Recent divider is not visible");
+    const assertFittedRow = (entry: typeof entries[number]) => {
+      const button = buttonFor(entry);
+      const directory = button.querySelector<HTMLElement>(".file-opener-recent-directory")!;
+      const filename = button.querySelector<HTMLElement>(".file-opener-recent-filename")!;
+      const style = getComputedStyle(button);
+      const contentWidth = button.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+      const visibleWidth = directory.getBoundingClientRect().width + filename.getBoundingClientRect().width;
+      requireInvariant(filename.textContent === entry.displayName, `Recent filename was changed: ${entry.recentId}`);
+      requireInvariant(filename.getBoundingClientRect().right <= button.getBoundingClientRect().right - Number.parseFloat(style.paddingRight) + 1, `Recent filename is clipped: ${entry.recentId}`);
+      requireInvariant(visibleWidth <= contentWidth + 1, `Recent path exceeds its row: ${entry.recentId}`);
+      requireInvariant(button.getAttribute("aria-label") === entry.displayPath && button.title === entry.displayPath, `Recent full path is not accessible: ${entry.recentId}`);
+      return { button, directory, filename, fontSize: Number.parseFloat(style.fontSize), visibleText: directory.textContent! + filename.textContent!, visibleWidth, contentWidth };
+    };
+    const directoryFit = assertFittedRow(longDirectoryEntry);
+    requireInvariant(directoryFit.directory.textContent!.startsWith("C:\\") && directoryFit.directory.textContent!.includes("…"), "Directory was not middle-truncated with its root visible");
+    const filenameFit = assertFittedRow(longFilenameEntry);
+    requireInvariant(filenameFit.fontSize < 13, "Long filename was not fitted by shrinking the row font");
+    const resizeFit = assertFittedRow(resizeEntry);
+    requireInvariant(Math.abs(resizeFit.fontSize - 13) <= 0.01 && resizeFit.visibleText === resizeEntry.displayPath, "Wider chooser did not restore the full path and base font");
+    const dispatchStart = code.indexOf("function dispatchFileOpenerEntry()");
+    const dispatchEnd = code.indexOf("async function openFileOpener", dispatchStart);
+    const dispatchSource = code.slice(dispatchStart, dispatchEnd);
+    requireInvariant(dispatchSource.includes("openRecentDocument(invoke, row.recentId)") && !dispatchSource.includes("openRecentDocument(invoke, row.displayPath)"), "Recent display path replaced opaque ID open authority");
     if (matchMedia("(forced-colors: active)").matches) requireInvariant([...dialog.querySelectorAll("kbd")].every(key => getComputedStyle(key).color === getComputedStyle(heading).color), "Forced-color shortcut hints do not use CanvasText");
     const bounds = dialog.getBoundingClientRect();
+    requireInvariant(bounds.width > 0 && bounds.width <= Math.min(460, innerWidth - 20) + 1, "Chooser exceeded its 480px-breakpoint width");
     requireInvariant(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, "Chooser exceeds viewport");
+    const stripWidth = strip.clientWidth;
+    const stripScrollWidth = strip.scrollWidth;
+    const stripScrollLeft = strip.scrollLeft;
+    const browseText = browse.textContent;
+    const divider = getComputedStyle(heading).borderTop;
+    chooserRenderer.dispose();
+    dialog.close();
+    dialog.remove();
+    strip.remove();
     await finish();
-    return { dimensions, stripWidth: strip.clientWidth, stripScrollWidth: strip.scrollWidth, stripScrollLeft: strip.scrollLeft, browse: browse.textContent, divider: getComputedStyle(heading).borderTop, dialog: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height }, disposed: true };
+    return {
+      dimensions,
+      stripWidth,
+      stripScrollWidth,
+      stripScrollLeft,
+      browse: browseText,
+      divider,
+      recentPaths: {
+        directory: directoryFit.visibleText,
+        longFilename: filenameFit.filename.textContent,
+        longFilenameFontSize: filenameFit.fontSize,
+        narrowResizeFont,
+        restoredResizeFont: resizeFit.fontSize,
+      },
+      dialog: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
+      disposed: true,
+    };
   },
   async runTabClose() {
     const landing = await session.navigatePagePrompt(12);

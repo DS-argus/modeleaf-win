@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { adoptChooserSnapshot, chooserRows, createOpenChooser, retainChooserFailure, updateChooserQuery } from "../../../src/ui/OpenChooserModel";
 
-const entry = (n: number, displayName = `${n}.pdf`) => ({ recentId: `recent-${n.toString(16).padStart(32, "0")}`, displayName });
+const entry = (n: number, displayName = `${n}.pdf`) => ({ recentId: `recent-${n.toString(16).padStart(32, "0")}`, displayName, displayPath: `C:\\Documents\\${displayName}` });
 describe("OpenChooserModel", () => {
   it("projects Browse first from a prepared snapshot without a loading frame", () => {
     const model = createOpenChooser({ tag: "READY", snapshot: { revision: "2", entries: [entry(1), entry(2)] } });
     expect(chooserRows(model).map((row) => row.kind)).toEqual(["browse", "recent", "recent"]);
+    expect(chooserRows(model)[1]).toMatchObject({ recentId: entry(1).recentId, displayName: "1.pdf", displayPath: "C:\\Documents\\1.pdf" });
   });
   it("retains unavailable state and chooser-owned diagnostics", () => {
     const initial = createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: "STATE_INVALID_JSON" });

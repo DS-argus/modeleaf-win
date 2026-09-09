@@ -190,9 +190,9 @@ Palette 자체가 독자 action list를 가지면 안 된다. action registry de
 
 - content top에서 72px, centered
 - 첫 frame부터 첫 row `Browse…`와 startup에 준비된 recents 최대 15개를 native 순서로 표시한다. loading/false-empty frame은 없다.
-- Issue #53 owner amendment: Browse 앞 glyph는 표시하지 않는다. Recent heading이 있을 때만 그 위에 theme/forced-colors를 따르는 구분선을 표시한다.
+- Issue #53 owner amendment: Browse 앞 glyph와 희미한 버튼 테두리를 제거하되 keyboard focus outline은 유지한다. Recent heading이 있을 때만 그 위에 theme/forced-colors를 따르는 구분선을 표시한다.
 - 정상 창에서는 15개가 모두 보이되 작은 창에서는 내부 scroll한다.
-- renderer에는 opaque recent ID와 Unicode filename만 전달하며 path는 표시하거나 전달하지 않는다.
+- Issue #53 owner amendment: renderer는 opaque `recentId`, `displayName`, 표시 전용 전체 `displayPath`를 받는다. 경로가 넘치면 디렉터리 가운데를 줄이고 파일명은 항상 전부 표시한다. 필요하면 행 글꼴을 축소한다. 전체 경로는 accessible name/title로도 유지하며 열기 권한은 경로가 아니라 `recentId`로만 전달한다.
 - query는 Unicode NFC filename fuzzy search이며 입력 자체가 refresh trigger가 아니다.
 - `Ctrl+Shift+C` clear history, arrows/`Ctrl+J/K`, Enter, Esc를 지원한다.
 - Browse는 app chooser overlay를 먼저 닫은 뒤 HWND-owned Windows dialog를 연다. native dialog는 app overlay owner에 포함하지 않는다.

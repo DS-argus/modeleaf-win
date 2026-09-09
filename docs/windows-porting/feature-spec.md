@@ -89,6 +89,7 @@ Rust preflight 순서:
 파일 대화상자와 installer association은 `.pdf`로 제한하지만, open service 자체는 확장자만으로 유효한 문서를 거부하지 않는다. 현재 macOS open service도 local/regular/readable과 실제 PDF load 결과를 검증할 뿐 확장자를 강제하지 않는다. 단, recent 목록에는 현재 계약대로 case-insensitive `.pdf` path만 기록한다.
 
 Recent identity는 가능한 경우 Windows file identity를 ephemeral dedupe에 쓰고, state에는 현재 계약대로 `absolute_path`와 `last_opened_at`만 저장한다. display는 사용자가 연 path 표기를 보존한다. 단순 lowercase만으로 identity를 영구 저장하지 않는다.
+Issue #53 owner amendment (2026-09-09): Recent 행은 native-owned 전체 `displayPath`를 표시한다. 공간이 부족하면 디렉터리 중간을 truncate하고 파일명은 줄이지 않으며, 필요하면 글꼴 크기를 줄인다. 경로는 표시 전용이고 recent 열기는 기존 opaque `recentId`로만 요청한다. filename-only fuzzy filtering과 state schema는 유지한다. Browse의 희미한 border는 제거하지만 키보드 focus 표시는 보존한다. `y`/`yy`/`of`는 Issue #55의 향후 작업이며 이번 변경에서 구현하지 않는다.
 
 ### Windows 차이와 주의사항
 

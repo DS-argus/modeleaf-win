@@ -353,12 +353,14 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .file-opener-overlay form { display: grid; min-height: 0; max-height: calc(100vh - 60px); gap: 7px; }
 .file-opener-overlay input { min-height: 36px; padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-inactive-tab); }
 .file-opener-overlay input:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: 1px; }
-.file-opener-list { max-height: min(48vh, 360px); padding: 1px; overscroll-behavior: contain; }
+.file-opener-list { grid-template-columns: minmax(0, 1fr); max-height: min(48vh, 360px); padding: 1px; overscroll-behavior: contain; }
 .file-opener-entry { min-height: 30px; padding: 6px 9px; font-size: 13px; }
-.file-opener-browse { display: block; font-weight: 650; border: 1px solid color-mix(in srgb, var(--theme-border) 80%, transparent); background: color-mix(in srgb, var(--theme-active-tab) 72%, transparent); }
+.file-opener-browse { display: block; font-weight: 650; background: color-mix(in srgb, var(--theme-active-tab) 72%, transparent); }
 .file-opener-recents-heading { margin: 7px 0 1px; padding: 7px 9px 0; color: var(--theme-muted-text); border-top: 1px solid var(--theme-border); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
-.file-opener-recent { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-opener-recent { display: flex; align-items: baseline; gap: 0; min-width: 0; white-space: nowrap; }
+.file-opener-recent-directory, .file-opener-recent-filename { flex: 0 0 auto; }
 .file-opener-entry[aria-selected="true"] { background: color-mix(in srgb, var(--theme-accent) 28%, transparent); box-shadow: inset 3px 0 var(--theme-accent); }
+.file-opener-entry:not(:disabled):focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: -2px; }
 .file-opener-footer { margin: 2px 1px 0; font-size: 11px; line-height: 1.35; white-space: normal; }
 .command-palette-list { scrollbar-width: none; }
 .command-palette-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
@@ -484,7 +486,7 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-overlay, .file-opener-overlay input { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
   .file-opener-entry, .file-opener-diagnostic, .file-opener-overlay input::placeholder { color: CanvasText; }
   .file-opener-entry[aria-selected="true"] { color: HighlightText; background: Highlight; box-shadow: inset 3px 0 HighlightText; }
-  .file-opener-entry:focus-visible, .file-opener-overlay input:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+  .file-opener-entry:not(:disabled):focus-visible, .file-opener-overlay input:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
   .file-opener-recents-heading, .file-opener-footer, .file-opener-footer kbd { color: CanvasText; }
   .file-opener-recents-heading { border-color: CanvasText; }
 }

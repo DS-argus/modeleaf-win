@@ -45,7 +45,7 @@ export async function writeDefaultProductConfig(invoke: NativeInvoke): Promise<C
 export async function resetProductConfig(invoke: NativeInvoke): Promise<ConfigResetOutcome> {
   return decodeSimple(await invoke<unknown>("reset_config"), RESET_TAGS) as ConfigResetOutcome;
 }
-export interface RecentEntry { readonly recentId: string; readonly displayName: string }
+export interface RecentEntry { readonly recentId: string; readonly displayName: string; readonly displayPath: string }
 export type RecentListOutcome =
   | { readonly tag: "READY"; readonly revision: string; readonly entries: readonly RecentEntry[] }
   | { readonly tag: "STATE_UNAVAILABLE"; readonly reason: "STATE_UNREADABLE" | "STATE_INVALID_ROOT" | "RECENT_FIELD_INVALID" };
@@ -154,11 +154,12 @@ function decodeRecentEntries(value: unknown): readonly RecentEntry[] {
     const prototype = Object.getPrototypeOf(entry);
     if (prototype !== Object.prototype && prototype !== null) throw contractError();
     const object = entry as Record<string, unknown>;
-    exactKeys(object, ["recentId", "displayName"]);
+    exactKeys(object, ["recentId", "displayName", "displayPath"]);
     if (typeof object.recentId !== "string" || !RECENT_ID.test(object.recentId) || ids.has(object.recentId)) throw contractError();
     if (typeof object.displayName !== "string" || object.displayName.length === 0 || object.displayName.length > 255 || /[\\/\p{Cc}]/u.test(object.displayName)) throw contractError();
+    if (typeof object.displayPath !== "string" || object.displayPath.length === 0 || object.displayPath.length > 32_767 || /\p{Cc}/u.test(object.displayPath)) throw contractError();
     ids.add(object.recentId);
-    return Object.freeze({ recentId: object.recentId, displayName: object.displayName.normalize("NFC") });
+    return Object.freeze({ recentId: object.recentId, displayName: object.displayName.normalize("NFC"), displayPath: object.displayPath });
   });
   return Object.freeze(entries);
 }

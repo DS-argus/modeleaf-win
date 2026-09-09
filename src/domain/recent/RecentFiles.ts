@@ -1,6 +1,6 @@
 export const MAX_RECENT_FILES = 15;
-export interface RecentFile { readonly recentId: string; readonly displayName: string }
-export interface RecentFileMatch { readonly recentId: string; readonly displayName: string; readonly score: number; readonly matchedIndices: readonly number[] }
+export interface RecentFile { readonly recentId: string; readonly displayName: string; readonly displayPath: string }
+export interface RecentFileMatch { readonly recentId: string; readonly displayName: string; readonly displayPath: string; readonly score: number; readonly matchedIndices: readonly number[] }
 export interface RecentSnapshot { readonly revision: string; readonly entries: readonly RecentFile[] }
 
 export function adoptRecentSnapshot(current: RecentSnapshot | undefined, candidate: RecentSnapshot): RecentSnapshot {
@@ -12,6 +12,7 @@ export function adoptRecentSnapshot(current: RecentSnapshot | undefined, candida
     entries: Object.freeze(candidate.entries.slice(0, MAX_RECENT_FILES).map((entry) => Object.freeze({
       recentId: entry.recentId,
       displayName: entry.displayName.normalize("NFC"),
+      displayPath: entry.displayPath,
     }))),
   });
 }
@@ -23,7 +24,7 @@ export function filterRecentFiles(entries: readonly RecentFile[], query: string)
     const matched = fuzzyMatch(Array.from(displayName.toLocaleLowerCase()), normalized);
     return matched === undefined ? undefined : {
       inputIndex,
-      value: Object.freeze({ recentId: entry.recentId, displayName, score: matched.score, matchedIndices: Object.freeze(matched.indices) }),
+      value: Object.freeze({ recentId: entry.recentId, displayName, displayPath: entry.displayPath, score: matched.score, matchedIndices: Object.freeze(matched.indices) }),
     };
   }).filter((value): value is NonNullable<typeof value> => value !== undefined);
   projected.sort((left, right) => left.value.score - right.value.score || left.inputIndex - right.inputIndex);

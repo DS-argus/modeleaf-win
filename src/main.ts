@@ -10,6 +10,7 @@ import { validateProductConfig } from "./domain/config/ConfigValidator";
 import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
 import type { ActionId, ActionRuntimeContext } from "./domain/actions/ActionRegistry";
 import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelection, selectChooserIndex, adoptChooserSnapshot, retainChooserFailure, type OpenChooserModel } from "./ui/OpenChooserModel";
+import { fitRecentPath } from "./ui/RecentPathPresentation";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
 import { bindSearchPrompt } from "./ui/SearchPromptController";
@@ -1131,7 +1132,16 @@ function renderFileOpener(): void {
       button.setAttribute("aria-label", "Browse for a PDF");
       button.textContent = row.label;
     } else {
-      button.textContent = row.displayName;
+      const separatorIndex = Math.max(row.displayPath.lastIndexOf("\\"), row.displayPath.lastIndexOf("/"));
+      const directory = document.createElement("span");
+      const filename = document.createElement("span");
+      directory.className = "file-opener-recent-directory";
+      filename.className = "file-opener-recent-filename";
+      directory.textContent = separatorIndex < 0 ? "" : row.displayPath.slice(0, separatorIndex + 1);
+      filename.textContent = row.displayName;
+      button.setAttribute("aria-label", row.displayPath);
+      button.title = row.displayPath;
+      button.append(directory, filename);
     }
     button.addEventListener("click", () => {
       fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
@@ -1145,6 +1155,72 @@ function renderFileOpener(): void {
   if (diagnostic[0] !== undefined) { diagnostic[0].setAttribute("role", "status"); diagnostic[0].setAttribute("aria-live", "polite"); }
   fileOpenerList.replaceChildren(...projected, ...diagnostic);
   fileOpenerList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
+  startFileOpenerPathFitting();
+}
+let fileOpenerPathFitFrame: number | undefined;
+let fileOpenerPathResizeObserver: ResizeObserver | undefined;
+let fileOpenerPathMeasureContext: CanvasRenderingContext2D | null | undefined;
+let fileOpenerPathLastWidth = -1;
+let fileOpenerPathFitDirty = false;
+let fileOpenerPathFitting = false;
+function startFileOpenerPathFitting(): void {
+  fileOpenerPathFitting = true;
+  if (fileOpenerPathResizeObserver === undefined && typeof ResizeObserver === "function") {
+    fileOpenerPathResizeObserver = new ResizeObserver(() => {
+      if (!fileOpenerPathFitting || fileOpenerList.clientWidth <= 0 || fileOpenerList.clientWidth === fileOpenerPathLastWidth) return;
+      scheduleFileOpenerPathFit();
+    });
+    fileOpenerPathResizeObserver.observe(fileOpenerList);
+  }
+  scheduleFileOpenerPathFit(true);
+}
+function scheduleFileOpenerPathFit(force = false): void {
+  if (!fileOpenerPathFitting) return;
+  fileOpenerPathFitDirty = fileOpenerPathFitDirty || force;
+  if (fileOpenerPathFitFrame !== undefined) return;
+  fileOpenerPathFitFrame = requestAnimationFrame(() => {
+    fileOpenerPathFitFrame = undefined;
+    if (!fileOpenerPathFitting) return;
+    const width = fileOpenerList.clientWidth;
+    if (width <= 0 || (!fileOpenerPathFitDirty && width === fileOpenerPathLastWidth)) return;
+    fileOpenerPathFitDirty = false;
+    fileOpenerPathLastWidth = width;
+    fitFileOpenerPaths();
+  });
+}
+function fitFileOpenerPaths(): void {
+  if (fileOpenerList.clientWidth <= 0) return;
+  if (fileOpenerPathMeasureContext === undefined) fileOpenerPathMeasureContext = document.createElement("canvas").getContext("2d");
+  const context = fileOpenerPathMeasureContext;
+  if (context === null) return;
+  for (const button of fileOpenerList.querySelectorAll<HTMLButtonElement>(".file-opener-recent")) {
+    button.style.removeProperty("font-size");
+    if (button.clientWidth <= 0) continue;
+    const style = getComputedStyle(button);
+    const baseFontSize = Number.parseFloat(style.fontSize);
+    const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    const availableWidth = button.clientWidth - horizontalPadding - 1;
+    const directory = button.querySelector<HTMLElement>(".file-opener-recent-directory");
+    const filename = button.querySelector<HTMLElement>(".file-opener-recent-filename");
+    if (!(availableWidth > 0) || !(baseFontSize > 0) || directory === null || filename === null) continue;
+    const result = fitRecentPath(button.title, filename.textContent ?? "", availableWidth, baseFontSize, (text, fontSize) => {
+      context.font = `${style.fontStyle} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
+      return context.measureText(text).width;
+    });
+    directory.textContent = result.directoryText;
+    filename.textContent = result.filenameText;
+    if (result.fontSize < baseFontSize) button.style.fontSize = `${result.fontSize}px`;
+  }
+}
+function stopFileOpenerPathFitting(): void {
+  fileOpenerPathFitting = false;
+  fileOpenerPathResizeObserver?.disconnect();
+  fileOpenerPathResizeObserver = undefined;
+  fileOpenerPathMeasureContext = undefined;
+  if (fileOpenerPathFitFrame !== undefined) cancelAnimationFrame(fileOpenerPathFitFrame);
+  fileOpenerPathFitFrame = undefined;
+  fileOpenerPathLastWidth = -1;
+  fileOpenerPathFitDirty = false;
 }
 let clearingRecents = false;
 async function clearFileOpenerHistory(): Promise<void> {
@@ -1167,6 +1243,7 @@ async function clearFileOpenerHistory(): Promise<void> {
   }
 }
 function closeFileOpener(): void {
+  stopFileOpenerPathFitting();
   releaseOverlay("recent");
 }
 function dispatchFileOpenerEntry(): void {
@@ -1550,6 +1627,7 @@ const disposeSearchPrompt = bindSearchPrompt(
 );
 window.addEventListener("resize", () => {
   scheduleDprPollFallback();
+  if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
   const session = active().session;
   session.dismissLinkDecorations();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
@@ -1561,6 +1639,7 @@ fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); d
 fileOpenerInput.addEventListener("input", () => { fileOpenerModel = updateChooserQuery(fileOpenerModel, fileOpenerInput.value); renderFileOpener(); });
 fileOpenerDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeFileOpener(); });
 fileOpenerDialog.addEventListener("close", () => {
+  stopFileOpenerPathFitting();
   if (overlayOwner.active?.id !== "recent") return;
   releaseOverlay("recent");
   render();
@@ -1598,6 +1677,7 @@ paletteDialog.addEventListener("keydown", (event) => {
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
 window.addEventListener("blur", () => active().session.dismissLinkDecorations());
 window.addEventListener("beforeunload", () => {
+  stopFileOpenerPathFitting();
   disposeSearchPrompt();
   themeUnlisten?.();
   recentSnapshotUnlisten?.();

@@ -27,7 +27,7 @@ describe("initial open flow contract", () => {
     expect(main).toContain("nativeOpenPending");
   });
 
-  it("prepares path-free recents before revealing the chooser", () => {
+  it("prepares native-owned recent display metadata before revealing the chooser", () => {
     expect(main).toContain('fileOpenerDialog.addEventListener("close"');
     const preload = main.indexOf("const initialRecentsReady = recentListenerReady.then");
     expect(preload).toBeGreaterThanOrEqual(0);
