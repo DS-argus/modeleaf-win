@@ -2551,6 +2551,39 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
+  it("retains named destinations and page-reference resolution for ordinary PDF links", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const cachedReference = Object.freeze({ num: 4, gen: 0 });
+    const uncachedReference = Object.freeze({ num: 8, gen: 0 });
+    const destination = Object.freeze([uncachedReference, Object.freeze({ name: "Fit" })]);
+    const getDestination = vi.fn(async (name: string) => name === "chapter" ? destination : null);
+    const getPageIndex = vi.fn(async (reference: unknown) => reference === uncachedReference ? 1 : -1);
+    const cachedPageNumber = vi.fn((reference: unknown) => reference === cachedReference ? 3 : null);
+    const pdf = Object.assign(documentWith(3), { getDestination, getPageIndex, cachedPageNumber });
+    const resources = new ResourceReservationManager();
+    let committedDocument: PdfDocument | undefined;
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("ordinary-link-resolution", 1))),
+      resources,
+      pdf: { getDocument: () => task(pdf), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: (_pageCount, _displayName, openedDocument) => { committedDocument = openedDocument; },
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(committedDocument).toBe(pdf);
+    await expect(committedDocument!.getDestination!("chapter")).resolves.toEqual(destination);
+    expect(getDestination).toHaveBeenCalledWith("chapter");
+    await expect(controller.resolvePageReference(cachedReference)).resolves.toBe(3);
+    expect(getPageIndex).not.toHaveBeenCalled();
+    await expect(controller.resolvePageReference(uncachedReference)).resolves.toBe(2);
+    expect(getPageIndex).toHaveBeenCalledWith(uncachedReference);
+
+    await controller.dispose();
+    resources.assertEmpty();
+  });
   it("destroys the loading task when the real document API has no destroy method", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const document: PdfDocument = { numPages: 1, getPage: async () => page(1) };

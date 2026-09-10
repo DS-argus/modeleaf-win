@@ -1,5 +1,7 @@
 # Modeleaf v0.10.0 Windows 포팅 명세
 
+> Issue #53 owner-approved Windows scope: 일반 PDF 링크 클릭은 유지하고 embedded TOC 및 `f` keyboard hints는 제외한다. 아래 macOS baseline 61 actions와 달리 현재 Windows contract는 50 actions(46 configurable + 4 fixed)다. 퇴역 기능의 재개발 reference는 [deferred-toc-link-hints.md](deferred-toc-link-hints.md), scope 결정은 ADR 0001을 따른다.
+
 이 폴더는 macOS용 Modeleaf `v0.10.0`의 기능, 제품 철학, UI를 Windows 전용 새 저장소에서 재구현하기 위한 실행 명세다. 대상 기술 스택은 `Tauri 2 + Rust + TypeScript + PDF.js`로 고정한다.
 
 이 문서의 독자는 Windows 구현을 맡은 개발 에이전트다. Swift/AppKit/PDFKit 코드를 줄 단위로 번역하지 말고, 여기 적힌 동작 계약과 회귀 테스트를 새 코드로 재현한다.

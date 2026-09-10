@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { NAVIGATION_HISTORY_LIMIT, NavigationHistory, type NavigationSnapshot } from "../../../src/domain/navigation/NavigationHistory";
+import { NAVIGATION_HISTORY_LIMIT, NavigationHistory, type NavigationCause, type NavigationSnapshot } from "../../../src/domain/navigation/NavigationHistory";
 
 const at = (pageIndex: number, x = pageIndex / 10, y = pageIndex / 5): NavigationSnapshot => ({ pageIndex, x, y });
-const jump = (history: NavigationHistory, origin: NavigationSnapshot, target: NavigationSnapshot, cause: "page-prompt" | "search" = "page-prompt", epoch?: number) => {
+const jump = (history: NavigationHistory, origin: NavigationSnapshot, target: NavigationSnapshot, cause: NavigationCause = "page-prompt", epoch?: number) => {
   const prepared = history.prepareJump(origin, target, cause, epoch);
   if (prepared.kind !== "prepared") throw new Error(prepared.kind);
   return prepared.transaction;
@@ -17,6 +17,12 @@ describe("NavigationHistory", () => {
     expect(history.snapshot().back).toEqual([at(0)]);
     const failed = jump(history, at(1), at(2));
     expect(history.commit(failed, at(2, 0.701, 0.4))).toBe("failed-verification");
+    expect(history.snapshot().back).toEqual([at(0)]);
+  });
+
+  it.each(["page-prompt", "page-first", "page-last", "internal-link"] as const)("records retained meaningful cause %s", (cause) => {
+    const history = new NavigationHistory();
+    expect(history.commit(jump(history, at(0), at(1), cause), at(1))).toBe("committed");
     expect(history.snapshot().back).toEqual([at(0)]);
   });
 

@@ -53,7 +53,7 @@ describe("parity matrix integrity", () => {
     ) as { readonly count: number; readonly ids: readonly string[] };
 
     // The matrix must agree with the frozen snapshot, not with stale prose.
-    expect(matrix).toContain(`ships **${String(snapshot.count)}**`);
+    expect(matrix).toContain(`contract contains **${String(snapshot.count)}**`);
     expect(snapshot.count).toBe(snapshot.ids.length);
     // The macOS baseline count must stay documented so pr-history rows remain readable.
     expect(matrix).toMatch(/macOS[\s\S]{0,80}\*\*61\*\*/u);
@@ -61,10 +61,10 @@ describe("parity matrix integrity", () => {
   });
 
   it("does not claim parity for phases that are still unfinished", () => {
-    // W13 has only SemanticVersion and no installer or release tooling.
+    // Retained click/native, settings, printing and release acceptance remain incomplete.
     // This list is a ratchet: a phase leaves it only when its gate actually
     // merges, which forces every parity claim to be a deliberate edit here.
-    for (const phase of ["W13"] as const) {
+    for (const phase of ["W08", "W11", "W12", "W13"] as const) {
       const row = matrix.split("\n").find((line) => line.startsWith(`| ${phase} |`));
       expect(row, `${phase} phase row missing`).toBeDefined();
       // Only the status column counts. Prose may legitimately mention parity,

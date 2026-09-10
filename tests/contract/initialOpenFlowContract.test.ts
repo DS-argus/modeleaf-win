@@ -72,10 +72,11 @@ describe("initial open flow contract", () => {
     expect(main).toContain("pending.request.ownerGeneration");
     expect(source("src/platform/OpenRequestClient.ts")).toContain("if (!active) return true;");
   });
-  it("does not block initial reading on optional outline parsing", () => {
-    const adoption = main.slice(main.indexOf("async function adoptRequest"), main.indexOf("function restoreOpenFocus"));
-    expect(adoption).not.toContain("loadOutline(");
-    expect(main).toContain("void loadOutline(payload.session, payload)");
+  it("keeps retired outline parsing out of opening and reader lifetimes", () => {
+    expect(main).toContain("async function adoptRequest");
+    for (const text of [main, source("src/pdf/PdfReaderController.ts"), source("src/pdf/PdfTabSession.ts")]) {
+      expect(text).not.toMatch(/loadOutline|getOutline|readOutline/);
+    }
   });
 
   it("clears durable recents instead of only resetting the filter", () => {

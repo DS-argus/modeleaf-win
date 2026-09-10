@@ -9,7 +9,6 @@ const expectedDomains = [
   "input",
   "links",
   "navigation",
-  "outlines",
   "recent",
   "tabs",
   "theme",

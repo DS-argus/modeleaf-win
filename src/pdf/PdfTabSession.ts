@@ -1,5 +1,4 @@
 import { NavigationHistory, sameSnapshotWithinTolerance, type NavigationCause, type NavigationSnapshot, type NavigationTransaction } from "../domain/navigation/NavigationHistory";
-import type { HintKeyInput } from "../domain/links/LinkHints";
 import { ReaderState, type ReaderSnapshot } from "../core/ReaderState";
 import {
   PdfContentController,
@@ -10,8 +9,6 @@ import {
   type PdfSearchLandingRequest,
   type PdfContentSnapshot,
 } from "./PdfContentController";
-import type { PdfOutlineProbeRow } from "./PdfOutlineProbe";
-import type { RawOutlineNode } from "../domain/outlines/OutlineModel";
 import { resolvePdfDestinationView } from "./PdfDestination";
 import {
   PdfReaderController,
@@ -194,7 +191,7 @@ export class PdfTabSession {
       reader: this.reader.snapshot,
       content: this.content?.snapshot ?? {
         generation: null, pageNumber: null, query: "", results: [], currentResult: -1,
-        searchPending: false, searchIncomplete: false, hintsVisible: false, visibleLinkCount: 0,
+        searchPending: false, searchIncomplete: false,
       },
     };
   }
@@ -202,12 +199,6 @@ export class PdfTabSession {
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
-  }
-  public async readOutlineTreeNodes(): Promise<readonly RawOutlineNode[]> {
-    return this.closed ? [] : this.pdfReader.readOutlineTreeNodes();
-  }
-  public async readOutlineDestinations(): Promise<readonly PdfOutlineProbeRow[]> {
-    return this.closed ? [] : this.pdfReader.readOutlineDestinations();
   }
   public async printCurrent(): Promise<boolean> {
     return this.closed || !this.isForegroundActive() ? false : this.pdfReader.printCurrent();
@@ -507,12 +498,12 @@ export class PdfTabSession {
       this.invalidatePageStepQueue();
       if (this.navigationLandingInProgress || this.pageStepActive) this.supersedeNavigation();
       else this.content?.cancelDestination();
-      this.content?.dismissLinkDecorations();
+      this.content?.dismissLinkIndicator();
     }
     if (action.type.startsWith("page.") || action.type.startsWith("view.")) {
       this.invalidatePageStepQueue();
       this.supersedeNavigation();
-      this.content?.dismissLinkDecorations();
+      this.content?.dismissLinkIndicator();
       const snapshot = this.lastCommittedRender;
       if (snapshot !== undefined && snapshot.documentGeneration === this.reader.snapshot.documentGeneration) {
         const intent = ++this.renderIntent;
@@ -522,9 +513,6 @@ export class PdfTabSession {
     this.reader.apply(action);
   }
   public nextMatch(reverse: boolean): void { this.cycleSearch(reverse); }
-  public toggleHints(): void { if (!this.closed && this.isForegroundActive()) this.content?.toggleHints(); }
-  public cancelHints(): void { if (!this.closed && this.isForegroundActive()) this.content?.cancelHints(); }
-  public handleHintKey(input: string | HintKeyInput): boolean { return !this.closed && this.isForegroundActive() && this.content?.handleHintKey(input) === true; }
   public invalidateSearch(): void {
     this.searchLandingOwnerRevision += 1;
     this.searchLandingGeneration = Number.MAX_SAFE_INTEGER;
@@ -535,12 +523,10 @@ export class PdfTabSession {
     this.endSearchLandingEpoch();
   }
   public get query(): string { return this.content?.snapshot.query ?? ""; }
-  public get hintsVisible(): boolean { return this.content?.snapshot.hintsVisible ?? false; }
-  public get visibleLinkCount(): number { return this.content?.snapshot.visibleLinkCount ?? 0; }
   public get indicatorPublicationPending(): boolean { return this.content?.indicatorPublicationPending ?? false; }
-  public get linkDecorationsVisible(): boolean { return this.content?.linkDecorationsVisible ?? false; }
+  public get linkIndicatorVisible(): boolean { return this.content?.linkIndicatorVisible ?? false; }
   public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
-  public dismissLinkDecorations(): void { if (!this.closed && this.isForegroundActive()) this.content?.dismissLinkDecorations(); }
+  public dismissLinkIndicator(): void { if (!this.closed && this.isForegroundActive()) this.content?.dismissLinkIndicator(); }
   public renderCurrentView(): Promise<boolean> {
     return this.openingFitRenderPending ? this.renderOpeningFitPage() : this.renderCurrentViewPreservingAnchor();
   }

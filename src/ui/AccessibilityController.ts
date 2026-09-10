@@ -22,7 +22,6 @@ export type AccessibilityAnnouncement =
   | { readonly kind: "loading-complete"; readonly generation: number; readonly pageCount: number }
   | { readonly kind: "tab"; readonly active: number; readonly total: number }
   | { readonly kind: "search"; readonly generation: number; readonly current: number; readonly total: number }
-  | { readonly kind: "link-hints"; readonly generation: number; readonly visible: boolean; readonly count: number }
   | { readonly kind: "palette"; readonly open: boolean }
   | { readonly kind: "theme"; readonly themeId: ThemeAnnouncementId }
   | { readonly kind: "error"; readonly error: SafeError };
@@ -253,9 +252,6 @@ export class AccessibilityController {
       case "search": return announcement.total === 0
         ? "No search results."
         : `Search result ${announcement.current} of ${announcement.total}.`;
-      case "link-hints": return announcement.visible
-        ? `${announcement.count} link hints shown.`
-        : "Link hints hidden.";
       case "palette": return announcement.open ? "Command palette opened." : "Command palette closed.";
       case "theme": return THEME_TEXT[announcement.themeId];
     }
@@ -269,7 +265,6 @@ export class AccessibilityController {
       case "loading-complete": return isGeneration(announcement.generation) && isCount(announcement.pageCount);
       case "tab": return isCount(announcement.total) && isCount(announcement.active) && announcement.active <= announcement.total;
       case "search": return isGeneration(announcement.generation) && isCount(announcement.total, true) && (announcement.total === 0 ? announcement.current === 0 : isCount(announcement.current) && announcement.current <= announcement.total);
-      case "link-hints": return isGeneration(announcement.generation) && isCount(announcement.count, true);
       case "palette": return typeof announcement.open === "boolean";
       case "theme": return isThemeId(announcement.themeId);
       case "error": return Object.hasOwn(ERROR_TEXT, announcement.error);

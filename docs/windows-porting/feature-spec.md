@@ -1,5 +1,7 @@
 # 기능별 포팅 계약
 
+> 현재 Windows owner-approved 계약: macOS 61-action baseline에서 pane 7개와 TOC 3개/keyboard hint 1개를 제외한 **50 actions(46 configurable + 4 fixed)**다. `t`/`J`/`K`/`f`는 미할당이며 일반 링크 클릭은 유지한다. 아래 immutable macOS 설명보다 ADR 0001의 이 명시적 Windows delta가 우선한다.
+
 각 기능은 `v0.10.0 계약 → Windows 구현 → 알려진 실패 모드 → acceptance` 순서로 구현한다. “비슷하게 보인다”가 아니라 observable behavior와 테스트가 같아야 한다.
 
 ## 1. 제품 범위와 읽기 전용 경계
@@ -318,6 +320,8 @@ Back/Forward도 destination을 peek하고 restore가 성공한 후에만 directi
 
 ## 7. 링크 클릭, 링크 힌트, 목적지 표시기
 
+> Issue #53 owner delta: 일반 PDF 링크 클릭과 목적지 이동·표시기는 유지한다. `f` 키보드 힌트와 그 입력·label UI는 제거한다. 아래 힌트 관련 v0.10.0 규칙은 재개발 참고로만 남긴다.
+
 ### v0.10.0 계약
 
 - PDF annotation link만 대상이다. 인쇄된 text URL은 자동 감지하지 않는다.
@@ -374,6 +378,8 @@ Indicator 계약:
 - 4개 DPI와 4개 rotation에서 hint/indicator 오차가 1 CSS px 이하이다.
 
 ## 8. Embedded outline TOC
+
+> Issue #53 owner delta: TOC는 현재 Windows 제품에서 제거한다. 아래 v0.10.0 계약은 재개발 참고용이며 현재 구현·parity 요구가 아니다. 기존 구현과 tests는 `deferred-toc-link-hints.md`의 immutable Git reference로 보존한다.
 
 ### v0.10.0 계약
 

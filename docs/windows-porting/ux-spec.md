@@ -254,6 +254,8 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 
 ## 15. Link hints와 destination indicator
 
+> Issue #53: `f` label/input UI는 현재 Windows에서 제거한다. 일반 PDF 링크 클릭 및 목적지 indicator는 유지한다. 아래 hint 전용 표현은 재개발 참조이며 현재 지원 기능이 아니다.
+
 - PDF surface 위 transparent overlay다.
 - visible annotation links만 labels를 갖는다.
 - lower-case ASCII label을 사용하고 matching prefix는 강조, non-match는 dim한다.
@@ -264,6 +266,8 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 - high contrast theme에서도 outline이 식별 가능해야 한다.
 
 ## 16. Embedded outline TOC
+
+> Issue #53: 현재 Windows UI에는 TOC를 제공하지 않는다. 이 절의 macOS 계약과 captures는 향후 재개발 참고용으로만 보존하며 `t`/`J`/`K`를 라우팅하지 않는다.
 
 TOC는 sidebar가 아니라 각 pane content 안의 floating, non-focus overlay다. PDF canvas 크기를 바꾸지 않는다.
 

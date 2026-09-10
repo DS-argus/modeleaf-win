@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
-import type { ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
+import { ACTION_DESCRIPTORS, type ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
 import {
   buildCommandPaletteEntries,
   commandPaletteKeyAction,
@@ -13,9 +13,9 @@ import {
 const baseContext: ActionRuntimeContext = {
   hasDocument: true, canCreateSession: true, canOpenDocument: true, canCreateWindow: true,
   tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false,
-  searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 1,
+  searchActive: false, canHistoryBack: false, canHistoryForward: false,
 };
-const unavailableContext: ActionRuntimeContext = { ...baseContext, hasDocument: false, canCreateSession: false, canOpenDocument: false, canCreateWindow: false, modalOpen: true, linkCount: 0 };
+const unavailableContext: ActionRuntimeContext = { ...baseContext, hasDocument: false, canCreateSession: false, canOpenDocument: false, canCreateWindow: false, modalOpen: true };
 function recent(recentId: string, displayName: string): RecentPaletteRecord {
   return { recentId, displayName };
 }
@@ -29,6 +29,28 @@ describe("CommandPaletteModel", () => {
     expect(firstDisabled).toBeGreaterThanOrEqual(0);
     expect(enabled.slice(firstDisabled)).not.toContain(true);
     expect(new Set(entries.map((entry) => entry.kind === "command" ? `action:${entry.id}` : `recent:${entry.recentId}`)).size).toBe(entries.length);
+  });
+  it("projects every retained configurable action and no retired TOC or hint command", () => {
+    const configurable = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
+
+    expect(ACTION_DESCRIPTORS).toHaveLength(50);
+    expect(configurable).toHaveLength(46);
+    for (const descriptor of configurable) {
+      expect(buildCommandPaletteEntries(baseContext, [], descriptor.displayName)).toContainEqual(expect.objectContaining({
+        kind: "command",
+        id: descriptor.id,
+        label: descriptor.displayName,
+      }));
+    }
+    for (const retiredTitle of [
+      "Toggle Table of Contents",
+      "Scroll Table of Contents Down",
+      "Scroll Table of Contents Up",
+      "Link Hints",
+    ]) expect(buildCommandPaletteEntries(baseContext, [], retiredTitle)).toEqual([]);
+    expect(buildCommandPaletteEntries(baseContext, [], "Link indicator settings")).toContainEqual(expect.objectContaining({
+      kind: "command", id: "indicator.picker", shortcut: "Shift+I", enabled: true,
+    }));
   });
   it("reports a foreign modal as the blocking reason", () => {
     const command = buildCommandPaletteEntries(unavailableContext)

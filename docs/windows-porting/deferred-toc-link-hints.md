@@ -4,7 +4,7 @@
 
 On 2026-09-09 the owner requested removing embedded TOC and the `f` keyboard-link feature from the active product, stabilizing basic reading first, and retaining implementation references for later redevelopment. The report mentions `1740_TaiwanVQA…` for TOC and no useful response from `f`. This is owner-reported behavior, not an independent diagnosis of the PDF's embedded outline or annotations.
 
-At this document's creation, removal is requested but not yet complete. Whether ordinary mouse link activation is retained is a separate scope decision; do not silently conflate it with keyboard hint removal. Browse-border and Recent-path corrections remain in scope. Path shortcuts `y`, `yy`, and `of` remain deferred in Issue #55.
+The owner explicitly confirmed that ordinary PDF link clicks and destination navigation remain supported. Retirement is limited to TOC and `f` keyboard hints, including their actions, bindings, models, labels and input/UI surfaces. Shared click authorization, navigation/history, destination indicators, text/search and resource ownership remain. Implementation and verification are tracked in Issue #53 / PR #54. Browse-border and Recent-path corrections remain in scope; `y`, `yy`, and `of` remain deferred in Issue #55.
 
 ## Immutable implementation backup
 

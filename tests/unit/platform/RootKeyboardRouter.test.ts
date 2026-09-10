@@ -5,7 +5,7 @@ import { createRootKeyboardRouter, type RootKeyboardContext, type RootKeyboardEv
 const validated = validateProductConfig({});
 if (!validated.ok) throw new Error("built-in config invalid");
 const config = validated.value;
-const runtime = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
+const runtime = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false };
 function keyboard(key: string, overrides: Partial<RootKeyboardEvent> = {}) {
   let prevented = false;
   const event: RootKeyboardEvent = { key, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault: () => { prevented = true; }, ...overrides };
@@ -36,6 +36,29 @@ describe("RootKeyboardRouter", () => {
     const h = harness(); const open = keyboard("O", { ctrlKey: true, shiftKey: true }); h.router.handleKeyDown(open.event);
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual(["document.open"]);
     const unknown = keyboard("q"); h.router.handleKeyDown(unknown.event); expect(unknown.prevented()).toBe(false);
+  });
+  it("leaves f, t, Shift+J, and Shift+K unclaimed after retiring reader hints", () => {
+    const h = harness();
+    const retired = [
+      keyboard("f"),
+      keyboard("t"),
+      keyboard("J", { shiftKey: true }),
+      keyboard("K", { shiftKey: true }),
+    ];
+    for (const value of retired) {
+      expect(h.router.handleKeyDown(value.event)).toBe(false);
+      expect(value.prevented()).toBe(false);
+    }
+    expect(h.dispatched).toEqual([]);
+  });
+  it("keeps lowercase j/k scrolling and uppercase F Fit Page routing", () => {
+    const h = harness();
+    const retained = [keyboard("j"), keyboard("k"), keyboard("F", { shiftKey: true })];
+    for (const value of retained) {
+      expect(h.router.handleKeyDown(value.event)).toBe(true);
+      expect(value.prevented()).toBe(true);
+    }
+    expect(h.dispatched).toEqual(["scroll.down", "scroll.up", "view.fitPage"]);
   });
   it.each([{ isComposing: true }, { keyCode: 229 }, { altGraph: true }, { key: "Dead" }, { ctrlKey: true, altKey: true, altGraph: true }])("leaves IME/dead/AltGraph input native-owned: %o", (overrides) => {
     const h = harness(); const value = keyboard("x", overrides); h.router.handleKeyDown(value.event);

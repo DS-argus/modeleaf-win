@@ -15,9 +15,6 @@ import {
   type PdfViewportLanding,
 } from "./PdfViewportAnchor";
 import { printPdfDocument, type PdfPrintProgress } from "./PdfPrintService";
-import { probePdfOutline, type PdfOutlineDocument, type PdfOutlineItem, type PdfOutlineProbeRow } from "./PdfOutlineProbe";
-import { readOutlineTree, type PdfOutlineAdapterDocument } from "./PdfOutlineAdapter";
-import type { RawOutlineNode } from "../domain/outlines/OutlineModel";
 import {
   checkedCanvasBytes,
   RESOURCE_LIMITS,
@@ -138,7 +135,6 @@ export interface PdfPage extends PdfContentPage {
   render(options: { readonly canvas: HTMLCanvasElement; readonly canvasContext: CanvasRenderingContext2D; readonly viewport: unknown; readonly transform?: readonly [number, number, number, number, number, number]; readonly annotationMode: number }): PdfRenderTask;
 }
 export interface PdfDocument extends PdfContentDocument {
-  getOutline?(): Promise<readonly PdfOutlineItem[] | null>;
   getPage(page: number): Promise<PdfPage>;
 }
 export interface PdfLoadingTask {
@@ -700,34 +696,6 @@ export class PdfReaderController {
 
   public residentPageNumbers(): readonly number[] {
     return Object.freeze([...(this.current?.residentRasters.keys() ?? [])].sort((a, b) => a - b));
-  }
-  /** Bounded immutable adapter for downstream outline presentation; this method creates no UI. */
-  /**
-   * Reads the embedded outline as pure-domain nodes.
-   *
-   * Returns an empty tree when the document has no outline; an outline is
-   * never generated or inferred.
-   */
-  public async readOutlineTreeNodes(): Promise<readonly RawOutlineNode[]> {
-    const current = this.current;
-    const document = current?.document;
-    if (current === undefined || document === undefined || this.disposed) return [];
-    if (typeof document.getOutline !== "function" || typeof document.getPageIndex !== "function") return [];
-    return readOutlineTree(document as unknown as PdfOutlineAdapterDocument);
-  }
-  public async readOutlineDestinations(): Promise<readonly PdfOutlineProbeRow[]> {
-    const current = this.current;
-    const document = current?.document;
-    if (current === undefined || document === undefined || this.disposed) return [];
-    if (typeof document.getOutline !== "function" || typeof document.getPageIndex !== "function") return [];
-    let rows: readonly PdfOutlineProbeRow[];
-    try {
-      rows = await probePdfOutline(document as PdfOutlineDocument);
-    } catch {
-      throw new Error("PDF_OUTLINE_UNAVAILABLE");
-    }
-    if (this.current !== current || this.disposed) return [];
-    return Object.freeze(rows.map((row) => Object.freeze({ ...row })));
   }
   public async rerenderForResize(requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     const pageNumber = this.current?.activePageNumber;

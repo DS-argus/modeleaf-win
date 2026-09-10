@@ -1,5 +1,7 @@
 # 단계별 구현 계획
 
+> 현재 Windows snapshot은 owner-approved exclusions를 적용한 50 actions(46 configurable + 4 fixed)다. 아래 macOS 61-action 기준은 immutable 원본 참조이며 Windows gate의 action count로 사용하지 않는다. TOC와 `f` 힌트 제외는 ADR 0001에 따른다.
+
 이 순서는 dependency와 가장 위험한 가정을 먼저 검증하도록 설계했다. 각 `Wxx`는 새 Windows 저장소의 독립 Issue이자 기본적으로 하나의 reviewable PR이다. 한 PR이 너무 커지면 테스트 가능한 세로 slice로 나누되 gate를 건너뛰지 않는다.
 
 명령 예시는 `pnpm` 기준이다. Windows 저장소가 이미 다른 package manager를 고정했다면 도구를 갈아엎지 말고 같은 검증 의미로 바꾼다.
@@ -431,6 +433,8 @@ PDF.js 내부 history에 의존하지 않고 search와 meaningful jumps를 trans
 
 ## W08 — Link click, hints, destination indicator
 
+> Issue #53 owner delta: 일반 annotation 링크 클릭과 목적지 표시기는 유지하며 keyboard hints는 제거한다. 아래 hint 전용 항목은 역사적 참조이고 현재 gate는 ordinary-link activation, stale/native authorization, retirement absence 및 cleanup 검증이다. `smoke-w06.ps1 -W08`은 내부 링크를 activate하고 page 2 landing을 확인한다.
+
 ### 목표
 
 PR #1/#2/#19–#23의 실패와 최종 규칙을 모두 반영한 링크 경험을 만든다.
@@ -496,6 +500,8 @@ PR #1/#2/#19–#23의 실패와 최종 규칙을 모두 반영한 링크 경험�
 - 두 번째 process가 남지 않고 path가 정확히 한 번 열린다.
 
 ## W10 — Embedded-outline pane-local TOC
+
+> Issue #53 owner delta: 이 TOC 구현 계획은 재개발 참고용으로 보존한다. 현재 Windows W10 계약은 TOC runtime/action/UI 부재와 기본 읽기 회귀 검증이다. 구현 참고는 `deferred-toc-link-hints.md`를 따른다. TOC를 다시 연결하지 않는다.
 
 ### 목표
 

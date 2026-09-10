@@ -1,5 +1,7 @@
 # 대상 아키텍처
 
+> Issue #53 owner delta: TOC와 `f` keyboard hint runtime/model/input/DOM은 제거한다. 일반 PDF 링크 클릭, native authorization, canonical destination/history, text/search ownership와 indicator는 유지한다. 아래 TOC/hint 아키텍처 설명은 immutable baseline 재개발 참고이며 현재 Windows 구성요소로 다시 연결하지 않는다. 보존 지점은 `deferred-toc-link-hints.md`를 따른다.
+
 ## 1. 결론
 
 Windows 포트는 다음 세 경계로 나눈다.
@@ -203,7 +205,7 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 
 다음은 DOM/Tauri/PDF.js import가 없는 pure modules로 만든다.
 
-- 61개 action registry와 availability
+- Windows 50개 action registry와 availability (macOS baseline 61개에서 pane 7개, TOC 3개, keyboard hint 1개 제외)
 - 네 입력 context: `navigation`, `pagePrompt`, `searchPrompt`, `searchResults`
 - key token/parser/sequence trie/prefix timer
 - prompt lifecycle 및 IME/dead-key bypass 판단

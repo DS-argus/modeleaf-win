@@ -29,7 +29,6 @@ type SessionInternals = {
     snapshot: SearchSnapshot;
     nextMatch: (reverse: boolean) => unknown;
     search: (query: string) => Promise<void>;
-    handleHintKey: (key: string) => boolean;
     suspend: () => void;
     resumeInteractions: () => void;
     restoreEvictedSearch: () => Promise<void>;
@@ -41,7 +40,8 @@ type SessionInternals = {
     activateResidentPage: (page: number) => boolean;
     activateVisiblePages: (pages: readonly number[]) => number;
     clearVisibleLinkAuthority: () => void;
-    dismissLinkDecorations: () => void;
+    linkIndicatorVisible: boolean;
+    dismissLinkIndicator: () => void;
     evictInactiveHeavyResources: () => boolean;
   };
   pdfReader: {
@@ -50,6 +50,7 @@ type SessionInternals = {
     getPageTopLanding: (page: number, transform: unknown, guard: () => boolean) => Promise<{ pageIndex: number; x: number; y: number } | undefined>;
     getPageNaturalSize: (page: number, rotation: number, guard: () => boolean) => Promise<{ width: number; height: number } | undefined>;
     suspend: () => Promise<void>;
+    resolvePageReference: (reference: unknown, guard: () => boolean) => Promise<number | null>;
     captureViewportLanding: () => { pageIndex: number; x: number; y: number } | undefined;
     restoreViewportLanding: (target: { pageIndex: number; x: number; y: number }, guard: () => boolean, transform?: unknown, placement?: "center" | "page-top") => Promise<
       | { kind: "verified" | "constrainedEdgeVerified"; landing: { pageIndex: number; x: number; y: number } }
@@ -75,7 +76,6 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     snapshot,
     nextMatch: vi.fn(),
     search: vi.fn(async () => undefined),
-    handleHintKey: vi.fn(() => false),
     suspend: vi.fn(),
     resumeInteractions: vi.fn(),
     restoreEvictedSearch: vi.fn(async () => undefined),
@@ -88,7 +88,8 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     activateResidentPage: vi.fn(() => true),
     activateVisiblePages: vi.fn(() => 0),
     clearVisibleLinkAuthority: vi.fn(),
-    dismissLinkDecorations: vi.fn(),
+    linkIndicatorVisible: false,
+    dismissLinkIndicator: vi.fn(),
     evictInactiveHeavyResources: vi.fn(() => true),
   };
   (session as unknown as SessionInternals).content = content;
@@ -308,7 +309,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(content.activateVisiblePages).toHaveBeenLastCalledWith([1, 2]);
 
     session.apply({ type: "page.next" });
-    expect(content.dismissLinkDecorations).toHaveBeenCalledOnce();
+    expect(content.dismissLinkIndicator).toHaveBeenCalledOnce();
     session.clearVisibleLinkAuthority();
     expect(content.clearVisibleLinkAuthority).toHaveBeenCalledOnce();
   });
@@ -585,16 +586,19 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.snapshot.reader.page).toBe(2);
     expect(statuses).toEqual([openingStatus, session.snapshot.status]);
   });
-  it("forwards active hint keys but ignores inactive tabs", async () => {
+  it("forwards active indicator dismissal but ignores inactive tabs", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
-    expect(session.handleHintKey("A")).toBe(false);
-    session.activate();
-    content.handleHintKey.mockReturnValue(true);
-    expect(session.handleHintKey("A")).toBe(true);
-    expect(content.handleHintKey).toHaveBeenCalledWith("A");
+    session.dismissLinkIndicator();
+    expect(content.dismissLinkIndicator).not.toHaveBeenCalled();
+    await session.activate();
+    content.linkIndicatorVisible = true;
+    expect(session.linkIndicatorVisible).toBe(true);
+    session.dismissLinkIndicator();
+    expect(content.dismissLinkIndicator).toHaveBeenCalledOnce();
     await session.deactivate();
-    expect(session.handleHintKey("S")).toBe(false);
+    session.dismissLinkIndicator();
+    expect(content.dismissLinkIndicator).toHaveBeenCalledOnce();
     expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
   });
   it("rolls activity back when native resident publication fails", async () => {
@@ -883,6 +887,25 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       .onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
     expect(content.resumeInteractions).toHaveBeenCalled();
   });
+  it("guards ordinary PDF page-reference resolution with foreground ownership", async () => {
+    const session = createSession();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    const reference = Object.freeze({ num: 8, gen: 0 });
+    const resolve = vi.spyOn(reader, "resolvePageReference")
+      .mockImplementation(async (_reference, guard) => guard() ? 2 : null);
+
+    await expect(session.resolveDestinationPage(reference)).resolves.toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    await session.activate();
+    await expect(session.resolveDestinationPage(reference)).resolves.toBe(2);
+    expect(resolve).toHaveBeenCalledWith(reference, expect.any(Function));
+    const ownershipGuard = resolve.mock.calls[0]?.[1];
+    expect(ownershipGuard?.()).toBe(true);
+    await session.deactivate();
+    expect(ownershipGuard?.()).toBe(false);
+    await expect(session.resolveDestinationPage(reference)).resolves.toBeNull();
+    expect(resolve).toHaveBeenCalledOnce();
+  });
   it("commits one verified point destination and records its origin for Back", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
@@ -899,7 +922,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     let activationCurrent = true;
     content.cancelDestination.mockImplementation((_intentId, preserveLinkActivation) => { if (!preserveLinkActivation) activationCurrent = false; });
 
-    const result = await session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "link-hint", () => activationCurrent);
+    const result = await session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "internal-link", () => activationCurrent);
     expect(result).toEqual({ kind: "verified", point: { pageNumber: 2, x: 20, y: 30 } });
     expect(content.queueDestination).toHaveBeenCalledOnce();
     expect(activationCurrent).toBe(true);

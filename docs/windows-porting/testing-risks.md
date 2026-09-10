@@ -347,10 +347,10 @@ markdown-links-and-diff-check
 - monitor-to-monitor DPI move
 - zoom/fit/rotation/anchor
 - search replacement/wrap/clear
-- URL/GoTo/hints/indicator
+- URL/GoTo ordinary clicks and destination indicator; no keyboard-hint UI
 - selection/Copy-only context menu
-- 1–4 panes/tabs/two windows
-- embedded-outline TOC: no-outline, wrapper/two-depth, invalid rows, numeric 399/400ms, pointer/Narrator, 1–4 pane isolation
+- tabs and two independent windows; panes are excluded by ADR 0001
+- retired TOC/hints absent; default t/J/K/f unassigned while j/k/F remain functional
 
 ### Windows integration
 
@@ -390,7 +390,7 @@ markdown-links-and-diff-check
 
 ## 12. Issue #53 reader-stability revalidation
 
-The development-only `tools/qa/reader-stability.html` harness runs the real PDF.js loader, raster/text layers, `PdfTabSession`, navigation, and search against `fixture-L-text-300.pdf`. Its native boundary is in memory, external activation is refused, and it neither starts Modeleaf nor accesses durable user state. Serve the worktree with `npm run dev -- --host 127.0.0.1 --port 1433 --strictPort`; in hidden Chromium open `/tools/qa/reader-stability.html` and call one scenario per fresh page load:
+The development-only `tools/qa/reader-stability.html` harness runs real PDF.js raster/text layers, `PdfTabSession`, navigation, search and ordinary links against committed fixtures. Its native boundary is in memory; no external URL is actually opened. It neither starts Modeleaf nor accesses durable user state. Serve the worktree with `npm run dev -- --host 127.0.0.1 --port 1433 --strictPort`; in hidden Chromium open `/tools/qa/reader-stability.html` and call one scenario per fresh page load:
 
 - `await window.readerHarness.run()`: initial top, 12 forward movements, repeated end-of-document movements, 12 reverse movements, stable document extent, and empty-resource teardown.
 - `await window.readerHarness.runNavigation()`: 30 adjacent requests (at most active plus latest pending), mixed first/last/opposite commands, one-page Fit, eight alternating zoom changes, and teardown.
@@ -403,6 +403,8 @@ Follow-up scenarios additionally cover the previously missed shell transition:
 - `await window.readerHarness.runChrome()`: dev-transformed production chooser/tab renderer fragments, filenames of different lengths, exact 184×26 tab slots, long tab-name ellipsis, selected-tab horizontal visibility, borderless glyph-free Browse with keyboard focus indication, conditional Recent divider, and display-only full Recent paths. It checks directory middle-ellipsis, complete Unicode filenames, measured font reduction and restoration after resize, full accessible paths, and minimum-window/forced-color containment. `docs/evidence/issue53-recent-paths.json` records the measured layout and the corrected intrinsic-grid-width regression. This is isolated component evidence, not full native shell automation.
 - Inject a final presentation failure after initial adoption commits. `OpenAdoptionOwnership.test.ts` executes the production adoption/terminal function bodies with the real workspace queue: retain the candidate descriptor until rejection, close it once on terminal rollback, publish the replacement before activation, and preserve the sanitized diagnostic.
 
+- `await window.readerHarness.runLinks()`: actual `links.pdf` annotation-button clicks, four neutral `PDF link N` targets, no TOC/hint DOM/style/API, mocked native external receipt without opening a URL, verified internal page-two landing/history/indicator, and empty-resource teardown. Fixture SHA-256: `dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4`. Registry publication must await native external dispatches without waiting on the internal navigation that requires that same publication; unmount must still retain all raw activation ownership.
+- `retiredReaderFeatures.test.ts` dispatches Escape from focused dialog/editable controls after late indicator publication. Overlay/input ownership wins over indicator dismissal; unmodified reader Escape still dismisses a visible indicator.
 Fixture SHA-256: `91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab`. Keep source bytes unchanged. The harness is not a packaged transport benchmark or a substitute for the Windows matrix above.
 
 Before restoring parity for the revised reader, separately authorize and retain packaged Windows evidence for: initial top/fit and mixed keyboard input, wheel/d/u at both edges, F then repeated +/- at supported DPI/rotation, cross-page search and query cancellation, and Ctrl+Shift+O → Ctrl+Shift+C with recent-state broadcast/restart behavior. Use disposable state for recent clearing; it must not erase PDFs, theme, indicator settings, or unknown state siblings. Rust fault tests additionally cover malformed state and pre-replace failure with durable/cache/revision rollback. Do not launch/stop an existing application or claim these native checks passed from Chromium/JSDOM results.

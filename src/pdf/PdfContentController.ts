@@ -4,7 +4,6 @@ import {
   type ResourceReservation,
   ResourceReservationManager,
 } from "./ResourceBudget";
-import { appendHintInput, generateHintLabels, type HintKeyInput } from "../domain/links/LinkHints";
 import { DEFAULT_INDICATOR_SETTINGS, validateIndicatorSettings, type IndicatorSettings } from "../domain/links/IndicatorSettings";
 import { isValidPdfDestination } from "./PdfDestination";
 export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: boolean; readonly fontName?: string; readonly dir?: string; readonly transform?: readonly number[]; readonly width?: number; readonly height?: number; readonly [key: string]: unknown; }
@@ -15,7 +14,7 @@ export interface PdfContentDocument { readonly numPages: number; getPage(pageNum
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
-export type PdfLinkActivationCause = "internal-link" | "link-hint" | "outline";
+export type PdfLinkActivationCause = "internal-link";
 export type PdfDestinationNavigationOutcome =
   | { readonly kind: "verified"; readonly point?: { readonly pageNumber: number; readonly x: number; readonly y: number } }
   | { readonly kind: "rejected" | "same-location" | "stale" | "failed" };
@@ -50,8 +49,6 @@ export interface PdfContentSnapshot {
   readonly currentResult: number;
   readonly searchPending: boolean;
   readonly searchIncomplete: boolean;
-  readonly hintsVisible: boolean;
-  readonly visibleLinkCount: number;
 }
 
 interface ResidentContentEntry {
@@ -62,7 +59,7 @@ interface ResidentContentEntry {
   readonly viewport: PdfContentViewport;
   readonly canvas: HTMLCanvasElement;
   readonly reservation: ResourceReservation;
-  readonly hintGroups: LinkGroup[];
+  readonly linkGroups: LinkGroup[];
 }
 
 interface LinkGroup {
@@ -70,7 +67,6 @@ interface LinkGroup {
   readonly key: string;
   readonly annotation: PdfContentAnnotation;
   readonly annotationId: string;
-  hintLabel: string;
   registryRevision: number | undefined;
   readonly rectangles: readonly DOMRect[];
 }
@@ -345,16 +341,15 @@ export class PdfContentController {
     readonly message: string;
   } | undefined;
   private partialSearchReason: string | undefined;
-  private hintsVisible = false;
   private interactionsEnabled = true;
   private interactionEpoch = 0;
   private registryQuarantined: { readonly revision: number; readonly reason: unknown } | undefined;
   private readonly publishedRegistryFinalizers = new Map<number, PublishedRegistryFinalizer>();
   private unsettledVisibleTextCleanup: Promise<void> | undefined;
-  private hintGroups: LinkGroup[] = [];
+  private visibleLinkGroups: LinkGroup[] = [];
   private readonly visiblePageNumbers = new Set<number>();
-  private hintInput = "";
   private readonly linkActivationSettlements = new Set<Promise<void>>();
+  private readonly externalDispatchSettlements = new Set<Promise<void>>();
   private readonly deferredRegistryCleanups = new Map<number, DeferredRegistryCleanup>();
   private mountedEpoch = 0;
   private closingEpoch: number | undefined;
@@ -370,12 +365,11 @@ export class PdfContentController {
       currentResult: this.currentResult,
       searchPending: this.searchPending,
       searchIncomplete: this.searchIncomplete,
-      hintsVisible: this.hintsVisible, visibleLinkCount: this.hintGroups.length,
     };
   }
 
   public mount(document: PdfContentDocument, generation: number, sessionId: string): void {
-    this.dismissLinkDecorations();
+    this.dismissLinkIndicator();
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
@@ -400,7 +394,7 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
-    this.dismissLinkDecorations();
+    this.dismissLinkIndicator();
     this.interactionsEnabled = false;
     this.interactionEpoch += 1;
     this.renderSequence += 1;
@@ -448,7 +442,7 @@ export class PdfContentController {
   }
 
   public async unmount(): Promise<void> {
-    this.dismissLinkDecorations();
+    this.dismissLinkIndicator();
     this.closingEpoch = this.mountedEpoch;
     const document = this.document;
     const generation = this.generation;
@@ -619,7 +613,7 @@ export class PdfContentController {
       annotationLayer.style.height = `${request.viewport.height}px`;
       if (!this.isCurrent(generation, document) || sequence !== this.renderSequence) return;
       layer.append(textLayer, annotationLayer);
-      const hintGroups = await awaitOwned(
+      const linkGroups = await awaitOwned(
         this.appendLinkGroups(annotationLayer, annotations, request.viewport, request.pageNumber, sequence, generation, document),
         Math.max(1, deadline - Date.now()),
       );
@@ -653,9 +647,9 @@ export class PdfContentController {
       }
       const presentationRoot = textLayer.closest<HTMLElement>(".pdf-page-frame") ?? layer;
       for (const [residentPage, entry] of this.residentEntries) {
-        if (retainedPages.has(residentPage)) for (const group of entry.hintGroups) group.registryRevision = registryPublication.revision;
+        if (retainedPages.has(residentPage)) for (const group of entry.linkGroups) group.registryRevision = registryPublication.revision;
       }
-      hintGroups.forEach((group) => { group.registryRevision = registryPublication!.revision; });
+      linkGroups.forEach((group) => { group.registryRevision = registryPublication!.revision; });
       const previousEntry = this.residentEntries.get(request.pageNumber);
       if (previousEntry !== undefined) this.evictPage(request.pageNumber);
       this.externalEntriesByPage = nextExternalEntries;
@@ -667,10 +661,10 @@ export class PdfContentController {
       this.visibleTextReservation = undefined;
       this.residentEntries.set(request.pageNumber, {
         pageNumber: request.pageNumber, layer: presentationRoot, textLayer, annotationLayer, viewport: request.viewport,
-        canvas: request.canvas, reservation: reserved.reservation, hintGroups,
+        canvas: request.canvas, reservation: reserved.reservation, linkGroups,
       });
       if (this.visiblePageNumbers.size === 0 && this.residentEntries.size === 1) this.visiblePageNumbers.add(request.pageNumber);
-      this.updateHintVisibility();
+      this.refreshVisibleLinks();
       ownsReservation = false;
       this.renderedPage = request.pageNumber;
       this.evictedPage = undefined;
@@ -713,7 +707,7 @@ export class PdfContentController {
     this.renderedCanvas = entry.canvas;
     this.renderedPage = entry.pageNumber;
     try {
-      this.updateHintVisibility();
+      this.refreshVisibleLinks();
       this.applyHighlights();
     } catch (error) {
       this.options.onStatus(`PDF resident decoration limited: ${error instanceof Error ? error.message : String(error)}`);
@@ -727,38 +721,30 @@ export class PdfContentController {
     pageNumbers.forEach((page) => this.visiblePageNumbers.add(page));
     const groups = [...this.residentEntries.values()]
       .filter((entry) => visible.has(entry.pageNumber))
-      .flatMap((entry) => entry.hintGroups)
+      .flatMap((entry) => entry.linkGroups)
       .sort((left, right) => left.pageNumber - right.pageNumber
         || this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!)
         || this.compareStrings(left.key, right.key)
         || this.compareStrings(left.annotationId, right.annotationId));
-    const hasSameOrderedGroups = groups.length === this.hintGroups.length
-      && groups.every((group, index) => group === this.hintGroups[index]);
-    this.hintGroups = groups;
-    if (!hasSameOrderedGroups) {
-      const labels = generateHintLabels(groups.length);
-      groups.forEach((group, index) => { group.hintLabel = labels[index]!; });
-    }
-    const labelById = new Map(groups.map((group) => [group.annotationId, group.hintLabel] as const));
+    this.visibleLinkGroups = groups;
+    const indexByAnnotationId = new Map(groups.map((group, index) => [group.annotationId, index + 1] as const));
     for (const entry of this.residentEntries.values()) {
-      entry.annotationLayer.querySelectorAll<HTMLElement>("[data-annotation-id]").forEach((element) => {
-        const label = labelById.get(element.dataset.annotationId ?? "");
-        if (element.classList.contains("pdf-link-hint")) {
-          element.textContent = label ?? "";
-          element.dataset.hintLabel = label ?? "";
-          element.style.display = this.hintsVisible && label !== undefined ? "block" : "none";
-        } else if (label !== undefined) {
-          element.dataset.hintTarget = label;
-          element.setAttribute("aria-label", `PDF link ${label}`);
+      entry.annotationLayer.querySelectorAll<HTMLElement>(".pdf-link-overlay[data-annotation-id]").forEach((element) => {
+        const index = indexByAnnotationId.get(element.dataset.annotationId ?? "");
+        if (index === undefined) {
+          delete element.dataset.linkIndex;
+          element.setAttribute("aria-label", "PDF link");
+        } else {
+          element.dataset.linkIndex = String(index);
+          element.setAttribute("aria-label", `PDF link ${index}`);
         }
       });
-      entry.layer.classList.toggle("pdf-link-hints-active", this.hintsVisible && entry.hintGroups.some((group) => labelById.has(group.annotationId)));
     }
     return groups.length;
   }
   /** Releases one resident page's overlays and reservation without disturbing siblings. */
   public evictPage(pageNumber: number): boolean {
-    const remainingVisiblePages = [...new Set(this.hintGroups.filter((group) => group.pageNumber !== pageNumber).map((group) => group.pageNumber))];
+    const remainingVisiblePages = [...new Set(this.visibleLinkGroups.filter((group) => group.pageNumber !== pageNumber).map((group) => group.pageNumber))];
     const entry = this.residentEntries.get(pageNumber);
     if (entry === undefined) return false;
     this.residentEntries.delete(pageNumber);
@@ -774,9 +760,7 @@ export class PdfContentController {
       this.renderedViewport = undefined;
       this.renderedCanvas = undefined;
       this.renderedPage = undefined;
-      this.hintGroups = [];
-      this.hintsVisible = false;
-      this.hintInput = "";
+      this.visibleLinkGroups = [];
     }
     this.activateVisiblePages(remainingVisiblePages);
     return true;
@@ -786,7 +770,7 @@ export class PdfContentController {
     const pages = new Set(pageNumbers);
     if ([...pages].some((page) => !Number.isSafeInteger(page) || page < 1)) throw new Error("PDF_RESIDENT_PAGE_INVALID");
     const priorRevisions = new Map<LinkGroup, number | undefined>();
-    for (const entry of this.residentEntries.values()) for (const group of entry.hintGroups) priorRevisions.set(group, group.registryRevision);
+    for (const entry of this.residentEntries.values()) for (const group of entry.linkGroups) priorRevisions.set(group, group.registryRevision);
     const publication = this.stageExternalLinks(
       [...this.externalEntriesByPage].filter(([page]) => pages.has(page)).flatMap(([, entries]) => entries),
       Date.now() + SEARCH_TIMEOUT_MS,
@@ -799,7 +783,7 @@ export class PdfContentController {
       throw error;
     }
     for (const [page, entry] of this.residentEntries) {
-      if (pages.has(page)) for (const group of entry.hintGroups) group.registryRevision = publication.revision;
+      if (pages.has(page)) for (const group of entry.linkGroups) group.registryRevision = publication.revision;
     }
     let finalized = false;
     return {
@@ -1251,35 +1235,19 @@ export class PdfContentController {
     this.currentResult = index; this.pendingResultIndex = undefined; this.reportCurrentMatch(""); this.applyHighlights(); return result;
   }
 
-  public toggleHints(): void {
-    if (!this.hintsVisible && this.hintGroups.length === 0) {
-      this.options.onStatus("No links are available on this page.");
-      return;
-    }
-    this.hintsVisible = !this.hintsVisible;
-    this.hintInput = "";
-    this.updateHintVisibility();
-  }
-
-  public cancelHints(): void {
-    this.hintsVisible = false;
-    this.hintInput = "";
-    this.updateHintVisibility();
-  }
   public clearVisibleLinkAuthority(): void {
     this.visiblePageNumbers.clear();
-    this.hintsVisible = false;
-    this.hintInput = "";
-    this.hintGroups = [];
+    this.visibleLinkGroups = [];
     for (const entry of this.residentEntries.values()) {
-      entry.annotationLayer.querySelectorAll<HTMLElement>("[data-hint-label]").forEach((hint) => { hint.style.display = "none"; });
-      entry.layer.classList.remove("pdf-link-hints-active");
+      entry.annotationLayer.querySelectorAll<HTMLElement>(".pdf-link-overlay[data-annotation-id]").forEach((element) => {
+        delete element.dataset.linkIndex;
+        element.setAttribute("aria-label", "PDF link");
+      });
     }
   }
   public get indicatorPublicationPending(): boolean { return this.indicatorPublishTimer !== undefined; }
-  public get linkDecorationsVisible(): boolean { return this.hintsVisible || this.indicatorElement !== undefined; }
-  public dismissLinkDecorations(): void {
-    this.cancelHints();
+  public get linkIndicatorVisible(): boolean { return this.indicatorElement !== undefined; }
+  public dismissLinkIndicator(): void {
     this.indicatorGeneration += 1;
     if (this.indicatorPublishTimer !== undefined) clearTimeout(this.indicatorPublishTimer);
     this.indicatorPublishTimer = undefined;
@@ -1290,7 +1258,7 @@ export class PdfContentController {
   }
 
   private showDestinationIndicator(point: { readonly pageNumber: number; readonly x: number; readonly y: number }): void {
-    this.dismissLinkDecorations();
+    this.dismissLinkIndicator();
     const entry = this.residentEntries.get(point.pageNumber);
     if (entry === undefined) return;
     const configured = this.options.indicatorSettings?.() ?? DEFAULT_INDICATOR_SETTINGS;
@@ -1330,29 +1298,6 @@ export class PdfContentController {
       this.indicatorTimer = undefined;
     }, settings.durationMilliseconds);
   }
-  public handleHintKey(input: string | HintKeyInput): boolean {
-    const event = typeof input === "string" ? { key: input } : input;
-    if (event.ctrlKey || event.altKey || event.metaKey || event.altGraph || event.isComposing || event.keyCode === 229
-      || event.key === "Dead" || event.key === "Process" || event.key === "Unidentified") return false;
-    if (!this.hintsVisible && !(event.key === "Escape" && this.indicatorElement !== undefined)) return false;
-    if (event.key === "Escape") { this.dismissLinkDecorations(); return true; }
-    if (event.key === "Backspace") {
-      this.hintInput = this.hintInput.slice(0, -1);
-      return true;
-    }
-    const next = appendHintInput(this.hintInput, event);
-    if (next === null) return true;
-    const matches = this.hintGroups.map((group, index) => ({ index, label: group.hintLabel }))
-      .filter((candidate) => candidate.label.startsWith(next));
-    if (matches.length === 0) return true;
-    if (matches.length === 1) {
-      void this.activateLink(this.hintGroups[matches[0]!.index]!, "link-hint");
-      this.cancelHints();
-      return true;
-    }
-    this.hintInput = next;
-    return true;
-  }
   private async appendLinkGroups(
     layer: HTMLElement,
     annotations: readonly PdfContentAnnotation[],
@@ -1381,13 +1326,12 @@ export class PdfContentController {
         key: candidate.key,
         annotation: candidate.annotation,
         annotationId: candidate.annotationId,
-        hintLabel: "",
         registryRevision: undefined,
         rectangles: [candidate.rect],
       });
     }
-    const hintGroups = groups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!) || this.compareStrings(left.key, right.key) || this.compareStrings(left.annotationId, right.annotationId));
-    hintGroups.forEach((group) => {
+    const linkGroups = groups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!) || this.compareStrings(left.key, right.key) || this.compareStrings(left.annotationId, right.annotationId));
+    linkGroups.forEach((group) => {
       group.rectangles.forEach((rect) => {
         const target = documentCreate("button", "pdf-link-overlay");
         target.type = "button";
@@ -1397,9 +1341,8 @@ export class PdfContentController {
         target.style.width = `${rect.width}px`;
         target.style.height = `${rect.height}px`;
         target.style.pointerEvents = "auto";
-        target.dataset.hintTarget = group.hintLabel;
         target.dataset.annotationId = group.annotationId;
-        target.setAttribute("aria-label", `PDF link ${group.hintLabel}`);
+        target.setAttribute("aria-label", "PDF link");
         const annotationColor = group.annotation.color;
         if (annotationColor !== undefined && annotationColor.length >= 3) {
           const channels = [annotationColor[0], annotationColor[1], annotationColor[2]].map(Number);
@@ -1417,19 +1360,8 @@ export class PdfContentController {
         });
         layer.append(target);
       });
-      const first = group.rectangles[0];
-      if (first === undefined) return;
-      const hint = documentCreate("span", "pdf-link-hint");
-      hint.textContent = group.hintLabel;
-      hint.dataset.hintLabel = group.hintLabel;
-      hint.dataset.annotationId = group.annotationId;
-      hint.style.position = "absolute";
-      hint.style.left = `${first.left}px`;
-      hint.style.top = `${first.top}px`;
-      hint.style.display = this.hintsVisible ? "block" : "none";
-      layer.append(hint);
     });
-    return hintGroups;
+    return linkGroups;
   }
 
   private async activateLink(group: LinkGroup, cause: PdfLinkActivationCause): Promise<void> {
@@ -1444,8 +1376,8 @@ export class PdfContentController {
       && this.interactionsEnabled
       && this.isCurrent(generation, document);
     const isActive = (): boolean => isOwnerActive()
-      && this.hintGroups.includes(group)
-      && this.residentEntries.get(group.pageNumber)?.hintGroups.includes(group) === true;
+      && this.visibleLinkGroups.includes(group)
+      && this.residentEntries.get(group.pageNumber)?.linkGroups.includes(group) === true;
 
     if (annotation.url !== undefined) {
       if (!isExternalUrl(annotation.url)) { this.options.onStatus("Unsupported PDF link destination."); this.markLinkOutcome(group, "unsupported"); }
@@ -1458,7 +1390,7 @@ export class PdfContentController {
         } catch (error) {
           rawActivation = Promise.reject(error);
         }
-        this.trackLinkActivation(rawActivation.then(() => undefined, () => undefined));
+        this.trackLinkActivation("external", rawActivation.then(() => undefined, () => undefined));
         this.reportLinkActivation(
           this.withDeadline(rawActivation, LINK_ACTIVATION_TIMEOUT_MS, "LINK_LAUNCH_TIMEOUT"),
           operationSequence,
@@ -1470,13 +1402,13 @@ export class PdfContentController {
       return;
     }
     if (annotation.action !== undefined || annotation.dest === undefined) {
-      if (this.hintGroups.includes(group)) { this.options.onStatus("Unsupported PDF link action."); this.markLinkOutcome(group, "unsupported"); }
+      if (this.visibleLinkGroups.includes(group)) { this.options.onStatus("Unsupported PDF link action."); this.markLinkOutcome(group, "unsupported"); }
       return;
     }
 
     let releaseSettlement!: () => void;
     const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
-    this.trackLinkActivation(settlement);
+    this.trackLinkActivation("internal", settlement);
     let rawSettlement = Promise.resolve();
     const deadline = Date.now() + LINK_ACTIVATION_TIMEOUT_MS;
     const remaining = (): number => {
@@ -1619,7 +1551,7 @@ export class PdfContentController {
     return left < right ? -1 : left > right ? 1 : 0;
   }
 
-  private updateHintVisibility(): void {
+  private refreshVisibleLinks(): void {
     const pages = [...this.visiblePageNumbers];
     this.activateVisiblePages(pages);
   }
@@ -1696,8 +1628,8 @@ export class PdfContentController {
       operation = foreground.then(() => undefined, () => undefined);
       return foreground;
     };
-    const awaitPendingActivations = (): Promise<void> => {
-      const settlements = [...this.linkActivationSettlements];
+    const awaitPendingExternalDispatches = (): Promise<void> => {
+      const settlements = [...this.externalDispatchSettlements];
       return settlements.length === 0 ? Promise.resolve() : Promise.allSettled(settlements).then(() => undefined);
     };
     const staged = enqueue(async () => {
@@ -1705,7 +1637,7 @@ export class PdfContentController {
         terminate();
         throw new Error("PDF link registry is quarantined until unmount.");
       }
-      await this.withDeadline(awaitPendingActivations(), remaining(), "PDF link registry publication timed out.");
+      await this.withDeadline(awaitPendingExternalDispatches(), remaining(), "PDF link registry publication timed out.");
       remaining();
       if (this.isClosing() || this.registryQuarantined !== undefined) {
         terminate();
@@ -1767,7 +1699,7 @@ export class PdfContentController {
           }
           remaining();
           if (phase !== "committed") throw new Error("LINK_REGISTRY_PHASE");
-          await this.withDeadline(awaitPendingActivations(), remaining(), "PDF link registry publication timed out.");
+          await this.withDeadline(awaitPendingExternalDispatches(), remaining(), "PDF link registry publication timed out.");
           if (this.isClosing()) {
             this.retainSkippedPublishedRegistryFinalizer(revision, undefined);
             terminate();
@@ -1972,13 +1904,15 @@ export class PdfContentController {
     this.renderedCanvas = undefined;
     this.visibleTextReservation = undefined;
     this.renderedPage = undefined;
-    this.hintGroups = [];
-    this.hintsVisible = false;
-    this.hintInput = "";
+    this.visibleLinkGroups = [];
   }
-  private trackLinkActivation(settlement: Promise<void>): void {
+  private trackLinkActivation(kind: "internal" | "external", settlement: Promise<void>): void {
     this.linkActivationSettlements.add(settlement);
-    void settlement.then(() => this.linkActivationSettlements.delete(settlement));
+    if (kind === "external") this.externalDispatchSettlements.add(settlement);
+    void settlement.then(() => {
+      this.linkActivationSettlements.delete(settlement);
+      if (kind === "external") this.externalDispatchSettlements.delete(settlement);
+    });
   }
 
   private deferRegistryCleanup(revision: number, operation: Promise<void>): void {
@@ -2069,7 +2003,9 @@ export class PdfContentController {
     for (const entry of this.residentEntries.values()) {
       for (const target of entry.layer.querySelectorAll<HTMLElement>(".pdf-link-overlay")) {
         if (target.dataset.annotationId !== group.annotationId) continue;
-        target.setAttribute("aria-label", `PDF link ${target.dataset.hintTarget ?? ""} ${outcome}`.trim());
+        const index = target.dataset.linkIndex;
+        const label = index === undefined ? "PDF link" : `PDF link ${index}`;
+        target.setAttribute("aria-label", `${label} ${outcome}`);
       }
     }
   }

@@ -28,10 +28,6 @@ import { CLOSED_THEME_PICKER, THEME_PICKER_FOOTER, THEME_PICKER_ROWS, commitThem
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
-import { TocController } from "./ui/reader/TocController";
-import { TocWidgetView } from "./ui/reader/TocWidgetView";
-import { normalizeOutline, type OutlineRow } from "./domain/outlines/OutlineModel";
-import { readOutlineTree, type PdfOutlineAdapterDocument } from "./pdf/PdfOutlineAdapter";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
@@ -54,8 +50,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
-  "toc.toggle", "toc.scrollDown", "toc.scrollUp",
-  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
+  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "config.writeDefault", "config.resetDefault", "theme.picker",
   "config.reload", "indicator.picker", "update.show",
   "history.back", "history.forward",
@@ -177,8 +172,7 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
 const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu, onCommand: (actionId) => dispatchActionId(actionId as ActionId) });
 function claimOverlay(id: OverlayId): void {
   applicationMenuOwner.close();
-  active().toc.cancelPending();
-  active().session.dismissLinkDecorations();
+  active().session.dismissLinkIndicator();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
   const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const activePrompt = pagePromptTransaction;
@@ -344,7 +338,7 @@ const native = {
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
 };
 
-type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly toc: TocController; readonly tocView: TocWidgetView; readonly disposeUi: () => void };
+type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly disposeUi: () => void };
 let workspace!: TabWorkspace<TabPayload>;
 const resources = new ResourceReservationManager((needed) => {
   if (workspace === undefined || !["canvas-bytes", "canvas-cache-bytes", "text-page-bytes", "text-document-bytes", "text-process-bytes", "search-document-results", "search-process-results", "search-extractor"].includes(needed.kind)) return;
@@ -443,7 +437,6 @@ function commandAvailabilityContext(): ActionRuntimeContext {
     searchActive: active().session.query.length > 0,
     canHistoryBack: active().session.canHistoryBack,
     canHistoryForward: active().session.canHistoryForward,
-    linkCount: active().session.visibleLinkCount,
     implementedActionIds: IMPLEMENTED_ACTION_IDS,
   };
 }
@@ -579,7 +572,6 @@ function createTab(): TabPayload {
       if (content.query !== "" && !content.searchPending && !content.searchIncomplete) {
         accessibility.announce({ kind: "search", generation: reader.documentGeneration, current: content.results.length === 0 ? 0 : content.currentResult + 1, total: content.results.length });
       }
-      accessibility.announce({ kind: "link-hints", generation: reader.documentGeneration, visible: content.hintsVisible, count: content.hintsVisible ? host.querySelectorAll(".pdf-link-hint").length : 0 });
     },
   });
   host.addEventListener("wheel", (event) => {
@@ -625,80 +617,21 @@ function createTab(): TabPayload {
   };
   const onReaderScroll = (): void => {
     if (session.navigationLandingInProgress) return;
-    if (!session.indicatorPublicationPending) session.dismissLinkDecorations();
+    if (!session.indicatorPublicationPending) session.dismissLinkIndicator();
     session.clearVisibleLinkAuthority();
     if (session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
   queueMicrotask(scheduleViewportSync);
-  const toc = new TocController({
-    clock: {
-      now: () => performance.now(),
-      schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
-      cancel: (handle) => { window.clearTimeout(handle); },
-    },
-    onActivate: ({ row }) => { void activateOutlineRow(session, row); },
-    onChange: () => { if (active().session === session) renderToc(); },
-  });
-  const tocView = new TocWidgetView({
-    host,
-    onActivateRow: (row) => { toc.activateRow(row); },
-  });
-  return { host, session, toc, tocView, disposeUi: () => {
+  return { host, session, disposeUi: () => {
     viewportDisposed = true;
     if (viewportFrameRequest !== undefined) window.cancelAnimationFrame(viewportFrameRequest);
     host.removeEventListener("scroll", onReaderScroll);
     copyContextMenu.dispose();
-    toc.dispose();
-    tocView.dispose();
   } };
 }
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
 active().session.activate();
-/** Re-raises and repaints the active tab's TOC so it never sinks below a replaced canvas. */
-function renderToc(): void {
-  const current = active();
-  current.toc.setContainerSize({ width: current.host.clientWidth, height: current.host.clientHeight });
-  current.tocView.raise();
-  current.tocView.render(current.toc.view());
-}
-
-/**
- * Loads the embedded outline for a session and hands it to its TOC.
- *
- * A PDF without an outline yields an empty list and the widget shows its empty
- * state; no outline is ever inferred.
- */
-const outlineLoadGenerations = new WeakMap<TabPayload, number>();
-async function loadOutline(session: PdfTabSession, payload: TabPayload): Promise<void> {
-  const generation = session.snapshot.reader.documentGeneration;
-  if (!session.snapshot.reader.hasDocument || outlineLoadGenerations.get(payload) === generation) return;
-  outlineLoadGenerations.set(payload, generation);
-  const current = (): boolean => session.snapshot.reader.hasDocument && session.snapshot.reader.documentGeneration === generation
-    && workspace.snapshot.tabs.some((tab) => tab.payload === payload);
-  try {
-    const outline = normalizeOutline(await session.readOutlineTreeNodes());
-    if (current()) payload.toc.setOutline(outline);
-  } catch {
-    if (current()) { payload.toc.setOutline([]); outlineLoadGenerations.delete(payload); }
-  }
-}
-/** Activates one outline row through the app-owned verified navigation transaction. */
-async function activateOutlineRow(session: PdfTabSession, row: OutlineRow): Promise<void> {
-  const destination = row.destination;
-  if (destination === undefined) return;
-  if (active().session !== session) return;
-  try {
-    await session.navigateToDestination(
-      destination.pageIndex + 1,
-      [destination.pageIndex, { name: "XYZ" }, destination.x, destination.y, null],
-      "outline",
-    );
-  } catch (error: unknown) {
-    reportPresentationFailure(session, error);
-  }
-  render();
-}
 
 let indicatorPicker: IndicatorPickerModel = CLOSED_INDICATOR_PICKER;
 let updateNotice: UpdateNoticeState = HIDDEN_UPDATE_NOTICE;
@@ -780,7 +713,6 @@ async function showUpdateNotice(): Promise<void> {
 }
 function render(): void {
   const current = active();
-  renderToc();
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
     windowId: SHELL_WINDOW_ID,
@@ -859,7 +791,7 @@ function switchTabNow(id: TabId): Promise<void> {
     activeId: () => workspace.activeTabId,
     payload: (tabId) => workspace.getPayload(tabId),
     isActive: (payload) => payload.session.snapshot.active,
-    cancelPending: (payload) => { cancelPagePromptOwnership(); payload.toc.cancelPending(); },
+    cancelPending: () => { cancelPagePromptOwnership(); },
     deactivate: (payload) => payload.session.deactivate(),
     activateWorkspace: (tabId) => workspace.activate(tabId),
     activateCurrent: (restoreFocus) => activateCurrentTab(restoreFocus),
@@ -1371,7 +1303,6 @@ function dispatchActionId(id: ActionId): void {
     "document.open": { type: "document.open" }, "document.close": { type: "tab.close" }, "document.print": { type: "document.print" },
     "app.quit": { type: "application.quit" }, "app.new": { type: "application.new" }, "palette.open": { type: "palette.toggle" }, "help.show": { type: "help.toggle" },
     "tab.next": { type: "tab.next" }, "tab.previous": { type: "tab.previous" },
-    "toc.toggle": { type: "toc.toggle" }, "toc.scrollDown": { type: "toc.scrollDown" }, "toc.scrollUp": { type: "toc.scrollUp" },
     "scroll.left": { type: "scroll.byCssPixels", axis: "horizontal", delta: -32 }, "scroll.right": { type: "scroll.byCssPixels", axis: "horizontal", delta: 32 },
     "scroll.down": { type: "scroll.byCssPixels", axis: "vertical", delta: 32 }, "scroll.up": { type: "scroll.byCssPixels", axis: "vertical", delta: -32 },
     "scroll.largeDown": { type: "scroll.byViewport", factor: 0.8 }, "scroll.largeUp": { type: "scroll.byViewport", factor: -0.8 },
@@ -1379,7 +1310,7 @@ function dispatchActionId(id: ActionId): void {
     "search.prompt": { type: "search.open" },
     "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.actualSize" },
     "view.fitWidth": { type: "view.fitWidth" }, "view.fitPage": { type: "view.fitPage" }, "view.rotateLeft": { type: "view.rotate", quarterTurns: -1 }, "view.rotateRight": { type: "view.rotate", quarterTurns: 1 },
-    "link.hint": { type: "linkHints.toggle" }, "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
+    "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
     "config.reload": { type: "config.reload" }, "indicator.picker": { type: "indicator.open" }, "update.show": { type: "update.show" },
   };
   if (id === "page.prompt") {
@@ -1469,9 +1400,6 @@ function dispatch(action: Action): void {
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
   if (type === "application.new") { void invoke<void>("create_app_window").catch(() => { active().session.reader.setStatus("WINDOW_CREATE_FAILED"); render(); }); return; }
-  if (type === "toc.toggle") { const payload = active(); payload.toc.toggle(); void loadOutline(payload.session, payload).then(() => { if (active() === payload) renderToc(); }); render(); return; }
-  if (type === "toc.scrollDown") { active().toc.scrollRows(1); render(); return; }
-  if (type === "toc.scrollUp") { active().toc.scrollRows(-1); render(); return; }
   if (type === "palette.toggle") { openPalette(); return; }
   if (type === "tab.next") { void switchAdjacentTab(1); return; }
   if (type === "tab.previous") { void switchAdjacentTab(-1); return; }
@@ -1503,7 +1431,7 @@ function dispatch(action: Action): void {
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
   if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchInput.focus(); }
-  if (type === "linkHints.toggle") session.toggleHints(); if (type === "prompt.cancel") session.cancelHints();
+  if (type === "prompt.cancel") session.dismissLinkIndicator();
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
     const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
@@ -1563,25 +1491,16 @@ window.addEventListener("keydown", (event) => {
     key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
     repeat: event.repeat, isComposing: event.isComposing, keyCode: event.keyCode,
     altGraph: event.getModifierState("AltGraph"),
-    nativeOwnedTarget: active().session.hintsVisible || (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
+    nativeOwnedTarget: (event.key === "Escape" && overlayOwner.active === undefined && !isEditableTarget(event.target) && active().session.linkIndicatorVisible && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) || (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
     preventDefault: () => event.preventDefault(),
   });
   if (claimed) event.stopImmediatePropagation();
 }, { capture: true });
 window.addEventListener("keydown", (event) => {
   const session = active().session;
-  if (!session.hintsVisible && !(event.key === "Escape" && session.linkDecorationsVisible)) return;
-  const consumed = session.handleHintKey({
-    key: event.key,
-    ctrlKey: event.ctrlKey,
-    altKey: event.altKey,
-    metaKey: event.metaKey,
-    shiftKey: event.shiftKey,
-    isComposing: event.isComposing || isNativeCompositionEvent(event),
-    keyCode: event.keyCode,
-    altGraph: event.getModifierState("AltGraph"),
-  });
-  if (!consumed) return;
+  if (overlayOwner.active !== undefined || isEditableTarget(event.target)) return;
+  if (event.key !== "Escape" || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || isNativeCompositionEvent(event) || event.getModifierState("AltGraph") || !session.linkIndicatorVisible) return;
+  session.dismissLinkIndicator();
   event.preventDefault();
   event.stopImmediatePropagation();
   render();
@@ -1594,7 +1513,7 @@ const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
-  session.dismissLinkDecorations();
+  session.dismissLinkIndicator();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 };
 function bindDprChange(): void {
@@ -1629,7 +1548,7 @@ window.addEventListener("resize", () => {
   scheduleDprPollFallback();
   if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
   const session = active().session;
-  session.dismissLinkDecorations();
+  session.dismissLinkIndicator();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
@@ -1675,7 +1594,7 @@ paletteDialog.addEventListener("keydown", (event) => {
   if (count > 0) renderPalette();
 }, { capture: true });
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
-window.addEventListener("blur", () => active().session.dismissLinkDecorations());
+window.addEventListener("blur", () => active().session.dismissLinkIndicator());
 window.addEventListener("beforeunload", () => {
   stopFileOpenerPathFitting();
   disposeSearchPrompt();

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "736bfa57ce846a2cf6d0099012c6aa43fe18f37d4e60f670b4ea0b6e26434ef2";
+  "74b60c0459695f711e6b73d83ed471ff6d9d517080d7fc69508c715d99eb031c";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -31,9 +31,6 @@ const ACTION_IDS = [
   "scroll.right",
   "scroll.largeDown",
   "scroll.largeUp",
-  "toc.toggle",
-  "toc.scrollDown",
-  "toc.scrollUp",
   "page.next",
   "page.previous",
   "page.first",
@@ -54,7 +51,6 @@ const ACTION_IDS = [
   "view.fitPage",
   "view.rotateLeft",
   "view.rotateRight",
-  "link.hint",
   "config.reload",
   "config.writeDefault",
   "config.resetDefault",
@@ -101,7 +97,7 @@ const fingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("v0.10.0 golden snapshots", () => {
-  it("freezes all 54 action identifiers and separates fixed bindings", async () => {
+  it("freezes all 50 Windows action identifiers and separates fixed bindings", async () => {
     const actions = await json("tests/contract/snapshots/action-ids.json");
     const defaults = await json(
       "tests/contract/snapshots/product-defaults.json",
@@ -112,9 +108,9 @@ describe("v0.10.0 golden snapshots", () => {
     ).toBe(PRODUCT_DEFAULTS_FINGERPRINT);
     expect(actions.schemaVersion).toBe(1);
     expect(actions.baseline.sha).toBe(BASELINE_SHA);
-    expect(actions.count).toBe(54);
+    expect(actions.count).toBe(50);
     expect(actions.ids).toEqual(ACTION_IDS);
-    expect(new Set(actions.ids).size).toBe(54);
+    expect(new Set(actions.ids).size).toBe(50);
 
     const fixed = Object.keys(defaults.fixedBindings).filter(
       (key) => key !== "reason",
@@ -126,7 +122,7 @@ describe("v0.10.0 golden snapshots", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(configurable).toHaveLength(50);
+    expect(configurable).toHaveLength(46);
     expect(new Set([...configurable, ...fixed])).toEqual(new Set(ACTION_IDS));
     expect(defaults.configurableKeyTemplates["document.open"]).toEqual(["<C-S-o>"]);
     expect(defaults.configurableKeyTemplates["document.open"]).not.toContain("<C-o>");

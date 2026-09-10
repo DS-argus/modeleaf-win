@@ -27,8 +27,8 @@ export interface CommandProjection {
 const CATEGORY_BY_PREFIX: readonly [string, CommandCategory][] = Object.freeze([
   ["app.", "application"], ["tab.", "tabs"], ["search.", "search"],
   ["view.", "view"], ["config.", "settings"], ["theme.", "settings"], ["indicator.", "settings"], ["update.", "settings"],
-  ["document.", "document"], ["scroll.", "navigation"], ["toc.", "navigation"], ["page.", "navigation"],
-  ["history.", "navigation"], ["link.", "navigation"], ["palette.", "application"], ["help.", "application"],
+  ["document.", "document"], ["scroll.", "navigation"], ["page.", "navigation"],
+  ["history.", "navigation"], ["palette.", "application"], ["help.", "application"],
 ]);
 
 export function projectCommands(

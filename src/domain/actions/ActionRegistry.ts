@@ -11,10 +11,9 @@ export const ACTION_IDS = Object.freeze([
   "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
-  "toc.toggle", "toc.scrollDown", "toc.scrollUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "history.back", "history.forward",
   "prompt.commit", "prompt.cancel", "search.prompt", "search.next", "search.previous", "search.cancel",
-  "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
+  "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "indicator.picker", "update.show",
 ] as const);
 
@@ -82,10 +81,6 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("scroll.largeDown", "Scroll Down by Viewport", contexts(READER_CONTEXTS), "allowed"),
   descriptor("scroll.largeUp", "Scroll Up by Viewport", contexts(READER_CONTEXTS), "allowed"),
 
-  descriptor("toc.toggle", "Toggle Table of Contents", contexts(READER_CONTEXTS)),
-  descriptor("toc.scrollDown", "Scroll Table of Contents Down", contexts(READER_CONTEXTS), "allowed"),
-  descriptor("toc.scrollUp", "Scroll Table of Contents Up", contexts(READER_CONTEXTS), "allowed"),
-
   descriptor("page.next", "Next Page", contexts(READER_CONTEXTS), "allowed"),
   descriptor("page.previous", "Previous Page", contexts(READER_CONTEXTS), "allowed"),
   descriptor("page.first", "First Page", contexts(READER_CONTEXTS)),
@@ -108,7 +103,6 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("view.fitPage", "Fit Page", contexts(READER_CONTEXTS)),
   descriptor("view.rotateLeft", "Rotate Left", contexts(READER_CONTEXTS)),
   descriptor("view.rotateRight", "Rotate Right", contexts(READER_CONTEXTS)),
-  descriptor("link.hint", "Link Hints", contexts(NAVIGATION_CONTEXT)),
   descriptor("config.reload", "Reload Config", contexts(NAVIGATION_CONTEXT)),
   descriptor("config.writeDefault", "Write Default Config", GLOBAL),
   descriptor("config.resetDefault", "Reset Config", GLOBAL),
@@ -153,7 +147,6 @@ export interface ActionRuntimeContext {
   readonly searchActive: boolean;
   readonly canHistoryBack: boolean;
   readonly canHistoryForward: boolean;
-  readonly linkCount: number;
   readonly implementedActionIds?: ReadonlySet<ActionId>;
 }
 
@@ -165,10 +158,9 @@ const DOCUMENT_ACTIONS = new Set<ActionId>([
   "document.close", "document.print", "tab.next", "tab.previous",
   ...ACTION_IDS.filter((id) => id.startsWith("tab.select.")),
   ...ACTION_IDS.filter((id) => id.startsWith("scroll.")),
-  ...ACTION_IDS.filter((id) => id.startsWith("toc.")),
   ...ACTION_IDS.filter((id) => id.startsWith("page.")),
   "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel",
-  ...ACTION_IDS.filter((id) => id.startsWith("view.")), "link.hint", "indicator.picker",
+  ...ACTION_IDS.filter((id) => id.startsWith("view.")), "indicator.picker",
 ]);
 
 /** Runtime availability used by menu/palette/help projections; input-context routing is checked separately. */
@@ -192,7 +184,6 @@ export function getActionRuntimeAvailability(id: ActionId, state: ActionRuntimeC
   if ((id === "search.next" || id === "search.previous" || id === "search.cancel") && !state.searchActive) return { enabled: false, reason: "No active search" };
   if (id === "history.back" && !state.canHistoryBack) return { enabled: false, reason: "No back history" };
   if (id === "history.forward" && !state.canHistoryForward) return { enabled: false, reason: "No forward history" };
-  if (id === "link.hint" && state.linkCount === 0) return { enabled: false, reason: "No links on page" };
   if (id === "update.show" && !state.updateAvailable) return { enabled: false, reason: "No update available" };
   return { enabled: true };
 }

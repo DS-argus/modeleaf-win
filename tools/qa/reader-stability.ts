@@ -142,6 +142,202 @@ Object.assign(window, { readerHarness: {
     await finish();
     return { firstMilliseconds, firstPending, landings, results: content.results.length, selected: content.currentResult, disposed: true };
   },
+  async runLinks() {
+    const linksFixture = "links.pdf";
+    const linksResponse = await fetch(`/fixtures/pdf/${linksFixture}`);
+    requireInvariant(linksResponse.ok, `Link fixture load failed: ${linksResponse.status}`);
+    const linkBytes = new Uint8Array(await linksResponse.arrayBuffer());
+    await finish();
+    host.hidden = true;
+
+    const linkHost = document.createElement("section");
+    linkHost.className = "reader-surface tab-host";
+    linkHost.tabIndex = 0;
+    linkHost.style.cssText = "width:800px;height:600px;max-width:100vw;max-height:100vh;box-sizing:border-box";
+    document.body.append(linkHost);
+    const linkResources = new ResourceReservationManager();
+    const linkStatuses: string[] = [];
+    const registryEvents: { phase: "prepare" | "commit" | "finalize" | "abort"; revision: number; entries: number }[] = [];
+    const registries = new Map<number, Map<string, string>>();
+    const externalActivations: { annotationId: string; registryRevision: number; operationId: string; operationSequence: number; target: string }[] = [];
+    const internalNavigations: { page: number; kind: string }[] = [];
+    let activeRegistryRevision: number | undefined;
+    let nativeCancelCalls = 0;
+    let nativeCloseCalls = 0;
+    let linkSession: PdfTabSession | undefined;
+    let scenario: Record<string, unknown> | undefined;
+    const linkOpened = { sessionId: "headless-links", documentGeneration: 1, length: linkBytes.length, displayName: linksFixture };
+    const waitFor = async (condition: () => boolean, message: string) => {
+      const deadline = performance.now() + 30_000;
+      while (!condition()) {
+        requireInvariant(performance.now() < deadline, `${message}: ${JSON.stringify({ outcomes: internalNavigations, page: linkSession?.snapshot.reader.page, historyBack: linkSession?.canHistoryBack, scrollTop: linkHost.scrollTop, statuses: linkStatuses })}`);
+        await frame();
+      }
+    };
+    let retiredStyleTokens: string[] = [];
+    try {
+      const stylesheetText = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).join("\n");
+      retiredStyleTokens = [".toc-widget", ".pdf-link-hint", ".pdf-link-hints-active"].filter((token) => stylesheetText.includes(token));
+      requireInvariant(retiredStyleTokens.length === 0, `Retired reader styling remains loaded: ${retiredStyleTokens.join(", ")}`);
+      linkSession = new PdfTabSession({
+        native: {
+          openPdfDialog: async () => linkOpened,
+          cancelSession: async (metadata) => {
+            requireInvariant(metadata.sessionId === linkOpened.sessionId, "Link fixture native cancellation targeted the wrong session");
+            nativeCancelCalls += 1;
+            return { barrierId: 1 };
+          },
+          closeSession: async (metadata, barrierId) => {
+            requireInvariant(metadata.sessionId === linkOpened.sessionId && barrierId === 1, "Link fixture native close authority was invalid");
+            nativeCloseCalls += 1;
+            activeRegistryRevision = undefined;
+            registries.clear();
+          },
+        },
+        pdf: {
+          annotationMode: AnnotationMode.DISABLE,
+          getDocument: (options) => getDocument({ ...options, url: undefined, range: undefined, data: linkBytes.slice() }) as unknown as PdfLoadingTask,
+        },
+        resources: linkResources,
+        canvasHost: linkHost,
+        createContentOptions: () => ({
+          onSearchResults: () => undefined,
+          requestSearchLanding: async () => { throw new Error("Search is outside the link scenario"); },
+          navigateToPage: (page) => { void linkSession?.navigatePagePrompt(page); },
+          navigateToDestination: async (page, destination, cause, guard) => {
+            if (linkSession === undefined) return { kind: "rejected" };
+            const outcome = await linkSession.navigateToDestination(page, destination, cause, guard);
+            internalNavigations.push({ page, kind: outcome.kind });
+            return outcome;
+          },
+          resolveDestinationPage: async (reference) => linkSession?.resolveDestinationPage(reference) ?? null,
+          prepareExternalLinks: async (entries, registryRevision) => {
+            const registry = new Map(entries.map((entry) => [entry.annotationId, entry.target] as const));
+            registries.set(registryRevision, registry);
+            registryEvents.push({ phase: "prepare", revision: registryRevision, entries: registry.size });
+          },
+          commitExternalLinks: async (registryRevision) => {
+            const registry = registries.get(registryRevision);
+            requireInvariant(registry !== undefined, `External registry ${registryRevision} committed before preparation`);
+            activeRegistryRevision = registryRevision;
+            registryEvents.push({ phase: "commit", revision: registryRevision, entries: registry!.size });
+          },
+          finalizeExternalLinks: async (registryRevision) => {
+            const registry = registries.get(registryRevision);
+            requireInvariant(registry !== undefined, `External registry ${registryRevision} finalized without authority`);
+            registryEvents.push({ phase: "finalize", revision: registryRevision, entries: registry!.size });
+          },
+          abortExternalLinks: async (registryRevision) => {
+            const entries = registries.get(registryRevision)?.size ?? 0;
+            registries.delete(registryRevision);
+            if (activeRegistryRevision === registryRevision) activeRegistryRevision = undefined;
+            registryEvents.push({ phase: "abort", revision: registryRevision, entries });
+          },
+          openExternal: async (annotationId, registryRevision, operationId, operationSequence) => {
+            const registry = registries.get(registryRevision);
+            const target = registry?.get(annotationId);
+            requireInvariant(activeRegistryRevision === registryRevision && target !== undefined, "External click bypassed active in-memory native authority");
+            requireInvariant(target === "https://example.invalid/allowed", `Unexpected external link target: ${target}`);
+            externalActivations.push({ annotationId, registryRevision, operationId, operationSequence, target: target! });
+            return operationSequence;
+          },
+        }),
+        onStatus: (status) => { if (linkStatuses.at(-1) !== status) linkStatuses.push(status); },
+      });
+
+      const started = performance.now();
+      await publishActivateAndAdoptPdfTab(() => undefined, linkSession, () => linkSession!.adopt(linkOpened, 1));
+      await linkSession.activate();
+      await waitFor(() => linkSession!.snapshot.reader.page === 1
+        && linkSession!.snapshot.reader.pageCount === 2
+        && linkHost.querySelectorAll<HTMLButtonElement>('.pdf-link-overlay[aria-label^="PDF link "]').length === 4,
+      "Link overlays did not publish from the two-page fixture");
+      const overlayMilliseconds = performance.now() - started;
+      const overlays = [...linkHost.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay")];
+      const retiredSessionApi = ["toggleHints", "cancelHints", "handleHintKey", "hintsVisible", "visibleLinkCount", "linkDecorationsVisible", "dismissLinkDecorations"].filter((name) => name in linkSession);
+      const retiredSnapshotFields = ["hintsVisible", "visibleLinkCount"].filter((name) => name in linkSession.snapshot.content);
+      requireInvariant(retiredSessionApi.length === 0 && retiredSnapshotFields.length === 0, `Retired hint API remains: ${[...retiredSessionApi, ...retiredSnapshotFields].join(", ")}`);
+      const labels = overlays.map((overlay) => overlay.getAttribute("aria-label"));
+      requireInvariant(overlays.length === 4, `Expected four supported ordinary link overlays, found ${overlays.length}`);
+      requireInvariant(labels.join("|") === "PDF link 1|PDF link 2|PDF link 3|PDF link 4", `Unexpected visible link order: ${labels.join(", ")}`);
+      requireInvariant(overlays.every((overlay) => overlay.type === "button" && !overlay.disabled && getComputedStyle(overlay).pointerEvents === "auto"), "Ordinary PDF link overlays are not clickable buttons");
+      const retiredDom = {
+        tocWidgets: linkHost.querySelectorAll(".toc-widget").length,
+        linkHints: linkHost.querySelectorAll(".pdf-link-hint").length,
+        hintActiveLayers: linkHost.querySelectorAll(".pdf-link-hints-active").length,
+        hintDataAttributes: linkHost.querySelectorAll("[data-hint-label], [data-hint-target]").length,
+      };
+      requireInvariant(Object.values(retiredDom).every((count) => count === 0), `Retired reader UI was published: ${JSON.stringify(retiredDom)}`);
+
+      const external = overlays.find((overlay) => overlay.getAttribute("aria-label") === "PDF link 1");
+      requireInvariant(external !== undefined, "Fixture external annotation was not exposed as PDF link 1");
+      external!.click();
+      await waitFor(() => externalActivations.length === 1 && linkStatuses.includes("PDF link opened (dispatch 1)."), "External annotation did not reach the mocked native callback");
+      requireInvariant(externalActivations.length === 1, `External annotation dispatched ${externalActivations.length} times`);
+
+      const internal = overlays.find((overlay) => overlay.getAttribute("aria-label") === "PDF link 2");
+      requireInvariant(internal !== undefined && internal.getAttribute("aria-label") === "PDF link 2", "Internal annotation lost its neutral accessible PDF link 2 name");
+      internal!.click();
+      await waitFor(() => internalNavigations.length === 1
+        && internalNavigations[0]!.kind === "verified"
+        && linkSession!.snapshot.reader.page === 2
+        && linkSession!.canHistoryBack,
+      "Clicking PDF link 2 did not verify page-two navigation and history");
+      const pageAfterClick = linkSession.snapshot.reader.page;
+      const canHistoryBackAfterClick = linkSession.canHistoryBack;
+      await waitFor(() => linkSession!.linkIndicatorVisible, "Verified point-link indicator was not published");
+      linkSession.dismissLinkIndicator();
+      requireInvariant(!linkSession.linkIndicatorVisible, "Destination indicator did not dismiss through the retired-feature replacement API");
+
+      const historyBack = await linkSession.navigateHistoryBack();
+      const pageAfterBack = linkSession.snapshot.reader.page;
+      requireInvariant(historyBack.kind === "verifiedLanding" && pageAfterBack === 1 && linkSession.canHistoryForward, `Link history back failed: ${historyBack.kind}, page ${pageAfterBack}`);
+      const historyForward = await linkSession.navigateHistoryForward();
+      const pageAfterForward = linkSession.snapshot.reader.page;
+      requireInvariant(historyForward.kind === "verifiedLanding" && pageAfterForward === 2 && linkSession.canHistoryBack, `Link history forward failed: ${historyForward.kind}, page ${pageAfterForward}`);
+
+      scenario = {
+        fixture: linksFixture,
+        fixtureBytes: linkBytes.length,
+        pageCount: linkSession.snapshot.reader.pageCount,
+        overlayMilliseconds,
+        overlayCount: overlays.length,
+        labels,
+        retiredSessionApi,
+        retiredSnapshotFields,
+        retiredDom,
+        retiredStyleTokens,
+        external: { activations: [...externalActivations], callbackOnly: true },
+        internal: {
+          target: "PDF link 2",
+          outcomes: [...internalNavigations],
+          pageAfterClick,
+          canHistoryBackAfterClick,
+          indicatorPublishedAndDismissed: true,
+          historyBack: historyBack.kind,
+          pageAfterBack,
+          historyForward: historyForward.kind,
+          pageAfterForward,
+        },
+        registryEvents: [...registryEvents],
+        statuses: [...linkStatuses],
+      };
+    } finally {
+      try { await linkSession?.close(); }
+      finally { linkHost.remove(); }
+    }
+
+    const settledResources = linkResources.snapshot();
+    linkResources.assertEmpty();
+    requireInvariant(nativeCancelCalls === 1 && nativeCloseCalls === 1, `Link native teardown count was ${nativeCancelCalls}/${nativeCloseCalls}`);
+    requireInvariant(activeRegistryRevision === undefined && registries.size === 0, "In-memory external-link authority survived teardown");
+    requireInvariant(scenario !== undefined, "Link scenario did not produce measurements");
+    return {
+      ...scenario!,
+      teardown: { nativeCancelCalls, nativeCloseCalls, reservationCount: settledResources.reservationCount },
+      disposed: true,
+    };
+  },
   async runChrome() {
     // Execute the dev-transformed production renderer fragments and pure fitter, not copied UI layout logic.
     const code = await (await fetch("/src/main.ts")).text();

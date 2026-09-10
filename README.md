@@ -9,10 +9,11 @@ The bullets below describe the retained implementation baseline, not verified v0
 - Exact-pinned, fully bundled PDF.js 6.2.108 renderer using opaque bounded range requests
 - Candidate-first opening that preserves a healthy document on malformed, password, locality, timeout, render, or cleanup failures
 - Registry-backed Phase 1 navigation plus `h`/`j`/`k`/`l` scrolling, `d`/`u` viewport scrolling, `w`/`F` fit modes, `=`/`-` zoom, and `[`/`]` view rotation
-- Fit-page opening, fit-width reading, 10–800% custom zoom, anchor-preserving transforms, DPI-aware backing canvases, and bounded one-page virtualization
+- Fit-width opening and continuous reading, one-page Fit Page, 10–800% custom zoom, anchor-preserving transforms, DPI-aware backing canvases, and bounded raster virtualization
 - Process-wide render/canvas reservations, stale-generation cancellation, and cancellation-before-release teardown
-- Virtualized PDF.js text and annotation layers with trimmed case-insensitive literal search, native pointer selection/copy, internal destinations, and deterministic `f` link hints
-- Rust-validated external `http`, `https`, and `mailto` activation without shell parsing; unsupported and unsafe PDF actions are rejected
+- Virtualized PDF.js text and annotation layers with trimmed case-insensitive literal search, native pointer selection/copy, and ordinary internal/external PDF link clicks
+- Embedded TOC and `f` keyboard link hints are retired from the Windows scope; their source/tests are preserved in [the redevelopment reference](docs/windows-porting/deferred-toc-link-hints.md)
+- Rust-validated external `http` and `https` activation without shell parsing; unsupported and unsafe PDF actions are rejected
 - Keyboard range selection, reading-order remediation, OCR, and scanned-content remediation remain explicitly unavailable
 
 TOML configuration and pane splitting are not implemented in the retained prototype. The immutable v0.10.0 contract, Windows deltas, phase order, and acceptance gates live in [`docs/windows-porting/`](docs/windows-porting/). Files under `.internal/docs/` describe historical v0.5.0 checkpoint evidence and are not parity authority.

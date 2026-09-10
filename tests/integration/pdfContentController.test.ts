@@ -136,7 +136,7 @@ describe("PdfContentController", () => {
 
     expect(getAnnotations).toHaveBeenCalledWith({ intent: "display" });
   });
-  it("publishes and reuses a bounded label set for 256 visible links", async () => {
+  it("publishes 256 ordinary link overlays at the shared capacity", async () => {
     const links = Array.from({ length: 256 }, (_, index): PdfContentAnnotation => ({
       subtype: "Link",
       rect: [index, index, index + 1, index + 1],
@@ -145,15 +145,12 @@ describe("PdfContentController", () => {
     const subject = setup([page("links", links)]);
 
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.controller.toggleHints();
-    const labels = [...subject.host.querySelectorAll<HTMLElement>("[data-hint-label]")].map((element) => element.dataset.hintLabel!);
+    const overlays = subject.host.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay");
 
-    expect(labels).toHaveLength(256);
-    expect(new Set(labels).size).toBe(256);
-    expect(labels.every((label) => label.length === 2)).toBe(true);
-    expect(subject.controller.handleHintKey(labels[255]![0]!)).toBe(true);
-    expect(subject.openExternal).not.toHaveBeenCalled();
-    expect(subject.controller.handleHintKey(labels[255]![1]!)).toBe(true);
+    expect(overlays).toHaveLength(256);
+    expect(overlays[0]?.getAttribute("aria-label")).toBe("PDF link 1");
+    expect(overlays[255]?.getAttribute("aria-label")).toBe("PDF link 256");
+    overlays[255]?.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-255", 1, expect.any(String), expect.any(Number));
   });
   it("searches Korean literal text with trimmed case-insensitive cycling and highlights the rendered page", async () => {
@@ -693,28 +690,7 @@ describe("PdfContentController", () => {
     await folded.controller.search("i̇x");
     expect(folded.controller.snapshot.results).toEqual([{ pageNumber: 1, index: 6, length: 2 }]);
   });
-  it("uses prefix-free deterministic labels beyond one alphabet width", async () => {
-    const links = Array.from({ length: 27 }, (_, index): PdfContentAnnotation => ({
-      subtype: "Link",
-      rect: [index, index, index + 1, index + 1],
-      url: `https://example.test/${index}`,
-    }));
-    const subject = setup([page("x", links)]);
-    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.controller.toggleHints();
-
-    expect(subject.host.querySelector(".pdf-content-layer")?.classList.contains("pdf-link-hints-active")).toBe(true);
-    const labels = [...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent);
-    expect(labels).toHaveLength(27);
-    expect(labels.every((label) => label?.length === 2)).toBe(true);
-    expect(subject.controller.handleHintKey(labels[0]![0]!)).toBe(true);
-    expect(subject.openExternal).not.toHaveBeenCalled();
-    expect(subject.controller.handleHintKey(labels[0]![1]!)).toBe(true);
-    expect(subject.host.querySelector(".pdf-content-layer")?.classList.contains("pdf-link-hints-active")).toBe(false);
-    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
-    expect(subject.openExternal).toHaveBeenCalledOnce();
-  });
-  it("aggregates labels and activation across exact visible resident pages", async () => {
+  it("authorizes ordinary clicks only across exact visible resident pages", async () => {
     const subject = setup([
       page("one", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/one" }]),
       page("two", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/two" }]),
@@ -740,13 +716,16 @@ describe("PdfContentController", () => {
       pageNumber: 3, page: await subject.pdf.getPage(3), viewport, canvas: thirdCanvas, retainedPages: [1, 2, 3],
       commitCanvas: (layer) => { if (layer !== undefined) thirdFrame.append(layer); return true; },
     });
-    expect(subject.controller.snapshot.visibleLinkCount).toBe(2);
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey({ key: "f", ctrlKey: true })).toBe(false);
-    expect(subject.controller.handleHintKey({ key: "f", altGraph: true })).toBe(false);
-    expect(subject.controller.snapshot.hintsVisible).toBe(true);
-    expect([...subject.host.querySelectorAll<HTMLElement>("[data-hint-label]")].filter((node) => node.style.display !== "none").map((node) => node.textContent)).toEqual(["f", "j"]);
-    subject.host.querySelector<HTMLButtonElement>("[data-annotation-id='page-1-render-2-annotation-0']")?.click();
+
+    const firstLink = firstFrame.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    const secondLink = secondFrame.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    const thirdLink = thirdFrame.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    expect(firstLink.getAttribute("aria-label")).toBe("PDF link 1");
+    expect(secondLink.getAttribute("aria-label")).toBe("PDF link 2");
+    expect(thirdLink.getAttribute("aria-label")).toBe("PDF link");
+    thirdLink.click();
+    expect(subject.openExternal).not.toHaveBeenCalled();
+    firstLink.click();
     await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 3, expect.any(String), expect.any(Number)));
   });
   it("keeps PDF links mouse-clickable and applies valid annotation appearance", async () => {
@@ -770,7 +749,7 @@ describe("PdfContentController", () => {
     await Promise.resolve();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
     await vi.waitFor(() => expect(subject.statuses).toContain("PDF link opened (dispatch 1)."));
-    expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 1");
+    expect(overlay.getAttribute("aria-label")).toBe("PDF link 1 opened dispatch 1");
   });
   it.each([undefined, 2] as const)("fails closed for an invalid native dispatch receipt %s", async (receipt) => {
     const subject = setup([page("link", [{ subtype: "Link", rect: [10, 10, 40, 24], url: "https://example.test/receipt" }])]);
@@ -790,10 +769,10 @@ describe("PdfContentController", () => {
     const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
     overlay.click();
     overlay.click();
-    await vi.waitFor(() => expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 2"));
+    await vi.waitFor(() => expect(overlay.getAttribute("aria-label")).toBe("PDF link 1 opened dispatch 2"));
     rejectFirst(new Error("late failure"));
     await Promise.resolve();
-    expect(overlay.getAttribute("aria-label")).toBe("PDF link f opened dispatch 2");
+    expect(overlay.getAttribute("aria-label")).toBe("PDF link 1 opened dispatch 2");
     expect(subject.statuses).not.toContain("PDF link could not be opened.");
   });
   it("keeps a newer internal success when an older destination rejects late", async () => {
@@ -813,7 +792,7 @@ describe("PdfContentController", () => {
     await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
     rejectFirst(new Error("late destination failure"));
     await Promise.resolve();
-    expect(overlay.getAttribute("aria-label")).toBe("PDF link f");
+    expect(overlay.getAttribute("aria-label")).toBe("PDF link 1");
     expect(subject.statuses).not.toContain("Unsupported PDF link destination.");
   });
   it("blocks published link clicks while content interactions are suspended", async () => {
@@ -900,7 +879,7 @@ describe("PdfContentController", () => {
       expect.objectContaining({ str: "글", fontName: "second" }),
     ]));
   });
-  it("creates pointer-selectable TextLayer spans and one deterministic hint per exact link identity", async () => {
+  it("creates pointer-selectable TextLayer spans and one overlay per exact link identity", async () => {
     const links: PdfContentAnnotation[] = [
       { subtype: "Link", rect: [10, 10, 30, 20], url: "https://example.test" },
       { subtype: "Link", rect: [10, 20, 30, 30], url: "https://example.test" },
@@ -908,16 +887,12 @@ describe("PdfContentController", () => {
     ];
     const subject = setup([page("select me", links)]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.controller.toggleHints();
-
     expect(subject.host.querySelector(".textLayer span")?.textContent).toBe("select me");
     expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.userSelect).toBe("text");
     expect(subject.host.querySelector<HTMLElement>(".textLayer")?.style.getPropertyValue("--total-scale-factor")).toBe("1.25");
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
-    expect([...subject.host.querySelectorAll("[data-hint-label]")].map((node) => node.textContent)).toEqual(["f", "j", "d"]);
-    subject.controller.handleHintKey("f");
+    subject.host.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay")[0]?.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
-    expect(subject.controller.snapshot.hintsVisible).toBe(false);
   });
 
   it("keeps both published content layers within the rotated canvas CSS viewport", async () => {
@@ -946,6 +921,7 @@ describe("PdfContentController", () => {
     });
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     const targets = subject.host.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay");
+    expect(targets[1]?.getAttribute("aria-label")).toBe("PDF link 2");
     targets[1]?.click();
     await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(2));
     [...targets].filter((_target, index) => index !== 1).forEach((target) => target.click());
@@ -976,7 +952,14 @@ describe("PdfContentController", () => {
       commitCanvas: () => true,
     });
     expect(subject.host.contains(indicator)).toBe(true);
+    expect(subject.controller.linkIndicatorVisible).toBe(true);
+    subject.controller.dismissLinkIndicator();
+    expect(subject.controller.linkIndicatorVisible).toBe(false);
+    expect(subject.host.querySelector(".pdf-destination-indicator")).toBeNull();
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
+    await vi.waitFor(() => expect(subject.controller.linkIndicatorVisible).toBe(true));
     await subject.controller.unmount();
+    expect(subject.controller.linkIndicatorVisible).toBe(false);
     expect(subject.host.querySelector(".pdf-destination-indicator")).toBeNull();
   });
   it("uses reader-owned page authority for worker-cloned indirect references", async () => {
@@ -1028,6 +1011,42 @@ describe("PdfContentController", () => {
     await teardown;
     expect(unmounted).toBe(true);
   });
+  it("lets an internal overlay navigation render and re-register its destination page", async () => {
+    let subject!: ReturnType<typeof setup>;
+    let navigation!: ReturnType<PdfContentControllerOptions["navigateToDestination"]>;
+    const navigateDestination = vi.fn<PdfContentControllerOptions["navigateToDestination"]>((pageNumber) => {
+      navigation = (async () => {
+        await subject.controller.renderPage({
+          pageNumber,
+          page: await subject.pdf.getPage(pageNumber),
+          viewport,
+          canvas: subject.canvas,
+        });
+        return { kind: "verified" as const };
+      })();
+      return navigation;
+    });
+    subject = setup([
+      page("source", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: [1, { name: "Fit" }] }]),
+      page("destination", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/destination" }]),
+    ], undefined, navigateDestination);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!.click();
+
+    await vi.waitFor(() => expect(navigateDestination).toHaveBeenCalledWith(
+      2, [1, { name: "Fit" }], "internal-link", expect.any(Function),
+    ));
+    await expect(navigation).resolves.toEqual({ kind: "verified" });
+    expect(subject.controller.snapshot.pageNumber).toBe(2);
+    expect(subject.host.querySelector(".pdf-content-layer")?.textContent).toContain("destination");
+    expect(subject.prepareExternalLinks).toHaveBeenCalledTimes(2);
+    expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
+      { annotationId: "page-2-render-3-annotation-0", target: "https://example.test/destination" },
+    ], 2);
+    expect(subject.statuses).not.toContain("PDF link destination resolution timed out.");
+    await subject.controller.unmount();
+  });
   it("retains the prior complete overlay across stale success and current failure", async () => {
     let resolveFirst!: (value: { items: readonly { str: string }[] }) => void;
     const firstText = new Promise<{ items: readonly { str: string }[] }>((resolve) => { resolveFirst = resolve; });
@@ -1037,17 +1056,18 @@ describe("PdfContentController", () => {
     const second: PdfContentPage = { getTextContent: () => secondText, getAnnotations: async () => [] };
     const subject = setup([page("old", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test" }]), first, second]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.controller.toggleHints();
     const staleRendering = subject.controller.renderPage({ pageNumber: 2, page: first, viewport, canvas: subject.canvas });
     const failingRendering = subject.controller.renderPage({ pageNumber: 3, page: second, viewport, canvas: subject.canvas });
     expect(subject.host.querySelector(".pdf-content-layer")?.textContent).toContain("old");
-    expect(subject.controller.snapshot).toMatchObject({ pageNumber: 1, hintsVisible: true });
+    expect(subject.controller.snapshot).toMatchObject({ pageNumber: 1 });
     resolveFirst({ items: [{ str: "stale" }] });
     await staleRendering;
     expect(subject.host.querySelector(".pdf-content-layer")?.textContent).toContain("old");
     rejectSecond(new Error("render failed"));
     await expect(failingRendering).rejects.toThrow("render failed");
     expect(subject.host.querySelector(".pdf-content-layer")?.textContent).toContain("old");
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
+    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
   it("retains pending external activation settlement through teardown", async () => {
     let resolveOpen!: (value: number) => void;
@@ -1072,7 +1092,8 @@ describe("PdfContentController", () => {
     ]);
     subject.openExternal.mockImplementationOnce(() => new Promise<number>((resolve) => { resolveOpen = resolve; }));
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
+    const oldOverlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
+    oldOverlay.click();
     await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledOnce());
     const replacement = subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
     await Promise.resolve();
@@ -1086,8 +1107,7 @@ describe("PdfContentController", () => {
     subject.openExternal.mockClear();
     expect(subject.controller.activateResidentPage(1)).toBe(true);
     expect(subject.controller.snapshot.pageNumber).toBe(1);
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("f")).toBe(true);
+    oldOverlay.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
   });
   it("reconciles the native registry when a viewport transition only evicts residents", async () => {
@@ -1097,14 +1117,14 @@ describe("PdfContentController", () => {
     ]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     await subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
+    const keptOverlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
 
     await subject.controller.synchronizeResidentPages([2]);
     expect(subject.prepareExternalLinks).toHaveBeenLastCalledWith([
       { annotationId: "page-2-render-3-annotation-0", target: "https://example.test/kept" },
     ], 3);
     expect(subject.controller.activateVisiblePages([2])).toBe(1);
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("f")).toBe(true);
+    keptOverlay.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-2-render-3-annotation-0", 3, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
@@ -1114,6 +1134,7 @@ describe("PdfContentController", () => {
       page("new", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test/new" }]),
     ]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    const oldOverlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
     await subject.controller.renderPage({ pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: subject.canvas });
 
     const transaction = await subject.controller.beginResidentPageAuthority([2]);
@@ -1122,8 +1143,7 @@ describe("PdfContentController", () => {
     expect(subject.abortExternalLinks).toHaveBeenLastCalledWith(3);
     expect(subject.controller.activateResidentPage(1)).toBe(true);
     subject.openExternal.mockClear();
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("f")).toBe(true);
+    oldOverlay.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 2, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
@@ -1137,8 +1157,7 @@ describe("PdfContentController", () => {
     await expect(subject.controller.synchronizeResidentPages([])).rejects.toThrow("registry unavailable");
     expect(subject.controller.activateResidentPage(1)).toBe(true);
     subject.openExternal.mockClear();
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("f")).toBe(true);
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
     await subject.controller.unmount();
   });
@@ -1287,11 +1306,8 @@ describe("PdfContentController", () => {
     ];
     const subject = setup([page("x", links)]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.controller.toggleHints();
-
-    expect(subject.host.querySelectorAll("[data-hint-label]")).toHaveLength(3);
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
-    subject.controller.handleHintKey("f");
+    subject.host.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay")[0]?.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
   it("deduplicates exact unsupported URLs, actions, and unresolved destinations", async () => {
@@ -1303,7 +1319,6 @@ describe("PdfContentController", () => {
     ])]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(3);
-    expect(subject.controller.snapshot.visibleLinkCount).toBe(3);
   });
 
   it("requires the viewport transform instead of using raw annotation rectangles", async () => {
@@ -1865,8 +1880,7 @@ describe("PdfContentController", () => {
     expect(subject.commitExternalLinks).toHaveBeenCalledWith(2);
     expect(subject.abortExternalLinks).toHaveBeenCalledWith(2);
     expect(subject.controller.snapshot.pageNumber).toBe(1);
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("f")).toBe(true);
+    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
     expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
   });
   it("serializes out-of-order registry publication so stale rollback cannot replace a newer entry", async () => {
@@ -1958,14 +1972,6 @@ describe("PdfContentController", () => {
     })).rejects.toThrow("TEXT_LIMIT");
     expect(subject.host.querySelector(".pdf-content-layer")).toBeNull();
     expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(0);
-  });
-  it("consumes Escape only while hints are visible", async () => {
-    const subject = setup([page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], url: "https://example.test" }])]);
-    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    expect(subject.controller.handleHintKey("Escape")).toBe(false);
-    subject.controller.toggleHints();
-    expect(subject.controller.handleHintKey("Escape")).toBe(true);
-    expect(subject.controller.snapshot.hintsVisible).toBe(false);
   });
   it("binds destination intent to one render and preserves null axes", async () => {
     const subject = setup([page("one"), page("two")]);
@@ -2124,9 +2130,6 @@ describe("PdfContentController", () => {
       { subtype: "Link", rect: [1, 30, 2, 31], dest: [0, { name: "FitH" }, 20] },
     ])]);
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.controller.toggleHints();
-
-    expect(subject.host.querySelectorAll("[data-hint-label]")).toHaveLength(5);
     expect(subject.host.querySelectorAll(".pdf-link-overlay")).toHaveLength(5);
     expect(normalizePdfSearchQuery("İX")).toBe("i̇x");
   });
