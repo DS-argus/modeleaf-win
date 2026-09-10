@@ -32,7 +32,7 @@ param(
     [string]$OutputDirectory,
 
     [ValidateNotNullOrEmpty()]
-    [string]$RepositoryRoot = (Join-Path -Path $PSScriptRoot -ChildPath '..\..'),
+    [string]$RepositoryRoot,
 
     [ValidateNotNullOrEmpty()]
     [string]$RepositorySlug = 'DS-argus/modeleaf-win'
@@ -41,6 +41,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+if (-not $PSBoundParameters.ContainsKey('RepositoryRoot')) {
+    if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        throw 'Cannot resolve the script directory; provide RepositoryRoot explicitly.'
+    }
+    $RepositoryRoot = [System.IO.Path]::GetFullPath(
+        [System.IO.Path]::Combine($PSScriptRoot, '..', '..')
+    )
+}
 
 function Get-NormalizedFullPath {
     param([Parameter(Mandatory = $true)][string]$Path)

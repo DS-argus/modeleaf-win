@@ -169,16 +169,16 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   return { base, repository, executable, output, commit, sourceInputs, packagedSources };
 }
 
-function runPackager(fixture: Fixture, repositorySlug = REPOSITORY_SLUG): SpawnSyncReturns<string> {
+function runPackager(fixture: Fixture, repositorySlug = REPOSITORY_SLUG, useDefaultRepositoryRoot = false): SpawnSyncReturns<string> {
   return spawnSync("powershell.exe", [
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
     "-ExecutionPolicy", "Bypass",
-    "-File", packageScript,
+    "-File", useDefaultRepositoryRoot ? join(fixture.repository, "tools/windows/package-scoop.ps1") : packageScript,
     "-ExecutablePath", fixture.executable,
     "-OutputDirectory", fixture.output,
-    "-RepositoryRoot", fixture.repository,
+    ...(useDefaultRepositoryRoot ? [] : ["-RepositoryRoot", fixture.repository]),
     "-RepositorySlug", repositorySlug,
   ], {
     cwd: fixture.base,
@@ -330,6 +330,20 @@ windowsSuite("Windows Scoop package preparation", () => {
     }
   });
 
+  it("resolves the repository root when the optional argument is omitted", async () => {
+    const fixture = await createFixture();
+    try {
+      const copiedScript = join(fixture.repository, "tools/windows/package-scoop.ps1");
+      await mkdir(dirname(copiedScript), { recursive: true });
+      await writeFile(copiedScript, await readFile(packageScript));
+      requireSuccess(runPackager(fixture, REPOSITORY_SLUG, true));
+      const receipt = JSON.parse(await readFile(join(fixture.output, "package-receipt.json"), "utf8")) as PackageReceipt;
+      expect(receipt.source).toEqual({ commit: fixture.commit, version: PACKAGE_VERSION });
+      expect(await stagingNames(fixture.base)).toEqual([]);
+    } finally {
+      await rm(fixture.base, { recursive: true, force: true });
+    }
+  });
   it.each([
     { metadata: "Tauri", options: { tauriVersion: "1.2.4" } satisfies FixtureOptions },
     { metadata: "Cargo", options: { cargoVersion: "1.2.4" } satisfies FixtureOptions },
