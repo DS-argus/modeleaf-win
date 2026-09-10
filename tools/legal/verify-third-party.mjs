@@ -1,3 +1,4 @@
+import { verifyRuntimeNotices } from "./runtime-notices.mjs";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, relative, sep } from "node:path";
@@ -140,6 +141,8 @@ function verifyThemes(review) {
 
 const review = reviewData();
 if (review) { verifyDependencies(review); verifyAssets(review); verifyThemes(review); }
+try { verifyRuntimeNotices(root); }
+catch (error) { fail(error.message); }
 if (errors.length) {
   for (const error of errors.sort()) console.error(`third-party verification failed: ${error}`);
   process.exitCode = 1;

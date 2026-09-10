@@ -1,0 +1,53 @@
+# cargo-about 0.9.2; retain complete runtime notices, not generic copyright templates.
+# Prefer an available Apache/BSD alternative before MIT where a crate offers a choice.
+accepted = ["Apache-2.0", "BSD-3-Clause", "MIT", "BSD-2-Clause", "ISC", "Unicode-3.0", "Zlib", "MPL-2.0"]
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# Product copyright is in the repository root, outside the native manifest directory.
+[modeleaf.clarify]
+license = "MIT"
+[[modeleaf.clarify.files]]
+path = "../LICENSE"
+checksum = "d02088c756c70b93f7f18d4f992a021e86f7213adb451a5dfca8391046232b49"
+
+# dpi embeds libm code; retain its complete additional copyright notice.
+[dpi.clarify]
+license = "Apache-2.0 AND MIT"
+[[dpi.clarify.files]]
+path = "LICENSE"
+license = "Apache-2.0"
+checksum = "6dc0e068dcf3a5bc8e054205b85b7720e1d49265bbc64bf515d2cf79197df69a"
+[[dpi.clarify.files]]
+path = "LICENSE-LIBM-MIT"
+license = "MIT"
+checksum = "9eff396a99bafd208e7126602420d6864f6066c08b84485a5b032320a9c01997"
+
+# These published crates omit the repository-root license. cargo-about uses
+# each crate's .cargo_vcs_info.json commit, and the source text must match.
+[webview2-com.clarify]
+license = "MIT"
+[[webview2-com.clarify.git]]
+path = "LICENSE"
+checksum = "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+
+[webview2-com-macros.clarify]
+license = "MIT"
+[[webview2-com-macros.clarify.git]]
+path = "LICENSE"
+checksum = "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+
+[webview2-com-sys.clarify]
+license = "MIT"
+[[webview2-com-sys.clarify.git]]
+path = "LICENSE"
+checksum = "0dcf41516e608bbcb6cdc5229feb7b86fe4a643b85e7df251133c93408fdac73"
+
+# The nested allocator crate also omits its repository-root BSD notice.
+[alloc-stdlib.clarify]
+license = "BSD-3-Clause"
+[[alloc-stdlib.clarify.git]]
+path = "LICENSE"
+checksum = "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae"

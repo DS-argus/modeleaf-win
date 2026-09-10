@@ -19,6 +19,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows/package-sc
 
 It creates exactly four outputs: the executable/license-only ZIP, `modeleaf.json`, `SHA256SUMS`, and `package-receipt.json`. Existing output directories are rejected. PE header validation is only header validation: signature and native acceptance remain `not-verified`. The ZIP contains no source PDFs. Generated URLs are proposed locations, not availability evidence.
 
+### Native dependency notices
+
+The ZIP's `THIRD_PARTY_NOTICES.md` includes full source-bound native dependency notices, including Unicode-3.0, WebView2 MIT copyrights, DPI's libm attribution, and MPL-2.0 source-availability links. `legal:verify` rejects stale Cargo.lock bindings, changed license text, or a missing/modified appendix. This is a reproducible notice inventory, not legal certification.
+
+After dependency changes, use **cargo-about 0.9.2**, review the output and source-bound clarifications in `tools/legal/about.toml`, then regenerate:
+
+```powershell
+cargo about generate --locked --fail --manifest-path src-tauri/Cargo.toml --config tools/legal/about.toml --format json --output-file .gjc/evidence/native-licenses.json
+node tools/legal/runtime-notices.mjs --import .gjc/evidence/native-licenses.json --write
+npm run legal:verify
+```
+
+Do not commit the raw cargo-about report: it contains local paths. The importer strips that metadata and rejects generic copyright placeholders. Commit only the normalized inventory and notice changes after review. No dependency was upgraded to add these notices.
+
 ## Reviewed tag publication
 
 [Tag publication](../.github/workflows/publish-scoop.yml) promotes the exact bytes from a successful **main** preparation run; it does not rebuild at the tag or promote PR artifacts. The repository must already be public, and both owner-reviewed repository variables must be set:
