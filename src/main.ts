@@ -10,6 +10,7 @@ import { validateProductConfig } from "./domain/config/ConfigValidator";
 import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
 import type { ActionId, ActionRuntimeContext } from "./domain/actions/ActionRegistry";
 import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelection, selectChooserIndex, adoptChooserSnapshot, retainChooserFailure, type OpenChooserModel } from "./ui/OpenChooserModel";
+import { fitRecentPath } from "./ui/RecentPathPresentation";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
 import { bindSearchPrompt } from "./ui/SearchPromptController";
@@ -18,8 +19,8 @@ import { buildWindowsMenuModel } from "./application/commands/WindowsMenuModel";
 import { createShellOpenCoordinator } from "./platform/ShellOpenCoordinator";
 import { beginPagePromptCommit, editPagePrompt, navigationFailureStatus, openPagePrompt, revokePagePromptOwnership, settlePagePromptCommit, type PagePromptNavigationKind, type PagePromptState } from "./application/PagePromptTransaction";
 import type { InitiatedTerminal } from "./application/OpenFlowCoordinator";
-import { performTabActivation, queueRelativeTabActivation } from "./application/TabActivationCoordinator";
-import { rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
+import { performTabActivation, performTabClose, queueRelativeTabActivation } from "./application/TabActivationCoordinator";
+import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
 import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "./application/WorkspaceTransitionQueue";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
 import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
@@ -27,36 +28,27 @@ import { CLOSED_THEME_PICKER, THEME_PICKER_FOOTER, THEME_PICKER_ROWS, commitThem
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
-import { TocController } from "./ui/reader/TocController";
-import { TocWidgetView } from "./ui/reader/TocWidgetView";
-import { normalizeOutline, type OutlineRow } from "./domain/outlines/OutlineModel";
-import { readOutlineTree, type PdfOutlineAdapterDocument } from "./pdf/PdfOutlineAdapter";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
-import { DEFAULT_INDICATOR_SETTINGS, type IndicatorSettings } from "./domain/links/IndicatorSettings";
-import { commitIndicatorPicker, indicatorPickerDialogKeyAction, INDICATOR_PICKER_ROWS, openIndicatorPicker, previewIndicatorPickerRow, revertIndicatorPicker, revertIndicatorPickerToDurable, CLOSED_INDICATOR_PICKER, type IndicatorPickerModel, type IndicatorPickerOpenModel } from "./ui/IndicatorPickerModel";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
-import { commitIndicatorState, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readIndicatorState, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
+import { clearRecentDocuments, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
 const shellConfig = shellConfigResult.value;
-let indicatorSettings: IndicatorSettings = DEFAULT_INDICATOR_SETTINGS;
-void readIndicatorState(invoke).then((value) => { if (value !== undefined) indicatorSettings = value; }, () => undefined);
 const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
-  "toc.toggle", "toc.scrollDown", "toc.scrollUp",
-  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight", "link.hint",
+  "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "config.writeDefault", "config.resetDefault", "theme.picker",
-  "config.reload", "indicator.picker", "update.show",
+  "config.reload", "update.show",
   "history.back", "history.forward",
 ]);
 function isNativeCompositionEvent(event: KeyboardEvent): boolean {
@@ -89,12 +81,12 @@ root.innerHTML = `
 <section id="app-shell" data-testid="app-shell" class="app-shell" tabindex="-1" role="application" aria-label="Modeleaf PDF reader">
   <nav id="windows-menu" data-testid="windows-menu" class="windows-menu" aria-label="Application menu"></nav>
   <div id="tab-strip" data-testid="tab-strip" class="tab-strip" role="tablist" aria-label="Open PDFs"></div>
-  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd></button></section></main>
+  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd></button></section></main>
   <section id="prompt" class="prompt" role="group" aria-label="Go to page" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">j or k previews a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><p class="overlay-footer theme-footer">${THEME_PICKER_FOOTER.map(({ key, action }) => `<kbd>${key}</kbd> ${action}`).join(" · ")}</p><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" class="search-prompt" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><label id="search-title" class="visually-hidden" for="search-input">Search PDF text</label><span class="search-prefix" aria-hidden="true">/</span><input id="search-input" type="search" spellcheck="false" aria-label="Search PDF text" placeholder="Search PDF text"><p class="search-footer"><kbd>Enter</kbd> search · <kbd>Esc</kbd> close</p></form></dialog>
-  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
+  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
   <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
@@ -176,8 +168,6 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
 const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu, onCommand: (actionId) => dispatchActionId(actionId as ActionId) });
 function claimOverlay(id: OverlayId): void {
   applicationMenuOwner.close();
-  active().toc.cancelPending();
-  active().session.dismissLinkDecorations();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
   const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const activePrompt = pagePromptTransaction;
@@ -343,7 +333,7 @@ const native = {
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
 };
 
-type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly toc: TocController; readonly tocView: TocWidgetView; readonly disposeUi: () => void };
+type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly disposeUi: () => void };
 let workspace!: TabWorkspace<TabPayload>;
 const resources = new ResourceReservationManager((needed) => {
   if (workspace === undefined || !["canvas-bytes", "canvas-cache-bytes", "text-page-bytes", "text-document-bytes", "text-process-bytes", "search-document-results", "search-process-results", "search-extractor"].includes(needed.kind)) return;
@@ -397,6 +387,7 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
   render();
 }
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
+  "PDF presentation could not be updated.",
   "Could not read this PDF.",
   "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
   "This PDF path cannot be opened safely.",
@@ -441,7 +432,6 @@ function commandAvailabilityContext(): ActionRuntimeContext {
     searchActive: active().session.query.length > 0,
     canHistoryBack: active().session.canHistoryBack,
     canHistoryForward: active().session.canHistoryForward,
-    linkCount: active().session.visibleLinkCount,
     implementedActionIds: IMPLEMENTED_ACTION_IDS,
   };
 }
@@ -489,22 +479,18 @@ function reportPresentationFailure(session: PdfTabSession, error: unknown): void
   }
   render();
 }
-const boundaryPageTurns = new WeakSet<HTMLElement>();
-function turnPageAtBoundary(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
-  if (boundaryPageTurns.has(payload.host)) return true;
-  const previousPage = payload.session.snapshot.reader.page;
-  payload.session.apply({ type: direction > 0 ? "page.next" : "page.previous" });
-  const page = payload.session.snapshot.reader.page;
-  if (page === previousPage) return false;
-  boundaryPageTurns.add(payload.host);
-  rootKeyboard.syncContext();
-  render();
-  void payload.session.renderPage(page).then((committed) => {
-    if (committed && direction < 0 && payload.session.snapshot.reader.zoomMode !== "fit-page") {
-      payload.host.scrollTop = Math.max(0, payload.host.scrollHeight - payload.host.clientHeight);
+const fittedPageTurns = new WeakSet<HTMLElement>();
+function turnFittedPage(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
+  if (fittedPageTurns.has(payload.host)) return true;
+  const reader = payload.session.snapshot.reader;
+  if ((direction < 0 && reader.page <= 1) || (direction > 0 && reader.page >= reader.pageCount)) return false;
+  fittedPageTurns.add(payload.host);
+  void payload.session.navigateAdjacentPage(direction).then((result) => {
+    if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") {
+      payload.session.reader.setStatus(navigationFailureStatus(result.kind));
     }
   }).catch((error: unknown) => reportPresentationFailure(payload.session, error)).finally(() => {
-    boundaryPageTurns.delete(payload.host);
+    fittedPageTurns.delete(payload.host);
     rootKeyboard.syncContext();
     render();
   });
@@ -556,7 +542,6 @@ function createTab(): TabPayload {
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       abortExternalLinks: (registryRevision) => invoke<void>("abort_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
-      indicatorSettings: () => indicatorSettings,
       openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<number>("open_external_link", { request: { operationId, operationSequence, sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, annotationId } }),
     }),
     onStatus: () => {
@@ -581,27 +566,22 @@ function createTab(): TabPayload {
       if (content.query !== "" && !content.searchPending && !content.searchIncomplete) {
         accessibility.announce({ kind: "search", generation: reader.documentGeneration, current: content.results.length === 0 ? 0 : content.currentResult + 1, total: content.results.length });
       }
-      accessibility.announce({ kind: "link-hints", generation: reader.documentGeneration, visible: content.hintsVisible, count: content.hintsVisible ? host.querySelectorAll(".pdf-link-hint").length : 0 });
     },
   });
   host.addEventListener("wheel", (event) => {
     if (active().session !== session) return;
     const reader = session.snapshot.reader;
-    const direction = reader.zoomMode === "fit-page" && !event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0
-      ? (event.deltaY > 0 ? 1 : -1)
-      : wheelPageDirection({
+    const direction = wheelPageDirection({
+      zoomMode: reader.zoomMode,
       deltaX: event.deltaX,
       deltaY: event.deltaY,
-      scrollTop: host.scrollTop,
-      scrollHeight: host.scrollHeight,
-      clientHeight: host.clientHeight,
       page: reader.page,
       pageCount: reader.pageCount,
       ctrlKey: event.ctrlKey,
     });
     if (direction === 0) return;
     event.preventDefault();
-    turnPageAtBoundary({ host, session }, direction);
+    turnFittedPage({ host, session }, direction);
   }, { passive: false });
   let viewportFrameRequest: number | undefined;
   let viewportSynchronization: Promise<boolean> | undefined;
@@ -631,78 +611,21 @@ function createTab(): TabPayload {
   };
   const onReaderScroll = (): void => {
     if (session.navigationLandingInProgress) return;
-    if (!session.indicatorPublicationPending) session.dismissLinkDecorations();
     session.clearVisibleLinkAuthority();
-    session.invalidateViewportSynchronization();
     if (session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
   queueMicrotask(scheduleViewportSync);
-  const toc = new TocController({
-    clock: {
-      now: () => performance.now(),
-      schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
-      cancel: (handle) => { window.clearTimeout(handle); },
-    },
-    onActivate: ({ row }) => { void activateOutlineRow(session, row); },
-    onChange: () => { if (active().session === session) renderToc(); },
-  });
-  const tocView = new TocWidgetView({
-    host,
-    onActivateRow: (row) => { toc.activateRow(row); },
-  });
-  return { host, session, toc, tocView, disposeUi: () => {
+  return { host, session, disposeUi: () => {
     viewportDisposed = true;
     if (viewportFrameRequest !== undefined) window.cancelAnimationFrame(viewportFrameRequest);
     host.removeEventListener("scroll", onReaderScroll);
     copyContextMenu.dispose();
-    toc.dispose();
-    tocView.dispose();
   } };
 }
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
 active().session.activate();
-/** Re-raises and repaints the active tab's TOC so it never sinks below a replaced canvas. */
-function renderToc(): void {
-  const current = active();
-  current.toc.setContainerSize({ width: current.host.clientWidth, height: current.host.clientHeight });
-  current.tocView.raise();
-  current.tocView.render(current.toc.view());
-}
 
-/**
- * Loads the embedded outline for a session and hands it to its TOC.
- *
- * A PDF without an outline yields an empty list and the widget shows its empty
- * state; no outline is ever inferred.
- */
-async function loadOutline(session: PdfTabSession, payload: TabPayload): Promise<void> {
-  try {
-    payload.toc.setOutline(normalizeOutline(await session.readOutlineTreeNodes()));
-  } catch {
-    // An unreadable outline is not a document failure; the TOC degrades to empty.
-    payload.toc.setOutline([]);
-  }
-}
-
-/** Activates one outline row through the app-owned verified navigation transaction. */
-async function activateOutlineRow(session: PdfTabSession, row: OutlineRow): Promise<void> {
-  const destination = row.destination;
-  if (destination === undefined) return;
-  if (active().session !== session) return;
-  try {
-    await session.navigateToDestination(
-      destination.pageIndex + 1,
-      [destination.pageIndex, { name: "XYZ" }, destination.x, destination.y, null],
-      "outline",
-    );
-  } catch (error: unknown) {
-    reportPresentationFailure(session, error);
-  }
-  render();
-}
-
-let indicatorPicker: IndicatorPickerModel = CLOSED_INDICATOR_PICKER;
 let updateNotice: UpdateNoticeState = HIDDEN_UPDATE_NOTICE;
 const RELEASE_REPOSITORY = "DS-argus/modeleaf-win";
 
@@ -728,43 +651,6 @@ async function reloadConfiguration(): Promise<ConfigReloadOutcome> {
   return outcome;
 }
 
-/** Opens the five-style indicator picker as a preview transaction. */
-function openIndicatorPickerDialog(): void {
-  try {
-    indicatorPicker = openIndicatorPicker(indicatorSettings);
-  } catch {
-    // Corrupt durable settings cannot seed a transaction; fall back to defaults.
-    indicatorPicker = openIndicatorPicker(DEFAULT_INDICATOR_SETTINGS);
-  }
-  render();
-}
-
-/** Commits the previewed indicator settings, reverting to durable state on failure. */
-async function commitIndicatorPickerDialog(): Promise<void> {
-  if (indicatorPicker.status !== "open") return;
-  const { intent } = commitIndicatorPicker(indicatorPicker);
-  const previous = indicatorPicker.transaction.baseline;
-  indicatorPicker = CLOSED_INDICATOR_PICKER;
-  try {
-    await commitIndicatorState(invoke, intent.settings);
-    indicatorSettings = intent.settings;
-  } catch {
-    // A failed durable write must never be reported as success.
-    indicatorSettings = previous;
-    active().session.reader.setStatus("Could not save the link indicator setting.");
-  }
-  render();
-}
-
-/** Closes the indicator picker and restores the settings captured on open. */
-function revertIndicatorPickerDialog(): void {
-  if (indicatorPicker.status !== "open") return;
-  const { effect } = revertIndicatorPicker(indicatorPicker);
-  indicatorPicker = CLOSED_INDICATOR_PICKER;
-  indicatorSettings = effect.settings;
-  render();
-}
-
 /** Opens the release page for an available update. Notify-only: never installs. */
 async function showUpdateNotice(): Promise<void> {
   const url = releasePageUrl(updateNotice, RELEASE_REPOSITORY);
@@ -782,7 +668,6 @@ async function showUpdateNotice(): Promise<void> {
 }
 function render(): void {
   const current = active();
-  renderToc();
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
     windowId: SHELL_WINDOW_ID,
@@ -831,10 +716,18 @@ function render(): void {
     const button = document.createElement("button");
     button.type = "button"; button.className = "workspace-tab"; button.id = `reader-tab-${String(tab.id)}`;
     button.role = semantics.role; button.setAttribute("aria-label", semantics.ariaLabel); button.setAttribute("aria-selected", semantics.ariaSelected); button.setAttribute("aria-setsize", String(semantics.ariaSetSize)); button.setAttribute("aria-posinset", String(semantics.ariaPosInSet)); button.setAttribute("aria-controls", `reader-panel-${String(tab.id)}`); button.tabIndex = semantics.tabIndex; button.textContent = tab.payload.session.snapshot.title;
+    button.title = tab.payload.session.snapshot.title;
     button.addEventListener("click", () => void switchTab(tab.id));
     const close = document.createElement("button"); close.type = "button"; close.className = "workspace-tab-close"; close.setAttribute("aria-label", "Close tab"); close.textContent = "×"; close.addEventListener("click", (event) => { event.stopPropagation(); closeTab(tab.id); });
     const item = document.createElement("div"); item.className = "workspace-tab-item"; item.append(button, close); item.dataset.index = String(index); return item;
   }));
+  const selectedTab = tabStrip.querySelector<HTMLElement>('[aria-selected="true"]')?.parentElement;
+  if (selectedTab !== null && selectedTab !== undefined) {
+    const stripBounds = tabStrip.getBoundingClientRect();
+    const selectedBounds = selectedTab.getBoundingClientRect();
+    if (selectedBounds.left < stripBounds.left) tabStrip.scrollLeft += selectedBounds.left - stripBounds.left;
+    else if (selectedBounds.right > stripBounds.right) tabStrip.scrollLeft += selectedBounds.right - stripBounds.right;
+  }
 }
 function cancelPagePromptOwnership(): void {
   const revoked = revokePagePromptOwnership(pagePromptTransaction, suspendedPagePrompt);
@@ -853,7 +746,7 @@ function switchTabNow(id: TabId): Promise<void> {
     activeId: () => workspace.activeTabId,
     payload: (tabId) => workspace.getPayload(tabId),
     isActive: (payload) => payload.session.snapshot.active,
-    cancelPending: (payload) => { cancelPagePromptOwnership(); payload.toc.cancelPending(); },
+    cancelPending: () => { cancelPagePromptOwnership(); },
     deactivate: (payload) => payload.session.deactivate(),
     activateWorkspace: (tabId) => workspace.activate(tabId),
     activateCurrent: (restoreFocus) => activateCurrentTab(restoreFocus),
@@ -866,17 +759,19 @@ function switchAdjacentTab(direction: -1 | 1): Promise<void> {
   return queueRelativeTabActivation(direction, queueWorkspaceActivation, (step) => workspace.adjacentId(step), switchTabNow);
 }
 function closeTab(id: TabId): void {
-  void queueWorkspaceTransition(async () => {
-    const wasActive = id === workspace.activeTabId;
-    if (wasActive) cancelPagePromptOwnership();
-    if (!workspace.close(id)) return;
-    if (wasActive) await activateCurrentTab(); else render();
-  }).catch(() => {
+  void queueWorkspaceTransition(() => performTabClose(id, {
+    activeId: () => workspace.activeTabId,
+    cancelPending: cancelPagePromptOwnership,
+    closeWorkspace: (tabId) => workspace.close(tabId),
+    publish: render,
+    activateCurrent: () => activateCurrentTab(),
+  })).catch(() => {
     active().session.reader.setStatus("Could not activate the tab after closing.");
     render();
   });
 }
 interface PendingOpenAdoption {
+  readonly failureStatus?: string;
   readonly request: OpenRequestAdoption;
   readonly id?: TabId;
   readonly payload?: TabPayload;
@@ -910,18 +805,27 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
       }
       pendingOpenAdoptions.set(request.requestId, { request, id, payload, priorActiveId });
       try {
-        await publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration));
-        await loadOutline(payload.session, payload);
-        if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
-        await activateCurrentTab(true);
+        await adoptWithCommittedPresentation(
+          () => publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration)),
+          async () => {
+            if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
+            await activateCurrentTab(true);
+          },
+        );
       } catch (error) {
         const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status);
+        if (error instanceof OpenAdoptionPresentationError) {
+          const pending = pendingOpenAdoptions.get(request.requestId);
+          if (pending !== undefined) pendingOpenAdoptions.set(request.requestId, { ...pending, failureStatus: candidateStatus });
+          throw error;
+        }
         pendingOpenAdoptions.delete(request.requestId);
         if (staged) workspace.rollbackAdoption(id);
         else if (id !== priorActiveId) {
           await payload.session.deactivate();
           workspace.activate(priorActiveId);
         }
+        render();
         await activateCurrentTab();
         active().session.reader.setStatus(candidateStatus);
         render();
@@ -929,7 +833,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
       }
     }));
   } catch (error) {
-    pendingOpenAdoptions.delete(request.requestId);
+    if (!(error instanceof OpenAdoptionPresentationError)) pendingOpenAdoptions.delete(request.requestId);
     throw error;
   }
 }
@@ -977,9 +881,10 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
       has: (id) => workspace.getPayload(id) !== undefined,
       activate: (id) => { workspace.activate(id); },
     });
+    render();
     await activateCurrentTab(terminal.tag !== "DISPOSED");
     if (terminal.tag !== "DISPOSED") {
-      active().session.reader.setStatus("The PDF open transaction was rolled back.");
+      active().session.reader.setStatus(pending.failureStatus ?? "The PDF open transaction was rolled back.");
       render();
     }
   }).then(() => {
@@ -1112,15 +1017,18 @@ function renderFileOpener(): void {
     button.setAttribute("aria-current", selected ? "true" : "false");
     if (row.kind === "browse") {
       button.setAttribute("aria-label", "Browse for a PDF");
-      const glyph = document.createElement("span");
-      glyph.className = "file-opener-browse-glyph";
-      glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = "▣";
-      const label = document.createElement("span");
-      label.textContent = row.label;
-      button.append(glyph, label);
+      button.textContent = row.label;
     } else {
-      button.textContent = row.displayName;
+      const separatorIndex = Math.max(row.displayPath.lastIndexOf("\\"), row.displayPath.lastIndexOf("/"));
+      const directory = document.createElement("span");
+      const filename = document.createElement("span");
+      directory.className = "file-opener-recent-directory";
+      filename.className = "file-opener-recent-filename";
+      directory.textContent = separatorIndex < 0 ? "" : row.displayPath.slice(0, separatorIndex + 1);
+      filename.textContent = row.displayName;
+      button.setAttribute("aria-label", row.displayPath);
+      button.title = row.displayPath;
+      button.append(directory, filename);
     }
     button.addEventListener("click", () => {
       fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
@@ -1134,8 +1042,95 @@ function renderFileOpener(): void {
   if (diagnostic[0] !== undefined) { diagnostic[0].setAttribute("role", "status"); diagnostic[0].setAttribute("aria-live", "polite"); }
   fileOpenerList.replaceChildren(...projected, ...diagnostic);
   fileOpenerList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
+  startFileOpenerPathFitting();
+}
+let fileOpenerPathFitFrame: number | undefined;
+let fileOpenerPathResizeObserver: ResizeObserver | undefined;
+let fileOpenerPathMeasureContext: CanvasRenderingContext2D | null | undefined;
+let fileOpenerPathLastWidth = -1;
+let fileOpenerPathFitDirty = false;
+let fileOpenerPathFitting = false;
+function startFileOpenerPathFitting(): void {
+  fileOpenerPathFitting = true;
+  if (fileOpenerPathResizeObserver === undefined && typeof ResizeObserver === "function") {
+    fileOpenerPathResizeObserver = new ResizeObserver(() => {
+      if (!fileOpenerPathFitting || fileOpenerList.clientWidth <= 0 || fileOpenerList.clientWidth === fileOpenerPathLastWidth) return;
+      scheduleFileOpenerPathFit();
+    });
+    fileOpenerPathResizeObserver.observe(fileOpenerList);
+  }
+  scheduleFileOpenerPathFit(true);
+}
+function scheduleFileOpenerPathFit(force = false): void {
+  if (!fileOpenerPathFitting) return;
+  fileOpenerPathFitDirty = fileOpenerPathFitDirty || force;
+  if (fileOpenerPathFitFrame !== undefined) return;
+  fileOpenerPathFitFrame = requestAnimationFrame(() => {
+    fileOpenerPathFitFrame = undefined;
+    if (!fileOpenerPathFitting) return;
+    const width = fileOpenerList.clientWidth;
+    if (width <= 0 || (!fileOpenerPathFitDirty && width === fileOpenerPathLastWidth)) return;
+    fileOpenerPathFitDirty = false;
+    fileOpenerPathLastWidth = width;
+    fitFileOpenerPaths();
+  });
+}
+function fitFileOpenerPaths(): void {
+  if (fileOpenerList.clientWidth <= 0) return;
+  if (fileOpenerPathMeasureContext === undefined) fileOpenerPathMeasureContext = document.createElement("canvas").getContext("2d");
+  const context = fileOpenerPathMeasureContext;
+  if (context === null) return;
+  for (const button of fileOpenerList.querySelectorAll<HTMLButtonElement>(".file-opener-recent")) {
+    button.style.removeProperty("font-size");
+    if (button.clientWidth <= 0) continue;
+    const style = getComputedStyle(button);
+    const baseFontSize = Number.parseFloat(style.fontSize);
+    const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
+    const availableWidth = button.clientWidth - horizontalPadding - 1;
+    const directory = button.querySelector<HTMLElement>(".file-opener-recent-directory");
+    const filename = button.querySelector<HTMLElement>(".file-opener-recent-filename");
+    if (!(availableWidth > 0) || !(baseFontSize > 0) || directory === null || filename === null) continue;
+    const result = fitRecentPath(button.title, filename.textContent ?? "", availableWidth, baseFontSize, (text, fontSize) => {
+      context.font = `${style.fontStyle} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
+      return context.measureText(text).width;
+    });
+    directory.textContent = result.directoryText;
+    filename.textContent = result.filenameText;
+    if (result.fontSize < baseFontSize) button.style.fontSize = `${result.fontSize}px`;
+  }
+}
+function stopFileOpenerPathFitting(): void {
+  fileOpenerPathFitting = false;
+  fileOpenerPathResizeObserver?.disconnect();
+  fileOpenerPathResizeObserver = undefined;
+  fileOpenerPathMeasureContext = undefined;
+  if (fileOpenerPathFitFrame !== undefined) cancelAnimationFrame(fileOpenerPathFitFrame);
+  fileOpenerPathFitFrame = undefined;
+  fileOpenerPathLastWidth = -1;
+  fileOpenerPathFitDirty = false;
+}
+let clearingRecents = false;
+async function clearFileOpenerHistory(): Promise<void> {
+  if (clearingRecents || nativeOpenPending || overlayOwner.active?.id !== "recent") return;
+  clearingRecents = true;
+  const generation = fileOpenerModel.generation;
+  try {
+    const outcome = await clearRecentDocuments(invoke);
+    if (outcome.tag === "COMMITTED") {
+      fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries });
+    } else if (fileOpenerModel.generation === generation) {
+      fileOpenerModel = retainChooserFailure(fileOpenerModel, generation,
+        outcome.tag === "STATE_UNAVAILABLE" ? RECENT_STATE_UNAVAILABLE : "Recent history could not be cleared because application state could not be saved.");
+    }
+  } catch {
+    if (fileOpenerModel.generation === generation) fileOpenerModel = retainChooserFailure(fileOpenerModel, generation, "Recent history could not be cleared.");
+  } finally {
+    clearingRecents = false;
+    if (!shellDisposing && overlayOwner.active?.id === "recent") renderFileOpener();
+  }
 }
 function closeFileOpener(): void {
+  stopFileOpenerPathFitting();
   releaseOverlay("recent");
 }
 function dispatchFileOpenerEntry(): void {
@@ -1263,7 +1258,6 @@ function dispatchActionId(id: ActionId): void {
     "document.open": { type: "document.open" }, "document.close": { type: "tab.close" }, "document.print": { type: "document.print" },
     "app.quit": { type: "application.quit" }, "app.new": { type: "application.new" }, "palette.open": { type: "palette.toggle" }, "help.show": { type: "help.toggle" },
     "tab.next": { type: "tab.next" }, "tab.previous": { type: "tab.previous" },
-    "toc.toggle": { type: "toc.toggle" }, "toc.scrollDown": { type: "toc.scrollDown" }, "toc.scrollUp": { type: "toc.scrollUp" },
     "scroll.left": { type: "scroll.byCssPixels", axis: "horizontal", delta: -32 }, "scroll.right": { type: "scroll.byCssPixels", axis: "horizontal", delta: 32 },
     "scroll.down": { type: "scroll.byCssPixels", axis: "vertical", delta: 32 }, "scroll.up": { type: "scroll.byCssPixels", axis: "vertical", delta: -32 },
     "scroll.largeDown": { type: "scroll.byViewport", factor: 0.8 }, "scroll.largeUp": { type: "scroll.byViewport", factor: -0.8 },
@@ -1271,8 +1265,8 @@ function dispatchActionId(id: ActionId): void {
     "search.prompt": { type: "search.open" },
     "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.actualSize" },
     "view.fitWidth": { type: "view.fitWidth" }, "view.fitPage": { type: "view.fitPage" }, "view.rotateLeft": { type: "view.rotate", quarterTurns: -1 }, "view.rotateRight": { type: "view.rotate", quarterTurns: 1 },
-    "link.hint": { type: "linkHints.toggle" }, "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
-    "config.reload": { type: "config.reload" }, "indicator.picker": { type: "indicator.open" }, "update.show": { type: "update.show" },
+    "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
+    "config.reload": { type: "config.reload" }, "update.show": { type: "update.show" },
   };
   if (id === "page.prompt") {
     const payload = active();
@@ -1361,9 +1355,6 @@ function dispatch(action: Action): void {
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
   if (type === "application.new") { void invoke<void>("create_app_window").catch(() => { active().session.reader.setStatus("WINDOW_CREATE_FAILED"); render(); }); return; }
-  if (type === "toc.toggle") { active().toc.toggle(); render(); return; }
-  if (type === "toc.scrollDown") { active().toc.scrollRows(1); render(); return; }
-  if (type === "toc.scrollUp") { active().toc.scrollRows(-1); render(); return; }
   if (type === "palette.toggle") { openPalette(); return; }
   if (type === "tab.next") { void switchAdjacentTab(1); return; }
   if (type === "tab.previous") { void switchAdjacentTab(-1); return; }
@@ -1371,9 +1362,9 @@ function dispatch(action: Action): void {
     const payload = active();
     const direction = type === "page.next" ? 1 : -1;
     void payload.session.navigateAdjacentPage(direction).then((result) => {
-      if (result.kind !== "verifiedLanding" && result.kind !== "noOp") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
+      if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
       render();
-      if (active().session === payload.session) payload.host.focus({ preventScroll: true });
+      if (active().session === payload.session && overlayOwner.active === undefined && result.kind === "verifiedLanding") payload.host.focus({ preventScroll: true });
     }, (error: unknown) => reportPresentationFailure(payload.session, error));
     return;
   }
@@ -1381,42 +1372,29 @@ function dispatch(action: Action): void {
     const payload = active();
     const navigation = type === "page.first" ? payload.session.navigateFirstPage() : payload.session.navigateLastPage();
     void navigation.then((result) => {
-      if (result.kind !== "verifiedLanding" && result.kind !== "noOp") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
+      if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") payload.session.reader.setStatus(navigationFailureStatus(result.kind));
       render();
-      if (active().session === payload.session) payload.host.focus({ preventScroll: true });
+      if (active().session === payload.session && overlayOwner.active === undefined && result.kind === "verifiedLanding") payload.host.focus({ preventScroll: true });
     }, (error: unknown) => reportPresentationFailure(payload.session, error));
     return;
   }
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "config.reload") { void reloadConfiguration(); return; }
-  if (type === "indicator.open") { openIndicatorPickerDialog(); return; }
   if (type === "update.show") { void showUpdateNotice(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
   if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchInput.focus(); }
-  if (type === "linkHints.toggle") session.toggleHints(); if (type === "prompt.cancel") session.cancelHints();
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
     const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
     const fitPageDirection = reader.zoomMode === "fit-page" && verticalCssPixels !== 0 ? (verticalCssPixels > 0 ? 1 : -1) : 0;
     if (fitPageDirection !== 0) {
-      turnPageAtBoundary(payload, fitPageDirection);
+      turnFittedPage(payload, fitPageDirection);
       rootKeyboard.syncContext(); render();
       return;
     }
-    const direction = wheelPageDirection({
-      deltaX: intent.horizontalCssPixels,
-      deltaY: verticalCssPixels,
-      scrollTop: payload.host.scrollTop,
-      scrollHeight: payload.host.scrollHeight,
-      clientHeight: payload.host.clientHeight,
-      page: reader.page,
-      pageCount: reader.pageCount,
-    });
-    if (direction === 0 || !turnPageAtBoundary(payload, direction)) {
-      payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels });
-    }
+    payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels, behavior: "instant" });
   }
   rootKeyboard.syncContext(); render();
 }
@@ -1466,28 +1444,10 @@ window.addEventListener("keydown", (event) => {
     key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
     repeat: event.repeat, isComposing: event.isComposing, keyCode: event.keyCode,
     altGraph: event.getModifierState("AltGraph"),
-    nativeOwnedTarget: active().session.hintsVisible || (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
+    nativeOwnedTarget: (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
     preventDefault: () => event.preventDefault(),
   });
   if (claimed) event.stopImmediatePropagation();
-}, { capture: true });
-window.addEventListener("keydown", (event) => {
-  const session = active().session;
-  if (!session.hintsVisible && !(event.key === "Escape" && session.linkDecorationsVisible)) return;
-  const consumed = session.handleHintKey({
-    key: event.key,
-    ctrlKey: event.ctrlKey,
-    altKey: event.altKey,
-    metaKey: event.metaKey,
-    shiftKey: event.shiftKey,
-    isComposing: event.isComposing || isNativeCompositionEvent(event),
-    keyCode: event.keyCode,
-    altGraph: event.getModifierState("AltGraph"),
-  });
-  if (!consumed) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  render();
 }, { capture: true });
 const DPR_POLL_DELAY_MS = 250;
 let dprMediaQuery: MediaQueryList | undefined;
@@ -1497,7 +1457,6 @@ const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
-  session.dismissLinkDecorations();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 };
 function bindDprChange(): void {
@@ -1530,8 +1489,8 @@ const disposeSearchPrompt = bindSearchPrompt(
 );
 window.addEventListener("resize", () => {
   scheduleDprPollFallback();
+  if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
   const session = active().session;
-  session.dismissLinkDecorations();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
@@ -1541,6 +1500,7 @@ fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); d
 fileOpenerInput.addEventListener("input", () => { fileOpenerModel = updateChooserQuery(fileOpenerModel, fileOpenerInput.value); renderFileOpener(); });
 fileOpenerDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeFileOpener(); });
 fileOpenerDialog.addEventListener("close", () => {
+  stopFileOpenerPathFitting();
   if (overlayOwner.active?.id !== "recent") return;
   releaseOverlay("recent");
   render();
@@ -1549,9 +1509,7 @@ fileOpenerDialog.addEventListener("keydown", (event) => {
   if (isPaletteClearShortcut(event)) {
     event.preventDefault();
     event.stopPropagation();
-    fileOpenerModel = updateChooserQuery(fileOpenerModel, "");
-    fileOpenerInput.value = "";
-    renderFileOpener();
+    void clearFileOpenerHistory();
     return;
   }
   const action = commandPaletteKeyAction(event);
@@ -1578,8 +1536,8 @@ paletteDialog.addEventListener("keydown", (event) => {
   if (count > 0) renderPalette();
 }, { capture: true });
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
-window.addEventListener("blur", () => active().session.dismissLinkDecorations());
 window.addEventListener("beforeunload", () => {
+  stopFileOpenerPathFitting();
   disposeSearchPrompt();
   themeUnlisten?.();
   recentSnapshotUnlisten?.();

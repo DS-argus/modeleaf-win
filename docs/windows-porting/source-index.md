@@ -2,6 +2,8 @@
 
 기준 commit은 `0f7ff0b54c3674c48f6b555261f939397cfbfb88`이고 annotated tag object는 `1c95412212e3045296fbce9c3fd73b4ac5240e4c`다. line number와 mutable working tree가 아니라 이 immutable commit의 파일을 기준으로 본다.
 
+Issue #53 owner delta: TOC·keyboard hint·destination indicator 원본은 재개발 reference이며 현재 Windows runtime 요구가 아니다. 일반 링크 클릭은 유지하고 pane7/TOC3/hint1/indicator1 action을 제외하여 Windows49 actions(45 configurable+4 fixed)를 사용한다. 퇴역 indicator는 dedcff85, TOC/hints는7e00424에 보존하며 `deferred-toc-link-hints.md`를 따른다.
+
 ## 1. Build와 product identity
 
 | 근거 | 계약 |

@@ -1,17 +1,19 @@
 # Modeleaf v0.10.0 Windows 포팅 명세
 
+> Issue #53 owner-approved Windows scope: ordinary internal/external PDF link clicks와 native authorization은 유지하고 embedded TOC, `f` keyboard hints, destination indicator/settings는 제외한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙에 놓고, destination transaction은 결과 viewport와 교차하는 page들을 기존 resource bound 안에서 materialize한 뒤에만 성공과 canonical actual-landing history를 commit한다. 현재 Windows contract는 macOS baseline 61 actions와 달리 **49 actions(45 configurable + 4 fixed)**이며 `t`/`J`/`K`/`f`/`I`는 미할당이다. 퇴역 source/tests는 TOC/hints `7e00424d30c5ffeab5a846d087236371644af53a`, indicator `dedcff8513e034efb904ef7d50fd59cc11444798`에서 [재개발 reference](deferred-toc-link-hints.md)로만 보존하고, scope 결정은 ADR 0001을 따른다.
+
 이 폴더는 macOS용 Modeleaf `v0.10.0`의 기능, 제품 철학, UI를 Windows 전용 새 저장소에서 재구현하기 위한 실행 명세다. 대상 기술 스택은 `Tauri 2 + Rust + TypeScript + PDF.js`로 고정한다.
 
 이 문서의 독자는 Windows 구현을 맡은 개발 에이전트다. Swift/AppKit/PDFKit 코드를 줄 단위로 번역하지 말고, 여기 적힌 동작 계약과 회귀 테스트를 새 코드로 재현한다.
 
-## 고정 기준
+## Immutable macOS 고정 기준
 
 | 항목 | 기준 |
 |---|---|
 | macOS 기준 버전 | `v0.10.0` |
 | 기준 커밋 | `0f7ff0b54c3674c48f6b555261f939397cfbfb88` |
 | 앱 버전 / 빌드 | `0.10.0` / `12` |
-| 공개 액션 | 61개 |
+| macOS 공개 액션 baseline | 61개 |
 | 최근 파일 상한 | 15개 |
 | 패널 상한 | 4개 |
 | 내비게이션 위치 상한 | 100개 |
@@ -31,11 +33,11 @@
 
 알려진 충돌은 다음과 같다.
 
-- 링크 힌트 병합은 PR #19의 인접 사각형 병합 설명이 아니라, PR #23과 현재 테스트의 **정확히 같은 annotation만 중복 제거**가 최종 계약이다.
-- README의 “줄바꿈 링크는 힌트 하나” 설명은 현재 코드와 충돌한다. PDF.js가 별도 annotation으로 반환하면 별도 힌트를 유지한다.
+- 링크 병합은 PR #19의 인접 사각형 병합 설명이 아니라, PR #23과 현재 계약의 **정확히 같은 annotation만 중복 제거**가 최종 규칙이다.
+- README의 “줄바꿈 링크는 힌트 하나” 설명은 현재 annotation 계약과 충돌한다. PDF.js가 별도 annotation으로 반환하면 ordinary click target도 별도로 유지한다.
 - 업데이트 경로는 PR #3/#38의 초기 구분보다 PR #43의 최종 정책이 우선한다. 단, Homebrew 자체는 Windows로 옮기지 않는다.
 - `gg`/`G`/페이지 점프는 PR #41처럼 stale current-page 값이 아니라 실제로 캡처한 viewport landing을 기준으로 성공과 no-op을 판정한다.
-- PR #45의 TOC는 PDF에 이미 포함된 outline만 읽는다. bookmark/thumbnail/attachment/OCR/outline 생성 기능으로 확장하지 않는다.
+- PR #45의 TOC 계약과 destination-indicator 계약은 현재 Windows 지원 범위가 아니라 재개발 reference다. bookmark/thumbnail/attachment/OCR/outline 생성 기능으로 확장하지 않는다.
 
 자세한 이력은 [PR 이력과 교훈](./pr-history.md)을 따른다.
 
@@ -59,11 +61,12 @@
 | 창 장식 | 첫 릴리스는 native Windows titlebar | macOS의 transparent full-size titlebar와 traffic-light inset을 복제하지 않음 |
 | PDF 전달 | Rust가 read-only handle을 보유하고 opaque URL로 Range 응답 | PDFKit가 파일 URL을 직접 읽는 구조를 사용하지 않음 |
 | config | Tauri `appConfigDir()/config.toml` | `~/.config/modeleaf/config.toml`을 사용하지 않음 |
-| state | Tauri `appLocalDataDir()/state.json` | 로컬 파일 경로를 roaming profile에 저장하지 않음 |
+| state | Tauri `appLocalDataDir()/state.json`; active owned fields는 `selected_theme`, `recent_files`뿐이며 퇴역 indicator 값은 unknown sibling으로 보존 | 로컬 파일 경로를 roaming profile에 저장하지 않고 기존 indicator metadata를 migrate/delete하지 않음 |
 | 키 문법 | `C=Ctrl`, `A=Alt`, `S=Shift`; `D`와 `Win` modifier 없음 | `D=Command` 문법 제거 |
-| 앱 단축키 | `Ctrl+O/W/P/N`, `Ctrl+Shift+P`, `Ctrl+1..9`, `Alt+F4` | macOS `Cmd` 계열을 Windows 표준으로 번역 |
-| 히스토리 | 기본 `Alt+Left`, `Alt+Right` | macOS `Ctrl+O/I`는 `Ctrl+O` Open과 충돌하므로 변경 |
-| TOC | PDF.js `getOutline()` 기반 pane-local floating overlay, `t`/`J`/`K`와 400ms 숫자 선택 | PDF.js generic sidebar·thumbnail·bookmark UI를 켜지 않음 |
+| 앱 단축키 | Open `Ctrl+Shift+O`, `Ctrl+W/P/N`, `Ctrl+Shift+P`, `Ctrl+1..9`, `Alt+F4` | Issue #53 owner 결정으로 Open을 변경; 명시적 사용자 keymap은 유지 |
+| 히스토리 | 기본 `Alt+Left`, `Alt+Right` | macOS `Ctrl+O/I` 대신 Windows history 키를 유지. Open 기본키 변경 후에도 재배정하지 않음 |
+| TOC / link hint / destination indicator | 현재 Windows 제품에서 제외; `t`/`J`/`K`/`f`/`I` 미할당 | macOS UI와 source/tests는 재개발 reference로만 보존 |
+| 내부 point 링크 | finite `XYZ` 좌표를 가능한 viewport 중앙에 배치하고 document edge에서 clamp; 보이는 landing page들을 bounded materialization한 뒤 성공/history commit | `Fit`/`FitB` page-fit과 `FitR` rectangle-fit 의미는 유지 |
 | 파일 연결 | 설치 시 `.pdf` Viewer/Open With 등록, 기본 앱 강제 변경 금지 | Finder document role을 Windows installer 등록으로 치환 |
 | 업데이트 | 새 버전 확인·알림·다운로드 안내만; 자동 설치 없음 | Homebrew 안내 제거; 명시적 Windows installer 경로 사용 |
 | 설치 형식 | 첫 공개 릴리스는 signed NSIS x64 | DMG/ZIP/Homebrew release flow를 사용하지 않음 |
@@ -80,12 +83,12 @@ Tauri의 `appConfigDir`와 `appLocalDataDir`는 이미 `tauri.conf.json`의 bund
 - PDF 내용이 주인공이고 앱 chrome은 조용하고 작아야 한다.
 - 키보드 우선이지만 텍스트 선택, 링크 클릭, 스크롤 같은 포인터 동작과 공존한다.
 - 모든 사용자 명령은 단일 action registry를 거친다. 메뉴, palette, help, status hint를 별도로 하드코딩하지 않는다.
-- 앱은 원본 PDF를 변경하지 않는다. view rotation, 검색 표시, 링크 힌트, destination indicator는 모두 일시적이다.
+- 앱은 원본 PDF를 변경하지 않는다. view rotation과 검색 표시는 일시적이며 퇴역 hint/indicator UI를 숨은 경로로 유지하지 않는다.
 - 문서 이동 이력은 앱이 소유하며 PDF.js generic viewer history에 위임하지 않는다.
 - 설정은 선언형 데이터뿐이다. 스크립트, shell command, macro, plugin을 추가하지 않는다.
 - persistence 실패를 성공처럼 보이지 않는다. 현재 세션에만 적용됐다면 그렇게 알려야 한다.
 - update check 실패는 독서를 방해하지 않는다.
-- TOC는 PDF에 이미 들어 있는 outline을 읽기 전용으로 투영할 뿐 bookmark나 outline을 만들거나 저장하지 않는다.
+- Embedded TOC, keyboard link hints와 destination indicator는 현재 Windows surface가 아니다. 재개발 근거와 마지막 source/tests commit은 [deferred-toc-link-hints.md](./deferred-toc-link-hints.md)에만 보존한다.
 
 ## 명시적 비범위
 
@@ -110,8 +113,8 @@ Tauri의 `appConfigDir`와 `appLocalDataDir`는 이미 `tauri.conf.json`의 bund
 | 앱 최초 실행 / empty state | [`ui/01-empty-state.png`](./ui/01-empty-state.png) |
 | `Cmd+O` Open/Recent | [`ui/02-open-recent-cmd-o.png`](./ui/02-open-recent-cmd-o.png) |
 | Theme picker | [`ui/03-theme-picker.png`](./ui/03-theme-picker.png) |
-| `Shift+I` Link Indicator picker | [`ui/04-link-indicator-picker-shift-i.png`](./ui/04-link-indicator-picker-shift-i.png) |
-| pane-local TOC | [`ui/05-toc-overlay.png`](./ui/05-toc-overlay.png) |
+| `Shift+I` Link Indicator picker (퇴역 재개발 reference) | [`ui/04-link-indicator-picker-shift-i.png`](./ui/04-link-indicator-picker-shift-i.png) |
+| pane-local TOC (퇴역 재개발 reference) | [`ui/05-toc-overlay.png`](./ui/05-toc-overlay.png) |
 | Search prompt | [`ui/06-search-prompt.png`](./ui/06-search-prompt.png) |
 | Go to page prompt | [`ui/07-goto-page-prompt.png`](./ui/07-goto-page-prompt.png) |
 

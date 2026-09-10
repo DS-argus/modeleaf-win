@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { performTabActivation, queueRelativeTabActivation, type TabActivationOperations } from "../../../src/application/TabActivationCoordinator";
+import { performTabActivation, performTabClose, queueRelativeTabActivation, type TabActivationOperations } from "../../../src/application/TabActivationCoordinator";
 import { createWorkspaceTransitionQueue } from "../../../src/application/WorkspaceTransitionQueue";
 import { TabWorkspace, type TabId } from "../../../src/core/TabWorkspace";
 
@@ -96,5 +96,69 @@ describe("TabActivationCoordinator", () => {
       queueRelativeTabActivation(1, enqueue, (direction) => workspace.adjacentId(direction), activate),
     ]);
     expect(visited).toEqual([second as number, 1, second as number, third as number]);
+  });
+});
+
+describe("tab close activation", () => {
+  function harness() {
+    const workspace = new TabWorkspace(() => ({ active: false, name: "empty" }));
+    const first = workspace.activeTabId;
+    workspace.setPayload(first, { active: false, name: "one" });
+    const second = workspace.appendAndActivate({ active: true, name: "two" })!;
+    let visibleId = second;
+    const events: string[] = [];
+    const operations = {
+      activeId: () => workspace.activeTabId,
+      cancelPending: () => { events.push("cancel"); },
+      closeWorkspace: (id: TabId) => { events.push("close"); return workspace.close(id); },
+      publish: () => { visibleId = workspace.activeTabId; events.push("publish"); },
+      activateCurrent: async () => {
+        expect(visibleId).toBe(workspace.activeTabId);
+        events.push("activate");
+        workspace.getPayload(workspace.activeTabId)!.active = true;
+      },
+    };
+    return { workspace, first, second, events, operations };
+  }
+
+  it("reveals a remaining inactive tab before restoring its presentation", async () => {
+    const h = harness();
+    await performTabClose(h.second, h.operations);
+    expect(h.workspace.activeTabId).toBe(h.first);
+    expect(h.workspace.getPayload(h.first)?.active).toBe(true);
+    expect(h.events).toEqual(["cancel", "close", "publish", "activate"]);
+  });
+
+  it("closes an inactive tab without cancelling or reactivating the current tab", async () => {
+    const h = harness();
+    await performTabClose(h.first, h.operations);
+    expect(h.workspace.activeTabId).toBe(h.second);
+    expect(h.events).toEqual(["close", "publish"]);
+  });
+
+  it("publishes and activates the empty replacement after closing the last tab", async () => {
+    const h = harness();
+    h.workspace.close(h.first);
+    await performTabClose(h.second, h.operations);
+    expect(h.workspace.snapshot.tabs).toHaveLength(1);
+    expect(h.workspace.getPayload(h.workspace.activeTabId)?.name).toBe("empty");
+    expect(h.events).toEqual(["cancel", "close", "publish", "activate"]);
+  });
+
+  it("propagates restore failure while retaining the visible surviving tab", async () => {
+    const h = harness();
+    await expect(performTabClose(h.second, { ...h.operations, activateCurrent: async () => {
+      expect(h.events.at(-1)).toBe("publish");
+      throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
+    } })).rejects.toThrow("PDF_PRESENTATION_RESTORE_FAILED");
+    expect(h.workspace.activeTabId).toBe(h.first);
+    expect(h.workspace.getPayload(h.second)).toBeUndefined();
+  });
+
+  it("ignores a repeated close without another activation", async () => {
+    const h = harness();
+    h.workspace.close(h.first);
+    await performTabClose(h.first, h.operations);
+    expect(h.events).toEqual(["close"]);
   });
 });

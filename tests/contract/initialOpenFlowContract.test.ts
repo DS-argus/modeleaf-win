@@ -11,7 +11,7 @@ describe("initial open flow contract", () => {
 
   it("has one canonical centered empty action with a live shortcut badge", () => {
     expect(main.match(/id="empty-reader-open"/gu)).toHaveLength(1);
-    expect(main).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd>');
+    expect(main).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd>');
     expect(main).not.toContain("No PDF open");
     expect(main).toContain("emptyReaderShortcut.textContent = shortcut");
     expect(main).toContain("tabStrip.hidden = documentTabs.length === 0");
@@ -27,7 +27,7 @@ describe("initial open flow contract", () => {
     expect(main).toContain("nativeOpenPending");
   });
 
-  it("prepares path-free recents before revealing the chooser", () => {
+  it("prepares native-owned recent display metadata before revealing the chooser", () => {
     expect(main).toContain('fileOpenerDialog.addEventListener("close"');
     const preload = main.indexOf("const initialRecentsReady = recentListenerReady.then");
     expect(preload).toBeGreaterThanOrEqual(0);
@@ -71,5 +71,29 @@ describe("initial open flow contract", () => {
     expect(adoptionSlice.indexOf("pendingOpenAdoptions.set(request.requestId")).toBeLessThan(adoptionSlice.indexOf("queueWorkspaceOwnership"));
     expect(main).toContain("pending.request.ownerGeneration");
     expect(source("src/platform/OpenRequestClient.ts")).toContain("if (!active) return true;");
+  });
+  it("keeps retired outline parsing out of opening and reader lifetimes", () => {
+    expect(main).toContain("async function adoptRequest");
+    for (const text of [main, source("src/pdf/PdfReaderController.ts"), source("src/pdf/PdfTabSession.ts")]) {
+      expect(text).not.toMatch(/loadOutline|getOutline|readOutline/);
+    }
+  });
+
+  it("clears durable recents instead of only resetting the filter", () => {
+    const clear = main.slice(main.indexOf("async function clearFileOpenerHistory"), main.indexOf("function closeFileOpener"));
+    expect(clear).toContain("await clearRecentDocuments(invoke)");
+    expect(clear).toContain('outcome.tag === "COMMITTED"');
+    expect(clear).toContain("retainChooserFailure");
+    expect(clear).not.toContain("updateChooserQuery");
+    expect(main).toContain("void clearFileOpenerHistory()");
+  });
+
+  it("never jumps to the whole continuous document bottom at a page boundary", () => {
+    expect(main).not.toContain("payload.host.scrollTop = Math.max");
+    expect(main).toContain('behavior: "instant"');
+    const scroll = main.slice(main.indexOf('if (type.startsWith("scroll."))'), main.indexOf("const rootKeyboard ="));
+    expect(scroll).not.toContain("wheelPageDirection");
+    expect(scroll).toContain('reader.zoomMode === "fit-page"');
+    expect(main).toContain('overlayOwner.active === undefined && result.kind === "verifiedLanding"');
   });
 });

@@ -6,7 +6,6 @@
     "sources": [
       "PDFReaderCore/Config/BuiltInDefaults.swift",
       "PDFReaderCore/Actions/ActionRegistry.swift",
-      "PDFReaderCore/Reader/LinkDestinationIndicatorSettings.swift",
       "docs/windows-porting/feature-spec.md",
       "docs/windows-porting/architecture.md"
     ]
@@ -38,7 +37,7 @@
     "prefixTemplate": "<prefix>"
   },
   "configurableKeyTemplates": {
-    "document.open": ["<C-o>"],
+    "document.open": ["<C-S-o>"],
     "document.close": ["<C-w>"],
     "document.print": ["<C-p>"],
     "app.quit": ["<A-F4>"],
@@ -62,9 +61,6 @@
     "scroll.right": ["l", "<Right>"],
     "scroll.largeDown": ["d"],
     "scroll.largeUp": ["u"],
-    "toc.toggle": ["t"],
-    "toc.scrollDown": ["J"],
-    "toc.scrollUp": ["K"],
     "page.next": ["n"],
     "page.previous": ["p"],
     "page.first": ["gg"],
@@ -81,12 +77,10 @@
     "view.fitPage": ["F"],
     "view.rotateLeft": ["["],
     "view.rotateRight": ["]"],
-    "link.hint": ["f"],
     "config.reload": ["<prefix>r"],
     "config.writeDefault": [],
     "config.resetDefault": [],
     "theme.picker": ["T"],
-    "indicator.picker": ["I"],
     "update.show": ["U"]
   },
   "fixedBindings": {
@@ -111,41 +105,10 @@
     "nord",
     "catppuccin-latte"
   ],
-  "linkDestinationIndicator": {
-    "styles": [
-      "pulse-ring",
-      "target",
-      "beacon",
-      "static-ring",
-      "diamond-pulse"
-    ],
-    "colors": [
-      "red",
-      "amber",
-      "cyan",
-      "green",
-      "purple",
-      "accent",
-      "auto-contrast",
-      "high-contrast"
-    ],
-    "customColor": { "format": "#RRGGBB", "normalization": "lowercase" },
-    "ranges": {
-      "size": { "minimum": 16.0, "maximum": 48.0 },
-      "durationMilliseconds": { "minimum": 500, "maximum": 3000 }
-    },
-    "default": {
-      "style": "pulse-ring",
-      "color": "red",
-      "size": 28.0,
-      "durationMilliseconds": 1500
-    }
-  },
   "persistence": {
     "stateOwnedFields": [
       "selected_theme",
-      "recent_files",
-      "link_destination_indicator"
+      "recent_files"
     ],
     "notPersisted": [
       "session",

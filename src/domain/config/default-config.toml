@@ -2,7 +2,7 @@
 # Copy this file to the application config directory before editing.
 
 [keymap]
-"document.open" = ["<C-o>"]
+"document.open" = ["<C-S-o>"]
 "document.close" = ["<C-w>"]
 "document.print" = ["<C-p>"]
 "app.quit" = ["<A-F4>"]
@@ -26,9 +26,6 @@
 "scroll.right" = ["l", "<Right>"]
 "scroll.largeDown" = ["d"]
 "scroll.largeUp" = ["u"]
-"toc.toggle" = ["t"]
-"toc.scrollDown" = ["J"]
-"toc.scrollUp" = ["K"]
 "page.next" = ["n"]
 "page.previous" = ["p"]
 "page.first" = ["gg"]
@@ -45,12 +42,10 @@
 "view.fitPage" = ["F"]
 "view.rotateLeft" = ["["]
 "view.rotateRight" = ["]"]
-"link.hint" = ["f"]
 "config.reload" = ["<prefix>r"]
 "config.writeDefault" = []
 "config.resetDefault" = []
 "theme.picker" = ["T"]
-"indicator.picker" = ["I"]
 "update.show" = ["U"]
 
 [navigation]

@@ -1,5 +1,7 @@
 # 기능별 포팅 계약
 
+> 현재 Windows owner-approved 계약: macOS 61-action baseline에서 pane 7개, TOC 3개, keyboard hint 1개와 indicator picker 1개를 제외한 **49 actions(45 configurable + 4 fixed)**다. `t`/`J`/`K`/`f`/`I`는 미할당이고 ordinary PDF link clicks와 native authorization은 유지한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙에 배치하며, destination transaction은 결과 viewport와 교차하는 page들을 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. 아래 immutable macOS 설명보다 ADR 0001의 이 명시적 Windows delta가 우선한다.
+
 각 기능은 `v0.10.0 계약 → Windows 구현 → 알려진 실패 모드 → acceptance` 순서로 구현한다. “비슷하게 보인다”가 아니라 observable behavior와 테스트가 같아야 한다.
 
 ## 1. 제품 범위와 읽기 전용 경계
@@ -39,7 +41,7 @@
 ### Acceptance
 
 - interactive fixture에서 input/editor/media가 focusable하지 않다.
-- action registry는 정확히 61개이고 forbidden vocabulary test가 통과한다.
+- macOS baseline action snapshot은 61개로 보존하고, current Windows registry는 정확히 49개(45 configurable + 4 fixed)이며 forbidden vocabulary test가 이를 구분한다.
 - Copy 외 context menu가 없다.
 - 모든 reader action 후 원본 PDF SHA-256이 동일하다.
 
@@ -89,6 +91,7 @@ Rust preflight 순서:
 파일 대화상자와 installer association은 `.pdf`로 제한하지만, open service 자체는 확장자만으로 유효한 문서를 거부하지 않는다. 현재 macOS open service도 local/regular/readable과 실제 PDF load 결과를 검증할 뿐 확장자를 강제하지 않는다. 단, recent 목록에는 현재 계약대로 case-insensitive `.pdf` path만 기록한다.
 
 Recent identity는 가능한 경우 Windows file identity를 ephemeral dedupe에 쓰고, state에는 현재 계약대로 `absolute_path`와 `last_opened_at`만 저장한다. display는 사용자가 연 path 표기를 보존한다. 단순 lowercase만으로 identity를 영구 저장하지 않는다.
+Issue #53 owner amendment (2026-09-09): Recent 행은 native-owned 전체 `displayPath`를 표시한다. 공간이 부족하면 디렉터리 중간을 truncate하고 파일명은 줄이지 않으며, 필요하면 글꼴 크기를 줄인다. 경로는 표시 전용이고 recent 열기는 기존 opaque `recentId`로만 요청한다. filename-only fuzzy filtering과 state schema는 유지한다. Browse의 희미한 border는 제거하지만 키보드 focus 표시는 보존한다. `y`/`yy`/`of`는 Issue #55의 향후 작업이며 이번 변경에서 구현하지 않는다.
 
 ### Windows 차이와 주의사항
 
@@ -178,20 +181,20 @@ Recent identity는 가능한 경우 Windows file identity를 ephemeral dedupe에
 
 | 종류 | 기본값 |
 |---|---|
-| Open / Close / Print / New | `Ctrl+O`, `Ctrl+W`, `Ctrl+P`, `Ctrl+N` |
+| Open / Close / Print / New | `Ctrl+Shift+O` (Issue #53 owner amendment), `Ctrl+W`, `Ctrl+P`, `Ctrl+N` |
 | 현재 창 닫기 (`app.quit`) | `Alt+F4` |
 | Palette | `:`, `Ctrl+Shift+P` |
 | Tab 1–9 | `Ctrl+1` … `Ctrl+9` |
 | History | `Alt+Left`, `Alt+Right` |
 | Vim reader keys | macOS와 동일 |
-| Pane prefix/focus | `Ctrl+B`, `Ctrl+H/J/K/L` |
-| TOC toggle / scroll | `t`, `J`, `K` |
+| Command prefix / retired pane focus | `Ctrl+B`; `Ctrl+H/J/K/L` 미할당 |
+| Retired TOC / hint / indicator | `t`, `J`, `K`, `f`, `I` 미할당 |
 | Zoom | `=`, `+`: Zoom In; `-`: Zoom Out |
 
 Windows grammar는 `C=Ctrl`, `A=Alt`, `S=Shift`다. `D`는 macOS config migration error를 내고, Windows key는 OS가 소유하므로 `Win` modifier를 노출하지 않는다.
 Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action에 binding하며, `-`는 `view.zoomOut`이다.
 
-`app.quit`라는 stable ID는 61개 action parity를 위해 유지하지만 Windows 표시명과 동작은 `Close Window`다. 호출한 top-level window만 닫고 마지막 창에서 process가 끝난다. 같은 Tauri process의 모든 창을 닫는 `Exit All`은 v1 범위에 추가하지 않는다.
+`app.quit`라는 stable ID는 macOS baseline에서 현재 49-action Windows registry로 유지되지만 표시명과 동작은 `Close Window`다. 호출한 top-level window만 닫고 마지막 창에서 process가 끝난다. 같은 Tauri process의 모든 창을 닫는 `Exit All`은 v1 범위에 추가하지 않는다.
 
 ### 구현 순서
 
@@ -206,7 +209,7 @@ Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action
 
 ### 실패 모드
 
-- `Ctrl+O`를 Open과 History Back에 동시에 배정
+- Open과 History Back을 사용자 설정에서 같은 sequence에 동시에 배정
 - `Ctrl+I`가 Tab으로 collapse
 - `AltGraph` 입력을 `Ctrl+Alt` shortcut으로 잘못 실행
 - IME composition 중 `j/k` navigation 실행
@@ -216,7 +219,7 @@ Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action
 
 ### Acceptance
 
-- 61개 action/4개 fixed binding snapshot이 고정된다.
+- 현재 Windows 49개 action/4개 fixed binding snapshot이 고정된다. macOS baseline 61개 snapshot은 immutable reference로 유지한다.
 - default keymap은 동일 context 안에서 충돌이 없다.
 - 한글 IME, dead key, AltGraph 입력 동안 reader action이 실행되지 않는다.
 - `Alt+Left/Right`는 WebView navigation이 아니라 app history만 실행한다.
@@ -262,6 +265,7 @@ Back/Forward도 destination을 peek하고 restore가 성공한 후에만 directi
 - DOM `scrollTop`은 zoom/rotation/layout에 종속적이므로 snapshot으로 저장하지 않는다.
 - IntersectionObserver의 가장 큰 visible ratio만으로 current page를 확정하면 page 경계에서 흔들릴 수 있다. viewport anchor point를 page space로 변환한다.
 - pending render와 scroll animation이 끝나기 전 commit하지 않는다.
+- 현재 Windows meaningful-link producer는 ordinary internal GoTo click뿐이다. 퇴역 hint/TOC activation은 history를 만들 수 없고, clamped destination의 canonical actual landing과 bounded visible-page materialization이 끝나기 전에는 commit하지 않는다.
 
 ### Acceptance
 
@@ -315,25 +319,17 @@ Back/Forward도 destination을 peek하고 restore가 성공한 후에만 directi
 - zoom/rotation/DPI 변경 후 highlight 오차가 1 CSS px 이하이다.
 - 300-page search 동안 key input과 scroll이 응답한다.
 
-## 7. 링크 클릭, 링크 힌트, 목적지 표시기
+## 7. 링크 클릭과 목적지 이동
 
-### v0.10.0 계약
+> Issue #53 owner delta: ordinary internal/external annotation clicks, native URL authorization와 canonical navigation/history는 유지한다. `f` keyboard hints와 destination indicator/settings는 현재 Windows 제품에서 제거한다. hint source/tests는 `7e00424d30c5ffeab5a846d087236371644af53a`, indicator source/tests는 `dedcff8513e034efb904ef7d50fd59cc11444798`에 있으며 [deferred redevelopment reference](./deferred-toc-link-hints.md)로만 사용한다.
 
-- PDF annotation link만 대상이다. 인쇄된 text URL은 자동 감지하지 않는다.
+### v0.10.0 baseline 계약
+
+- PDF annotation link만 대상이며 인쇄된 text URL은 자동 감지하지 않는다.
 - URL은 OS browser로, internal GoTo는 같은 document 안에서 이동한다.
 - unresolved/foreign GoTo는 실행하지 않는다.
-- link hints는 현재 visible pages의 link만 대상으로 deterministic reading order를 사용한다.
-- exact duplicate annotation만 dedupe한다. 같은 destination이거나 인접했다는 이유로 합치지 않는다.
-- `f`가 hints, `F`가 Fit Page다.
-- hint labels는 lowercase letter sequence이며 plain/Shift/Caps ASCII letters는 lowercase로 normalize하고 Ctrl/Alt/Meta/AltGraph, IME/composition, keyCode 229, dead/process/unidentified, non-letter input은 거부한다.
-- 성공하고 point가 있는 internal destination에는 configurable indicator를 표시한다.
-
-Indicator 계약:
-
-- styles: `pulse-ring`, `target`, `beacon`, `static-ring`, `diamond-pulse`
-- colors: `red`, `amber`, `cyan`, `green`, `purple`, `accent`, `auto-contrast`, `high-contrast`, custom `#RRGGBB`
-- size `16...48`, duration `500...3000ms`
-- default: red pulse ring, 28, 1500ms
+- exact duplicate annotation만 dedupe하고 같은 destination이거나 인접했다는 이유로 합치지 않는다.
+- macOS baseline은 visible-link `f` hints와 successful point GoTo indicator를 제공한다. 이 두 UI/settings 계약은 현재 Windows acceptance가 아니다.
 
 근거:
 
@@ -344,35 +340,42 @@ Indicator 계약:
 - [`ReaderPDFView.swift`](../../PDFReaderApp/Input/ReaderPDFView.swift), 76–170행
 - PR [#1](https://github.com/DS-argus/modeleaf/pull/1), [#2](https://github.com/DS-argus/modeleaf/pull/2), [#19](https://github.com/DS-argus/modeleaf/pull/19)–[#23](https://github.com/DS-argus/modeleaf/pull/23)
 
-### Windows 구현
+### 현재 Windows 구현 계약
 
-1. `getAnnotations({ intent: "display" })` 결과에서 Link action만 map한다.
-2. rectangle과 target을 canonical DTO로 만든다.
-3. exact structural equality로만 dedupe하고 reading order로 sort한다.
-4. link overlay는 page layer와 같은 transform을 사용한다.
-5. click와 hint activation이 같은 `activateLink()` transaction을 호출한다.
-6. URL은 Rust allowlist command로 보낸다.
-7. GoTo는 resolve → origin capture → move → landing capture → history commit → indicator 순서다.
-8. scroll/zoom/rotate/resize/pane drag/document close 때 hint와 indicator를 dismiss한다.
+1. `getAnnotations({ intent: "display" })`의 Link action만 canonical DTO로 map하고 exact structural equality로만 dedupe한다.
+2. external URL은 Rust의 `http`/`https` allowlist command로 보내며 raw shell 또는 unsupported scheme을 실행하지 않는다.
+3. internal destination transaction은 origin capture → resolve → guarded move → scroll settlement → bounded landing-viewport materialization → actual landing capture/verify → history commit 순서를 따른다.
+4. `XYZ`의 finite x/y 좌표는 회전된 viewport space에서 각 축의 midpoint를 목표로 한다. 지정되지 않은 축은 기존 canonical 축을 보존하고 실제 scroll offset은 document edge에서 clamp한다.
+5. edge clamp 뒤 캡처한 canonical actual landing이 success/no-op과 history의 authority다. 요청 좌표나 stale current-page label을 대신 기록하지 않는다.
+6. `Fit`/`FitB`는 page-fit, `FitR`은 rectangle-fit placement를 유지하며 point-centering 규칙으로 바꾸지 않는다.
+7. destination scroll이 settle된 뒤 결과 viewport와 교차하는 모든 page를 기존 continuous resident window, render budget와 navigation/activity guard 안에서 materialize한다. success와 history commit은 raster/text를 포함한 이 bounded visible range가 준비된 뒤에만 가능하다.
+8. newer navigation, lifecycle change 또는 raw user scroll은 stale transaction을 fence한다. 실패·취소된 materialization은 history를 commit하거나 newer input을 덮지 않으며 기존 rollback/compensation을 따른다.
+9. manual/synthetic scroll, detached repair, unbounded residency, hint/indicator DOM·timer·settings·IPC는 이 흐름의 일부가 아니다.
 
 ### 실패 모드
 
-- annotation 좌표의 y-axis를 뒤집지 않거나 두 번 뒤집음
-- rotated page에서 hint가 다른 위치에 뜸
-- wrapped link를 destination 기준으로 합쳐 클릭 target을 숨김
-- stale visible page cache에서 hint 생성
+- annotation 좌표의 y-axis 또는 rotation mapping을 잘못 적용해 point가 반대 방향으로 이동함
+- document edge clamp 전 요청 좌표를 history에 기록함
+- landing target page만 준비하고 같은 viewport와 교차하는 다음 page의 raster/text가 비어 있음
+- internal navigation이 자신을 완료할 render publication을 기다리며 deadlock함
+- stale navigation/lifecycle/user scroll 뒤 늦은 materialization이 success나 history를 commit함
 - `javascript:`, `file:`, Launch action이 opener로 넘어감
-- Caps Lock/Shift가 label 입력을 망침
+- retired hint/indicator action, overlay, CSS, timer, settings 또는 native command가 callable 상태로 남음
 
 ### Acceptance
 
-- duplicate/adjacent/wrapped fixture가 current merge tests와 같은 개수를 만든다.
-- URL click와 hint는 browser open 한 번만 발생한다.
-- internal GoTo click와 hint는 같은 landing/history 결과를 만든다.
-- unsupported scheme과 unresolved destination은 no-op + non-blocking diagnostic이다.
-- 4개 DPI와 4개 rotation에서 hint/indicator 오차가 1 CSS px 이하이다.
+- duplicate/adjacent/wrapped fixture가 exact-annotation rule과 일치하고 ordinary pointer target을 유지한다.
+- URL click은 native authorization을 한 번만 요청하며 unsupported/unresolved target은 history 없이 non-blocking diagnostic을 낸다.
+- finite/partial `XYZ` destination은 지원 rotation/DPI에서 attainable viewport midpoint에 놓이고 first/last document edge에서는 canonical actual landing으로 clamp된다.
+- `Fit`/`FitB` page-fit과 `FitR` rectangle-fit 결과가 point-centering 변경으로 회귀하지 않는다.
+- click completion 직후 별도 scroll 없이 landing viewport의 모든 visible page raster/text가 준비돼 있고 resident/resource bound를 넘지 않는다.
+- stale, cancelled 또는 failed materialization은 history를 만들거나 newer navigation/input을 덮지 않으며 cleanup 뒤 reservation이 남지 않는다.
+- current action/DOM/style/options/IPC/state surface에 link hint와 destination indicator가 없고 `f`/`I`가 미할당이어야 한다.
+- 모든 scenario 전후 source PDF SHA-256이 동일해야 하며 packaged Windows/native acceptance는 별도 gate로 남는다.
 
 ## 8. Embedded outline TOC
+
+> Issue #53 owner delta: TOC는 현재 Windows 제품에서 제거한다. 아래 v0.10.0 계약은 재개발 참고용이며 현재 구현·parity 요구가 아니다. 기존 구현과 tests는 `deferred-toc-link-hints.md`의 immutable Git reference로 보존한다.
 
 ### v0.10.0 계약
 
@@ -491,7 +494,7 @@ Indicator 계약:
 ### Windows 구현
 
 - `OverlayOwner` state machine에 current modal, suspended prompt, return focus target을 저장한다.
-- overlay open 시 active PDF/hint를 정리하고, close 시 이전 valid owner로만 focus를 돌린다.
+- overlay open/close는 `OverlayOwner` generation과 valid return target을 따르며 퇴역 hint/indicator cleanup 경로에 의존하지 않는다.
 - overlay row는 native `<button>`/listbox semantics와 accessible name/state를 사용한다.
 - recent filename query는 Unicode를 허용한다. command title filter는 registry title을 대상으로 한다.
 - browser focus trap library에만 의존하지 말고 action/input state와 함께 test한다.
@@ -553,11 +556,11 @@ Indicator 계약:
 - Write Default가 기존 파일을 절대 덮어쓰지 않는다.
 - Reset failure 어느 지점에서도 원본 또는 backup 중 최소 하나가 복구 가능하다.
 
-## 12. State, themes, link indicator persistence
+## 12. State, themes, retired destination-indicator metadata
 
-### v0.10.0 계약
+### v0.10.0 baseline 계약
 
-`state.json`의 owned fields는 다음뿐이다.
+macOS baseline `state.json`은 theme, recents와 `link_destination_indicator`를 owned fields로 사용했다. 이 shape와 indicator 설정은 현재 Windows 지원 계약이 아니라 `dedcff8513e034efb904ef7d50fd59cc11444798`의 재개발 reference다.
 
 ```json
 {
@@ -574,13 +577,6 @@ Indicator 계약:
 }
 ```
 
-- unknown top-level fields를 유지한다.
-- malformed known sibling은 다른 field decode를 망치지 않는다.
-- theme는 7종: Tokyo Night, Gruvbox Dark, Solarized Dark, Dracula, Everforest, Nord, Catppuccin Latte.
-- theme는 app chrome만 바꾸고 PDF pixels를 바꾸지 않는다.
-- preview cancel은 이전 theme/settings로 rollback한다.
-- persistence 실패 시 현재 session 적용은 유지하되 저장 실패를 알린다.
-
 근거:
 
 - [`StateFileStore.swift`](../../PDFReaderCore/Recent/StateFileStore.swift), 16–114행
@@ -589,14 +585,17 @@ Indicator 계약:
 - [`ThemeSelectionStore.swift`](../../PDFReaderCore/Theme/ThemeSelectionStore.swift)
 - PR [#4](https://github.com/DS-argus/modeleaf/pull/4), [#7](https://github.com/DS-argus/modeleaf/pull/7), [#18](https://github.com/DS-argus/modeleaf/pull/18)
 
-### Windows 구현과 Acceptance
+### 현재 Windows 계약과 Acceptance
 
-- JSON shape와 theme IDs/colors를 그대로 복제한다.
-- `appLocalDataDir()/state.json`을 사용한다.
-- field별 mutation command가 read/merge/write transaction을 수행한다.
-- 두 window의 동시 theme/recent update에서 한쪽 field가 사라지지 않는다.
-- unknown sentinel field가 모든 update 뒤 그대로 남는다.
-- PDF screenshot pixels는 theme 전후 동일하고 chrome만 달라진다.
+- `appLocalDataDir()/state.json`에서 active owned fields는 `selected_theme`와 `recent_files`뿐이다.
+- 기존 `link_destination_indicator` 값은 unknown top-level sibling으로 보존할 뿐 indicator-specific decode, apply, mutation 또는 IPC authority로 사용하지 않는다.
+- retirement는 state migration, 기존 값 삭제, user config/state 자동 rewrite를 수행하지 않는다.
+- supported field mutation은 read/merge/write transaction으로 unknown siblings를 유지한다.
+- 두 window의 동시 theme/recent update에서 어느 supported field도 사라지지 않아야 한다.
+- malformed known sibling은 다른 supported field decode를 망치지 않아야 한다.
+- theme 7종과 exact chrome colors를 유지하고 PDF pixels에는 theme filter를 적용하지 않는다.
+- persistence 실패는 성공으로 표시하지 않고, unknown sentinel은 관련 없는 update 뒤에도 유지해야 한다.
+- indicator picker/settings/action/native read·commit command가 current registry, UI 또는 state API에 없어야 한다.
 
 ## 13. 인쇄
 
@@ -613,7 +612,7 @@ Indicator 계약:
 1. W02에서 PDF.js print feasibility를 먼저 검증한다.
 2. visible virtualized DOM을 그대로 `window.print()`하지 않는다. 그러면 보이는 페이지만 출력될 수 있다.
 3. adapter 뒤의 hidden print container/iframe에 전체 page를 순차 준비한다.
-4. overlays, search highlights, hints, theme chrome은 print surface에 넣지 않는다.
+4. application overlays, search highlights와 theme chrome은 print surface에 넣지 않는다.
 5. system dialog가 닫히면 print canvases와 iframe을 전부 해제하고 reader focus/state를 복원한다.
 6. cancel과 error를 normal outcome으로 처리한다.
 

@@ -8,7 +8,7 @@ import { buildHelpRows } from "../../src/ui/HelpModel";
 import { beginPagePromptCommit, editPagePrompt, openPagePrompt, type PagePromptState } from "../../src/application/PagePromptTransaction";
 const configResult = validateProductConfig({});
 if (!configResult.ok) throw new Error("built-in config invalid");
-const runtime: ActionRuntimeContext = { hasDocument: true, canCreateSession: true, canOpenDocument: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 1 };
+const runtime: ActionRuntimeContext = { hasDocument: true, canCreateSession: true, canOpenDocument: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false };
 function key(keyValue: string, init: Partial<RootKeyboardEvent> = {}) { let prevented = false; return { event: { key: keyValue, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault: () => { prevented = true; }, ...init } satisfies RootKeyboardEvent, prevented: () => prevented }; }
 describe("shortcut workflow", () => {
   it("routes reader actions through the W03 root registry", () => {
@@ -93,10 +93,10 @@ describe("shortcut workflow", () => {
     expect(visiblePaletteTabRows.length).toBeGreaterThan(0);
     for (const entry of visiblePaletteTabRows) expect(entry).toMatchObject({ label: expect.stringMatching(/^Select Tab [1-9]$/u), shortcut: expect.stringMatching(/^Ctrl\+[1-9]$/u) });
     expect(helpById.get("tab.select.1")).toMatchObject({ label: "Select Tab 1–9", shortcut: "Ctrl+1 … Ctrl+9" });
-    expect(help.map(({ shortcut }) => shortcut)).toEqual(expect.arrayContaining(["Ctrl+O", "Alt+F4", ":, Ctrl+Shift+P", "Shift+N", "g g", "Shift+G"]));
+    expect(help.map(({ shortcut }) => shortcut)).toEqual(expect.arrayContaining(["Ctrl+Shift+O", "Alt+F4", ":, Ctrl+Shift+P", "Shift+N", "g g", "Shift+G"]));
   });
   it("projects exact no-document current-window and theme behavior", () => {
-    const empty = { ...runtime, hasDocument: false, modalOpen: true, linkCount: 0 };
+    const empty = { ...runtime, hasDocument: false, modalOpen: true };
     const select = (rows: readonly { id: string; shortcut: string; label: string; enabled: boolean }[]) => rows.filter(({ id }) => id === "app.quit" || id === "theme.picker").map(({ id, shortcut, label, enabled }) => ({ id, shortcut, label, enabled }));
     expect(select(buildHelpRows(empty))).toEqual([{ id: "app.quit", shortcut: "Alt+F4", label: "Close Window", enabled: true }, { id: "theme.picker", shortcut: "Shift+T", label: "Theme picker", enabled: false }]);
   });

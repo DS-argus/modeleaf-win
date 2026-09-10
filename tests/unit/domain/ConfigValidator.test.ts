@@ -46,7 +46,7 @@ describe("ConfigValidator", () => {
   });
   it("returns a complete resolved default map and expands a concrete custom prefix", () => {
     const defaults = validateProductConfig({});
-    expect(defaults.ok && defaults.value.keymap["document.open"]).toEqual(["<C-o>"]);
+    expect(defaults.ok && defaults.value.keymap["document.open"]).toEqual(["<C-S-o>"]);
     expect(defaults.ok && defaults.value.keymap["config.reload"]).toEqual(["<C-b>r"]);
     const custom = validateProductConfig({ input: { prefix: "<C-x>" } });
     expect(custom.ok && custom.value.keymap["config.reload"]).toEqual(["<C-x>r"]);

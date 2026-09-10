@@ -1,0 +1,122 @@
+{
+  "issue": 53,
+  "evidenceScope": "Hidden Chromium, real PDF.js 6.2.108 and PdfTabSession; in-memory native authority",
+  "harness": "tools/qa/reader-stability.html",
+  "viewport": { "width": 1000, "height": 800, "deviceScaleFactor": 1 },
+  "fixture": {
+    "path": "fixtures/pdf/fixture-L-text-300.pdf",
+    "sha256": "91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab",
+    "sourceDiffEmpty": true
+  },
+  "scroll": {
+    "command": "await window.readerHarness.run()",
+    "openingTop": 0,
+    "documentHeight": 286668,
+    "endTop": 286068,
+    "endPage": 300,
+    "endResidentCanvases": 3,
+    "reverseFinalTop": 280308,
+    "reverseFinalPage": 294,
+    "reverseFinalResidentCanvases": 5,
+    "edgeOscillationAssertionsPassed": true,
+    "resourcesEmptyAfterClose": true
+  },
+  "navigation": {
+    "command": "await window.readerHarness.runNavigation()",
+    "adjacentRequests": 30,
+    "verifiedSteps": 2,
+    "supersededPendingSteps": 28,
+    "finalRepeatedPage": 3,
+    "mixedOutcomes": ["stale", "stale", "verifiedLanding"],
+    "mixedFinalPage": 1,
+    "fitPageFrames": 1,
+    "fitPageTop": 0,
+    "alternatingZoomCommits": 8,
+    "zoomScales": [0.7555555555555556, 0.686868686868687, 0.7555555555555558, 0.6868686868686871, 0.7555555555555559, 0.6868686868686872, 0.755555555555556, 0.6868686868686872],
+    "resourcesEmptyAfterClose": true
+  },
+  "search": {
+    "command": "await window.readerHarness.runSearch()",
+    "firstResultMillisecondsObserved": 13.300000011920929,
+    "scanningContinuedAfterFirstLanding": true,
+    "subsequentDisplayedPages": [2, 3, 4],
+    "subsequentScrollTops": [769, 1725, 2680],
+    "totalResults": 300,
+    "selectedIndexAfterCompletion": 3,
+    "resourcesEmptyAfterClose": true
+  },
+  "followup": {
+    "sourceBase": "1f8b818936ea506f9c09d47f4677a7e1d13572a7",
+    "hiddenOpening": {
+      "urlQuery": "hidden=true",
+      "zeroInitialClientSizeAsserted": true,
+      "topBeforeRepair": 52,
+      "finalTop": 0,
+      "page": 1,
+      "mode": "fit-width",
+      "scale": 1.1911764705882353,
+      "residentCanvases": 3
+    },
+    "closeActiveTab": {
+      "command": "await window.readerHarness.runTabClose()",
+      "evictedSuccessor": true,
+      "page": 12,
+      "mode": "custom",
+      "scale": 1.3102941176470588,
+      "reproductionBeforeTop": 11605,
+      "reproductionBrokenRestoredTop": 11547,
+      "repairedPageModeScaleAssertionsPassed": true,
+      "repairedPositionAssertionToleranceCssPixels": 1,
+      "restoredRasterAssertionPassed": true,
+      "exactRepairedScrollTop": "Not retained; successful assertion verifies a difference of at most one CSS pixel",
+      "resourcesEmptyAfterClose": true
+    },
+    "regressions": {
+      "scrollHeight": 286668,
+      "scrollEnd": { "page": 300, "top": 286068 },
+      "scrollReverseFinal": { "page": 294, "top": 280308 },
+      "adjacentRequests": 30,
+      "verifiedSteps": 2,
+      "supersededSteps": 28,
+      "fitPageFrames": 1,
+      "alternatingZoomCommits": 8,
+      "firstSearchResultMillisecondsObserved": 11.900000005960464,
+      "firstSearchResultWhilePending": true,
+      "searchResults": 300,
+      "selectedSearchIndex": 3,
+      "resourcesEmptyAfterEveryScenario": true
+    },
+    "chrome": {
+      "command": "await window.readerHarness.runChrome()",
+      "productionRendererFragments": true,
+      "tabWidths": [184, 184, 184],
+      "tabHeights": [26, 26, 26],
+      "minimumViewport": { "width": 480, "height": 360 },
+      "minimumStripScrollWidth": 572,
+      "minimumStripScrollLeft": 84,
+      "chooserAtMinimumViewport": { "width": 442, "height": 246.75 },
+      "browseHasNoChildGlyph": true,
+      "recentDividerPixels": 1,
+      "emptyRecentDividerAbsent": true,
+      "forcedColorsLayoutVerified": true,
+      "screenshot": "docs/evidence/issue53-chooser-followup.png",
+      "finalForcedColorHintRefinement": "CanvasText source regression passed; screenshot recheck blocked by headless browser worker startup failure. Pre-refinement contrast screenshot is not presented as final evidence."
+    },
+    "localGate": {
+      "frontendFiles": 86,
+      "frontendTests": 878,
+      "rustTests": 147,
+      "build": "passed",
+      "rustFmt": "passed",
+      "rustClippy": "passed",
+      "diffCheck": "passed",
+      "postCommitPresentationFault": "Production adoption/terminal bodies retain descriptor, close rejected candidate once, and preserve diagnostic.",
+      "independentLifecycleReview": "APPROVE; committed-adoption rollback P1 resolved"
+    }
+  },
+  "limitations": [
+    "Observed timing is one local run, not a guaranteed latency bound.",
+    "No packaged WebView2, native input, native state-event, DPI/rotation matrix, or OS integration result is claimed.",
+    "Existing applications, foreground focus, durable user state, and source PDFs were not modified for QA."
+  ]
+}

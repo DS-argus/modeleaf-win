@@ -40,7 +40,9 @@ describe("W04 native services contract", () => {
 
   it("keeps IPC narrow and excludes generic filesystem capabilities", () => {
     const facade = source("src/platform/tauri-commands.ts");
-    expect(facade).toMatch(/read_config|write_default_config|reset_config|read_indicator_state|commit_indicator_state/);
+    expect(facade).toMatch(/read_config|write_default_config|reset_config/);
+    expect(facade).not.toMatch(/read_indicator_state|commit_indicator_state/);
+    expect(source("src-tauri/src/lib.rs")).not.toMatch(/read_indicator_state|commit_indicator_state/);
     expect(facade).not.toMatch(/read_file|write_file|remove_file|shell|process|open_path/);
     const capability = source("src-tauri/capabilities/default.json");
     expect(capability).not.toMatch(/fs:|shell:|process:|opener:/);

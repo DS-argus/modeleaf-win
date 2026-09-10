@@ -31,7 +31,7 @@ describe("config diagnostics projection", () => {
   });
 
   it("flags a D-modifier sequence as a migration rather than a generic parse error", () => {
-    // Silently rewriting D to Ctrl would shadow Ctrl+O and the history keys.
+    // Silently rewriting D to Ctrl could shadow explicit user bindings.
     const [row] = projectConfigDiagnostics([
       { code: "CONFIG_KEY_SEQUENCE_INVALID", path: "keymap.document.open", detail: "unsupported_modifier:D" },
     ]);

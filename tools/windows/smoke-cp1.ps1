@@ -234,7 +234,9 @@ try {
   Focus-App
   Capture-Window "cp1-empty"
 
-  Send-Key 0x4F $true $false "shortcut:Ctrl+O"
+  Send-Key 0x4F $true $true "shortcut:Ctrl+Shift+O"
+  Start-Sleep -Milliseconds 700
+  Send-Key 0x0D $false $false "chooser:Browse"
   Start-Sleep -Milliseconds 700
   $dialog = [ModeleafNativeWindow]::Foreground()
   if ($dialog -eq [IntPtr]::Zero -or $dialog -eq $process.MainWindowHandle) { throw "Native PDF dialog did not become active" }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PdfTabSession } from "../../../src/pdf/PdfTabSession";
+import type { PdfViewportRestoreOutcome } from "../../../src/pdf/PdfReaderController";
 import type { PdfSearchResult } from "../../../src/pdf/PdfContentController";
 import { ResourceReservationManager } from "../../../src/pdf/ResourceBudget";
 function createSession(onStatus?: (status: string) => void): PdfTabSession {
@@ -7,13 +8,14 @@ function createSession(onStatus?: (status: string) => void): PdfTabSession {
     native: {} as never,
     pdf: {} as never,
     resources: new ResourceReservationManager(),
-    canvasHost: { clientWidth: 200, clientHeight: 100 } as HTMLElement,
+    canvasHost: Object.assign(new EventTarget(), { clientWidth: 200, clientHeight: 100, scrollWidth: 2_000, scrollHeight: 2_000, scrollLeft: 0, scrollTop: 0 }) as unknown as HTMLElement,
     ...(onStatus === undefined ? {} : { onStatus }),
     createContentOptions: () => ({}) as never,
   });
   const reader = (session as unknown as SessionInternals).pdfReader;
   vi.spyOn(reader, "getPageTopLanding").mockImplementation(async (page) => ({ pageIndex: page - 1, x: 0, y: 0 }));
   vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (_topology, page, transform, guard) => reader.renderPageWithTransform(page, transform, guard));
+  vi.spyOn(reader, "setOpeningPresentationAtTop").mockImplementation(async (_topology, page, transform, guard) => reader.renderPageWithTransform(page, transform, guard));
   return session;
 }
 
@@ -28,7 +30,6 @@ type SessionInternals = {
     snapshot: SearchSnapshot;
     nextMatch: (reverse: boolean) => unknown;
     search: (query: string) => Promise<void>;
-    handleHintKey: (key: string) => boolean;
     suspend: () => void;
     resumeInteractions: () => void;
     restoreEvictedSearch: () => Promise<void>;
@@ -40,7 +41,7 @@ type SessionInternals = {
     activateResidentPage: (page: number) => boolean;
     activateVisiblePages: (pages: readonly number[]) => number;
     clearVisibleLinkAuthority: () => void;
-    dismissLinkDecorations: () => void;
+    evictInactiveHeavyResources: () => boolean;
   };
   pdfReader: {
     evictInactiveCanvas: () => boolean;
@@ -48,14 +49,19 @@ type SessionInternals = {
     getPageTopLanding: (page: number, transform: unknown, guard: () => boolean) => Promise<{ pageIndex: number; x: number; y: number } | undefined>;
     getPageNaturalSize: (page: number, rotation: number, guard: () => boolean) => Promise<{ width: number; height: number } | undefined>;
     suspend: () => Promise<void>;
+    resolvePageReference: (reference: unknown, guard: () => boolean) => Promise<number | null>;
     captureViewportLanding: () => { pageIndex: number; x: number; y: number } | undefined;
-    restoreViewportLanding: (target: { pageIndex: number; x: number; y: number }, guard: () => boolean, transform?: unknown, placement?: "center" | "page-top") => Promise<
-      | { kind: "verified" | "constrainedEdgeVerified"; landing: { pageIndex: number; x: number; y: number } }
-      | { kind: "preflightRejected" | "staleOrCancelled" }
-      | { kind: "failed"; landing?: { pageIndex: number; x: number; y: number } }
-    >;
+    restoreViewportLanding: (
+      target: { pageIndex: number; x: number; y: number },
+      guard: () => boolean,
+      transform?: unknown,
+      placement?: "center" | "page-top",
+      onViewportOwnershipLost?: () => void,
+    ) => Promise<PdfViewportRestoreOutcome>;
     setPresentationTopology: (topology: "continuous" | "single-page", page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
+    setOpeningPresentationAtTop: (topology: "continuous" | "single-page", page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
     invalidateViewportSynchronization: () => void;
+    synchronizeViewport: (scrollTop: number, clientHeight: number, guard: () => boolean) => Promise<boolean>;
     renderPageWithTransform: (page: number, transform: unknown, guard: () => boolean) => Promise<boolean>;
   };
 };
@@ -72,7 +78,6 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     snapshot,
     nextMatch: vi.fn(),
     search: vi.fn(async () => undefined),
-    handleHintKey: vi.fn(() => false),
     suspend: vi.fn(),
     resumeInteractions: vi.fn(),
     restoreEvictedSearch: vi.fn(async () => undefined),
@@ -85,7 +90,7 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     activateResidentPage: vi.fn(() => true),
     activateVisiblePages: vi.fn(() => 0),
     clearVisibleLinkAuthority: vi.fn(),
-    dismissLinkDecorations: vi.fn(),
+    evictInactiveHeavyResources: vi.fn(() => true),
   };
   (session as unknown as SessionInternals).content = content;
   return content;
@@ -289,7 +294,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await expect(navigation).resolves.toEqual({ kind: "stale" });
     expect(session.canHistoryBack).toBe(false);
   });
-  it("uses concrete content synchronization and dismissal methods during navigation", async () => {
+  it("uses concrete content synchronization and link-authority methods during navigation", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
     const internals = session as unknown as SessionInternals & {
@@ -304,7 +309,6 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(content.activateVisiblePages).toHaveBeenLastCalledWith([1, 2]);
 
     session.apply({ type: "page.next" });
-    expect(content.dismissLinkDecorations).toHaveBeenCalledOnce();
     session.clearVisibleLinkAuthority();
     expect(content.clearVisibleLinkAuthority).toHaveBeenCalledOnce();
   });
@@ -480,6 +484,27 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(inactiveEviction).toHaveBeenCalledOnce();
   });
 
+  it("captures the inactive viewport anchor before content removes the shared page frame", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "match", results: [SEARCH_RESULT], searchPending: false, searchIncomplete: false });
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    await session.activate();
+    await session.deactivate();
+    const order: string[] = [];
+    vi.spyOn(reader, "evictInactiveCanvas").mockImplementation(() => {
+      order.push("canvas-anchor");
+      expect(content.evictInactiveHeavyResources).not.toHaveBeenCalled();
+      return true;
+    });
+    content.evictInactiveHeavyResources.mockImplementation(() => {
+      order.push("content-layer");
+      return true;
+    });
+
+    session.evictInactiveHeavyResources();
+
+    expect(order).toEqual(["canvas-anchor", "content-layer"]);
+  });
   it("cycles completed results but restarts every prompt query including the same query", async () => {
     const session = createSession();
     await session.activate();
@@ -559,18 +584,6 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.snapshot.title).toBe("fixture.pdf");
     expect(session.snapshot.reader.page).toBe(2);
     expect(statuses).toEqual([openingStatus, session.snapshot.status]);
-  });
-  it("forwards active hint keys but ignores inactive tabs", async () => {
-    const session = createSession();
-    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
-    expect(session.handleHintKey("A")).toBe(false);
-    session.activate();
-    content.handleHintKey.mockReturnValue(true);
-    expect(session.handleHintKey("A")).toBe(true);
-    expect(content.handleHintKey).toHaveBeenCalledWith("A");
-    await session.deactivate();
-    expect(session.handleHintKey("S")).toBe(false);
-    expect(content.synchronizeResidentPages).toHaveBeenLastCalledWith([]);
   });
   it("rolls activity back when native resident publication fails", async () => {
     const session = createSession();
@@ -858,130 +871,449 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       .onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
     expect(content.resumeInteractions).toHaveBeenCalled();
   });
-  it("commits one verified point destination and records its origin for Back", async () => {
+  it("guards ordinary PDF page-reference resolution with foreground ownership", async () => {
+    const session = createSession();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    const reference = Object.freeze({ num: 8, gen: 0 });
+    const resolve = vi.spyOn(reader, "resolvePageReference")
+      .mockImplementation(async (_reference, guard) => guard() ? 2 : null);
+
+    await expect(session.resolveDestinationPage(reference)).resolves.toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    await session.activate();
+    await expect(session.resolveDestinationPage(reference)).resolves.toBe(2);
+    expect(resolve).toHaveBeenCalledWith(reference, expect.any(Function));
+    const ownershipGuard = resolve.mock.calls[0]?.[1];
+    expect(ownershipGuard?.()).toBe(true);
+    await session.deactivate();
+    expect(ownershipGuard?.()).toBe(false);
+    await expect(session.resolveDestinationPage(reference)).resolves.toBeNull();
+    expect(resolve).toHaveBeenCalledOnce();
+  });
+  it("keeps one landing owner through awaited viewport materialization before committing history", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
     session.reader.mountDocument(3);
     await session.activate();
     internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
-    vi.spyOn(internals.pdfReader, "captureViewportLanding")
-      .mockReturnValueOnce({ pageIndex: 0, x: 5, y: 6 })
-      .mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
-    vi.spyOn(session, "renderPage").mockResolvedValue(true);
-    content.takeDestinationLanding.mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    const displayedTarget = { pageIndex: 1, x: 20, y: 30 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValueOnce(origin).mockReturnValue(displayedTarget);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(displayedTarget);
+    content.applyQueuedDestinationToResidentPage.mockReturnValue(false);
     let activationCurrent = true;
-    content.cancelDestination.mockImplementation((_intentId, preserveLinkActivation) => { if (!preserveLinkActivation) activationCurrent = false; });
+    content.cancelDestination.mockImplementation((intentId, preserveLinkActivation) => {
+      if (intentId === undefined && !preserveLinkActivation) activationCurrent = false;
+    });
+    const materialization = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockImplementationOnce(async (target, guard) => {
+      await materialization.promise;
+      return guard() ? { kind: "verified", landing: target } : { kind: "staleOrCancelled" };
+    });
 
-    const result = await session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "link-hint", () => activationCurrent);
-    expect(result).toEqual({ kind: "verified", point: { pageNumber: 2, x: 20, y: 30 } });
+    let settled = false;
+    const navigation = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "internal-link", () => activationCurrent)
+      .then((outcome) => { settled = true; return outcome; });
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+
+    expect(settled).toBe(false);
+    expect(session.navigationLandingInProgress).toBe(true);
+    expect(session.canHistoryBack).toBe(false);
+    await expect(session.synchronizeViewport(25, 100)).resolves.toBe(false);
+    (session as unknown as { options: { canvasHost: EventTarget } }).options.canvasHost.dispatchEvent(new Event("scroll"));
+    expect(session.navigationLandingInProgress).toBe(true);
+    const renderGuard = vi.mocked(reader.renderPageWithTransform).mock.calls[0]?.[2];
+    expect(renderGuard?.()).toBe(true);
+
+    materialization.resolve();
+    await expect(navigation).resolves.toEqual({ kind: "verified" });
+    expect(restore).toHaveBeenCalledWith(
+      displayedTarget,
+      expect.any(Function),
+      expect.objectContaining({ scale: 1, rotation: 0 }),
+      "center",
+      expect.any(Function),
+    );
     expect(content.queueDestination).toHaveBeenCalledOnce();
-    expect(activationCurrent).toBe(true);
+    expect(content.applyQueuedDestinationToResidentPage).toHaveBeenCalledWith(2);
     expect(content.cancelDestination).toHaveBeenCalledWith(undefined, true);
+    expect(activationCurrent).toBe(true);
+    expect(session.navigationLandingInProgress).toBe(false);
     expect(session.canHistoryBack).toBe(true);
     expect(session.canHistoryForward).toBe(false);
   });
-  it("invalidates queued adjacent steps before a newer destination can land", async () => {
+  it.each([true, false])("verifies the constrained completion against actual capture before history commit: %s", async (captureMatches) => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
     session.reader.mountDocument(3);
     await session.activate();
     internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
     const origin = { pageIndex: 0, x: 5, y: 6 };
-    const target = { pageIndex: 1, x: 20, y: 30 };
-    vi.spyOn(internals.pdfReader, "captureViewportLanding").mockReturnValueOnce(origin).mockReturnValueOnce(origin).mockReturnValue(target);
-    vi.mocked(internals.pdfReader.getPageTopLanding).mockResolvedValue({ pageIndex: 1, x: 0, y: 100 });
-    const adjacentRestore = deferred<Awaited<ReturnType<SessionInternals["pdfReader"]["restoreViewportLanding"]>>>();
-    vi.spyOn(internals.pdfReader, "restoreViewportLanding").mockImplementationOnce(() => adjacentRestore.promise);
-    vi.spyOn(session, "renderPage").mockResolvedValue(true);
-    content.takeDestinationLanding.mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
+    const initialLanding = { pageIndex: 1, x: 20, y: 30 };
+    const constrainedLanding = { pageIndex: 1, x: 20, y: 25 };
+    const actualLanding = captureMatches ? constrainedLanding : { ...constrainedLanding, y: 15 };
+    const capture = vi.spyOn(reader, "captureViewportLanding").mockReturnValueOnce(origin).mockReturnValue(actualLanding);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(initialLanding);
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockResolvedValueOnce({ kind: "constrainedEdgeVerified", landing: constrainedLanding, expected: constrainedLanding })
+      .mockImplementationOnce(async (target) => {
+        capture.mockReturnValue(origin);
+        internals.onPage(target.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+        return { kind: "verified", landing: target };
+      });
 
-    const first = session.navigateAdjacentPage(1);
-    const queued = session.navigateAdjacentPage(1);
-    await vi.waitFor(() => expect(internals.pdfReader.restoreViewportLanding).toHaveBeenCalledOnce());
-    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null])).resolves.toEqual({ kind: "verified", point: { pageNumber: 2, x: 20, y: 30 } });
-    adjacentRestore.resolve({ kind: "staleOrCancelled" });
-    await expect(first).resolves.toEqual({ kind: "stale" });
-    await expect(queued).resolves.toEqual({ kind: "stale" });
-    expect(content.queueDestination).toHaveBeenCalledOnce();
+    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null]))
+      .resolves.toEqual({ kind: captureMatches ? "verified" : "failed" });
+    expect(restore.mock.calls.map((call) => call[0])).toEqual(captureMatches ? [initialLanding] : [initialLanding, origin]);
+    expect(session.canHistoryBack).toBe(captureMatches);
+    expect(session.canHistoryForward).toBe(false);
+    expect(session.snapshot.reader.page).toBe(captureMatches ? 2 : 1);
+    expect(session.navigationLandingInProgress).toBe(false);
   });
-  it("cancels an in-flight destination without history or landing mutation", async () => {
+  it("compensates the origin when post-scroll viewport materialization fails", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    const displayedTarget = { pageIndex: 1, x: 20, y: 30 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(displayedTarget);
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockResolvedValueOnce({ kind: "failed" })
+      .mockImplementationOnce(async (target) => {
+        internals.onPage(target.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+        return { kind: "verified", landing: target };
+      });
+
+    await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null])).resolves.toEqual({ kind: "failed" });
+    expect(restore.mock.calls.map((call) => call[0])).toEqual([displayedTarget, origin]);
+    expect(session.snapshot.reader.page).toBe(1);
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("fences a raw viewport change during materialization without restoring over the newer position", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void; options: { canvasHost: HTMLElement } };
+    const reader = internals.pdfReader;
+    const host = internals.options.canvasHost;
     session.reader.mountDocument(2);
     await session.activate();
     internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
     const origin = { pageIndex: 0, x: 5, y: 6 };
-    vi.spyOn(internals.pdfReader, "captureViewportLanding").mockReturnValue(origin);
-    const restore = vi.spyOn(internals.pdfReader, "restoreViewportLanding").mockImplementation(async (landing) => {
-      internals.onPage(landing.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-      return { kind: "verified", landing };
-    });
-    const published = deferred<void>();
-    const releaseRender = deferred<void>();
-    vi.spyOn(session, "renderPage").mockImplementation(async () => {
-      internals.onPage(2, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-      published.resolve();
-      await releaseRender.promise;
+    const displayedTarget = { pageIndex: 1, x: 20, y: 30 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
       return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(displayedTarget);
+    const materialization = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockImplementationOnce(async (
+      target,
+      guard,
+      _transform,
+      _placement,
+      onViewportOwnershipLost,
+    ) => {
+      const ownedLeft = host.scrollLeft;
+      const ownedTop = host.scrollTop;
+      await materialization.promise;
+      if (host.scrollLeft !== ownedLeft || host.scrollTop !== ownedTop) {
+        onViewportOwnershipLost?.();
+        return { kind: "staleOrCancelled" };
+      }
+      return guard() ? { kind: "verified", landing: target } : { kind: "staleOrCancelled" };
     });
 
     const navigation = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null]);
-    await published.promise;
-    expect(session.snapshot.reader.page).toBe(2);
-    session.cancelPendingNavigation();
-    releaseRender.resolve();
-    await expect(navigation).resolves.toEqual({ kind: "stale" });
-    expect(restore).toHaveBeenCalledWith(origin, expect.any(Function), expect.any(Object), "center");
-    expect(content.cancelDestination).toHaveBeenCalled();
-    expect(session.canHistoryBack).toBe(false);
-    expect(session.snapshot.reader.page).toBe(1);
-    expect(internals.pdfReader.captureViewportLanding()).toEqual(origin);
-  });
-  it("compensates an in-render link activation superseded outside session navigation", async () => {
-    const session = createSession();
-    installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
-    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
-    session.reader.mountDocument(2);
-    await session.activate();
-    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
-    const origin = { pageIndex: 0, x: 5, y: 6 };
-    vi.spyOn(internals.pdfReader, "captureViewportLanding").mockReturnValue(origin);
-    const restore = vi.spyOn(internals.pdfReader, "restoreViewportLanding").mockResolvedValue({ kind: "verified", landing: origin });
-    const rendering = deferred<boolean>();
-    const render = vi.spyOn(session, "renderPage").mockReturnValue(rendering.promise);
-    let activationCurrent = true;
-    const navigation = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null], "internal-link", () => activationCurrent);
-    await vi.waitFor(() => expect(render).toHaveBeenCalled());
-    activationCurrent = false;
-    rendering.resolve(true);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    host.scrollLeft = 17;
+    host.scrollTop = 61;
+    host.dispatchEvent(new Event("scroll"));
+    materialization.resolve();
 
     await expect(navigation).resolves.toEqual({ kind: "stale" });
-    expect(restore).toHaveBeenCalledWith(origin, expect.any(Function), expect.any(Object), "center");
+    expect(restore).toHaveBeenCalledOnce();
+    expect({ left: host.scrollLeft, top: host.scrollTop }).toEqual({ left: 17, top: 61 });
+    expect(session.snapshot.reader.page).toBe(2);
     expect(session.canHistoryBack).toBe(false);
   });
-  it("compensates a committed destination when its independent target is unavailable", async () => {
+  it("retains the explicit-cancellation landing owner until origin compensation settles", async () => {
     const session = createSession();
     const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
     session.reader.mountDocument(2);
     await session.activate();
     internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
-    internals.pdfReader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
     const origin = { pageIndex: 0, x: 5, y: 6 };
-    vi.spyOn(internals.pdfReader, "captureViewportLanding").mockReturnValueOnce(origin).mockReturnValue({ pageIndex: 1, x: 20, y: 30 });
-    const restore = vi.spyOn(internals.pdfReader, "restoreViewportLanding").mockResolvedValue({ kind: "verified", landing: origin });
-    vi.spyOn(session, "renderPage").mockResolvedValue(true);
+    const displayedTarget = { pageIndex: 1, x: 20, y: 30 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(displayedTarget);
+    const materialization = deferred<void>();
+    const compensationStarted = deferred<void>();
+    const compensation = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockImplementationOnce(async (_target, guard) => {
+        await materialization.promise;
+        return guard() ? { kind: "verified", landing: displayedTarget } : { kind: "staleOrCancelled" };
+      })
+      .mockImplementationOnce(async (target, guard) => {
+        compensationStarted.resolve();
+        await compensation.promise;
+        if (!guard()) return { kind: "staleOrCancelled" };
+        internals.onPage(target.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+        return { kind: "verified", landing: target };
+      });
+
+    const navigation = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null]);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    session.cancelPendingNavigation();
+    materialization.resolve();
+    await compensationStarted.promise;
+
+    expect(session.navigationLandingInProgress).toBe(true);
+    expect(session.canHistoryBack).toBe(false);
+    const viewportSync = vi.spyOn(reader, "synchronizeViewport");
+    await expect(session.synchronizeViewport(25, 100)).resolves.toBe(false);
+    expect(viewportSync).not.toHaveBeenCalled();
+
+    compensation.resolve();
+    await expect(navigation).resolves.toEqual({ kind: "stale" });
+    expect(restore.mock.calls[1]?.[0]).toEqual(origin);
+    expect(session.navigationLandingInProgress).toBe(false);
+    expect(session.snapshot.reader.page).toBe(1);
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("retains the landing owner while compensating a stale link activation", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    const displayedTarget = { pageIndex: 1, x: 20, y: 30 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(displayedTarget);
+    const materialization = deferred<void>();
+    const compensationStarted = deferred<void>();
+    const compensation = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockImplementationOnce(async (_target, guard) => {
+        await materialization.promise;
+        return guard() ? { kind: "verified", landing: displayedTarget } : { kind: "staleOrCancelled" };
+      })
+      .mockImplementationOnce(async (target, guard) => {
+        compensationStarted.resolve();
+        await compensation.promise;
+        if (!guard()) return { kind: "staleOrCancelled" };
+        internals.onPage(target.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+        return { kind: "verified", landing: target };
+      });
+    let activationCurrent = true;
+
+    const navigation = session.navigateToDestination(
+      2,
+      [null, { name: "XYZ" }, 20, 30, null],
+      "internal-link",
+      () => activationCurrent,
+    );
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    activationCurrent = false;
+    materialization.resolve();
+    await compensationStarted.promise;
+
+    expect(session.navigationLandingInProgress).toBe(true);
+    expect(session.canHistoryBack).toBe(false);
+    const viewportSync = vi.spyOn(reader, "synchronizeViewport");
+    await expect(session.synchronizeViewport(25, 100)).resolves.toBe(false);
+    expect(viewportSync).not.toHaveBeenCalled();
+
+    compensation.resolve();
+    await expect(navigation).resolves.toEqual({ kind: "stale" });
+    expect(restore.mock.calls[1]?.[0]).toEqual(origin);
+    expect(session.navigationLandingInProgress).toBe(false);
+    expect(session.snapshot.reader.page).toBe(1);
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("lets newer raw input fence explicit-cancellation compensation", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: HTMLElement };
+    };
+    const reader = internals.pdfReader;
+    const host = internals.options.canvasHost;
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    const displayedTarget = { pageIndex: 1, x: 20, y: 30 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.takeDestinationLanding.mockReturnValue(displayedTarget);
+    const materialization = deferred<void>();
+    const compensationStarted = deferred<void>();
+    const compensation = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockImplementationOnce(async (_target, guard) => {
+        await materialization.promise;
+        return guard() ? { kind: "verified", landing: displayedTarget } : { kind: "staleOrCancelled" };
+      })
+      .mockImplementationOnce(async (target, guard) => {
+        compensationStarted.resolve();
+        await compensation.promise;
+        if (!guard()) return { kind: "staleOrCancelled" };
+        internals.onPage(target.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+        return { kind: "verified", landing: target };
+      });
+
+    const navigation = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null]);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    session.cancelPendingNavigation();
+    materialization.resolve();
+    await compensationStarted.promise;
+
+    expect(session.navigationLandingInProgress).toBe(true);
+    host.scrollLeft = 17;
+    host.scrollTop = 61;
+    host.dispatchEvent(new Event("wheel"));
+    expect(session.navigationLandingInProgress).toBe(true);
+    await expect(session.synchronizeViewport(17, 100)).resolves.toBe(false);
+    compensation.resolve();
+
+    await expect(navigation).resolves.toEqual({ kind: "stale" });
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect({ left: host.scrollLeft, top: host.scrollTop }).toEqual({ left: 17, top: 61 });
+    expect(session.navigationLandingInProgress).toBe(false);
+    expect(session.snapshot.reader.page).toBe(2);
+    expect(session.canHistoryBack).toBe(false);
+  });
+  it("does not let a stale materialization clear or overwrite a newer destination", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    const firstTarget = { pageIndex: 1, x: 20, y: 30 };
+    const secondTarget = { pageIndex: 2, x: 40, y: 50 };
+    vi.spyOn(reader, "captureViewportLanding").mockImplementation(() => {
+      if (session.snapshot.reader.page === 1) return origin;
+      return session.snapshot.reader.page === 2 ? firstTarget : secondTarget;
+    });
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    content.queueDestination.mockReturnValueOnce(1).mockReturnValueOnce(2);
+    content.takeDestinationLanding.mockImplementation((intentId) => intentId === 1 ? firstTarget : secondTarget);
+    const firstMaterialization = deferred<void>();
+    const secondMaterialization = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding")
+      .mockImplementationOnce(async (target, guard) => {
+        await firstMaterialization.promise;
+        return guard() ? { kind: "verified", landing: target } : { kind: "staleOrCancelled" };
+      })
+      .mockImplementationOnce(async (target, guard) => {
+        await secondMaterialization.promise;
+        return guard() ? { kind: "verified", landing: target } : { kind: "staleOrCancelled" };
+      });
+
+    const first = session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null]);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    const second = session.navigateToDestination(3, [null, { name: "XYZ" }, 40, 50, null]);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledTimes(2));
+
+    firstMaterialization.resolve();
+    await expect(first).resolves.toEqual({ kind: "stale" });
+    expect(session.navigationLandingInProgress).toBe(true);
+    expect(session.snapshot.reader.page).toBe(3);
+    expect(session.canHistoryBack).toBe(false);
+
+    secondMaterialization.resolve();
+    await expect(second).resolves.toEqual({ kind: "verified" });
+    expect(session.navigationLandingInProgress).toBe(false);
+    expect(session.snapshot.reader.page).toBe(3);
+    expect(session.canHistoryBack).toBe(true);
+  });
+  it("compensates a published destination when its independently captured center is unavailable", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    const reader = internals.pdfReader;
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    reader.getPageNaturalSize = vi.fn(async () => ({ width: 200, height: 100 }));
+    const origin = { pageIndex: 0, x: 5, y: 6 };
+    vi.spyOn(reader, "captureViewportLanding").mockReturnValue(origin);
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockImplementation(async (target) => {
+      internals.onPage(target.pageIndex + 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      return { kind: "verified", landing: target };
+    });
     content.takeDestinationLanding.mockReturnValue(undefined);
 
     await expect(session.navigateToDestination(2, [null, { name: "XYZ" }, 20, 30, null])).resolves.toEqual({ kind: "failed" });
     expect(restore).toHaveBeenCalledWith(origin, expect.any(Function), expect.any(Object), "center");
+    expect(session.snapshot.reader.page).toBe(1);
     expect(session.canHistoryBack).toBe(false);
   });
   it("rejects a destination before queuing when history preflight is unavailable", async () => {
@@ -1098,7 +1430,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     onStatus.mockClear();
     internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
     await vi.waitFor(() => expect(internals.pdfReader.renderPageWithTransform).toHaveBeenCalledWith(1, { scale: 1, rotation: 0, devicePixelRatio: 1 }, expect.any(Function)));
-    expect(onStatus).not.toHaveBeenCalled();
+    expect(onStatus).toHaveBeenCalledWith(session.snapshot.status);
 
     expect(internals.pendingRenderRollback).toMatchObject({ page: 1, devicePixelRatio: 1 });
   });
@@ -1187,6 +1519,64 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     }
   });
 
+  it.each([
+    { hostWidth: 785, hostHeight: 620, padding: { left: 12, right: 8, top: 10, bottom: 6 }, pageWidth: 640, pageHeight: 900 },
+    { hostWidth: 420, hostHeight: 260, padding: { left: 24, right: 16, top: 18, bottom: 12 }, pageWidth: 300, pageHeight: 180 },
+  ])("publishes a hidden opening before fitting its $pageWidth x $pageHeight page to the padded $hostWidth x $hostHeight host top", async ({ hostWidth, hostHeight, padding, pageWidth, pageHeight }) => {
+    let session!: PdfTabSession;
+    let published = false;
+    session = createSession(() => {
+      if (!session.snapshot.reader.hasDocument) return;
+      const host = (session as unknown as SessionInternals & { options: { canvasHost: { clientWidth: number; clientHeight: number } } }).options.canvasHost;
+      host.clientWidth = hostWidth;
+      host.clientHeight = hostHeight;
+      published = true;
+    });
+    const internals = session as unknown as SessionInternals & {
+      openingFitRenderPending: boolean;
+      options: { canvasHost: { clientWidth: number; clientHeight: number; scrollTop: number } };
+      pdfReader: SessionInternals["pdfReader"] & {
+        options: {
+          onCommitted: (pageCount: number, displayName: string) => void;
+          onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+        };
+      };
+    };
+    internals.options.canvasHost.clientWidth = 0;
+    internals.options.canvasHost.clientHeight = 0;
+    const styleDescriptor = Object.getOwnPropertyDescriptor(globalThis, "getComputedStyle");
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({
+      paddingLeft: `${padding.left}px`, paddingRight: `${padding.right}px`,
+      paddingTop: `${padding.top}px`, paddingBottom: `${padding.bottom}px`,
+    }) });
+    try {
+      await session.activate();
+      vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: pageWidth, height: pageHeight });
+      const opening = vi.mocked(internals.pdfReader.setOpeningPresentationAtTop).mockImplementation(async (_topology, _page, _transform, guard) => {
+        if (!guard()) return false;
+        internals.options.canvasHost.scrollTop = 0;
+        return true;
+      });
+
+      internals.pdfReader.options.onCommitted(3, "hidden.pdf");
+      expect(internals.openingFitRenderPending).toBe(true);
+      internals.options.canvasHost.scrollTop = 0;
+      internals.pdfReader.options.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+
+      await session.activate();
+      expect(opening).toHaveBeenCalledOnce();
+      expect(published).toBe(true);
+      expect(opening.mock.calls[0]?.[0]).toBe("continuous");
+      expect(opening.mock.calls[0]?.[1]).toBe(1);
+      expect((opening.mock.calls[0]?.[2] as { scale: number }).scale)
+        .toBeCloseTo((hostWidth - padding.left - padding.right) / pageWidth);
+      expect(internals.options.canvasHost.scrollTop).toBe(0);
+      expect(internals.openingFitRenderPending).toBe(false);
+    } finally {
+      if (styleDescriptor === undefined) delete (globalThis as { getComputedStyle?: unknown }).getComputedStyle;
+      else Object.defineProperty(globalThis, "getComputedStyle", styleDescriptor);
+    }
+  });
   it("retries opening fit for a hidden empty adoption host after geometry returns", async () => {
     const session = createSession();
     const internals = session as unknown as SessionInternals & {
@@ -1203,7 +1593,8 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     const render = vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockResolvedValue(true);
 
     internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
-    await vi.waitFor(() => expect(internals.pdfReader.getPageNaturalSize).toHaveBeenCalledOnce());
+    await expect(session.renderCurrentView()).resolves.toBe(false);
+    expect(internals.pdfReader.getPageNaturalSize).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
     expect(internals.openingFitRenderPending).toBe(true);
 
@@ -1213,6 +1604,77 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.activate();
 
     expect(render).toHaveBeenCalledWith(1, { scale: 1, rotation: 0, devicePixelRatio: 1 }, expect.any(Function));
+    expect(internals.openingFitRenderPending).toBe(false);
+  });
+  it.each([
+    { action: { type: "page.next" } as const, committedPage: 2, committedScale: 1 },
+    { action: { type: "view.zoom", factor: 1.1 } as const, committedPage: 1, committedScale: 1.1 },
+  ])("does not let a delayed opening fit reset the viewport after newer $action.type intent", async ({ action, committedPage, committedScale }) => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      openingFitRenderPending: boolean;
+      openingFitRenderInFlight: boolean;
+      options: { canvasHost: { clientWidth: number; clientHeight: number; scrollTop: number } };
+    };
+    session.reader.mountDocument(3);
+    await session.activate();
+    internals.openingFitRenderPending = true;
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let openingGuard!: () => boolean;
+    const opening = vi.mocked(internals.pdfReader.setOpeningPresentationAtTop).mockImplementation(async (_topology, _page, _transform, guard) => {
+      openingGuard = guard;
+      entered.resolve();
+      await release.promise;
+      if (!guard()) return false;
+      internals.options.canvasHost.scrollTop = 0;
+      return true;
+    });
+
+    internals.options.canvasHost.scrollTop = 0;
+    internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
+    await entered.promise;
+    session.apply(action);
+    internals.options.canvasHost.scrollTop = 240;
+    expect(openingGuard()).toBe(false);
+    release.resolve();
+    await vi.waitFor(() => expect(internals.openingFitRenderInFlight).toBe(false));
+    internals.onPage(committedPage, { scale: committedScale, rotation: 0, devicePixelRatio: 1 });
+
+    expect(opening).toHaveBeenCalledOnce();
+    expect(internals.options.canvasHost.scrollTop).toBe(240);
+    expect(internals.openingFitRenderPending).toBe(false);
+  });
+  it("retires a pending opening fit when raw scrolling takes viewport ownership", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      openingFitRenderPending: boolean;
+      openingFitRenderInFlight: boolean;
+      options: { canvasHost: { scrollTop: number } };
+    };
+    session.reader.mountDocument(1);
+    await session.activate();
+    internals.openingFitRenderPending = true;
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.mocked(internals.pdfReader.setOpeningPresentationAtTop).mockImplementation(async (_topology, _page, _transform, guard) => {
+      entered.resolve();
+      await release.promise;
+      return guard() && internals.options.canvasHost.scrollTop === 0;
+    });
+
+    internals.options.canvasHost.scrollTop = 0;
+    internals.onPage(1, { scale: 1.25, rotation: 0, devicePixelRatio: 1 });
+    await entered.promise;
+    internals.options.canvasHost.scrollTop = 91;
+    release.resolve();
+    await vi.waitFor(() => expect(internals.openingFitRenderInFlight).toBe(false));
+
+    expect(internals.options.canvasHost.scrollTop).toBe(91);
     expect(internals.openingFitRenderPending).toBe(false);
   });
   it("retains the exact session controller after a rejected unmount and retries it once", async () => {
@@ -1264,5 +1726,55 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     session.apply({ type: "view.zoom", factor: 1.1 });
     await session.renderCurrentView();
     expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("continuous", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));
+  });
+  it("bounds held adjacent input to an active step and the latest pending direction", async () => {
+    const session = createSession();
+    session.reader.mountDocument(50);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    let location = { pageIndex: 0, x: 0, y: 0 };
+    vi.spyOn(reader, "captureViewportLanding").mockImplementation(() => location);
+    const gate = deferred<void>();
+    let calls = 0;
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockImplementation(async (target, guard) => {
+      if (++calls === 1) await gate.promise;
+      if (!guard()) return { kind: "staleOrCancelled" };
+      location = target;
+      return { kind: "verified", landing: target };
+    });
+    const first = session.navigateAdjacentPage(1);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledTimes(1));
+    const pending = Array.from({ length: 29 }, (_unused, index) => session.navigateAdjacentPage(index === 28 ? -1 : 1));
+    gate.resolve();
+    const outcomes = await Promise.all([first, ...pending]);
+    expect(outcomes.filter(result => result.kind === "stale")).toHaveLength(28);
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(location.pageIndex).toBe(0);
+    await expect(session.navigateAdjacentPage(1)).resolves.toEqual({ kind: "verifiedLanding" });
+  });
+
+  it("does not cancel passive rendering on ordinary scroll or let stale renders undo newer zoom", async () => {
+    const session = createSession();
+    session.reader.mountDocument(3);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let current!: () => boolean;
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (_page, _transform, guard) => {
+      current = guard; entered.resolve(); await release.promise; return guard();
+    });
+    const rendering = session.renderPage(1);
+    await entered.promise;
+    session.apply({ type: "scroll.byViewport", factor: 0.8 });
+    expect(current()).toBe(true);
+    session.apply({ type: "view.zoom", factor: 1.1 });
+    const intendedScale = session.snapshot.reader.customScale;
+    expect(current()).toBe(false);
+    release.resolve();
+    await expect(rendering).resolves.toBe(false);
+    expect(session.snapshot.reader.customScale).toBe(intendedScale);
   });
 });

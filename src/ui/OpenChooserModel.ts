@@ -12,7 +12,7 @@ export interface OpenChooserModel {
 }
 export type OpenChooserRow =
   | { readonly kind: "browse"; readonly label: "Browse..." }
-  | { readonly kind: "recent"; readonly recentId: string; readonly displayName: string };
+  | { readonly kind: "recent"; readonly recentId: string; readonly displayName: string; readonly displayPath: string };
 
 export function createOpenChooser(prepared: PreparedRecentState, generation = 1): OpenChooserModel {
   return Object.freeze({ generation, prepared, query: "", activeIndex: 0, diagnostic: undefined });
@@ -21,7 +21,7 @@ export function chooserRows(model: OpenChooserModel): readonly OpenChooserRow[] 
   const recents: readonly RecentFile[] = model.prepared.tag === "READY" ? model.prepared.snapshot.entries : [];
   return Object.freeze([
     Object.freeze({ kind: "browse" as const, label: "Browse..." as const }),
-    ...filterRecentFiles(recents, model.query).map((entry) => Object.freeze({ kind: "recent" as const, recentId: entry.recentId, displayName: entry.displayName })),
+    ...filterRecentFiles(recents, model.query).map((entry) => Object.freeze({ kind: "recent" as const, recentId: entry.recentId, displayName: entry.displayName, displayPath: entry.displayPath })),
   ]);
 }
 export function updateChooserQuery(model: OpenChooserModel, query: string): OpenChooserModel {

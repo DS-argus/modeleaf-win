@@ -40,7 +40,7 @@ describe("CP5 shell integration", () => {
     expect(mainSource).not.toContain("Keyboard-first PDF reading for Windows");
     // The hint is now the accessible click target rather than inert text, so
     // one affordance carries both the shortcut and the action.
-    expect(mainSource).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut">Ctrl+O</kbd>');
+    expect(mainSource).toContain('<span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd>');
     expect(mainSource).toContain('empty-reader-action');
     expect(styles).toContain("place-content: center");
   });

@@ -41,7 +41,7 @@ const MESSAGES: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * A `D` modifier is the macOS Command key. Converting it to Ctrl silently would
- * shadow `Ctrl+O` and the history accelerators, so it is surfaced for the user
+ * shadow explicit user bindings, so it is surfaced for the user
  * to resolve.
  */
 function isMigration(diagnostic: ConfigDiagnostic): boolean {

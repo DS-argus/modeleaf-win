@@ -49,8 +49,8 @@ function page(pageNumber: number, renderPromise: Promise<void> = Promise.resolve
   };
 }
 
-function documentWith(pageCount: number, getPage = vi.fn(async (pageNumber: number) => page(pageNumber))): PdfDocument {
-  return { numPages: pageCount, getPage, destroy: vi.fn() };
+function documentWith(pageCount: number, getPage = vi.fn(async (pageNumber: number) => page(pageNumber))): PdfDocument & { destroyWorker: () => Promise<void> | void } {
+  return { numPages: pageCount, getPage, destroyWorker: vi.fn() };
 }
 
 function publishedCanvas(host: HTMLElement): HTMLCanvasElement {
@@ -59,8 +59,8 @@ function publishedCanvas(host: HTMLElement): HTMLCanvasElement {
   return canvas;
 }
 
-function task(document: PdfDocument): PdfLoadingTask {
-  return { promise: Promise.resolve(document), destroy: vi.fn() };
+function task(document: ReturnType<typeof documentWith>): PdfLoadingTask {
+  return { promise: Promise.resolve(document), destroy: () => document.destroyWorker() };
 }
 
 function nativeBoundary(openPdfDialog: ReturnType<typeof vi.fn>) {
@@ -348,7 +348,7 @@ describe("PdfReaderController", () => {
   it("quarantines a synchronous PDF.js destroy failure and blocks later opens", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const first = documentWith(1);
-    first.destroy = vi.fn(() => { throw new Error("destroy failed"); });
+    first.destroyWorker = vi.fn(() => { throw new Error("destroy failed"); });
     const second = documentWith(1);
     const native = nativeBoundary(vi.fn()
       .mockResolvedValueOnce(session("destroy-failure", 1))
@@ -407,12 +407,12 @@ describe("PdfReaderController", () => {
       replacementSettled = true;
     });
     await vi.waitFor(() => expect(committed).toHaveBeenCalledTimes(2));
-    expect(first.destroy).not.toHaveBeenCalled();
+    expect(first.destroyWorker).not.toHaveBeenCalled();
 
     expect(replacementSettled).toBe(false);
     releaseContent.resolve();
     await replacing;
-    expect(first.destroy).toHaveBeenCalledOnce();
+    expect(first.destroyWorker).toHaveBeenCalledOnce();
     await controller.dispose();
   });
   it("retries the rejected prior content owner before its PDF and native session release", async () => {
@@ -448,15 +448,15 @@ describe("PdfReaderController", () => {
     await controller.open(1);
     await controller.open(1);
     expect(priorUnmount).toHaveBeenCalledOnce();
-    expect(first.destroy).not.toHaveBeenCalled();
+    expect(first.destroyWorker).not.toHaveBeenCalled();
     expect(native.cancelSession).not.toHaveBeenCalled();
     expect(native.closeSession).not.toHaveBeenCalled();
 
     await controller.open(1);
     expect(priorUnmount).toHaveBeenCalledTimes(2);
-    expect(first.destroy).toHaveBeenCalledOnce();
+    expect(first.destroyWorker).toHaveBeenCalledOnce();
     expect(native.cancelSession.mock.calls[0]?.[0]).toMatchObject({ sessionId: "prior-content" });
-    expect(vi.mocked(first.destroy).mock.invocationCallOrder[0]).toBeLessThan(native.cancelSession.mock.invocationCallOrder[0]!);
+    expect(vi.mocked(first.destroyWorker).mock.invocationCallOrder[0]).toBeLessThan(native.cancelSession.mock.invocationCallOrder[0]!);
     await controller.dispose();
   });
   it("retains a delayed adapter teardown as the sole cancel and close owner until it completes", async () => {
@@ -503,7 +503,7 @@ describe("PdfReaderController", () => {
       vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
       const destroy = deferred<void>();
       const pdf = documentWith(1);
-      pdf.destroy = vi.fn(() => destroy.promise);
+      pdf.destroyWorker = vi.fn(() => destroy.promise);
       const native = nativeBoundary(vi.fn().mockResolvedValue(session("delayed-pdf-destroy", 1)));
       const controller = new PdfReaderController({
         native,
@@ -518,7 +518,7 @@ describe("PdfReaderController", () => {
       const rejected = expect(disposing).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
       await vi.advanceTimersByTimeAsync(15_000);
       await rejected;
-      expect(pdf.destroy).toHaveBeenCalledOnce();
+      expect(pdf.destroyWorker).toHaveBeenCalledOnce();
       expect(native.cancelSession).not.toHaveBeenCalled();
       expect(native.closeSession).not.toHaveBeenCalled();
 
@@ -934,7 +934,13 @@ describe("PdfReaderController", () => {
       resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 },
       canvasHost: host,
-      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onCommitted: vi.fn(),
+      onPage: () => {
+        for (const frame of host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+          Object.defineProperty(frame, "offsetTop", { configurable: true, get: () => Number.parseFloat(frame.style.top) });
+        }
+      },
+      onStatus: vi.fn(),
     });
 
     await controller.open(1);
@@ -957,6 +963,147 @@ describe("PdfReaderController", () => {
     expect(outcome.landing).toEqual(outcome.expected);
     expect(outcome.expected).toEqual(controller.captureViewportLanding());
     expect(outcome.expected).toMatchObject({ pageIndex: 4, x: expect.any(Number), y: expect.any(Number) });
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("keeps a newer raw scroll when canonical landing loses final-window ownership", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const delayedNeighbor = deferred<void>();
+    const neighborRenderEntered = deferred<void>();
+    const cancelNeighbor = vi.fn();
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      if (pageNumber !== 2) return page(pageNumber);
+      const neighbor = page(pageNumber, delayedNeighbor.promise, cancelNeighbor);
+      return {
+        ...neighbor,
+        render: (options) => {
+          neighborRenderEntered.resolve();
+          return neighbor.render(options);
+        },
+      };
+    });
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 20 }, clientHeight: { configurable: true, value: 30 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const statuses: string[] = [];
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("landing-raw-scroll", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(4, getPage))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (message) => statuses.push(message),
+    });
+
+    await controller.open(1);
+    const callerGuard = vi.fn(() => true);
+    const onViewportOwnershipLost = vi.fn();
+    const landing = controller.restoreViewportLanding(
+      { pageIndex: 0, x: 20, y: 30 }, callerGuard, undefined, "center", onViewportOwnershipLost,
+    );
+    await neighborRenderEntered.promise;
+    expect({ scrollLeft: host.scrollLeft, scrollTop: host.scrollTop }).toEqual({ scrollLeft: 10, scrollTop: 15 });
+    expect(resources.snapshot().totals.render).toBe(1);
+
+    const newerOffsets = { scrollLeft: 321, scrollTop: 654 };
+    host.scrollLeft = newerOffsets.scrollLeft;
+    host.scrollTop = newerOffsets.scrollTop;
+    delayedNeighbor.resolve();
+
+    await expect(landing).resolves.toEqual({ kind: "staleOrCancelled" });
+    expect(onViewportOwnershipLost).toHaveBeenCalledOnce();
+    expect(callerGuard).toHaveBeenCalled();
+    expect(callerGuard.mock.results.every((result) => result.type === "return" && result.value === true)).toBe(true);
+    expect({ scrollLeft: host.scrollLeft, scrollTop: host.scrollTop }).toEqual(newerOffsets);
+    expect(cancelNeighbor).not.toHaveBeenCalled();
+    expect(statuses).not.toContain("PDF viewport page 2 could not be materialized.");
+    expect(statuses.some((message) => message.startsWith("PDF viewport landing failed:"))).toBe(false);
+    expect(controller.residentPageNumbers()).toEqual([1]);
+    expect(resources.snapshot().totals.render).toBe(0);
+    expect(resources.snapshot().totals["canvas-bytes"]).toBe(20 * 30 * 4);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("restores a constrained landing after owned mixed-height layout clamping", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const mixedHeightPage = (pageNumber: number, height: number): PdfPage => ({
+      getViewport: () => pdfViewport(1_000, height),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => [],
+      render: ({ canvas }) => {
+        canvas.dataset.page = String(pageNumber);
+        return { promise: Promise.resolve(), cancel: vi.fn() };
+      },
+    });
+    const getPage = vi.fn(async (pageNumber: number) => mixedHeightPage(pageNumber, pageNumber === 3 ? 100 : 1_000));
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    // jsdom has no layout, so bind CSSOM clamping to the controller-owned document extent.
+    const hostWidth = 1_000;
+    const hostHeight = 600;
+    let storedScrollTop = 0;
+    const layoutClamps: { readonly from: number; readonly to: number }[] = [];
+    const documentHeight = (): number => {
+      const height = Number.parseFloat(host.querySelector<HTMLElement>(":scope > .pdf-page-spacer-bottom")?.style.height ?? "");
+      return Number.isFinite(height) ? Math.max(hostHeight, height) : hostHeight;
+    };
+    const maxScrollTop = (): number => Math.max(0, documentHeight() - hostHeight);
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: hostWidth }, clientHeight: { configurable: true, value: hostHeight },
+      scrollWidth: { configurable: true, value: hostWidth }, scrollHeight: { configurable: true, get: documentHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => {
+          const clamped = Math.min(maxScrollTop(), Math.max(0, storedScrollTop));
+          if (clamped !== storedScrollTop) layoutClamps.push({ from: storedScrollTop, to: clamped });
+          storedScrollTop = clamped;
+          return storedScrollTop;
+        },
+        set: (value: number) => { storedScrollTop = Math.min(maxScrollTop(), Math.max(0, value)); },
+      },
+    });
+    const installFrameOffsets = () => {
+      for (const frame of host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+        Object.defineProperties(frame, {
+          offsetLeft: { configurable: true, get: () => Number.parseFloat(frame.style.left) || 0 },
+          offsetTop: { configurable: true, get: () => Number.parseFloat(frame.style.top) || 0 },
+        });
+      }
+    };
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("mixed-height-clamp", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, getPage))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: installFrameOffsets, onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(await controller.renderPage(2)).toBe(true);
+    const callerGuard = vi.fn(() => true);
+    const onViewportOwnershipLost = vi.fn();
+    const outcome = await controller.restoreViewportLanding(
+      { pageIndex: 1, x: 500, y: 900 }, callerGuard, undefined, "center", onViewportOwnershipLost,
+    );
+
+    expect(layoutClamps).toEqual([{ from: 1_612, to: 1_524 }]);
+    expect(outcome.kind).toBe("constrainedEdgeVerified");
+    if (outcome.kind !== "constrainedEdgeVerified") throw new Error("expected a constrained-edge landing after layout clamping");
+    expect(outcome.landing).toEqual(outcome.expected);
+    expect(host.scrollTop).toBe(1_524);
+    expect(controller.captureViewportLanding()).toEqual(outcome.expected);
+    expect(onViewportOwnershipLost).not.toHaveBeenCalled();
+    expect(callerGuard).toHaveBeenCalled();
+    expect(callerGuard.mock.results.every((result) => result.type === "return" && result.value === true)).toBe(true);
+    expect(controller.visiblePageNumbers).toEqual([2, 3]);
+    const visibleBackings = controller.visiblePageNumbers.map((pageNumber) => host.querySelector<HTMLCanvasElement>(
+      `:scope > .pdf-page-frame[data-page='${pageNumber}'] > .pdf-page-canvas-layer`,
+    ));
+    expect(visibleBackings.map((canvas) => canvas?.dataset.page)).toEqual(["2", "3"]);
+    expect(visibleBackings.every((canvas) => canvas !== null && canvas.width > 0 && canvas.height > 0)).toBe(true);
+    expect(controller.residentPageNumbers()).toEqual([1, 2, 3]);
     await controller.dispose();
     resources.assertEmpty();
   });
@@ -1009,6 +1156,153 @@ describe("PdfReaderController", () => {
     await fitted.open(1);
     expect(onPage).toHaveBeenCalledWith(1, expect.objectContaining({ scale: 2.5, rotation: 0 }));
     await fitted.dispose();
+    resources.assertEmpty();
+  });
+  it.each([
+    { hostWidth: 785, hostHeight: 620, padding: { left: 12, right: 8, top: 10, bottom: 6 }, pageWidth: 640, pageHeight: 900 },
+    { hostWidth: 420, hostHeight: 260, padding: { left: 24, right: 16, top: 18, bottom: 12 }, pageWidth: 300, pageHeight: 180 },
+  ])("re-fits a zero-size $pageWidth x $pageHeight opening at the padded $hostWidth x $hostHeight host top", async ({ hostWidth, hostHeight, padding, pageWidth, pageHeight }) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    let clientWidth = 0;
+    let clientHeight = 0;
+    const host = document.createElement("div");
+    host.style.paddingLeft = `${padding.left}px`;
+    host.style.paddingRight = `${padding.right}px`;
+    host.style.paddingTop = `${padding.top}px`;
+    host.style.paddingBottom = `${padding.bottom}px`;
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, get: () => clientWidth },
+      clientHeight: { configurable: true, get: () => clientHeight },
+      scrollWidth: { configurable: true, value: 4_000 },
+      scrollHeight: { configurable: true, value: 4_000 },
+    });
+    const scalablePage: PdfPage = {
+      getViewport: ({ scale, rotation }) => ({ ...pdfViewport(pageWidth * scale, pageHeight * scale, scale), rotation,
+        convertToPdfPoint: (x: number, y: number) => [x / scale, y / scale] as const,
+        convertToViewportPoint: (x: number, y: number) => [x * scale, y * scale] as const }),
+      getTextContent: async () => ({ items: [] }), getAnnotations: async () => [],
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+    };
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("hidden-opening-top", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, vi.fn(async () => scalablePage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(publishedCanvas(host).dataset.scale).toBe("1");
+    expect(host.scrollTop).toBe(0);
+    clientWidth = hostWidth;
+    clientHeight = hostHeight;
+    host.scrollLeft = 0;
+    host.scrollTop = 0;
+    const scale = (hostWidth - padding.left - padding.right) / pageWidth;
+
+    await expect(controller.setOpeningPresentationAtTop("continuous", 1,
+      { scale, rotation: 0, devicePixelRatio: 1 }, () => true)).resolves.toBe(true);
+
+    expect(publishedCanvas(host).dataset.scale).toBe(String(scale));
+    expect(host.scrollLeft).toBe(0);
+    expect(host.scrollTop).toBe(0);
+    expect(controller.presentationTopology).toBe("continuous");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+
+  it("does not apply a delayed opening-top reset after a newer guarded view render", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 100 }, clientHeight: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const scalablePage: PdfPage = {
+      getViewport: ({ scale, rotation }) => ({ ...pdfViewport(20 * scale, 30 * scale, scale), rotation,
+        convertToPdfPoint: (x: number, y: number) => [x / scale, y / scale] as const,
+        convertToViewportPoint: (x: number, y: number) => [x * scale, y * scale] as const }),
+      getTextContent: async () => ({ items: [] }), getAnnotations: async () => [],
+      render: () => ({ promise: Promise.resolve(), cancel: vi.fn() }),
+    };
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let stallNextCommit = false;
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("stale-opening-top", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => scalablePage)))), annotationMode: 0 },
+      canvasHost: host, availableContentSize: () => ({ width: 20, height: 30 }),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit) => {
+        if (stallNextCommit) {
+          stallNextCommit = false;
+          entered.resolve();
+          await release.promise;
+        }
+        commit();
+      },
+    });
+    await controller.open(1);
+    host.scrollTop = 0;
+    let openingCurrent = true;
+    stallNextCommit = true;
+    const openingFit = controller.setOpeningPresentationAtTop("continuous", 1,
+      { scale: 2, rotation: 0, devicePixelRatio: 1 }, () => openingCurrent);
+    await entered.promise;
+
+    openingCurrent = false;
+    host.scrollTop = 240;
+    const newerRender = controller.setViewTransform({ scale: 3, rotation: 0, devicePixelRatio: 1 });
+    // Real replacements wait for the obsolete render's settlement barrier.
+    release.resolve();
+    await expect(newerRender).resolves.toBe(true);
+    const newerViewportTop = host.scrollTop;
+    expect(newerViewportTop).not.toBe(0);
+
+    await expect(openingFit).resolves.toBe(false);
+    expect(host.scrollTop).toBe(newerViewportTop);
+    expect(publishedCanvas(host).dataset.scale).toBe("3");
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("treats a raw scroll during opening fit as newer viewport ownership", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 100 }, clientHeight: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    let stallNextCommit = false;
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("opening-scroll-owner", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1))), annotationMode: 0 }, canvasHost: host,
+      availableContentSize: () => ({ width: 20, height: 30 }),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit) => {
+        if (stallNextCommit) {
+          stallNextCommit = false;
+          entered.resolve();
+          await release.promise;
+        }
+        commit();
+      },
+    });
+    await controller.open(1);
+    stallNextCommit = true;
+    const openingFit = controller.setOpeningPresentationAtTop("continuous", 1,
+      { scale: 2, rotation: 0, devicePixelRatio: 1 }, () => true);
+    await entered.promise;
+
+    host.scrollTop = 91;
+    release.resolve();
+
+    await expect(openingFit).resolves.toBe(false);
+    expect(host.scrollTop).toBe(91);
+    expect(publishedCanvas(host).dataset.scale).toBe("1");
+    await controller.dispose();
     resources.assertEmpty();
   });
   it("positions the host explicitly after direct far-page navigation", async () => {
@@ -1229,6 +1523,7 @@ describe("PdfReaderController", () => {
     host.scrollTop = 200;
     const anchor = controller.captureScrollAnchor()!;
     expect(await controller.setViewTransform({ scale: 2, rotation: 90, devicePixelRatio: 1 })).toBe(true);
+    expect(host.scrollTop).not.toBe(0);
     installOffsets();
     controller.restoreScrollAnchor(anchor);
     const restored = controller.captureScrollAnchor()!;
@@ -1919,8 +2214,8 @@ describe("PdfReaderController", () => {
     await controller.open(1);
 
     expect(publishedCanvas(host)).toBe(healthyCanvas);
-    expect(first.destroy).not.toHaveBeenCalled();
-    expect(second.destroy).toHaveBeenCalledOnce();
+    expect(first.destroyWorker).not.toHaveBeenCalled();
+    expect(second.destroyWorker).toHaveBeenCalledOnce();
     await controller.dispose();
   });
   it("restores the controller transform after a failed precommit", async () => {
@@ -1985,10 +2280,10 @@ describe("PdfReaderController", () => {
     await vi.waitFor(() => expect(staged).toBe(true));
     const successor = controller.open(2);
     await Promise.resolve();
-    expect(first.destroy).not.toHaveBeenCalled();
+    expect(first.destroyWorker).not.toHaveBeenCalled();
     overlay.resolve();
     await Promise.all([firstOpen, successor]);
-    expect(first.destroy).toHaveBeenCalledOnce();
+    expect(first.destroyWorker).toHaveBeenCalledOnce();
     await controller.dispose();
   });
   it("settles an opening overlay before disposal destroys its PDF", async () => {
@@ -2016,10 +2311,10 @@ describe("PdfReaderController", () => {
     await vi.waitFor(() => expect(staged).toBe(true));
     const disposing = controller.dispose();
     await Promise.resolve();
-    expect(pdf.destroy).not.toHaveBeenCalled();
+    expect(pdf.destroyWorker).not.toHaveBeenCalled();
     overlay.resolve();
     await Promise.all([opening, disposing]);
-    expect(pdf.destroy).toHaveBeenCalledOnce();
+    expect(pdf.destroyWorker).toHaveBeenCalledOnce();
   });
   it("retries a late staged teardown fulfillment once without retaining settled ownership", async () => {
     vi.useFakeTimers();
@@ -2051,14 +2346,14 @@ describe("PdfReaderController", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       await rejected;
       expect(teardown).toHaveBeenCalledOnce();
-      expect(pdf.destroy).not.toHaveBeenCalled();
+      expect(pdf.destroyWorker).not.toHaveBeenCalled();
 
       overlay.resolve();
       await vi.runAllTimersAsync();
       await opening;
       expect(teardown).toHaveBeenCalledOnce();
       await controller.dispose();
-      expect(pdf.destroy).toHaveBeenCalledOnce();
+      expect(pdf.destroyWorker).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
     }
@@ -2094,12 +2389,12 @@ describe("PdfReaderController", () => {
 
     await controller.open(1);
     expect(teardown).toHaveBeenCalledOnce();
-    expect(first.destroy).not.toHaveBeenCalled();
+    expect(first.destroyWorker).not.toHaveBeenCalled();
 
     teardownReady = true;
     await controller.open(2);
     expect(teardown).toHaveBeenCalledTimes(2);
-    expect(first.destroy).toHaveBeenCalledOnce();
+    expect(first.destroyWorker).toHaveBeenCalledOnce();
     expect(committed).toHaveBeenCalledOnce();
     await controller.dispose();
   });
@@ -2127,7 +2422,7 @@ describe("PdfReaderController", () => {
       rawPage.resolve(page(2));
       await vi.runAllTimersAsync();
       await Promise.resolve();
-      expect(pdf.destroy).toHaveBeenCalledOnce();
+      expect(pdf.destroyWorker).toHaveBeenCalledOnce();
       await controller.dispose();
     } finally {
       vi.useRealTimers();
@@ -2165,7 +2460,7 @@ describe("PdfReaderController", () => {
     expect(rerenderContext).toBeDefined();
     expect(rerenderContext).not.toHaveProperty("registerStagedTeardown");
     await controller.open(1);
-    expect(first.destroy).toHaveBeenCalledOnce();
+    expect(first.destroyWorker).toHaveBeenCalledOnce();
     await controller.dispose();
   });
   it("does not enter PDF cleanup when content teardown fails", async () => {
@@ -2186,7 +2481,7 @@ describe("PdfReaderController", () => {
     await controller.open(1);
     await expect(controller.dispose()).rejects.toThrow("PDF_OWNERSHIP_INCOMPLETE");
 
-    expect(pdf.destroy).not.toHaveBeenCalled();
+    expect(pdf.destroyWorker).not.toHaveBeenCalled();
     expect(native.cancelSession).not.toHaveBeenCalled();
   });
   it("adopts an opaque session without reopening the dialog", async () => {
@@ -2231,9 +2526,9 @@ describe("PdfReaderController", () => {
     await expect(controller.adopt(session("failed-adoption", 2), 2)).rejects.toThrow("PDF_ADOPTION_NOT_COMMITTED");
 
     expect(publishedCanvas(host)).toBe(committedCanvas);
-    expect(healthy.destroy).not.toHaveBeenCalled();
+    expect(healthy.destroyWorker).not.toHaveBeenCalled();
     expect(native.openPdfDialog).toHaveBeenCalledOnce();
-    expect(failed.destroy).toHaveBeenCalledOnce();
+    expect(failed.destroyWorker).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "failed-adoption" }), 7, 2);
     await controller.dispose();
   });
@@ -2400,6 +2695,100 @@ describe("PdfReaderController", () => {
     expect(host.querySelectorAll(":scope > .pdf-page-frame")).toHaveLength(1);
     expect(host.querySelectorAll(":scope > .pdf-page-spacer")).toHaveLength(0);
     expect(host.classList.contains("pdf-reader-single-page")).toBe(true);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("retains named destinations and page-reference resolution for ordinary PDF links", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const cachedReference = Object.freeze({ num: 4, gen: 0 });
+    const uncachedReference = Object.freeze({ num: 8, gen: 0 });
+    const destination = Object.freeze([uncachedReference, Object.freeze({ name: "Fit" })]);
+    const getDestination = vi.fn(async (name: string) => name === "chapter" ? destination : null);
+    const getPageIndex = vi.fn(async (reference: unknown) => reference === uncachedReference ? 1 : -1);
+    const cachedPageNumber = vi.fn((reference: unknown) => reference === cachedReference ? 3 : null);
+    const pdf = Object.assign(documentWith(3), { getDestination, getPageIndex, cachedPageNumber });
+    const resources = new ResourceReservationManager();
+    let committedDocument: PdfDocument | undefined;
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("ordinary-link-resolution", 1))),
+      resources,
+      pdf: { getDocument: () => task(pdf), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: (_pageCount, _displayName, openedDocument) => { committedDocument = openedDocument; },
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(committedDocument).toBe(pdf);
+    await expect(committedDocument!.getDestination!("chapter")).resolves.toEqual(destination);
+    expect(getDestination).toHaveBeenCalledWith("chapter");
+    await expect(controller.resolvePageReference(cachedReference)).resolves.toBe(3);
+    expect(getPageIndex).not.toHaveBeenCalled();
+    await expect(controller.resolvePageReference(uncachedReference)).resolves.toBe(2);
+    expect(getPageIndex).toHaveBeenCalledWith(uncachedReference);
+
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("destroys the loading task when the real document API has no destroy method", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const document: PdfDocument = { numPages: 1, getPage: async () => page(1) };
+    const destroy = vi.fn(async () => undefined);
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("task-owned", 1)));
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({ native, resources, canvasHost: window.document.createElement("div"),
+      pdf: { getDocument: () => ({ promise: Promise.resolve(document), destroy }), annotationMode: 0 },
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn() });
+    await controller.open(1);
+    await controller.dispose();
+    expect(destroy).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+    resources.assertEmpty();
+  });
+
+  it("keeps document extent and page positions independent of resident frames", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({ native: nativeBoundary(vi.fn().mockResolvedValue(session("stable-layout", 1))), resources,
+      pdf: { getDocument: () => task(documentWith(300)), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn() });
+    await controller.open(1);
+    const extent = () => host.querySelector<HTMLElement>(".pdf-page-spacer-bottom")!.style.height;
+    const openingExtent = extent();
+    expect(host.scrollTop).toBe(0);
+    await controller.synchronizeViewport(84, 30);
+    expect(extent()).toBe(openingExtent);
+    const third = host.querySelector<HTMLElement>("[data-page='3']")!;
+    expect(third.style.position).toBe("absolute");
+    expect(third.style.top).toBe("84px");
+    await controller.synchronizeViewport(42 * 199, 30);
+    expect(extent()).toBe(openingExtent);
+    expect(host.querySelector<HTMLElement>("[data-page='200']")!.style.top).toBe(`${42 * 199}px`);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it.each([false, true])("rejects cached viewport publication when guard starts %s and is false after the await", async (initiallyCurrent) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const onPage = vi.fn();
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({ native: nativeBoundary(vi.fn().mockResolvedValue(session("cached-guard", 1))), resources,
+      pdf: { getDocument: () => task(documentWith(3)), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage, onStatus: vi.fn() });
+    await controller.open(1);
+    await controller.synchronizeViewport(0, 30);
+    const frames = [...host.querySelectorAll(".pdf-page-frame")];
+    onPage.mockClear();
+    let current = initiallyCurrent;
+    const requested = controller.synchronizeViewport(42, 30, () => current);
+    current = false;
+    await expect(requested).resolves.toBe(false);
+    expect(controller.activePageNumber).toBe(1);
+    expect(controller.visiblePageNumbers).toEqual([1]);
+    expect(onPage).not.toHaveBeenCalled();
+    expect([...host.querySelectorAll(".pdf-page-frame")]).toEqual(frames);
     await controller.dispose();
     resources.assertEmpty();
   });
