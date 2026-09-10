@@ -1,34 +1,60 @@
-# Modeleaf for Windows
+<div align="center">
+  <img src="src-tauri/icons/128x128@2x.png" alt="Modeleaf app icon" width="160">
+  <h1>Modeleaf for Windows</h1>
+</div>
 
-Keyboard-first, read-only PDF viewer for Windows 11 x64. The current code is a retained Windows prototype being re-baselined against the immutable Modeleaf v0.10.0 contract at `0f7ff0b54c3674c48f6b555261f939397cfbfb88`.
+A keyboard-first, read-only PDF viewer for Windows 11 x64, based on [Modeleaf for macOS](https://github.com/DS-argus/modeleaf).
 
-## Current scope
-The bullets below describe the retained implementation baseline, not verified v0.10.0 parity. Track contract status in [`docs/parity-matrix.md`](docs/parity-matrix.md).
+## Philosophy
 
-- Rust-owned single-file chooser for local fixed/removable volumes, with reparse and final-handle locality validation
-- Exact-pinned, fully bundled PDF.js 6.2.108 renderer using opaque bounded range requests
-- Candidate-first opening that preserves a healthy document on malformed, password, locality, timeout, render, or cleanup failures
-- Registry-backed Phase 1 navigation plus `h`/`j`/`k`/`l` scrolling, `d`/`u` viewport scrolling, `w`/`F` fit modes, `=`/`-` zoom, and `[`/`]` view rotation
-- Fit-page opening, fit-width reading, 10–800% custom zoom, anchor-preserving transforms, DPI-aware backing canvases, and bounded one-page virtualization
-- Process-wide render/canvas reservations, stale-generation cancellation, and cancellation-before-release teardown
-- Virtualized PDF.js text and annotation layers with trimmed case-insensitive literal search, native pointer selection/copy, internal destinations, and deterministic `f` link hints
-- Rust-validated external `http`, `https`, and `mailto` activation without shell parsing; unsupported and unsafe PDF actions are rejected
-- Keyboard range selection, reading-order remediation, OCR, and scanned-content remediation remain explicitly unavailable
+- **Read-only.** No annotation editing, saving, or changes to the source PDF.
+- **Keyboard-first.** Vim-style navigation with a command palette and shortcut help.
+- **Focused on reading.** Local PDFs, tabs, and a minimal interface.
 
-TOML configuration and pane splitting are not implemented in the retained prototype. The immutable v0.10.0 contract, Windows deltas, phase order, and acceptance gates live in [`docs/windows-porting/`](docs/windows-porting/). Files under `.internal/docs/` describe historical v0.5.0 checkpoint evidence and are not parity authority.
+## Key features
 
-## Development
+- Continuous reading, page navigation, and Back/Forward history
+- Text search, text selection and copying, and ordinary PDF link clicks
+- Tabs and a recent-file picker
+- Fit width/page, zoom, and rotation
+- Command palette, shortcut help, and seven interface themes
 
-Build prerequisites: Node.js, the Rust MSVC toolchain, Visual Studio Build Tools with the C++ workload, and WebView2. These are developer/CI dependencies only; end users must not install Node.js, Rust, or MSVC to run Modeleaf. W13 owns the NSIS installer, WebView2 bootstrap, and clean-machine runtime dependency verification.
+## Availability
+
+Requires **Windows 11 x64** and **Microsoft Edge WebView2 Runtime**.
+
+Public downloads and Scoop installation are not available yet. Current limitations and verification status are recorded in the [parity matrix](docs/parity-matrix.md).
+
+## Keys (defaults)
+
+| Action | Key |
+| --- | --- |
+| Scroll / large scroll | `h` `j` `k` `l` / `d` `u` |
+| Previous / next page | `p` / `n` |
+| First / last page | `gg` / `G` |
+| Go to page | `g`, number, `Enter` |
+| Back / forward | `Alt+Left` / `Alt+Right` |
+| Search / next / previous result | `/` / `Enter` / `Shift+Enter` |
+| Fit width / page | `w` / `F` |
+| Zoom / rotate | `=` `-` / `[` `]` |
+| Previous / next tab | `P` / `N` |
+| Theme / palette / help | `T` / `:` / `?` |
+
+## Build from source
+
+Use the Node.js/npm versions specified in [package.json](package.json), the Rust MSVC toolchain, Visual Studio Build Tools with the C++ workload, and WebView2 Runtime.
 
 ```powershell
-npm install
+npm ci
 npm test
 npm run build
 npm run tauri -- build --no-bundle
 ```
-## CP5 runtime guidance and limitations
 
-Theme selection changes application chrome only; it does not filter PDF pixels. Accessibility support covers named application controls, keyboard focus, dialogs, status, and bounded live announcements, not full PDF-content accessibility, OCR, scanned-document remediation, reading-order remediation, or keyboard range selection. Diagnostics are local, bounded, redacted, and have no application network transport. The WebView2 runtime can independently contact Microsoft services according to Windows/WebView2 diagnostic policy. `Ctrl+Q` uses renderer-first cleanup with a bounded native fallback, and the retained CP5 evidence verifies clean process/job teardown.
+For development, run `npm run tauri -- dev`. See the [engineering guide](docs/windows-porting/agent-runbook.md) for contribution and verification requirements.
 
-Third-party review is tracked in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and the [direct dependency inventory](.internal/docs/dependency-licenses.txt). Run `node tools/legal/verify-third-party.mjs` after a production manifest, lockfile, copied PDF.js asset, or upstream theme attribution changes. This verifier is a local release gate for the reviewed inventory; it does not replace authoritative review of Rust crates and transitive dependencies.
+## Credits
+
+Original app: [DS-argus/modeleaf](https://github.com/DS-argus/modeleaf). Built with Tauri, Rust, TypeScript, and PDF.js.
+
+Dependency licenses and theme attributions: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
