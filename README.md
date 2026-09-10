@@ -11,8 +11,8 @@ The bullets below describe the retained implementation baseline, not verified v0
 - Registry-backed Phase 1 navigation plus `h`/`j`/`k`/`l` scrolling, `d`/`u` viewport scrolling, `w`/`F` fit modes, `=`/`-` zoom, and `[`/`]` view rotation
 - Fit-width opening and continuous reading, one-page Fit Page, 10–800% custom zoom, anchor-preserving transforms, DPI-aware backing canvases, and bounded raster virtualization
 - Process-wide render/canvas reservations, stale-generation cancellation, and cancellation-before-release teardown
-- Virtualized PDF.js text and annotation layers with trimmed case-insensitive literal search, native pointer selection/copy, and ordinary internal/external PDF link clicks
-- Embedded TOC and `f` keyboard link hints are retired from the Windows scope; their source/tests are preserved in [the redevelopment reference](docs/windows-porting/deferred-toc-link-hints.md)
+- Virtualized PDF.js text/annotation layers, incremental literal search, native text selection/copy, ordinary internal/external links, and centered point-link landings with complete visible-page rendering
+- Embedded TOC, `f` keyboard link hints and the destination indicator/settings are retired; source/tests remain in [the redevelopment reference](docs/windows-porting/deferred-toc-link-hints.md)
 - Rust-validated external `http` and `https` activation without shell parsing; unsupported and unsafe PDF actions are rejected
 - Keyboard range selection, reading-order remediation, OCR, and scanned-content remediation remain explicitly unavailable
 

@@ -978,12 +978,47 @@ export class PdfReaderController {
     });
     return Object.freeze({ pageIndex: anchor.pageNumber - 1, x: anchor.pagePoint.x, y: anchor.pagePoint.y });
   }
-  /** Restores a canonical landing through the existing W06 materialization and viewport authority. */
+  private contentViewportGeometry(): { readonly scrollTop: number; readonly clientHeight: number } {
+    const host = this.options.canvasHost;
+    const style = typeof getComputedStyle === "function" ? getComputedStyle(host) : undefined;
+    const padding = (value: string | undefined): number => {
+      const parsed = Number.parseFloat(value ?? "0");
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const paddingTop = padding(style?.paddingTop);
+    return {
+      scrollTop: Math.max(0, host.scrollTop - paddingTop),
+      clientHeight: Math.max(0, host.clientHeight - paddingTop - padding(style?.paddingBottom)),
+    };
+  }
+
+  private publishFinalViewportIfMaterialized(current: Candidate): boolean {
+    if (current.topology !== "continuous") return true;
+    const window = current.window;
+    if (window === undefined) return false;
+    const geometry = this.contentViewportGeometry();
+    const range = window.visibleRangeForViewport(geometry.scrollTop, geometry.clientHeight);
+    if (range.firstVisiblePage === undefined || range.lastVisiblePage === undefined) return false;
+    const visiblePages = Array.from(
+      { length: range.lastVisiblePage - range.firstVisiblePage + 1 },
+      (_unused, index) => range.firstVisiblePage! + index,
+    );
+    const plan = window.previewPlan(range.firstVisiblePage, range.lastVisiblePage);
+    const plannedPages = window.checkpoint().plannedPages;
+    const planUnchanged = plannedPages.length === plan.plannedPages.length
+      && plannedPages.every((page, index) => page === plan.plannedPages[index]);
+    if (!planUnchanged || plan.materializePages.length > 0 || plan.evictPages.length > 0
+      || !visiblePages.every((page) => current.residentRasters.has(page))) return false;
+    current.visiblePageNumbers = Object.freeze(visiblePages);
+    return true;
+  }
+  /** Restores a canonical landing and materializes its final bounded viewport before verification. */
   public async restoreViewportLanding(
     target: PdfViewportLanding,
     requestCommitGuard?: PdfRequestCommitGuard,
     targetTransform: PdfViewTransform = this.viewTransform,
     placement: "center" | "page-top" = "center",
+    onViewportOwnershipLost?: () => void,
   ): Promise<PdfViewportRestoreOutcome> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed
@@ -992,13 +1027,28 @@ export class PdfReaderController {
       return { kind: "preflightRejected" };
     }
     if (!(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+    let ownedScrollLeft = this.options.canvasHost.scrollLeft;
+    let ownedScrollTop = this.options.canvasHost.scrollTop;
+    const requestCurrent = (): boolean => this.current === current && !this.disposed && (requestCommitGuard?.() ?? true);
+    const prePlacementPositionCurrent = (): boolean => this.options.canvasHost.scrollLeft === ownedScrollLeft
+      && this.options.canvasHost.scrollTop === ownedScrollTop;
+    const prePlacementGuard = (): boolean => requestCurrent() && prePlacementPositionCurrent();
     try {
       await this.getOwnedPage(current, target.pageIndex + 1);
     } catch {
+      if (!requestCurrent()) return { kind: "staleOrCancelled" };
+      if (!prePlacementPositionCurrent()) {
+        onViewportOwnershipLost?.();
+        return { kind: "staleOrCancelled" };
+      }
       return { kind: "preflightRejected" };
     }
     await this.awaitViewportIdle();
-    if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+    if (!requestCurrent()) return { kind: "staleOrCancelled" };
+    if (!prePlacementPositionCurrent()) {
+      onViewportOwnershipLost?.();
+      return { kind: "staleOrCancelled" };
+    }
     const pageNumber = target.pageIndex + 1;
     try {
       const transformUnchanged = targetTransform.scale === this.viewTransform.scale
@@ -1007,8 +1057,8 @@ export class PdfReaderController {
       let committed = true;
       const synchronizeTargetWindow = async (offset: number): Promise<boolean> => {
         for (let attempt = 0; attempt < 4; attempt += 1) {
-          if (await this.synchronizeViewport(offset, this.options.canvasHost.clientHeight, requestCommitGuard)) return true;
-          if (!(requestCommitGuard?.() ?? true) || this.current !== current || this.disposed) return false;
+          if (await this.synchronizeViewport(offset, this.contentViewportGeometry().clientHeight, prePlacementGuard)) return true;
+          if (!prePlacementGuard()) return false;
           await this.awaitViewportIdle();
         }
         return false;
@@ -1018,15 +1068,30 @@ export class PdfReaderController {
         if (transformUnchanged && targetOffset !== undefined) {
           committed = await synchronizeTargetWindow(targetOffset);
         } else {
-          committed = await this.renderPage(pageNumber, targetTransform, requestCommitGuard);
+          committed = await this.renderPage(pageNumber, targetTransform, prePlacementGuard);
+          if (committed && requestCurrent()) {
+            ownedScrollLeft = this.options.canvasHost.scrollLeft;
+            ownedScrollTop = this.options.canvasHost.scrollTop;
+          }
           const transformedOffset = current.window?.offsetForPage(pageNumber);
           if (committed && transformedOffset !== undefined) {
             committed = await synchronizeTargetWindow(transformedOffset);
           }
         }
       }
-      if (!committed) return !(requestCommitGuard?.() ?? true) ? { kind: "staleOrCancelled" } : { kind: "failed" };
-      if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
+      if (!committed) {
+        if (!requestCurrent()) return { kind: "staleOrCancelled" };
+        if (!prePlacementPositionCurrent()) {
+          onViewportOwnershipLost?.();
+          return { kind: "staleOrCancelled" };
+        }
+        return { kind: "failed" };
+      }
+      if (!requestCurrent()) return { kind: "staleOrCancelled" };
+      if (!prePlacementPositionCurrent()) {
+        onViewportOwnershipLost?.();
+        return { kind: "staleOrCancelled" };
+      }
       const anchor: PdfViewportAnchor = Object.freeze({
         pageNumber,
         pagePoint: Object.freeze({ x: target.x, y: target.y }),
@@ -1035,11 +1100,75 @@ export class PdfReaderController {
           y: placement === "page-top" ? 0 : this.options.canvasHost.clientHeight / 2,
         }),
       });
+      const restoreOwnedAnchor = async (): Promise<boolean> => {
+        if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return false;
+        this.restoreScrollAnchor(anchor);
+        await Promise.resolve();
+        return this.current === current && !this.disposed && (requestCommitGuard?.() ?? true);
+      };
+      if (!await restoreOwnedAnchor()) return { kind: "staleOrCancelled" };
+      let viewportMaterialized = this.publishFinalViewportIfMaterialized(current);
+      for (let attempt = 0; attempt < 4 && !viewportMaterialized; attempt += 1) {
+        const geometry = this.contentViewportGeometry();
+        const host = this.options.canvasHost;
+        const viewportPosition = () => {
+          const scrollLeft = host.scrollLeft;
+          const scrollTop = host.scrollTop;
+          return {
+            scrollLeft,
+            scrollTop,
+            maxScrollLeft: Math.max(0, host.scrollWidth - host.clientWidth),
+            maxScrollTop: Math.max(0, host.scrollHeight - host.clientHeight),
+          };
+        };
+        let ownedViewportPosition = viewportPosition();
+        const viewportPositionCurrent = (): boolean => {
+          const position = viewportPosition();
+          return position.scrollLeft === ownedViewportPosition.scrollLeft
+            && position.scrollTop === ownedViewportPosition.scrollTop;
+        };
+        // Measuring a shorter page can shrink the owned extent and synchronously clamp an edge position.
+        const acceptOwnedLayoutClamp = (): boolean => {
+          const position = viewportPosition();
+          if (position.scrollLeft === ownedViewportPosition.scrollLeft
+            && position.scrollTop === ownedViewportPosition.scrollTop) return true;
+          const axisOwned = (ownedScroll: number, ownedMax: number, scroll: number, max: number): boolean =>
+            scroll === ownedScroll || (max < ownedMax && ownedScroll > max && scroll === max);
+          if (!axisOwned(ownedViewportPosition.scrollLeft, ownedViewportPosition.maxScrollLeft,
+            position.scrollLeft, position.maxScrollLeft)
+            || !axisOwned(ownedViewportPosition.scrollTop, ownedViewportPosition.maxScrollTop,
+              position.scrollTop, position.maxScrollTop)) return false;
+          ownedViewportPosition = position;
+          return true;
+        };
+        const materializationGuard = (): boolean => (requestCommitGuard?.() ?? true) && acceptOwnedLayoutClamp();
+        let synchronized: boolean;
+        try {
+          synchronized = await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, materializationGuard);
+        } catch (error) {
+          if (requestCurrent() && !acceptOwnedLayoutClamp()) onViewportOwnershipLost?.();
+          throw error;
+        }
+        if (!requestCurrent()) return { kind: "staleOrCancelled" };
+        if (!acceptOwnedLayoutClamp()) {
+          onViewportOwnershipLost?.();
+          return { kind: "staleOrCancelled" };
+        }
+        if (!synchronized) {
+          await this.awaitViewportIdle();
+          if (!requestCurrent()) return { kind: "staleOrCancelled" };
+          if (!viewportPositionCurrent()) {
+            onViewportOwnershipLost?.();
+            return { kind: "staleOrCancelled" };
+          }
+          continue;
+        }
+        if (!await restoreOwnedAnchor()) return { kind: "staleOrCancelled" };
+        viewportMaterialized = this.publishFinalViewportIfMaterialized(current);
+      }
+      if (!viewportMaterialized) return { kind: "failed" };
       const expected = this.resolveReachableViewportLanding(anchor);
       if (expected === undefined) return { kind: "failed" };
-      this.restoreScrollAnchor(anchor);
-      await Promise.resolve();
-      if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return { kind: "staleOrCancelled" };
       const landing = this.captureViewportLandingAtOffset(pageNumber, anchor.viewportOffset);
       if (landing === undefined) return { kind: "failed" };
       const exact = samePdfViewportLanding(target, landing);

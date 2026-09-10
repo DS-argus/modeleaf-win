@@ -4,7 +4,7 @@
 
 On 2026-09-09 the owner requested removing embedded TOC and the `f` keyboard-link feature from the active product, stabilizing basic reading first, and retaining implementation references for later redevelopment. The report mentions `1740_TaiwanVQA…` for TOC and no useful response from `f`. This is owner-reported behavior, not an independent diagnosis of the PDF's embedded outline or annotations.
 
-The owner explicitly confirmed that ordinary PDF link clicks and destination navigation remain supported. Retirement is limited to TOC and `f` keyboard hints, including their actions, bindings, models, labels and input/UI surfaces. Shared click authorization, navigation/history, destination indicators, text/search and resource ownership remain. Implementation and verification are tracked in Issue #53 / PR #54. Browse-border and Recent-path corrections remain in scope; `y`, `yy`, and `of` remain deferred in Issue #55.
+The owner explicitly confirmed that ordinary PDF link clicks and destination navigation remain supported. TOC and `f` keyboard hints, including their actions/bindings/models/UI, are retired. A subsequent 2026-09-10 owner amendment also retires destination indicators and their settings surface; shared click authorization, canonical navigation/history, text/search and resource ownership remain. Issue #53 / PR #54 track implementation and verification. Browse/Recent corrections remain; `y`, `yy`, and `of` remain deferred in Issue #55.
 
 ## Immutable implementation backup
 
@@ -37,6 +37,17 @@ Do not retain dormant copies, hidden feature switches, compatibility aliases, or
 - Tests at the saved commit: `tests/unit/domain/LinkHints.test.ts`, `tests/contract/linkHintReliabilityContract.test.ts`, and relevant `tests/integration/pdfContentController.test.ts` cases.
 - Rust external-link authorization, session identities, generation checks, read-only handles and bounded cleanup are security foundations, not synonymous with keyboard hint UI. Preserve any foundation still used by retained behavior.
 
+### Destination-indicator reference map
+
+The owner additionally retired the destination indicator on 2026-09-10 (Issue #53 comment5611619154). The prior keep-indicator decision is superseded. Its last implementation is archived at **`dedcff8513e034efb904ef7d50fd59cc11444798`**:
+
+- `src/pdf/PdfContentController.ts`, `PdfTabSession.ts`: destination indicator publication, timers and cancellation, formerly shared with ordinary link landing.
+- `src/domain/links/IndicatorSettings.ts`, `src/ui/IndicatorPickerModel.ts`: settings validation and preview transactions.
+- `src/main.ts`, `src/styles/app.css`: settings/action wiring and indicator presentation.
+- `src/platform/tauri-commands.ts`, `src-tauri/src/lib.rs`, `src-tauri/src/commands/state.rs`: former indicator IPC and typed durable state.
+- Dedicated `tests/unit/domain/IndicatorSettings.test.ts`, `tests/unit/ui/IndicatorPickerModel.test.ts`, and mixed controller/session/native tests at the archived commit.
+
+Current ordinary point-link navigation instead centers the target where document bounds allow and owns complete visible-page materialization. It does not depend on an indicator. Existing stored indicator JSON remains preserved unknown metadata; do not migrate, delete or reactivate it without a future contract. Reintroduce indicators together with link hints only under separately authorized redevelopment.
 ## Redevelopment acceptance, not current completion claims
 
 The immutable macOS behavior remains at `0f7ff0b54c3674c48f6b555261f939397cfbfb88`; see feature-spec §§7–8 and the superseding PR references in pr-history. Old passing unit counts are not proof of current native usability.

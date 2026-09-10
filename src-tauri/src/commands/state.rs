@@ -1,4 +1,4 @@
-//! Durable ownership of the three state.json siblings.
+//! Durable ownership of the supported state.json fields.
 use crate::persistence::{
     atomic_write::{self, AtomicWriteFaults},
     lock::SidecarLock,
@@ -32,40 +32,10 @@ pub struct RecentFile {
     pub absolute_path: String,
     pub last_opened_at: String,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LinkDestinationIndicatorStyle {
-    PulseRing,
-    Target,
-    Beacon,
-    StaticRing,
-    DiamondPulse,
-}
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct LinkDestinationIndicator {
-    pub style: LinkDestinationIndicatorStyle,
-    pub color: String,
-    pub size: f64,
-    pub duration_ms: u32,
-}
-impl LinkDestinationIndicator {
-    pub fn validate(&self) -> Result<(), StateFileError> {
-        if !valid_indicator_color(&self.color)
-            || !self.size.is_finite()
-            || !(16.0..=48.0).contains(&self.size)
-            || !(500..=3000).contains(&self.duration_ms)
-        {
-            Err(StateFileError::Invalid)
-        } else {
-            Ok(())
-        }
-    }
-}
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StateSnapshot {
     pub selected_theme: Option<String>,
     pub recent_files: Vec<RecentFile>,
-    pub link_destination_indicator: Option<LinkDestinationIndicator>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecentPruneOutcome {
@@ -126,36 +96,12 @@ impl StateFileStore {
     pub fn load_recents_strict(&self) -> Result<Vec<RecentFile>, StateFileError> {
         decode_recents_strict(self.read_root()?.get("recent_files"))
     }
-    pub fn read_indicator(&self) -> Result<Option<LinkDestinationIndicator>, StateFileError> {
-        match self.load() {
-            Ok(snapshot) => Ok(snapshot.link_destination_indicator),
-            Err(StateFileError::Absent) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
     pub fn set_selected_theme(&self, value: String) -> Result<(), StateFileError> {
         if !VALID_THEMES.contains(&value.as_str()) {
             return Err(StateFileError::Invalid);
         }
         self.update(|root| {
             root.insert("selected_theme".into(), Value::String(value));
-            Ok(())
-        })
-    }
-    pub fn set_link_destination_indicator(
-        &self,
-        value: LinkDestinationIndicator,
-    ) -> Result<(), StateFileError> {
-        let mut value = value;
-        value.validate()?;
-        if value.color.starts_with('#') {
-            value.color.make_ascii_lowercase();
-        }
-        self.update(|root| {
-            root.insert(
-                "link_destination_indicator".into(),
-                serde_json::to_value(value).map_err(|_| StateFileError::Invalid)?,
-            );
             Ok(())
         })
     }
@@ -320,21 +266,6 @@ impl StateFileStore {
         }
     }
 }
-fn valid_indicator_color(value: &str) -> bool {
-    matches!(
-        value,
-        "red"
-            | "amber"
-            | "cyan"
-            | "green"
-            | "purple"
-            | "accent"
-            | "auto-contrast"
-            | "high-contrast"
-    ) || (value.len() == 7
-        && value.starts_with('#')
-        && value[1..].bytes().all(|byte| byte.is_ascii_hexdigit()))
-}
 fn decode_snapshot(root: &Map<String, Value>) -> StateSnapshot {
     StateSnapshot {
         selected_theme: root
@@ -343,10 +274,6 @@ fn decode_snapshot(root: &Map<String, Value>) -> StateSnapshot {
             .filter(|value| !value.is_empty())
             .map(str::to_owned),
         recent_files: decode_recents(root.get("recent_files")),
-        link_destination_indicator: root
-            .get("link_destination_indicator")
-            .and_then(|value| serde_json::from_value(value.clone()).ok())
-            .filter(|value: &LinkDestinationIndicator| value.validate().is_ok()),
     }
 }
 fn decode_recents(value: Option<&Value>) -> Vec<RecentFile> {
@@ -444,14 +371,22 @@ mod tests {
         fs::create_dir_all(store.path().parent().unwrap()).unwrap();
         fs::write(
             store.path(),
-            br#"{"future":{"keep":true},"recent_files":{},"link_destination_indicator":17}"#,
+            br##"{"future":{"keep":true},"recent_files":{},"link_destination_indicator":{"style":"target","color":"#12abcf","size":28.5,"duration_ms":1500}}"##,
         )
         .unwrap();
         store.set_selected_theme("nord".into()).unwrap();
         let root: Value = serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
         assert_eq!(root["future"]["keep"], true);
         assert!(root["recent_files"].is_object());
-        assert_eq!(root["link_destination_indicator"], 17);
+        assert_eq!(
+            root["link_destination_indicator"],
+            serde_json::json!({
+                "style": "target",
+                "color": "#12abcf",
+                "size": 28.5,
+                "duration_ms": 1500,
+            })
+        );
         assert_eq!(
             store.load().unwrap().selected_theme.as_deref(),
             Some("nord")
@@ -467,40 +402,6 @@ mod tests {
         }
         assert_eq!(
             store.set_selected_theme("unknown".into()),
-            Err(StateFileError::Invalid)
-        );
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn indicator_accepts_all_styles_fractional_size_and_exact_bounds() {
-        let (directory, store) = store("indicator");
-        let styles = [
-            LinkDestinationIndicatorStyle::PulseRing,
-            LinkDestinationIndicatorStyle::Target,
-            LinkDestinationIndicatorStyle::Beacon,
-            LinkDestinationIndicatorStyle::StaticRing,
-            LinkDestinationIndicatorStyle::DiamondPulse,
-        ];
-        for style in styles {
-            store
-                .set_link_destination_indicator(LinkDestinationIndicator {
-                    style,
-                    color: "#12aBcF".into(),
-                    size: 28.5,
-                    duration_ms: 1500,
-                })
-                .unwrap();
-        }
-        assert_eq!(store.read_indicator().unwrap().unwrap().color, "#12abcf");
-        assert_eq!(
-            LinkDestinationIndicator {
-                style: LinkDestinationIndicatorStyle::Target,
-                color: "cyan".into(),
-                size: 15.9,
-                duration_ms: 1500
-            }
-            .validate(),
             Err(StateFileError::Invalid)
         );
         fs::remove_dir_all(directory).unwrap();
@@ -643,13 +544,6 @@ mod tests {
         assert_eq!(store.load(), Err(StateFileError::Invalid));
         fs::remove_dir_all(directory).unwrap();
     }
-    #[test]
-    fn missing_indicator_reads_as_unsaved_default() {
-        let (directory, store) = store("missing-indicator");
-        assert_eq!(store.read_indicator(), Ok(None));
-        let _ = fs::remove_dir_all(directory);
-    }
-
     #[test]
     fn mutation_that_would_exceed_state_limit_preserves_previous_bytes() {
         let (directory, store) = store("write-limit");

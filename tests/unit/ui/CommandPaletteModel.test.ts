@@ -30,11 +30,11 @@ describe("CommandPaletteModel", () => {
     expect(enabled.slice(firstDisabled)).not.toContain(true);
     expect(new Set(entries.map((entry) => entry.kind === "command" ? `action:${entry.id}` : `recent:${entry.recentId}`)).size).toBe(entries.length);
   });
-  it("projects every retained configurable action and no retired TOC or hint command", () => {
+  it("projects every retained configurable action and no retired reader command", () => {
     const configurable = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
 
-    expect(ACTION_DESCRIPTORS).toHaveLength(50);
-    expect(configurable).toHaveLength(46);
+    expect(ACTION_DESCRIPTORS).toHaveLength(49);
+    expect(configurable).toHaveLength(45);
     for (const descriptor of configurable) {
       expect(buildCommandPaletteEntries(baseContext, [], descriptor.displayName)).toContainEqual(expect.objectContaining({
         kind: "command",
@@ -47,10 +47,9 @@ describe("CommandPaletteModel", () => {
       "Scroll Table of Contents Down",
       "Scroll Table of Contents Up",
       "Link Hints",
+      "Link indicator settings",
     ]) expect(buildCommandPaletteEntries(baseContext, [], retiredTitle)).toEqual([]);
-    expect(buildCommandPaletteEntries(baseContext, [], "Link indicator settings")).toContainEqual(expect.objectContaining({
-      kind: "command", id: "indicator.picker", shortcut: "Shift+I", enabled: true,
-    }));
+    expect(configurable.map(({ id }) => id)).not.toContain("indicator.picker");
   });
   it("reports a foreign modal as the blocking reason", () => {
     const command = buildCommandPaletteEntries(unavailableContext)

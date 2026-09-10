@@ -7,7 +7,6 @@ const expectedDomains = [
   "actions",
   "config",
   "input",
-  "links",
   "navigation",
   "recent",
   "tabs",

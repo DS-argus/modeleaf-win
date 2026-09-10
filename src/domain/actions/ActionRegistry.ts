@@ -14,7 +14,7 @@ export const ACTION_IDS = Object.freeze([
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "history.back", "history.forward",
   "prompt.commit", "prompt.cancel", "search.prompt", "search.next", "search.previous", "search.cancel",
   "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
-  "config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "indicator.picker", "update.show",
+  "config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "update.show",
 ] as const);
 
 export type ActionId = (typeof ACTION_IDS)[number];
@@ -107,7 +107,6 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("config.writeDefault", "Write Default Config", GLOBAL),
   descriptor("config.resetDefault", "Reset Config", GLOBAL),
   descriptor("theme.picker", "Theme picker", contexts(READER_CONTEXTS)),
-  descriptor("indicator.picker", "Link indicator settings", contexts(READER_CONTEXTS)),
   descriptor("update.show", "View Available Update", contexts(READER_CONTEXTS)),
 
 ]);
@@ -160,7 +159,7 @@ const DOCUMENT_ACTIONS = new Set<ActionId>([
   ...ACTION_IDS.filter((id) => id.startsWith("scroll.")),
   ...ACTION_IDS.filter((id) => id.startsWith("page.")),
   "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel",
-  ...ACTION_IDS.filter((id) => id.startsWith("view.")), "indicator.picker",
+  ...ACTION_IDS.filter((id) => id.startsWith("view.")),
 ]);
 
 /** Runtime availability used by menu/palette/help projections; input-context routing is checked separately. */

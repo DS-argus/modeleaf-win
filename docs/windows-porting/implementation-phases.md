@@ -1,6 +1,6 @@
 # 단계별 구현 계획
 
-> 현재 Windows snapshot은 owner-approved exclusions를 적용한 50 actions(46 configurable + 4 fixed)다. 아래 macOS 61-action 기준은 immutable 원본 참조이며 Windows gate의 action count로 사용하지 않는다. TOC와 `f` 힌트 제외는 ADR 0001에 따른다.
+> 현재 Windows snapshot은 owner-approved exclusions를 적용한 **49 actions(45 configurable + 4 fixed)**다. macOS 61-action 기준은 immutable 원본 reference이고 Windows gate의 action count가 아니다. TOC, `f` keyboard hints와 destination indicator/settings는 retired이며 `t`/`J`/`K`/`f`/`I`가 미할당이다. Ordinary PDF clicks/native authorization은 유지하고 finite `XYZ` points는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하며, destination transaction은 bounded visible-page materialization 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. ADR 0001과 [deferred reference](./deferred-toc-link-hints.md)가 scope와 archives를 고정한다.
 
 이 순서는 dependency와 가장 위험한 가정을 먼저 검증하도록 설계했다. 각 `Wxx`는 새 Windows 저장소의 독립 Issue이자 기본적으로 하나의 reviewable PR이다. 한 PR이 너무 커지면 테스트 가능한 세로 slice로 나누되 gate를 건너뛰지 않는다.
 
@@ -18,9 +18,9 @@
 | W05 | Windows shell, menu, action routing, focus | W03–W04 |
 | W06 | single reader rendering/view/navigation | W02, W04–W05 |
 | W07 | search + navigation history transactions | W06 |
-| W08 | links + hints + destination indicator | W06–W07 |
+| W08 | ordinary links + centered complete landings; hints/indicator retired | W06–W07 |
 | W09 | tabs + panes + multiwindow + shell open | W04–W08 |
-| W10 | embedded-outline pane-local TOC | W06–W09 |
+| W10 | retired embedded-outline TOC absence + retained-reader regression | W06–W09 |
 | W11 | overlays + recent + config + themes + help | W03–W10 |
 | W12 | production print path | W02 spike, W06–W11 |
 | W13 | installer + update notice + parity/release hardening | W00–W12 |
@@ -46,7 +46,7 @@ tests/contract/*
 
 1. 이 폴더 문서를 Windows repo `docs/windows-porting/`에 복사하고 mac baseline SHA를 고정한다.
 2. parity matrix 각 row에 `not-started | partial | parity | intentional-delta | blocked` 상태를 둔다.
-3. 61개 Action ID, 7 themes, indicator presets, config bounds/defaults를 machine-readable snapshots로 옮긴다.
+3. macOS 61 Action ID와 indicator presets를 immutable baseline으로, owner-approved exclusions를 적용한 Windows 49 Action ID/retained defaults를 별도 machine-readable snapshot으로 고정한다.
 4. macOS test support의 performance fixtures를 PDF 파일로 생성해 Windows repo에 commit한다.
 5. `manifest.json`에 filename, SHA-256, byte size, page count, expected text/link/annotation/outline sentinel을 기록한다.
 6. malformed, locked, image-only, interactive, Unicode filename, long-path, links fixture를 추가한다.
@@ -60,7 +60,7 @@ tests/contract/*
 
 - manifest의 모든 SHA/page count가 검증된다.
 - expected sentinel이 실제 PDF와 일치한다.
-- Action ID count는 61이다.
+- macOS baseline Action ID count는 61이고 current Windows snapshot은 49(45 configurable + 4 fixed)다.
 - fixture generator를 다시 실행하면 동일 manifest 또는 의도된 차이를 낸다.
 
 ### Exit gate
@@ -222,7 +222,6 @@ src/domain/config/*
 src/domain/navigation/*
 src/domain/recent/*
 src/domain/tabs/*
-src/domain/panes/*
 src/domain/theme/*
 src/domain/links/*
 src/domain/update/*
@@ -230,7 +229,7 @@ src/domain/update/*
 
 ### 구현 순서
 
-1. 61 Action IDs/descriptors/scopes/repeat/fixed flags
+1. 49 Action IDs/descriptors/scopes/repeat/fixed flags
 2. input contexts와 action availability
 3. Windows key token grammar/parser/normalizer
 4. sequence trie, prefix fallback, 400ms timer semantics
@@ -238,13 +237,11 @@ src/domain/update/*
 6. strict sparse config schema/default overlay/diagnostics
 7. command palette fuzzy filter/enabled-first ordering
 8. recent filename fuzzy filter
-9. link hint labels/filter/exact duplicate merge
+9. annotation-link DTO normalization과 exact duplicate merge
 10. navigation snapshot/history/search epoch
-11. embedded outline normalization/selector/current-row model
-12. tab store
-13. pane topology/split/focus/unsplit reducer
-14. themes/indicator settings/state DTOs
-15. semantic version update comparison
+11. tab store
+12. themes/state DTOs
+13. semantic version update comparison
 
 ### 테스트 이전표
 
@@ -255,12 +252,10 @@ src/domain/update/*
 | `ConfigValidatorTests` | strict config tests |
 | `CommandPaletteTests` | palette filter/availability |
 | `RecentFileFilterTests` | filename fuzzy filter |
-| `LinkHintLabels/Filter/MergeTests` | link pure rules |
+| `ReaderLink`/`LinkHintMerge` baseline tests | retained annotation DTO/exact-dedup rules |
 | `NavigationHistoryTests` | history/search epoch |
 | `TabStoreTests` | tabs |
-| `ReaderOutlineTests` | embedded outline normalization/selector/tracking |
-| pane red-team pure cases | topology reducer |
-| theme/indicator/update core tests | remaining DTOs |
+| theme/update core tests | remaining DTOs |
 
 ### Exit gate
 
@@ -291,11 +286,12 @@ src/application/open-document/*
 2. open handle registry와 ref-count close를 productionize한다.
 3. config read size/UTF-8 gate를 구현한다.
 4. Write Default exclusive create와 Reset `.bak` transaction을 구현한다.
-5. state field update read/merge/replace transaction을 구현한다.
+5. `selected_theme`와 `recent_files`만 owned state field로 갱신하는 read/merge/replace transaction을 구현한다.
 6. Windows lock/replace wrapper에 fault injection point를 둔다.
-7. unknown state field retention과 malformed sibling isolation을 구현한다.
+7. unknown state field retention과 malformed supported-sibling isolation을 구현하며 기존 `link_destination_indicator`를 unknown metadata로만 보존한다.
 8. recent max 15/dedupe/prune semantics를 application service와 연결한다.
 9. frontend command payload를 최소화하고 error에 raw sensitive content를 넣지 않는다.
+10. retired indicator DTO와 native read/commit command를 command surface에 노출하지 않는다.
 
 ### 테스트
 
@@ -307,6 +303,7 @@ src/application/open-document/*
 - read-only source handle
 - invalid range/custom protocol fuzz cases
 - frontend contract serialization tests
+- selected-theme/recent mutations preserve a retired-indicator sentinel as unknown metadata, while indicator-specific IPC/DTOs remain absent
 
 ### Exit gate
 
@@ -431,40 +428,43 @@ PDF.js 내부 history에 의존하지 않고 search와 meaningful jumps를 trans
 - ordinary movement가 history count를 바꾸지 않는다.
 - `Alt+Left/Right`가 WebView nav와 충돌하지 않는다.
 
-## W08 — Link click, hints, destination indicator
+## W08 — Ordinary links and centered complete landings
 
-> Issue #53 owner delta: 일반 annotation 링크 클릭과 목적지 표시기는 유지하며 keyboard hints는 제거한다. 아래 hint 전용 항목은 역사적 참조이고 현재 gate는 ordinary-link activation, stale/native authorization, retirement absence 및 cleanup 검증이다. `smoke-w06.ps1 -W08`은 내부 링크를 activate하고 page 2 landing을 확인한다.
+> Issue #53 owner delta: ordinary annotation clicks와 native authorization은 유지하고 keyboard hints와 destination indicator/settings는 제거한다. hint source/tests는 `7e00424d30c5ffeab5a846d087236371644af53a`, indicator source/tests는 `dedcff8513e034efb904ef7d50fd59cc11444798`의 [deferred reference](./deferred-toc-link-hints.md)에만 남긴다. 이 gate는 pass claim이 아니라 current acceptance contract다.
 
 ### 목표
 
-PR #1/#2/#19–#23의 실패와 최종 규칙을 모두 반영한 링크 경험을 만든다.
+Ordinary internal/external link activation을 stale-safe transaction으로 유지하고 point destination을 가능한 viewport 중앙에 놓은 뒤 전체 visible landing range를 bounded하게 준비한다.
 
 ### 작업
 
-1. visible annotation link provider
-2. URL/GoTo/unresolved mapping
-3. `http`/`https` opener allowlist
-4. exact duplicate dedupe와 deterministic reading order
-5. hint label/filter/modal input
-6. click/hint 공통 GoTo transaction
-7. indicator five styles/eight presets/custom hex
-8. dismissal/teardown rules
+1. display-intent annotation Link만 canonical DTO로 map한다.
+2. exact duplicate만 제거하고 adjacent/wrapped same-target annotation은 독립 pointer target으로 유지한다.
+3. external URL은 Rust `http`/`https` allowlist를 정확히 한 번 거친다.
+4. internal GoTo는 origin capture → resolve → guarded move → scroll settlement → landing-viewport materialization → actual landing capture/verify → history commit transaction을 사용한다.
+5. finite `XYZ` x/y는 rotation-aware viewport midpoint를 목표로 하고 unspecified axis는 기존 canonical 축을 보존하며 document edge에서 actual scroll을 clamp한다.
+6. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit placement는 point-centering으로 바꾸지 않는다.
+7. 결과 viewport와 교차하는 모든 page를 existing resident window/resource budget 안에서 materialize한 후에만 success/history를 commit한다.
+8. newer navigation, lifecycle change와 raw user scroll로 stale work를 fence하고 failed/cancelled work는 rollback/compensation한다.
+9. `link.hint`, `indicator.picker`, `f`, `I`, hint/indicator DOM·style·timer·settings·IPC를 제거하며 manual/synthetic scroll, detached repair와 unbounded residency를 추가하지 않는다.
 
-### 테스트
+### 테스트 요구
 
-- exact duplicate vs adjacent same-target fixture
-- wrapped annotations separate hints
-- text-only URL excluded
-- modified/Caps/IME hint input
-- URL allowlist and one-open assertion
-- internal destination at all rotations/DPI
-- indicator preview/commit/cancel/persistence failure
+- exact duplicate vs adjacent/wrapped fixture와 text-only URL exclusion
+- URL allowlist, unsupported/unresolved no-op와 one-authorization assertion
+- finite/partial `XYZ`의 supported rotation/DPI midpoint placement와 first/last document-edge clamp
+- `Fit`/`FitB` page-fit 및 `FitR` rectangle-fit non-regression
+- click completion 직후 별도 scroll 없이 visible landing pages의 raster/text가 모두 준비되는 fixture
+- rapid supersession, lifecycle change, raw user scroll, render failure와 cleanup/resource-bound cases
+- retired hint/indicator action, default, DOM, CSS, controller option, timer, native IPC/state authority 부재
+- 모든 scenario 전후 source PDF SHA-256 불변
 
 ### Exit gate
 
-- `f`를 공개하기 전에 click, hint, dedupe, read-only E2E가 모두 green이다.
-- geometry 오차가 1 CSS px 이하이다.
-- failed/unresolved GoTo가 history/indicator를 만들지 않는다.
+- canonical clamped actual landing과 complete bounded visible-page materialization이 성공/history의 전제다.
+- failed/unresolved/stale/cancelled activation은 history를 만들거나 newer input을 덮지 않는다.
+- ordinary internal/external pointer clicks는 indicator 없이 동작하고 `f`/`I`는 미할당이다.
+- fixture/unit/browser evidence만으로 packaged WebView2/native/DPI/accessibility gate 통과를 주장하지 않는다.
 
 ## W09 — Tabs, panes, multiwindow, Explorer handoff
 
@@ -499,46 +499,33 @@ PR #1/#2/#19–#23의 실패와 최종 규칙을 모두 반영한 링크 경험�
 - duplicate failure에 UI 흔적이 없다.
 - 두 번째 process가 남지 않고 path가 정확히 한 번 열린다.
 
-## W10 — Embedded-outline pane-local TOC
+## W10 — Retired embedded-outline TOC
 
-> Issue #53 owner delta: 이 TOC 구현 계획은 재개발 참고용으로 보존한다. 현재 Windows W10 계약은 TOC runtime/action/UI 부재와 기본 읽기 회귀 검증이다. 구현 참고는 `deferred-toc-link-hints.md`를 따른다. TOC를 다시 연결하지 않는다.
+> Issue #53 owner delta: 현재 Windows 제품에는 TOC runtime/model/action/UI가 없다. Immutable macOS 계약과 마지막 Windows source/tests `7e00424d30c5ffeab5a846d087236371644af53a`는 [deferred redevelopment reference](./deferred-toc-link-hints.md)로만 보존하며 active code에 다시 연결하지 않는다.
 
 ### 목표
 
-PDF에 이미 포함된 outline을 읽기 전용으로 투영하고, 1–4 pane에서 독립적인 floating TOC를 완성한다. PDF.js generic sidebar, thumbnail, bookmark, attachment, OCR, outline 생성·편집은 구현하지 않는다.
+TOC 부재를 명시적으로 고정하면서 ordinary reading, search, text selection, annotation clicks와 history를 보존한다.
 
 ### 작업
 
-1. PDF.js `getOutline()`/destination resolution adapter와 empty-outline outcome
-2. immutable preorder rows, structural IDs, single-wrapper promotion, 최대 two-depth normalization
-3. current-document/finite media-box/sentinel/8pt destination normalization
-4. invalid row 보존 + valid-only consecutive numeric selectors
-5. viewport anchor 기반 current-row tracking과 duplicate-location first-row policy
-6. `toc.toggle`, `toc.scrollDown`, `toc.scrollUp` action과 Windows live key hints
-7. pane content top-right floating widget: max 300px, `min(300px, pane width - 24px)`, 20px rows, 24px footer, pane 높이 50% cap
-8. non-focus list, pointer/Narrator activation, disabled-row semantics, theme contrast
-9. injected scheduler 기반 400ms atomic numeric buffer, Backspace deadline renewal, Esc/toggle cancellation lifecycle
-10. strict active-pane input routing; 다른 visible pane fallback 금지
-11. widget identity/z-order/manual-scroll/selection 보존과 tab/pane/config/prompt/focus teardown
-12. `.toc` meaningful jump를 기존 verified history transaction에 연결
+1. `toc.toggle`, `toc.scrollDown`, `toc.scrollUp`과 기본 `t`/`J`/`K`를 registry/config/menu/palette/help/router에서 제외한다.
+2. outline widget/model/selector/controller DOM, CSS와 lifecycle callback을 current runtime에서 제거하고 dormant flag나 alias를 두지 않는다.
+3. ordinary internal/external link activation, `j`/`k`, `F`, text/search ownership과 source-PDF read-only boundary를 유지한다.
+4. archived TOC source/tests는 Git reference에서만 조회하고 현재 product tree로 복사하지 않는다.
 
-### 테스트
+### 테스트 요구
 
-- `ReaderOutlineTests`: wrapper/two-depth/preorder/duplicate/invalid/current-row/destination edge
-- `TOCWidgetTests`: geometry, 399/400ms fake clock, digit/Backspace renewal/cancel/rollback, contrast, accessibility
-- `TOCNumericRoutingTests`: active pane priority, normal router isolation, lifecycle cancellation
-- `PaneShellTests`: 2→3→4 growth, tab replacement z-order, pane-local Esc, final widget retirement
-- `ReaderSessionTests`: TOC history producer, mutation provenance, one-epoch boundary behavior
-- `ReaderWorkflowUITests`: actual embedded-outline document toggle/scroll/numeric jump
-- generated outline fixture와 real reference PDF의 before/after SHA-256
+- action/default snapshots는 TOC actions와 `t`/`J`/`K` routing 부재를 요구한다.
+- shell/controller contract는 TOC owner, widget, model, timer, CSS와 DOM ID 부재를 요구한다.
+- retained-reader fixture는 ordinary click/search/scroll/Fit Page와 cleanup을 함께 검증해야 한다.
+- embedded-outline fixture를 ordinary reader로 열어도 synthetic sidebar/TOC를 만들지 않고 source PDF SHA-256을 보존해야 한다.
 
 ### Exit gate
 
-- 1/2/3/4 pane에서 TOC state가 pane/tab/window 경계를 넘어 새지 않는다.
-- invalid selector와 failed landing이 selection/history를 바꾸지 않는다.
-- overlay가 PDF canvas를 resize하거나 replacement content 아래로 내려가지 않는다.
-- no-outline 문서에 synthetic TOC를 만들지 않는다.
-- source PDF hash가 모든 activation/pointer/keyboard scenario 전후 동일하다.
+- current action/runtime/DOM/style surface에서 TOC가 callable 또는 visible하지 않다.
+- retirement 검증이 ordinary links, search, scroll, fit, history 또는 teardown을 약화하지 않는다.
+- packaged Windows acceptance가 실행되기 전에는 W10 native completion이나 release readiness를 주장하지 않는다.
 
 ## W11 — Recent, palette, help, config, themes, settings UX
 
@@ -555,9 +542,8 @@ PDF에 이미 포함된 outline을 읽기 전용으로 투영하고, 1–4 pane�
 5. config launch/reload diagnostics
 6. Write Default/Reset Config UI
 7. theme picker preview/commit/cancel
-8. indicator picker preview/commit/cancel
-9. status diagnostics/update placeholder/version
-10. `CONFIG.md`와 default TOML 생성/snapshot
+8. status diagnostics/update placeholder/version
+9. `CONFIG.md`와 default TOML 생성/snapshot
 
 ### 테스트
 

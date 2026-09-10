@@ -15,7 +15,7 @@ export function helpCategoryForId(id: ActionId): HelpCategory {
   if (id.startsWith("scroll.")) return "Scroll";
   if (id.startsWith("view.")) return "View / Zoom";
   if (id.startsWith("search.")) return "Search";
-  if (id.startsWith("theme.") || id.startsWith("indicator.")) return "Theme";
+  if (id.startsWith("theme.")) return "Theme";
   return "Application";
 }
 export function buildHelpRows(context: ActionRuntimeContext = DEFAULT_RUNTIME_CONTEXT, config: ProductConfig = DEFAULT_CONFIG, projectionOptions: CommandProjectionOptions = {}): readonly HelpRow[] {

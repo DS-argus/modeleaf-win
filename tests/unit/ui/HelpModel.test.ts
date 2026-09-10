@@ -10,20 +10,20 @@ const unavailableContext: ActionRuntimeContext = {
 };
 
 describe("HelpModel", () => {
-  it("projects the retained 50-action registry and groups its nine tab selection actions", () => {
+  it("projects the retained 49-action registry and groups its nine tab selection actions", () => {
     const rows = buildHelpRows();
     const selectionRows = rows.filter(({ label }) => label === "Select Tab 1–9");
     const visible = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
     const rowIds: readonly string[] = rows.map(({ id }) => id);
 
-    expect(ACTION_DESCRIPTORS).toHaveLength(50);
-    expect(visible).toHaveLength(46);
+    expect(ACTION_DESCRIPTORS).toHaveLength(49);
+    expect(visible).toHaveLength(45);
     expect(selectionRows).toEqual([expect.objectContaining({ id: "tab.select.1", category: "Tabs", shortcut: "Ctrl+1 … Ctrl+9", enabled: true })]);
-    expect(rows).toHaveLength(38);
+    expect(rows).toHaveLength(37);
     expect(rowIds).toEqual(visible.map(({ id }) => id).filter((id) => !/^tab\.select\.[2-9]$/u.test(id)));
-    for (const retiredId of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint"]) expect(rowIds).not.toContain(retiredId);
+    for (const retiredId of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"]) expect(rowIds).not.toContain(retiredId);
+    expect(rows).not.toContainEqual(expect.objectContaining({ id: "indicator.picker", enabled: true }));
     expect(rows).toContainEqual(expect.objectContaining({ category: "Pages", id: "page.first", shortcut: "g g", label: "First Page", enabled: true }));
-    expect(rows).toContainEqual(expect.objectContaining({ category: "Theme", id: "indicator.picker", shortcut: "Shift+I", label: "Link indicator settings", enabled: true }));
   });
   it("spells uppercase bindings as explicit Shift shortcuts", () => {
     const rows = buildHelpRows();

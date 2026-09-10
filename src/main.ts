@@ -34,17 +34,13 @@ import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSessio
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
-import { DEFAULT_INDICATOR_SETTINGS, type IndicatorSettings } from "./domain/links/IndicatorSettings";
-import { commitIndicatorPicker, indicatorPickerDialogKeyAction, INDICATOR_PICKER_ROWS, openIndicatorPicker, previewIndicatorPickerRow, revertIndicatorPicker, revertIndicatorPickerToDurable, CLOSED_INDICATOR_PICKER, type IndicatorPickerModel, type IndicatorPickerOpenModel } from "./ui/IndicatorPickerModel";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
-import { clearRecentDocuments, commitIndicatorState, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readIndicatorState, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
+import { clearRecentDocuments, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
 const shellConfig = shellConfigResult.value;
-let indicatorSettings: IndicatorSettings = DEFAULT_INDICATOR_SETTINGS;
-void readIndicatorState(invoke).then((value) => { if (value !== undefined) indicatorSettings = value; }, () => undefined);
 const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
   "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
@@ -52,7 +48,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "config.writeDefault", "config.resetDefault", "theme.picker",
-  "config.reload", "indicator.picker", "update.show",
+  "config.reload", "update.show",
   "history.back", "history.forward",
 ]);
 function isNativeCompositionEvent(event: KeyboardEvent): boolean {
@@ -172,7 +168,6 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
 const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu, onCommand: (actionId) => dispatchActionId(actionId as ActionId) });
 function claimOverlay(id: OverlayId): void {
   applicationMenuOwner.close();
-  active().session.dismissLinkIndicator();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
   const focusedTarget = focusTargetId(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const activePrompt = pagePromptTransaction;
@@ -547,7 +542,6 @@ function createTab(): TabPayload {
       commitExternalLinks: (registryRevision) => invoke<void>("commit_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       finalizeExternalLinks: (registryRevision) => invoke<void>("finalize_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
       abortExternalLinks: (registryRevision) => invoke<void>("abort_external_links", { sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision }),
-      indicatorSettings: () => indicatorSettings,
       openExternal: (annotationId, registryRevision, operationId, operationSequence) => invoke<number>("open_external_link", { request: { operationId, operationSequence, sessionId: opened.sessionId, documentGeneration: opened.documentGeneration, ownerGeneration: generation, registryRevision, annotationId } }),
     }),
     onStatus: () => {
@@ -617,7 +611,6 @@ function createTab(): TabPayload {
   };
   const onReaderScroll = (): void => {
     if (session.navigationLandingInProgress) return;
-    if (!session.indicatorPublicationPending) session.dismissLinkIndicator();
     session.clearVisibleLinkAuthority();
     if (session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
   };
@@ -633,7 +626,6 @@ function createTab(): TabPayload {
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
 active().session.activate();
 
-let indicatorPicker: IndicatorPickerModel = CLOSED_INDICATOR_PICKER;
 let updateNotice: UpdateNoticeState = HIDDEN_UPDATE_NOTICE;
 const RELEASE_REPOSITORY = "DS-argus/modeleaf-win";
 
@@ -657,43 +649,6 @@ async function reloadConfiguration(): Promise<ConfigReloadOutcome> {
   active().session.reader.setStatus(summarizeConfigReload(outcome));
   render();
   return outcome;
-}
-
-/** Opens the five-style indicator picker as a preview transaction. */
-function openIndicatorPickerDialog(): void {
-  try {
-    indicatorPicker = openIndicatorPicker(indicatorSettings);
-  } catch {
-    // Corrupt durable settings cannot seed a transaction; fall back to defaults.
-    indicatorPicker = openIndicatorPicker(DEFAULT_INDICATOR_SETTINGS);
-  }
-  render();
-}
-
-/** Commits the previewed indicator settings, reverting to durable state on failure. */
-async function commitIndicatorPickerDialog(): Promise<void> {
-  if (indicatorPicker.status !== "open") return;
-  const { intent } = commitIndicatorPicker(indicatorPicker);
-  const previous = indicatorPicker.transaction.baseline;
-  indicatorPicker = CLOSED_INDICATOR_PICKER;
-  try {
-    await commitIndicatorState(invoke, intent.settings);
-    indicatorSettings = intent.settings;
-  } catch {
-    // A failed durable write must never be reported as success.
-    indicatorSettings = previous;
-    active().session.reader.setStatus("Could not save the link indicator setting.");
-  }
-  render();
-}
-
-/** Closes the indicator picker and restores the settings captured on open. */
-function revertIndicatorPickerDialog(): void {
-  if (indicatorPicker.status !== "open") return;
-  const { effect } = revertIndicatorPicker(indicatorPicker);
-  indicatorPicker = CLOSED_INDICATOR_PICKER;
-  indicatorSettings = effect.settings;
-  render();
 }
 
 /** Opens the release page for an available update. Notify-only: never installs. */
@@ -1311,7 +1266,7 @@ function dispatchActionId(id: ActionId): void {
     "view.zoomIn": { type: "view.zoom", factor: 1.1 }, "view.zoomOut": { type: "view.zoom", factor: 1 / 1.1 }, "view.zoomReset": { type: "view.actualSize" },
     "view.fitWidth": { type: "view.fitWidth" }, "view.fitPage": { type: "view.fitPage" }, "view.rotateLeft": { type: "view.rotate", quarterTurns: -1 }, "view.rotateRight": { type: "view.rotate", quarterTurns: 1 },
     "theme.picker": { type: "theme.open" }, "prompt.cancel": { type: "prompt.cancel" },
-    "config.reload": { type: "config.reload" }, "indicator.picker": { type: "indicator.open" }, "update.show": { type: "update.show" },
+    "config.reload": { type: "config.reload" }, "update.show": { type: "update.show" },
   };
   if (id === "page.prompt") {
     const payload = active();
@@ -1425,13 +1380,11 @@ function dispatch(action: Action): void {
   }
   if (type === "theme.open") { openThemePicker(); return; }
   if (type === "config.reload") { void reloadConfiguration(); return; }
-  if (type === "indicator.open") { openIndicatorPickerDialog(); return; }
   if (type === "update.show") { void showUpdateNotice(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
   if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchInput.focus(); }
-  if (type === "prompt.cancel") session.dismissLinkIndicator();
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
     const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
@@ -1491,19 +1444,10 @@ window.addEventListener("keydown", (event) => {
     key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
     repeat: event.repeat, isComposing: event.isComposing, keyCode: event.keyCode,
     altGraph: event.getModifierState("AltGraph"),
-    nativeOwnedTarget: (event.key === "Escape" && overlayOwner.active === undefined && !isEditableTarget(event.target) && active().session.linkIndicatorVisible && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) || (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
+    nativeOwnedTarget: (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
     preventDefault: () => event.preventDefault(),
   });
   if (claimed) event.stopImmediatePropagation();
-}, { capture: true });
-window.addEventListener("keydown", (event) => {
-  const session = active().session;
-  if (overlayOwner.active !== undefined || isEditableTarget(event.target)) return;
-  if (event.key !== "Escape" || event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.isComposing || isNativeCompositionEvent(event) || event.getModifierState("AltGraph") || !session.linkIndicatorVisible) return;
-  session.dismissLinkIndicator();
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  render();
 }, { capture: true });
 const DPR_POLL_DELAY_MS = 250;
 let dprMediaQuery: MediaQueryList | undefined;
@@ -1513,7 +1457,6 @@ const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
-  session.dismissLinkIndicator();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 };
 function bindDprChange(): void {
@@ -1548,7 +1491,6 @@ window.addEventListener("resize", () => {
   scheduleDprPollFallback();
   if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
   const session = active().session;
-  session.dismissLinkIndicator();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
@@ -1594,7 +1536,6 @@ paletteDialog.addEventListener("keydown", (event) => {
   if (count > 0) renderPalette();
 }, { capture: true });
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
-window.addEventListener("blur", () => active().session.dismissLinkIndicator());
 window.addEventListener("beforeunload", () => {
   stopFileOpenerPathFitting();
   disposeSearchPrompt();

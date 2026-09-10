@@ -1,23 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_DEFAULT_CONFIG_TOML } from "../../../src/domain/config/ConfigFile";
-import { clearRecentDocuments, commitIndicatorState, listRecentDocuments, recordRecentDocument, openNativePdfDialog, openRecentDocument, readIndicatorState, readProductConfig, resetProductConfig, writeDefaultProductConfig, type NativeInvoke } from "../../../src/platform/tauri-commands";
+import { clearRecentDocuments, listRecentDocuments, recordRecentDocument, openNativePdfDialog, openRecentDocument, readProductConfig, resetProductConfig, writeDefaultProductConfig, type NativeInvoke } from "../../../src/platform/tauri-commands";
 
 const invoke = (value: unknown): NativeInvoke => vi.fn(async () => value) as unknown as NativeInvoke;
 
 describe("tauri-commands", () => {
-  it("decodes and commits only validated indicator settings", async () => {
-    const settings = { style: "beacon" as const, color: "cyan" as const, size: 28.5, durationMilliseconds: 1500 };
-    await expect(readIndicatorState(invoke({ style: "beacon", color: "cyan", size: 28.5, duration_ms: 1500 }))).resolves.toEqual(settings);
-    await expect(readIndicatorState(invoke(null))).resolves.toBeUndefined();
-    const commit = vi.fn(async () => null) as unknown as NativeInvoke;
-    await commitIndicatorState(commit, settings);
-    expect(commit).toHaveBeenCalledWith("commit_indicator_state", { value: { style: "beacon", color: "cyan", size: 28.5, duration_ms: 1500 } });
-  });
-
-  it("rejects malformed indicator payloads without echoing fields", async () => {
-    await expect(readIndicatorState(invoke({ style: "bad", color: "cyan", size: 28, duration_ms: 1500 }))).rejects.toThrow("NATIVE_CONTRACT_INVALID");
-    await expect(readIndicatorState(invoke({ style: "beacon", color: "cyan", size: 28, duration_ms: 1500, path: "C:/secret" }))).rejects.toThrow("NATIVE_CONTRACT_INVALID");
-  });
   it("decodes and validates loaded config without exposing a generic filesystem call", async () => {
     await expect(readProductConfig(invoke({ tag: "LOADED", text: CANONICAL_DEFAULT_CONFIG_TOML }))).resolves.toMatchObject({ tag: "LOADED", config: { ok: true } });
     await expect(readProductConfig(invoke({ tag: "MISSING" }))).resolves.toEqual({ tag: "MISSING" });

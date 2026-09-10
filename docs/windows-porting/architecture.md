@@ -1,6 +1,6 @@
 # 대상 아키텍처
 
-> Issue #53 owner delta: TOC와 `f` keyboard hint runtime/model/input/DOM은 제거한다. 일반 PDF 링크 클릭, native authorization, canonical destination/history, text/search ownership와 indicator는 유지한다. 아래 TOC/hint 아키텍처 설명은 immutable baseline 재개발 참고이며 현재 Windows 구성요소로 다시 연결하지 않는다. 보존 지점은 `deferred-toc-link-hints.md`를 따른다.
+> Issue #53 owner delta: ordinary internal/external PDF link clicks, native authorization, canonical destination/history와 text/search ownership은 유지한다. Embedded TOC, `f` keyboard hints와 destination indicator/settings/runtime/API는 제거하며 현재 Windows registry는 **49 actions(45 configurable + 4 fixed)**다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하고, destination transaction은 결과 viewport와 교차하는 page들을 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. 아래 retired architecture는 [deferred reference](./deferred-toc-link-hints.md)의 immutable source/tests(TOC/hints `7e00424d30c5ffeab5a846d087236371644af53a`, indicator `dedcff8513e034efb904ef7d50fd59cc11444798`)로만 읽는다.
 
 ## 1. 결론
 
@@ -33,12 +33,12 @@ Rust는 신뢰 경계를, TypeScript는 제품 동작을, PDF.js는 PDF 해석�
 3. 프론트엔드가 받는 문서 식별자는 실제 경로가 아니라 opaque `DocumentId`다.
 4. PDF.js worker와 frontend package는 정확히 같은 lockfile 버전을 사용한다.
 5. 모든 page location은 0-based page index와 회전 전 PDF page-space point로 정규화한다.
-6. canvas, text layer, annotation layer, search highlight, link hint, destination indicator는 같은 viewport transform을 사용한다.
+6. canvas, text layer, annotation layer와 search highlight는 같은 viewport transform을 사용한다. 퇴역 hint/indicator layer는 active transform consumer가 아니다.
 7. 각 window의 tabs/panes/overlays/history는 독립적이다. Rust의 파일·config·state 서비스만 프로세스 전체에서 공유한다.
-8. 앱이 저장하는 상태는 `selected_theme`, `recent_files`, `link_destination_indicator`뿐이다. session, tabs, page, zoom, rotation, history는 저장하지 않는다.
+8. 앱이 actively 저장하는 상태는 `selected_theme`, `recent_files`뿐이다. 기존 `link_destination_indicator`는 unknown sibling으로 보존하고 session, tabs, page, zoom, rotation, history는 저장하지 않는다.
 9. 파일 열기, drag/drop, Explorer Open With, recent open, duplicate pane는 모두 같은 Rust preflight와 같은 TS insertion transaction을 거친다.
 10. source PDF에 write handle을 열지 않는다.
-11. TOC는 embedded outline의 일시적 pane projection이다. visibility, selector buffer, scroll, selection을 state/config/PDF에 저장하지 않는다.
+11. Embedded TOC, keyboard link hints와 destination indicator를 active runtime/UI/state에 다시 연결하지 않는다.
 
 ## 3. 권장 저장소 구조
 
@@ -179,6 +179,8 @@ Rust가 파일 I/O와 transaction을 맡고, TS가 TOML schema와 제품 검증�
 
 - config: `appConfigDir()/config.toml`
 - state: `appLocalDataDir()/state.json`
+- active state ownership은 `selected_theme`, `recent_files`로 한정; 기존 `link_destination_indicator`는 unknown sibling으로 보존하되 actively decode/apply/mutate하지 않음
+- indicator retirement를 위한 state migration, deletion 또는 user config/state 자동 rewrite 금지
 - 두 app directory API는 이미 Tauri bundle identifier를 포함한다. product name directory를 중복으로 덧붙이지 않는다.
 - config read limit: 256 KiB, UTF-8만 허용
 - write: 같은 디렉터리의 새 temp file → flush → atomic replace
@@ -205,7 +207,7 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 
 다음은 DOM/Tauri/PDF.js import가 없는 pure modules로 만든다.
 
-- Windows 50개 action registry와 availability (macOS baseline 61개에서 pane 7개, TOC 3개, keyboard hint 1개 제외)
+- Windows 49개 action registry와 availability (macOS baseline 61개에서 pane 7개, TOC 3개, keyboard hint 1개, indicator picker 1개 제외)
 - 네 입력 context: `navigation`, `pagePrompt`, `searchPrompt`, `searchResults`
 - key token/parser/sequence trie/prefix timer
 - prompt lifecycle 및 IME/dead-key bypass 판단
@@ -213,11 +215,10 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 - recent filename fuzzy filter
 - strict sparse config overlay와 diagnostics
 - navigation history와 search epoch
-- tab store와 pane topology
-- link hint label/filter/exact-dedup
-- theme와 indicator settings
-- embedded outline normalization, valid-only selector, current-row tracking
-- semantic version update comparison
+- tab store
+- annotation-link DTO normalization과 exact-dedup
+- theme settings와 semantic version update comparison
+- retired TOC/hint/indicator domains는 active registry/application/UI에서 제외하고 immutable Git reference로만 보존
 
 이 계층은 먼저 macOS pure tests를 포팅해 계약을 잠근다.
 
@@ -238,7 +239,7 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 - semantic HTML을 우선한다.
 - menu, palette, help, empty-state shortcut, status hints는 action registry와 active keymap에서 생성한다.
 - PDF canvas focus와 active pane 표시는 1px 수준으로 조용하게 유지한다.
-- pane-local TOC는 reader focus를 빼앗지 않는 floating overlay이며 modal owner가 열릴 때 pending numeric input만 취소한다.
+- pane-local TOC, keyboard link hint와 destination indicator surface는 current UI layer에 mount하지 않는다.
 - PDF pixels에는 theme filter를 적용하지 않는다.
 
 ## 6. PDF.js adapter 책임
@@ -311,9 +312,16 @@ type NavigationSnapshot = {
 - annotation은 `intent: display`로 읽고 link action만 허용한다.
 - exact duplicate는 page index, normalized rectangle, complete target이 모두 같은 경우에만 제거한다.
 - adjacent/same-destination rectangle은 합치지 않는다.
-- internal destination은 page-space로 resolve한 후 landing을 실제 캡처해 history를 commit한다.
+- internal destination transaction은 resolve와 guarded scroll settlement 뒤 결과 viewport와 교차하는 page들을 existing resident window/resource budget 안에서 materialize하고, 그 뒤 canonical actual landing을 캡처해야만 성공/history를 commit한다.
+- finite `XYZ` x/y는 rotation-aware viewport midpoint를 목표로 하고 unspecified axis는 기존 canonical 축을 보존한다. physical scroll은 document edge에서 clamp하며 clamped actual landing이 history authority다.
+- `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 point-centering으로 바꾸지 않는다.
+- newer navigation, lifecycle change 또는 raw user scroll은 stale work를 fence한다. failed/cancelled materialization은 history나 newer input을 덮지 않고 rollback/compensation을 따른다.
+- landing completion을 위한 manual/synthetic scroll, detached repair 또는 unbounded residency를 두지 않는다.
+- hint/indicator DOM, timers, settings와 IPC는 current link path의 dependency가 아니다.
 
 ### 7.4 Embedded outline TOC
+
+> 현재 Windows 제품에는 TOC runtime/action/UI가 없다. 아래 구조는 `7e00424d30c5ffeab5a846d087236371644af53a`의 재개발 reference이며 active adapter/application wiring 요구가 아니다.
 
 - PDF.js adapter는 `getOutline()`과 destination resolution만 노출하고 generic viewer sidebar UI를 사용하지 않는다.
 - raw outline은 pure TS domain에서 immutable preorder rows로 바꾼다. stable ID는 structural child path이며 단일 title wrapper를 숨기고 visible depth는 최대 두 단계다.
@@ -349,9 +357,9 @@ type NavigationSnapshot = {
 | `tab.select.1..9` | `<C-1>.. <C-9>` |
 | `history.back` | `<A-Left>` |
 | `history.forward` | `<A-Right>` |
-| pane prefix | `<C-b>` |
-| pane focus | `<C-h/j/k/l>` |
-| `toc.toggle` / scroll | `t` / `J` / `K` |
+| command prefix | `<C-b>` |
+| retired pane focus | `<C-h/j/k/l>` 미할당 |
+| retired TOC / hint / indicator | `t` / `J` / `K` / `f` / `I` 미할당 |
 
 DOM keyboard adapter는 `compositionstart/update/end`, `event.isComposing`, dead keys, AltGraph를 먼저 분류한다. prompt가 텍스트를 소유할 때 printable/IME input은 action engine으로 보내지 않는다. 앱이 처리한 key event만 `preventDefault()`하고, 나머지는 WebView2 native path에 남긴다.
 
@@ -373,13 +381,13 @@ W02 spike가 다음을 만족해야 이 구조를 확정한다.
 
 - packaged Windows app에서 Range request가 실제 발생한다.
 - 300-page fixture의 첫 페이지를 전체 파일 다운로드 완료 전 표시할 수 있다.
-- 100/125/150/200% DPI에서 text, annotation, hint의 최대 오차가 1 CSS px 이하이다.
+- 100/125/150/200% DPI에서 text, annotation과 search highlight의 최대 오차가 1 CSS px 이하이다.
 - search와 internal GoTo가 rotation 0/90/180/270에서 page-space를 왕복한다.
 - inactive pages의 canvas가 해제된다.
 - interactive PDF가 form/script/media UI를 노출하지 않는다.
 - source PDF hash가 변하지 않는다.
 - print spike가 Microsoft Print to PDF dialog까지 도달하고 reader state를 보존한다.
-- embedded-outline fixture가 wrapper/two-depth/invalid/duplicate/edge destination을 동일하게 정규화하고 TOC jump 뒤 source hash를 보존한다.
+- ordinary internal point-link fixture가 attainable center와 document-edge clamp를 재현하고, 성공 시점에 visible landing pages가 bounded resident/resource policy 안에서 materialize되며 source hash를 보존한다.
 
 실패 시 기능을 계속 쌓지 말고 [테스트 및 위험 게이트](./testing-risks.md)의 대체 경로를 따른다.
 

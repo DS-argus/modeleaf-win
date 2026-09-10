@@ -6,7 +6,6 @@
     "sources": [
       "PDFReaderCore/Config/BuiltInDefaults.swift",
       "PDFReaderCore/Actions/ActionRegistry.swift",
-      "PDFReaderCore/Reader/LinkDestinationIndicatorSettings.swift",
       "docs/windows-porting/feature-spec.md",
       "docs/windows-porting/architecture.md"
     ]
@@ -82,7 +81,6 @@
     "config.writeDefault": [],
     "config.resetDefault": [],
     "theme.picker": ["T"],
-    "indicator.picker": ["I"],
     "update.show": ["U"]
   },
   "fixedBindings": {
@@ -107,41 +105,10 @@
     "nord",
     "catppuccin-latte"
   ],
-  "linkDestinationIndicator": {
-    "styles": [
-      "pulse-ring",
-      "target",
-      "beacon",
-      "static-ring",
-      "diamond-pulse"
-    ],
-    "colors": [
-      "red",
-      "amber",
-      "cyan",
-      "green",
-      "purple",
-      "accent",
-      "auto-contrast",
-      "high-contrast"
-    ],
-    "customColor": { "format": "#RRGGBB", "normalization": "lowercase" },
-    "ranges": {
-      "size": { "minimum": 16.0, "maximum": 48.0 },
-      "durationMilliseconds": { "minimum": 500, "maximum": 3000 }
-    },
-    "default": {
-      "style": "pulse-ring",
-      "color": "red",
-      "size": 28.0,
-      "durationMilliseconds": 1500
-    }
-  },
   "persistence": {
     "stateOwnedFields": [
       "selected_theme",
-      "recent_files",
-      "link_destination_indicator"
+      "recent_files"
     ],
     "notPersisted": [
       "session",

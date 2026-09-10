@@ -53,6 +53,14 @@ const EXPECTED_SENTINELS: Record<string, unknown> = {
     foreign: true,
     text_only_url: true,
   },
+  "link-landing-3-page.pdf": {
+    target: { page: 2, mode: "XYZ", x: 306, y: 40 },
+    first_boundary: { page: 1, mode: "XYZ", x: 306, y: 780 },
+    last_boundary: { page: 3, mode: "XYZ", x: 306, y: 12 },
+    viewport_height_css: 600,
+    page_3_visible_after_center: true,
+    page_3_raster: "link-landing-page-3-raster-v1",
+  },
   "link-duplicates.pdf": {
     exact_duplicates: 2,
     adjacent_same_target: true,
@@ -101,6 +109,7 @@ async function inspectPdf(pdf: Uint8Array, password?: string) {
   const document = await task.promise;
   const text: string[] = [];
   const annotations: AnnotationRecord[] = [];
+  const pageAnnotations: AnnotationRecord[][] = [];
   const pageViews: number[][] = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
@@ -109,18 +118,26 @@ async function inspectPdf(pdf: Uint8Array, password?: string) {
     text.push(
       content.items.map((item) => ("str" in item ? item.str : "")).join(""),
     );
-    annotations.push(
-      ...((await page.getAnnotations({
-        intent: "display",
-      })) as AnnotationRecord[]),
-    );
+    const currentAnnotations = (await page.getAnnotations({
+      intent: "display",
+    })) as AnnotationRecord[];
+    pageAnnotations.push(currentAnnotations);
+    annotations.push(...currentAnnotations);
   }
   const outline = flattenOutline(
     ((await document.getOutline()) ?? []) as OutlineNode[],
   );
   const pages = document.numPages;
   await task.destroy();
-  return { pages, text: text.join("\n"), annotations, outline, pageViews };
+  return {
+    pages,
+    text: text.join("\n"),
+    pageText: text,
+    annotations,
+    pageAnnotations,
+    outline,
+    pageViews,
+  };
 }
 
 function countAnnotations(annotations: AnnotationRecord[]) {
@@ -345,6 +362,42 @@ describe("golden PDF fixtures", () => {
         expect(linksRaw, `links sentinel ${sentinel}`).toContain(sentinel);
       }
 
+      const linkLandingBytes = await readFile(
+        join(first, "pdf", "link-landing-3-page.pdf"),
+      );
+      const linkLanding = await inspectPdf(
+        new Uint8Array(linkLandingBytes),
+      );
+      expect(linkLanding.pageViews).toEqual([
+        [0, 0, 612, 792],
+        [0, 0, 612, 792],
+        [0, 0, 612, 792],
+      ]);
+      expect(linkLanding.pageText).toHaveLength(3);
+      expect(linkLanding.pageText[0]).toContain("Link landing source page one");
+      expect(linkLanding.pageText[1]).toContain("Link landing target page two");
+      expect(linkLanding.pageText[2]).toContain("Link landing visible page three");
+      expect(
+        linkLanding.pageAnnotations.map((page) =>
+          page.filter(({ subtype }) => subtype === "Link").length,
+        ),
+      ).toEqual([3, 0, 0]);
+      const landingLinks = linkLanding.pageAnnotations[0]!.filter(
+        ({ subtype }) => subtype === "Link",
+      );
+      expect(landingLinks.map(({ rect }) => rect)).toEqual([
+        [48, 690, 270, 714],
+        [48, 650, 270, 674],
+        [48, 610, 270, 634],
+      ]);
+      expect(landingLinks.map(({ dest }) => dest)).toEqual([
+        [{ num: 9, gen: 0 }, { name: "XYZ" }, 306, 40, null],
+        [{ num: 4, gen: 0 }, { name: "XYZ" }, 306, 780, null],
+        [{ num: 11, gen: 0 }, { name: "XYZ" }, 306, 12, null],
+      ]);
+      const linkLandingRaw = linkLandingBytes.toString("latin1");
+      expect(linkLandingRaw).toContain("% link-landing-page-3-raster-v1");
+      expect(linkLandingRaw).toContain("48 650 192 48 re f");
       const duplicates = await inspectPdf(
         new Uint8Array(
           await readFile(join(first, "pdf", "link-duplicates.pdf")),

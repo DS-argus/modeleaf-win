@@ -4,7 +4,6 @@ import {
   type ResourceReservation,
   ResourceReservationManager,
 } from "./ResourceBudget";
-import { DEFAULT_INDICATOR_SETTINGS, validateIndicatorSettings, type IndicatorSettings } from "../domain/links/IndicatorSettings";
 import { isValidPdfDestination } from "./PdfDestination";
 export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: boolean; readonly fontName?: string; readonly dir?: string; readonly transform?: readonly number[]; readonly width?: number; readonly height?: number; readonly [key: string]: unknown; }
 export interface PdfContentTextContent { readonly items: readonly PdfContentTextItem[]; readonly styles?: Readonly<Record<string, unknown>>; readonly lang?: string; }
@@ -15,9 +14,7 @@ export interface PdfContentViewport { readonly width: number; readonly scale: nu
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
 export type PdfLinkActivationCause = "internal-link";
-export type PdfDestinationNavigationOutcome =
-  | { readonly kind: "verified"; readonly point?: { readonly pageNumber: number; readonly x: number; readonly y: number } }
-  | { readonly kind: "rejected" | "same-location" | "stale" | "failed" };
+export type PdfDestinationNavigationOutcome = { readonly kind: "verified" | "rejected" | "same-location" | "stale" | "failed" };
 export interface PdfSearchGeometry { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 interface PdfSearchGeometryRange { readonly start: number; readonly end: number; readonly originX: number; readonly originY: number; readonly advanceX: number; readonly advanceY: number; readonly thicknessX: number; readonly thicknessY: number; readonly width: number; readonly height: number; readonly reverse: boolean; }
 export interface PdfSearchResult { readonly pageNumber: number; readonly index: number; readonly length: number; readonly geometry?: PdfSearchGeometry; }
@@ -28,7 +25,6 @@ export interface PdfContentControllerOptions {
   readonly host: HTMLElement;
   readonly resources: ResourceReservationManager;
   readonly onStatus: (message: string) => void;
-  readonly indicatorSettings?: () => IndicatorSettings;
   readonly navigateToPage: (pageNumber: number) => void;
   readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean) => Promise<PdfDestinationNavigationOutcome>;
   readonly resolveDestinationPage?: (reference: unknown) => Promise<number | null>;
@@ -303,10 +299,6 @@ export class PdfContentController {
     readonly destination: readonly unknown[];
   } | undefined;
   private destinationScrollSettlement: { readonly intentId: number; readonly promise: Promise<void>; readonly finish: () => void } | undefined;
-  private indicatorElement: HTMLElement | undefined;
-  private indicatorTimer: ReturnType<typeof setTimeout> | undefined;
-  private indicatorPublishTimer: ReturnType<typeof setTimeout> | undefined;
-  private indicatorGeneration = 0;
   private destinationSequence = 0;
   private linkActivationSequence = 0;
   private readonly resolvedDestinationPages = new WeakMap<PdfContentAnnotation, number>();
@@ -369,7 +361,6 @@ export class PdfContentController {
   }
 
   public mount(document: PdfContentDocument, generation: number, sessionId: string): void {
-    this.dismissLinkIndicator();
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
@@ -394,7 +385,6 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
-    this.dismissLinkIndicator();
     this.interactionsEnabled = false;
     this.interactionEpoch += 1;
     this.renderSequence += 1;
@@ -442,7 +432,6 @@ export class PdfContentController {
   }
 
   public async unmount(): Promise<void> {
-    this.dismissLinkIndicator();
     this.closingEpoch = this.mountedEpoch;
     const document = this.document;
     const generation = this.generation;
@@ -915,12 +904,19 @@ export class PdfContentController {
       : String(mode ?? "");
     const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
     const canvasOrigin = this.canvasScrollOrigin(request.canvas);
-    const scrollTo = (point: readonly number[]): void => {
+    const scrollTo = (
+      point: readonly number[],
+      placement: { readonly centerX: boolean; readonly centerY: boolean } = { centerX: false, centerY: false },
+    ): void => {
       if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
       const beforeLeft = this.options.host.scrollLeft;
       const beforeTop = this.options.host.scrollTop;
-      const targetLeft = Math.max(0, canvasOrigin[0] + point[0]!);
-      const targetTop = Math.max(0, canvasOrigin[1] + point[1]!);
+      const maxScrollLeft = Math.max(0, this.options.host.scrollWidth - this.options.host.clientWidth);
+      const maxScrollTop = Math.max(0, this.options.host.scrollHeight - this.options.host.clientHeight);
+      const requestedLeft = canvasOrigin[0] + point[0]! - (placement.centerX ? this.options.host.clientWidth / 2 : 0);
+      const requestedTop = canvasOrigin[1] + point[1]! - (placement.centerY ? this.options.host.clientHeight / 2 : 0);
+      const targetLeft = Math.min(maxScrollLeft, Math.max(0, requestedLeft));
+      const targetTop = Math.min(maxScrollTop, Math.max(0, requestedTop));
       this.destinationScrollSettlement?.finish();
       let resolveScroll!: () => void;
       const promise = new Promise<void>((resolve) => { resolveScroll = resolve; });
@@ -979,7 +975,12 @@ export class PdfContentController {
     const targetX = x ?? current[0];
     const targetY = y ?? current[1];
     if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
-    scrollTo(request.viewport.convertToViewportPoint(targetX, targetY));
+    const rotation = ((request.viewport.rotation % 360) + 360) % 360;
+    const swapsAxes = rotation === 90 || rotation === 270;
+    scrollTo(request.viewport.convertToViewportPoint(targetX, targetY), {
+      centerX: name === "XYZ" && (swapsAxes ? destinationY !== undefined : destinationX !== undefined),
+      centerY: name === "XYZ" && (swapsAxes ? destinationX !== undefined : destinationY !== undefined),
+    });
   }
   public async search(query: string, restoreEvictedResult = false): Promise<void> {
     const deadline = Date.now() + SEARCH_TIMEOUT_MS;
@@ -1245,59 +1246,6 @@ export class PdfContentController {
       });
     }
   }
-  public get indicatorPublicationPending(): boolean { return this.indicatorPublishTimer !== undefined; }
-  public get linkIndicatorVisible(): boolean { return this.indicatorElement !== undefined; }
-  public dismissLinkIndicator(): void {
-    this.indicatorGeneration += 1;
-    if (this.indicatorPublishTimer !== undefined) clearTimeout(this.indicatorPublishTimer);
-    this.indicatorPublishTimer = undefined;
-    if (this.indicatorTimer !== undefined) clearTimeout(this.indicatorTimer);
-    this.indicatorTimer = undefined;
-    this.indicatorElement?.remove();
-    this.indicatorElement = undefined;
-  }
-
-  private showDestinationIndicator(point: { readonly pageNumber: number; readonly x: number; readonly y: number }): void {
-    this.dismissLinkIndicator();
-    const entry = this.residentEntries.get(point.pageNumber);
-    if (entry === undefined) return;
-    const configured = this.options.indicatorSettings?.() ?? DEFAULT_INDICATOR_SETTINGS;
-    const validated = validateIndicatorSettings(configured);
-    if (!validated.ok) return;
-    const settings = validated.value;
-    const [x, y] = entry.viewport.convertToViewportPoint(point.x, point.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > entry.viewport.width || y > entry.viewport.height) return;
-    const indicator = documentCreate("div", "pdf-destination-indicator");
-    indicator.dataset.style = settings.style;
-    indicator.dataset.color = settings.color;
-    indicator.setAttribute("aria-hidden", "true");
-    indicator.style.position = "absolute";
-    indicator.style.pointerEvents = "none";
-    indicator.style.left = `${x - settings.size / 2}px`;
-    indicator.style.top = `${y - settings.size / 2}px`;
-    indicator.style.width = `${settings.size}px`;
-    indicator.style.height = `${settings.size}px`;
-    if (settings.color.startsWith("#")) indicator.style.setProperty("--indicator-color", settings.color);
-    else if (settings.color === "auto-contrast" && typeof getComputedStyle === "function") {
-      const values = getComputedStyle(entry.layer).backgroundColor.match(/[\d.]+/g)?.map(Number);
-      const alpha = values?.[3] ?? 1;
-      const channels = alpha === 0 ? [255, 255, 255] : values?.slice(0, 3);
-      if (channels?.length === 3 && channels.every(Number.isFinite)) {
-        const luminance = (0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!) / 255;
-        indicator.style.setProperty("--indicator-color", luminance > 0.5 ? "#000" : "#fff");
-      }
-    }
-    indicator.style.setProperty("--indicator-duration", `${settings.durationMilliseconds}ms`);
-    entry.annotationLayer.append(indicator);
-    this.indicatorElement = indicator;
-    const generation = ++this.indicatorGeneration;
-    this.indicatorTimer = setTimeout(() => {
-      if (generation !== this.indicatorGeneration) return;
-      indicator.remove();
-      if (this.indicatorElement === indicator) this.indicatorElement = undefined;
-      this.indicatorTimer = undefined;
-    }, settings.durationMilliseconds);
-  }
   private async appendLinkGroups(
     layer: HTMLElement,
     annotations: readonly PdfContentAnnotation[],
@@ -1437,13 +1385,7 @@ export class PdfContentController {
         this.markLinkOutcome(group, "unsupported");
       } else {
         const outcome = await awaitRaw(this.options.navigateToDestination(pageNumber, destination, cause, isOwnerActive));
-        if (isOwnerActive() && outcome.kind === "verified" && outcome.point !== undefined) {
-          const point = outcome.point;
-          this.indicatorPublishTimer = setTimeout(() => {
-            this.indicatorPublishTimer = undefined;
-            if (isOwnerActive()) this.showDestinationIndicator(point);
-          }, 0);
-        } else if (isOwnerActive() && outcome.kind !== "verified" && outcome.kind !== "same-location" && outcome.kind !== "stale") {
+        if (isOwnerActive() && outcome.kind !== "verified" && outcome.kind !== "same-location" && outcome.kind !== "stale") {
           this.options.onStatus("PDF link destination could not be reached.");
           this.markLinkOutcome(group, `failed ${outcome.kind}`);
         }

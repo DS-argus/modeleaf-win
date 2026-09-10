@@ -466,6 +466,7 @@ export class PdfTabSession {
     const ownerIntent = this.navigationIntent;
     const fenceIntent = this.supersedeNavigation(true);
     this.cancelledNavigation = { ownerIntent, fenceIntent, activityGeneration: this.activityGeneration };
+    this.pdfReader.invalidateViewportSynchronization();
     this.navigationHistory.cancelPending();
   }
   public async navigateSearchLanding(request: PdfSearchLandingRequest): Promise<PdfTabNavigationDecision> {
@@ -498,12 +499,10 @@ export class PdfTabSession {
       this.invalidatePageStepQueue();
       if (this.navigationLandingInProgress || this.pageStepActive) this.supersedeNavigation();
       else this.content?.cancelDestination();
-      this.content?.dismissLinkIndicator();
     }
     if (action.type.startsWith("page.") || action.type.startsWith("view.")) {
       this.invalidatePageStepQueue();
       this.supersedeNavigation();
-      this.content?.dismissLinkIndicator();
       const snapshot = this.lastCommittedRender;
       if (snapshot !== undefined && snapshot.documentGeneration === this.reader.snapshot.documentGeneration) {
         const intent = ++this.renderIntent;
@@ -523,10 +522,7 @@ export class PdfTabSession {
     this.endSearchLandingEpoch();
   }
   public get query(): string { return this.content?.snapshot.query ?? ""; }
-  public get indicatorPublicationPending(): boolean { return this.content?.indicatorPublicationPending ?? false; }
-  public get linkIndicatorVisible(): boolean { return this.content?.linkIndicatorVisible ?? false; }
   public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
-  public dismissLinkIndicator(): void { if (!this.closed && this.isForegroundActive()) this.content?.dismissLinkIndicator(); }
   public renderCurrentView(): Promise<boolean> {
     return this.openingFitRenderPending ? this.renderOpeningFitPage() : this.renderCurrentViewPreservingAnchor();
   }
@@ -560,6 +556,7 @@ export class PdfTabSession {
       && this.navigationIntent === navigationIntent;
     const guard = (): boolean => sessionGuard() && activationGuard();
     const snapshot = this.reader.snapshot;
+    let landingOwnerIntent = navigationIntent;
     const compensateToOrigin = async (compensationGuard: () => boolean = sessionGuard): Promise<"failed" | "stale"> => {
       this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: snapshot.customScale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
       const compensated = await this.restoreCanonicalLanding(origin, compensationGuard);
@@ -567,63 +564,14 @@ export class PdfTabSession {
       if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
       return "failed";
     };
-    const targetSize = await this.pdfReader.getPageNaturalSize(page, snapshot.rotationQuarterTurns * 90, guard);
-    if (!guard()) return { kind: "stale" };
-    const view = resolvePdfDestinationView(destination, snapshot.customScale, targetSize,
-      this.availableContentSize(), snapshot.rotationQuarterTurns,
-      (scale) => Math.max(0.1, Math.min(8, scale)));
-    if (view === undefined || !guard()) return { kind: "rejected" };
-    const mode = destination[1];
-    const modeName = typeof mode === "object" && mode !== null && "name" in mode ? String((mode as { readonly name?: unknown }).name) : String(mode ?? "");
-    const requestedPoint = modeName === "XYZ" && Number.isFinite(destination[2]) && Number.isFinite(destination[3])
-      ? { x: destination[2] as number, y: destination[3] as number }
-      : undefined;
-    const target = requestedPoint === undefined
-      ? await this.pdfReader.getPageTopLanding(page, { scale: view.scale, rotation: snapshot.rotationQuarterTurns * 90, devicePixelRatio: this.devicePixelRatio() }, guard)
-      : { pageIndex: page - 1, ...requestedPoint };
-    if (target === undefined || !guard()) return guard() ? { kind: "rejected" } : { kind: "stale" };
-    this.navigationHistory.cancelPending();
-    const prepared = this.navigationHistory.prepareJump(origin, target, cause);
-    if (prepared.kind === "same-location") return { kind: "same-location" };
-    if (prepared.kind !== "prepared") return { kind: "rejected" };
-    const rollbackSnapshot = this.lastCommittedRender;
-    if (rollbackSnapshot === undefined || rollbackSnapshot.documentGeneration !== snapshot.documentGeneration) {
-      this.navigationHistory.rollback(prepared.transaction);
-      return { kind: "rejected" };
-    }
-    const intentId = content.queueDestination(page, destination);
-    if (intentId === undefined || !guard()) {
-      this.navigationHistory.rollback(prepared.transaction);
-      if (intentId !== undefined) content.cancelDestination(intentId);
-      return guard() ? { kind: "rejected" } : { kind: "stale" };
-    }
-    const renderIntent = ++this.renderIntent;
-    this.pendingRenderRollback = { intent: renderIntent, activityGeneration, ...rollbackSnapshot };
-    this.reader.apply({ type: "page.goTo", page });
-    this.reader.restoreView({ zoomMode: view.zoomMode, customScale: view.scale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
-    this.navigationLandingIntent = navigationIntent;
-    let committed = false;
-    try {
-      committed = await this.renderPage(page, { scale: view.scale, rotation: snapshot.rotationQuarterTurns * 90, devicePixelRatio: this.devicePixelRatio() });
-      if (committed) {
-        content.applyQueuedDestinationToResidentPage(page);
-        await content.awaitDestinationScroll(intentId);
-      }
-    } catch {
-      committed = false;
-    } finally {
-      if (!committed) content.cancelDestination(intentId);
-      if (this.navigationLandingIntent === navigationIntent) this.navigationLandingIntent = undefined;
-    }
-    if (!committed) {
-      this.navigationHistory.rollback(prepared.transaction);
-      return guard() ? { kind: "failed" } : { kind: "stale" };
-    }
-    if (!guard()) {
-      this.navigationHistory.rollback(prepared.transaction);
+    const settleStaleAfterMovement = async (): Promise<PdfDestinationNavigationOutcome> => {
       const cancellation = this.cancelledNavigation;
       if (cancellation?.ownerIntent === navigationIntent && cancellation.fenceIntent === this.navigationIntent
         && cancellation.activityGeneration === activityGeneration) {
+        if (this.navigationLandingIntent === landingOwnerIntent) {
+          landingOwnerIntent = cancellation.fenceIntent;
+          this.navigationLandingIntent = landingOwnerIntent;
+        }
         const cancellationGuard = (): boolean => !this.closed && this.isForegroundActive()
           && this.activityGeneration === activityGeneration && this.navigationIntent === cancellation.fenceIntent;
         await compensateToOrigin(cancellationGuard);
@@ -633,20 +581,118 @@ export class PdfTabSession {
       if (!sessionGuard()) return { kind: "stale" };
       await compensateToOrigin();
       return { kind: "stale" };
+    };
+    const rawActivityEvents = ["wheel", "touchmove", "pointerdown"] as const;
+    const fenceForRawActivity = (): void => {
+      if (this.navigationLandingIntent !== landingOwnerIntent || this.navigationIntent !== landingOwnerIntent) return;
+      this.pendingRenderRollback = undefined;
+      this.invalidatePageStepQueue();
+      this.navigationHistory.cancelPending();
+      this.supersedeNavigation();
+      this.pdfReader.invalidateViewportSynchronization();
+    };
+    const observesRawActivity = typeof this.options.canvasHost.addEventListener === "function";
+    this.navigationLandingIntent = navigationIntent;
+    if (observesRawActivity) {
+      for (const event of rawActivityEvents) this.options.canvasHost.addEventListener(event, fenceForRawActivity, { passive: true });
     }
-    const displayed = this.captureNavigationSnapshot();
-    const verificationTarget = content.takeDestinationLanding(intentId);
-    if (displayed === undefined || verificationTarget === undefined) {
-      this.navigationHistory.rollback(prepared.transaction);
-      return { kind: await compensateToOrigin() };
+    let destinationIntentId: number | undefined;
+    try {
+      const targetSize = await this.pdfReader.getPageNaturalSize(page, snapshot.rotationQuarterTurns * 90, guard);
+      if (!guard()) return { kind: "stale" };
+      const view = resolvePdfDestinationView(destination, snapshot.customScale, targetSize,
+        this.availableContentSize(), snapshot.rotationQuarterTurns,
+        (scale) => Math.max(0.1, Math.min(8, scale)));
+      if (view === undefined) return { kind: "rejected" };
+      if (!guard()) return { kind: "stale" };
+      const mode = destination[1];
+      const modeName = typeof mode === "object" && mode !== null && "name" in mode ? String((mode as { readonly name?: unknown }).name) : String(mode ?? "");
+      const requestedPoint = modeName === "XYZ" && Number.isFinite(destination[2]) && Number.isFinite(destination[3])
+        ? { x: destination[2] as number, y: destination[3] as number }
+        : undefined;
+      const targetTransform = { scale: view.scale, rotation: snapshot.rotationQuarterTurns * 90, devicePixelRatio: this.devicePixelRatio() };
+      const target = requestedPoint === undefined
+        ? await this.pdfReader.getPageTopLanding(page, targetTransform, guard)
+        : { pageIndex: page - 1, ...requestedPoint };
+      if (target === undefined) return guard() ? { kind: "rejected" } : { kind: "stale" };
+      if (!guard()) return { kind: "stale" };
+      this.navigationHistory.cancelPending();
+      const prepared = this.navigationHistory.prepareJump(origin, target, cause);
+      if (prepared.kind === "same-location") return { kind: "same-location" };
+      if (prepared.kind !== "prepared") return { kind: "rejected" };
+      const rollbackSnapshot = this.lastCommittedRender;
+      if (rollbackSnapshot === undefined || rollbackSnapshot.documentGeneration !== snapshot.documentGeneration) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return { kind: "rejected" };
+      }
+      const intentId = content.queueDestination(page, destination);
+      destinationIntentId = intentId;
+      if (intentId === undefined || !guard()) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return guard() ? { kind: "rejected" } : { kind: "stale" };
+      }
+      const renderIntent = ++this.renderIntent;
+      this.pendingRenderRollback = { intent: renderIntent, activityGeneration, ...rollbackSnapshot };
+      this.reader.apply({ type: "page.goTo", page });
+      this.reader.restoreView({ zoomMode: view.zoomMode, customScale: view.scale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
+      let targetPublished = false;
+      try {
+        targetPublished = await this.renderPageRequest(page, targetTransform, undefined, guard);
+      } catch {
+        targetPublished = false;
+      }
+      if (!targetPublished) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return guard() ? { kind: "failed" } : await settleStaleAfterMovement();
+      }
+      if (!guard()) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return await settleStaleAfterMovement();
+      }
+      content.applyQueuedDestinationToResidentPage(page);
+      await content.awaitDestinationScroll(intentId);
+      if (!guard()) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return await settleStaleAfterMovement();
+      }
+      const verificationTarget = content.takeDestinationLanding(intentId);
+      if (verificationTarget === undefined) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return { kind: await compensateToOrigin() };
+      }
+      const completion = await this.pdfReader.restoreViewportLanding(
+        verificationTarget,
+        guard,
+        targetTransform,
+        "center",
+        fenceForRawActivity,
+      );
+      if (completion.kind === "staleOrCancelled" || !guard()) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return await settleStaleAfterMovement();
+      }
+      if (completion.kind !== "verified" && completion.kind !== "constrainedEdgeVerified") {
+        this.navigationHistory.rollback(prepared.transaction);
+        return { kind: await compensateToOrigin() };
+      }
+      const displayed = this.captureNavigationSnapshot();
+      const finalVerificationTarget = completion.kind === "constrainedEdgeVerified" ? completion.expected : verificationTarget;
+      if (displayed === undefined) {
+        this.navigationHistory.rollback(prepared.transaction);
+        return { kind: await compensateToOrigin() };
+      }
+      const historyResult = this.navigationHistory.commit(prepared.transaction, displayed, finalVerificationTarget);
+      if (historyResult === "same-location") return { kind: "same-location" };
+      if (historyResult !== "committed") return { kind: await compensateToOrigin() };
+      this.endSearchLandingEpoch();
+      return { kind: "verified" };
+    } finally {
+      if (observesRawActivity) {
+        for (const event of rawActivityEvents) this.options.canvasHost.removeEventListener(event, fenceForRawActivity);
+      }
+      if (destinationIntentId !== undefined) content.cancelDestination(destinationIntentId);
+      if (this.navigationLandingIntent === landingOwnerIntent) this.navigationLandingIntent = undefined;
     }
-    const historyResult = this.navigationHistory.commit(prepared.transaction, displayed, verificationTarget);
-    if (historyResult === "same-location") return { kind: "same-location" };
-    if (historyResult !== "committed") return { kind: await compensateToOrigin() };
-    this.endSearchLandingEpoch();
-    return requestedPoint === undefined
-      ? { kind: "verified" }
-      : { kind: "verified", point: { pageNumber: page, ...requestedPoint } };
   }
   private endSearchLandingEpoch(): void {
     this.searchLandingEpochActive = false;

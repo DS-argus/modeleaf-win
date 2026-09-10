@@ -73,10 +73,10 @@ If update checking fails — no network, unreachable server, unexpected response
 
 ## Data
 
-Modeleaf stores exactly three things at `%LOCALAPPDATA%\com.dsargus.modeleaf\state.json`:
+Modeleaf currently owns two fields in `%LOCALAPPDATA%\com.dsargus.modeleaf\state.json`:
 
 1. Your selected theme
 2. Your recent files list
-3. Your link-destination indicator preference
 
+The destination indicator is retired. Any old indicator preference remains preserved as unknown metadata during unrelated state updates; it is not applied or edited by the current app.
 It does not store windows, sessions, tabs, page positions, zoom, rotation, history, or table-of-contents state. Every reading session starts clean by design.

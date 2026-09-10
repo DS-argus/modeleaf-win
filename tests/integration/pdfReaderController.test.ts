@@ -934,7 +934,13 @@ describe("PdfReaderController", () => {
       resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 },
       canvasHost: host,
-      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onCommitted: vi.fn(),
+      onPage: () => {
+        for (const frame of host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+          Object.defineProperty(frame, "offsetTop", { configurable: true, get: () => Number.parseFloat(frame.style.top) });
+        }
+      },
+      onStatus: vi.fn(),
     });
 
     await controller.open(1);
@@ -957,6 +963,147 @@ describe("PdfReaderController", () => {
     expect(outcome.landing).toEqual(outcome.expected);
     expect(outcome.expected).toEqual(controller.captureViewportLanding());
     expect(outcome.expected).toMatchObject({ pageIndex: 4, x: expect.any(Number), y: expect.any(Number) });
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("keeps a newer raw scroll when canonical landing loses final-window ownership", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const delayedNeighbor = deferred<void>();
+    const neighborRenderEntered = deferred<void>();
+    const cancelNeighbor = vi.fn();
+    const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
+      if (pageNumber !== 2) return page(pageNumber);
+      const neighbor = page(pageNumber, delayedNeighbor.promise, cancelNeighbor);
+      return {
+        ...neighbor,
+        render: (options) => {
+          neighborRenderEntered.resolve();
+          return neighbor.render(options);
+        },
+      };
+    });
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 20 }, clientHeight: { configurable: true, value: 30 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const statuses: string[] = [];
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("landing-raw-scroll", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(4, getPage))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (message) => statuses.push(message),
+    });
+
+    await controller.open(1);
+    const callerGuard = vi.fn(() => true);
+    const onViewportOwnershipLost = vi.fn();
+    const landing = controller.restoreViewportLanding(
+      { pageIndex: 0, x: 20, y: 30 }, callerGuard, undefined, "center", onViewportOwnershipLost,
+    );
+    await neighborRenderEntered.promise;
+    expect({ scrollLeft: host.scrollLeft, scrollTop: host.scrollTop }).toEqual({ scrollLeft: 10, scrollTop: 15 });
+    expect(resources.snapshot().totals.render).toBe(1);
+
+    const newerOffsets = { scrollLeft: 321, scrollTop: 654 };
+    host.scrollLeft = newerOffsets.scrollLeft;
+    host.scrollTop = newerOffsets.scrollTop;
+    delayedNeighbor.resolve();
+
+    await expect(landing).resolves.toEqual({ kind: "staleOrCancelled" });
+    expect(onViewportOwnershipLost).toHaveBeenCalledOnce();
+    expect(callerGuard).toHaveBeenCalled();
+    expect(callerGuard.mock.results.every((result) => result.type === "return" && result.value === true)).toBe(true);
+    expect({ scrollLeft: host.scrollLeft, scrollTop: host.scrollTop }).toEqual(newerOffsets);
+    expect(cancelNeighbor).not.toHaveBeenCalled();
+    expect(statuses).not.toContain("PDF viewport page 2 could not be materialized.");
+    expect(statuses.some((message) => message.startsWith("PDF viewport landing failed:"))).toBe(false);
+    expect(controller.residentPageNumbers()).toEqual([1]);
+    expect(resources.snapshot().totals.render).toBe(0);
+    expect(resources.snapshot().totals["canvas-bytes"]).toBe(20 * 30 * 4);
+    await controller.dispose();
+    resources.assertEmpty();
+  });
+  it("restores a constrained landing after owned mixed-height layout clamping", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const mixedHeightPage = (pageNumber: number, height: number): PdfPage => ({
+      getViewport: () => pdfViewport(1_000, height),
+      getTextContent: async () => ({ items: [] }),
+      getAnnotations: async () => [],
+      render: ({ canvas }) => {
+        canvas.dataset.page = String(pageNumber);
+        return { promise: Promise.resolve(), cancel: vi.fn() };
+      },
+    });
+    const getPage = vi.fn(async (pageNumber: number) => mixedHeightPage(pageNumber, pageNumber === 3 ? 100 : 1_000));
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    // jsdom has no layout, so bind CSSOM clamping to the controller-owned document extent.
+    const hostWidth = 1_000;
+    const hostHeight = 600;
+    let storedScrollTop = 0;
+    const layoutClamps: { readonly from: number; readonly to: number }[] = [];
+    const documentHeight = (): number => {
+      const height = Number.parseFloat(host.querySelector<HTMLElement>(":scope > .pdf-page-spacer-bottom")?.style.height ?? "");
+      return Number.isFinite(height) ? Math.max(hostHeight, height) : hostHeight;
+    };
+    const maxScrollTop = (): number => Math.max(0, documentHeight() - hostHeight);
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: hostWidth }, clientHeight: { configurable: true, value: hostHeight },
+      scrollWidth: { configurable: true, value: hostWidth }, scrollHeight: { configurable: true, get: documentHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => {
+          const clamped = Math.min(maxScrollTop(), Math.max(0, storedScrollTop));
+          if (clamped !== storedScrollTop) layoutClamps.push({ from: storedScrollTop, to: clamped });
+          storedScrollTop = clamped;
+          return storedScrollTop;
+        },
+        set: (value: number) => { storedScrollTop = Math.min(maxScrollTop(), Math.max(0, value)); },
+      },
+    });
+    const installFrameOffsets = () => {
+      for (const frame of host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+        Object.defineProperties(frame, {
+          offsetLeft: { configurable: true, get: () => Number.parseFloat(frame.style.left) || 0 },
+          offsetTop: { configurable: true, get: () => Number.parseFloat(frame.style.top) || 0 },
+        });
+      }
+    };
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("mixed-height-clamp", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, getPage))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: installFrameOffsets, onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(await controller.renderPage(2)).toBe(true);
+    const callerGuard = vi.fn(() => true);
+    const onViewportOwnershipLost = vi.fn();
+    const outcome = await controller.restoreViewportLanding(
+      { pageIndex: 1, x: 500, y: 900 }, callerGuard, undefined, "center", onViewportOwnershipLost,
+    );
+
+    expect(layoutClamps).toEqual([{ from: 1_612, to: 1_524 }]);
+    expect(outcome.kind).toBe("constrainedEdgeVerified");
+    if (outcome.kind !== "constrainedEdgeVerified") throw new Error("expected a constrained-edge landing after layout clamping");
+    expect(outcome.landing).toEqual(outcome.expected);
+    expect(host.scrollTop).toBe(1_524);
+    expect(controller.captureViewportLanding()).toEqual(outcome.expected);
+    expect(onViewportOwnershipLost).not.toHaveBeenCalled();
+    expect(callerGuard).toHaveBeenCalled();
+    expect(callerGuard.mock.results.every((result) => result.type === "return" && result.value === true)).toBe(true);
+    expect(controller.visiblePageNumbers).toEqual([2, 3]);
+    const visibleBackings = controller.visiblePageNumbers.map((pageNumber) => host.querySelector<HTMLCanvasElement>(
+      `:scope > .pdf-page-frame[data-page='${pageNumber}'] > .pdf-page-canvas-layer`,
+    ));
+    expect(visibleBackings.map((canvas) => canvas?.dataset.page)).toEqual(["2", "3"]);
+    expect(visibleBackings.every((canvas) => canvas !== null && canvas.width > 0 && canvas.height > 0)).toBe(true);
+    expect(controller.residentPageNumbers()).toEqual([1, 2, 3]);
     await controller.dispose();
     resources.assertEmpty();
   });

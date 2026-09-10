@@ -5,13 +5,13 @@ import { describe, expect, it } from "vitest";
 /**
  * Persistence boundary contract.
  *
- * `feature-spec.md` §12 and ADR 0001 permit exactly three durable fields:
- * selected theme, recent files, and the link-destination indicator. Windows,
- * sessions, tabs, pages, zoom, rotation, history, and TOC UI state are never
- * persisted. That rule is invisible at runtime until it is already broken, so
- * it is enforced here against the Rust state writer.
+ * The active state contract permits exactly two writer-owned fields: selected
+ * theme and recent files. Retired `link_destination_indicator` data and other
+ * unknown siblings survive generic atomic merges without becoming active state
+ * authority. Windows, sessions, tabs, pages, zoom, rotation, history, and TOC
+ * UI state are never persisted.
  */
-const PERMITTED_STATE_FIELDS = ["selected_theme", "recent_files", "link_destination_indicator"] as const;
+const PERMITTED_STATE_FIELDS = ["selected_theme", "recent_files"] as const;
 
 const FORBIDDEN_STATE_FIELDS = [
   "windows", "window", "sessions", "session", "tabs", "tab",
@@ -42,10 +42,10 @@ describe("durable state field contract", () => {
     expect(violations, `forbidden durable fields present: ${violations.join(", ")}`).toEqual([]);
   });
 
-  it("keeps the permitted set to exactly three fields", () => {
-    // A fourth permitted field is a product decision, not an implementation
+  it("keeps the permitted set to exactly two active fields", () => {
+    // A third writer-owned field is a product decision, not an implementation
     // detail, so widening this set must be a deliberate edit.
-    expect(PERMITTED_STATE_FIELDS).toHaveLength(3);
+    expect(PERMITTED_STATE_FIELDS).toHaveLength(2);
   });
 
   it("preserves unknown top-level fields rather than dropping them", () => {
@@ -62,7 +62,7 @@ describe("renderer persistence surface", () => {
     const commitCalls = [...mainSource.matchAll(/invoke<[^>]*>\(\s*"([a-z_]+)"/gu)].map((match) => match[1]!);
     const persistenceCalls = commitCalls.filter((name) => /commit|write|reset|record/u.test(name));
     const allowed = new Set([
-      "commit_theme_state", "commit_indicator_state", "write_default_config",
+      "commit_theme_state", "write_default_config",
       "reset_config", "record_recent", "record_diagnostic",
       "prepare_external_links", "commit_external_links", "finalize_external_links",
     ]);

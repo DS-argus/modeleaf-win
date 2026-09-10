@@ -13,7 +13,7 @@ pub mod workspace;
 use crate::commands::config::{
     ConfigReadOutcome, ConfigResetOutcome, ConfigStore, ConfigWriteOutcome,
 };
-use crate::commands::state::{LinkDestinationIndicator, StateFileError, StateFileStore};
+use crate::commands::state::StateFileStore;
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
 use open_dialog::choose_pdf_file;
@@ -245,20 +245,6 @@ fn reset_config(state: State<'_, ConfigStore>) -> ConfigResetOutcome {
     state.reset(CANONICAL_DEFAULT_CONFIG)
 }
 
-#[tauri::command]
-fn read_indicator_state(
-    state: State<'_, StateFileStore>,
-) -> Result<Option<LinkDestinationIndicator>, StateFileError> {
-    state.read_indicator()
-}
-
-#[tauri::command]
-fn commit_indicator_state(
-    state: State<'_, StateFileStore>,
-    value: LinkDestinationIndicator,
-) -> Result<(), StateFileError> {
-    state.set_link_destination_indicator(value)
-}
 #[tauri::command]
 fn read_theme_state(state: State<'_, ThemeStateManager>) -> theme_state::ThemeState {
     state.current()
@@ -1443,8 +1429,6 @@ pub fn run() {
             read_config,
             write_default_config,
             reset_config,
-            read_indicator_state,
-            commit_indicator_state,
             read_theme_state,
             commit_theme_state,
             record_diagnostic,

@@ -18,13 +18,13 @@ const snapshot = JSON.parse(readFileSync(
   "utf8",
 )) as { readonly ids: readonly string[]; readonly count: number };
 
-const RETIRED_ACTION_IDS = ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint"] as const;
+const RETIRED_ACTION_IDS = ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"] as const;
 
 describe("ActionRegistry", () => {
-  it("matches the exact frozen 50-action order with no duplicates", () => {
+  it("matches the exact frozen 49-action order with no duplicates", () => {
     expect(ACTION_IDS).toEqual(snapshot.ids);
     expect(ACTION_IDS).toHaveLength(snapshot.count);
-    expect(new Set(ACTION_IDS).size).toBe(50);
+    expect(new Set(ACTION_IDS).size).toBe(49);
     expect(ACTION_DESCRIPTORS.map(({ id }) => id)).toEqual(ACTION_IDS);
   });
 
@@ -37,13 +37,14 @@ describe("ActionRegistry", () => {
     }
 
     const assignedSequences = new Set(Object.values(DEFAULT_BINDINGS).flat());
-    for (const sequence of ["t", "J", "K", "f", "y", "yy", "of"]) {
+    for (const sequence of ["t", "J", "K", "f", "y", "yy", "of", "I"]) {
       expect(assignedSequences.has(sequence)).toBe(false);
     }
     expect(DEFAULT_BINDINGS["scroll.down"]).toContain("j");
     expect(DEFAULT_BINDINGS["scroll.up"]).toContain("k");
     expect(DEFAULT_BINDINGS["view.fitPage"]).toEqual(["F"]);
-    expect(DEFAULT_BINDINGS["indicator.picker"]).toEqual(["I"]);
+    expect(DEFAULT_BINDINGS["history.back"]).toEqual(["<A-Left>"]);
+    expect(DEFAULT_BINDINGS["history.forward"]).toEqual(["<A-Right>"]);
     expect(DEFAULT_BINDINGS["document.open"]).toEqual(["<C-S-o>"]);
     expect(DEFAULT_BINDINGS["document.open"]).not.toContain("<C-o>");
   });
@@ -55,7 +56,7 @@ describe("ActionRegistry", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(46);
+    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(45);
   });
 
   it("exposes exactly four input contexts and context-scoped availability", () => {

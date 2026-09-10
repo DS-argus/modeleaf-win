@@ -1,5 +1,7 @@
 # Windows UX 명세
 
+> Issue #53 owner-approved Windows UX는 ordinary internal/external PDF clicks와 native authorization을 유지하고 embedded TOC, `f` keyboard hints와 destination indicator/settings를 제외한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하며, visible landing pages를 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. Current registry는 49 actions(45 configurable + 4 fixed)이며 `t`/`J`/`K`/`f`/`I`는 미할당이다.
+
 ## 1. 디자인 방향
 
 Modeleaf는 “일반적인 Windows PDF suite”가 아니라 문서를 중심에 둔 keyboard-first 읽기 도구다.
@@ -27,7 +29,7 @@ custom titlebar는 첫 릴리스 범위에서 제외한다. native titlebar 아�
 | compact active tab minimum | `120px` |
 | active PDF focus ring | `1px` |
 | prompt preferred / max / min width | `480 / 520 / 360px` |
-| TOC width / row / footer | `max 300 / 20 / 24px`; 실제 width는 `min(300px, pane width - 24px)`; 높이는 owning pane의 최대 50% |
+| retired TOC / indicator geometry | TOC `max 300 / 20 / 24px`와 indicator capture는 재개발 reference에만 보존; current Windows surface 없음 |
 | prompt height | `42px` |
 
 근거는 [`WindowVisualMetrics.swift`](../../PDFReaderApp/Window/WindowVisualMetrics.swift), [`TabBarView.swift`](../../PDFReaderApp/Window/TabBarView.swift)다.
@@ -96,12 +98,15 @@ Windows 차이:
 - nested layout의 accessible label은 `Left`, `Right`, `Top`, `Bottom`, `Top Left`처럼 위치를 설명한다.
 - divider는 separator role과 orientation, value/min/max를 노출하고 keyboard 이동을 지원한다.
 
-Layout 변경, divider drag, window resize가 시작되면 link hint와 destination indicator를 즉시 dismiss한다.
+Layout 변경, window resize, raw user scroll 또는 newer navigation은 in-flight point-destination transaction을 supersede하며 stale success/history publication을 허용하지 않는다.
 
 ## 6. PDF surface
 
 - page background, 12px page break 느낌, shadow를 유지한다.
 - PDF pixel layer에 theme filter/blend/invert를 적용하지 않는다.
+- point destination은 가능한 viewport 중앙에 보이고 document edge에서는 실제 bounds로 clamp한다.
+- internal-link success 시점에는 별도 scroll 없이 결과 viewport와 교차하는 page raster/text가 bounded resident policy 안에서 준비돼 있어야 한다.
+- destination indicator나 keyboard link-hint overlay를 표시하지 않는다.
 - text selection은 native cursor와 selection UX를 사용한다.
 - annotation link 위에서는 pointer cursor를 보인다.
 - context menu는 선택이 있으면 Copy만, 없으면 빈 allowlist를 보인다.
@@ -111,8 +116,9 @@ Layout 변경, divider drag, window resize가 시작되면 link hint와 destinat
 HiDPI acceptance:
 
 - 100/125/150/200%에서 canvas는 선명하다.
-- text selection, annotation hit box, search highlight, hint label, indicator가 같은 위치를 가리킨다.
+- text selection, annotation hit box와 search highlight가 같은 위치를 가리킨다.
 - 다른 DPI monitor로 window를 이동한 후에도 다음 render generation에서 모두 재계산된다.
+- finite `XYZ` point의 attainable midpoint와 document-edge clamp는 rotation/DPI 변경 뒤에도 canonical actual landing으로 계산된다.
 
 ## 7. Status bar
 
@@ -148,9 +154,7 @@ Transient overlay 종류:
 - search prompt/results mode
 - help
 - theme picker
-- link indicator picker
 - update instructions
-- link hint overlay
 
 공통 규칙:
 
@@ -171,7 +175,7 @@ type OverlayState = {
 };
 ```
 
-TOC는 이 modal owner stack과 별개인 non-focus pane overlay다. modal을 열 때 TOC의 pending numeric input은 취소하지만 TOC visibility는 owning pane state로 유지한다.
+TOC, keyboard link hint와 destination indicator는 current overlay-owner graph에 포함하지 않는다. 퇴역 surface의 hidden focus owner나 Escape handler를 남기지 않는다.
 
 ## 9. Command palette
 
@@ -231,15 +235,11 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 
 기준 이미지: [`ui/03-theme-picker.png`](./ui/03-theme-picker.png).
 
-## 13. Link indicator picker
+## 13. Retired Link indicator picker (재개발 reference)
 
-- style, color, size, duration을 preview/commit/cancel model로 편집한다.
-- slider/input은 accessible label, current value, min/max를 노출한다.
-- custom hex는 `#RRGGBB`만 허용한다.
-- preview는 PDF 목적지로 실제 이동하지 않고 picker 안의 sample 또는 현재 safe viewport에만 그린다.
-- Esc는 모든 settings를 open 전 값으로 rollback한다.
+> Issue #53 owner amendment로 picker/action/default `I`, settings model, preview UI와 native state API를 current Windows 제품에서 제거한다. 기존 user config/state를 자동 rewrite하거나 저장된 indicator JSON을 삭제하지 않으며, unknown state sibling으로만 보존한다.
 
-기준 이미지: [`ui/04-link-indicator-picker-shift-i.png`](./ui/04-link-indicator-picker-shift-i.png).
+아래 macOS baseline UX는 current acceptance가 아니다: style/color/size/duration preview, `#RRGGBB` validation, commit/cancel rollback과 `ui/04-link-indicator-picker-shift-i.png`. 마지막 Windows implementation/tests는 `dedcff8513e034efb904ef7d50fd59cc11444798`의 [deferred reference](./deferred-toc-link-hints.md)에 보존한다.
 
 ## 14. Help
 
@@ -252,18 +252,18 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 - tab selection row는 `Ctrl+1..9`로 collapse 가능
 - `?`는 navigation context에서 열고 Esc로 닫는다.
 
-## 15. Link hints와 destination indicator
+## 15. Ordinary links; retired hints and destination indicator
 
-> Issue #53: `f` label/input UI는 현재 Windows에서 제거한다. 일반 PDF 링크 클릭 및 목적지 indicator는 유지한다. 아래 hint 전용 표현은 재개발 참조이며 현재 지원 기능이 아니다.
+> Issue #53: ordinary PDF annotation clicks와 native authorization은 유지한다. `f` link hints와 destination indicator는 current Windows UI가 아니며 `f`/`I`를 routing하지 않는다.
 
-- PDF surface 위 transparent overlay다.
-- visible annotation links만 labels를 갖는다.
-- lower-case ASCII label을 사용하고 matching prefix는 강조, non-match는 dim한다.
-- plain/Shift/Caps ASCII letter는 lowercase label 입력으로 normalize한다. Ctrl/Alt/Meta/AltGraph, IME/composition, keyCode 229, dead/process/unidentified, non-letter input은 받지 않는다.
-- exact duplicate가 아닌 rectangles는 겹쳐 보여도 별도 labels다.
-- scroll/wheel/pinch/zoom/rotate/resize/divider drag/tab/pane switch에서 dismiss한다.
-- destination indicator는 successful point GoTo에만 보이고 timeout 후 사라진다.
-- high contrast theme에서도 outline이 식별 가능해야 한다.
+- internal `XYZ` link의 finite 축은 rotation-aware viewport midpoint를 목표로 하고 unspecified axis는 기존 canonical 축을 보존한다. 실제 scroll은 document edge에서 clamp한다.
+- `Fit`/`FitB`는 page-fit, `FitR`은 rectangle-fit placement를 유지한다.
+- destination scroll settlement 뒤 결과 viewport와 교차하는 page들을 existing resident/resource bound 안에서 materialize한 후에만 success/history를 commit한다.
+- edge clamp 뒤 actual landing이 history authority이고 newer navigation, lifecycle change 또는 raw user scroll은 stale landing work를 fence한다.
+- failed/cancelled landing은 history나 newer input을 덮지 않으며 manual/synthetic scroll, detached repair 또는 unbounded residency로 보정하지 않는다.
+- destination indicator, hint labels/overlay, settings picker, timer와 indicator-specific focus/Escape behavior는 없어야 한다. Search highlight와 focus ring은 그대로 유지한다.
+
+macOS hint/indicator UX와 captures는 current support가 아니라 [deferred redevelopment reference](./deferred-toc-link-hints.md)다. 마지막 Windows source/tests는 hints `7e00424d30c5ffeab5a846d087236371644af53a`, indicator `dedcff8513e034efb904ef7d50fd59cc11444798`에서 조회한다.
 
 ## 16. Embedded outline TOC
 
@@ -326,16 +326,15 @@ recentFilesOpenOverlay
 promptOverlay
 helpOverlay
 themePickerOverlay
-indicatorPickerOverlay
-linkHintOverlay
-tocWidget
 ```
+
+Retired `indicatorPickerOverlay`, `linkHintOverlay`와 `tocWidget` ID는 current DOM/accessibility tree에 존재하지 않아야 한다.
 
 필수 수동 검사:
 
 - Narrator가 active window/pane/tab, page, zoom, mode, diagnostic을 읽는다.
 - Tab/Shift+Tab 순서가 예측 가능하고 focus trap에서 빠져나오지 않는다.
-- keyboard만으로 Open, search, link hint, TOC toggle/scroll/numeric jump, split/focus/unsplit, print가 가능하다.
+- keyboard만으로 Open, search, scroll/fit, history와 print를 실행할 수 있다. Ordinary annotation link target은 pointer와 applicable accessible activation semantics를 유지한다.
 - Windows high contrast/forced colors에서 text, selected row, focus ring이 보인다.
 - 200% text scaling에서 overlay action이 잘리지 않는다.
 
@@ -354,4 +353,5 @@ tocWidget
 - DPI 변경 후 link/search layer가 1 CSS px 이상 어긋남
 - split 최소 크기에서 tab/status/prompt 핵심 action이 접근 불가능
 - high contrast에서 focus/selected/error 상태를 구분할 수 없음
-- inactive pane가 numeric/`J`/`K`/`Esc`를 받거나 TOC가 PDF canvas 아래로 내려감
+- point link가 attainable viewport center/document-edge clamp를 지키지 않거나 visible landing pages가 준비되기 전에 success를 보고함
+- retired TOC/hint/indicator action, overlay, style, timer 또는 accessible landmark가 current UI에 다시 나타남

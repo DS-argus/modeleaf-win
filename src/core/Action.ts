@@ -25,7 +25,6 @@ export type Action =
   | { readonly type: "tab.previous" }
   | { readonly type: "theme.open" }
   | { readonly type: "config.reload" }
-  | { readonly type: "indicator.open" }
   | { readonly type: "update.show" }
   | { readonly type: "application.quit" }
   | { readonly type: "search.open" }

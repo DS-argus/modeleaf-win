@@ -177,7 +177,7 @@ Object.assign(window, { readerHarness: {
     let retiredStyleTokens: string[] = [];
     try {
       const stylesheetText = [...document.styleSheets].flatMap((sheet) => [...sheet.cssRules].map((rule) => rule.cssText)).join("\n");
-      retiredStyleTokens = [".toc-widget", ".pdf-link-hint", ".pdf-link-hints-active"].filter((token) => stylesheetText.includes(token));
+      retiredStyleTokens = [".toc-widget", ".pdf-link-hint", ".pdf-link-hints-active", ".pdf-destination-indicator"].filter((token) => stylesheetText.includes(token));
       requireInvariant(retiredStyleTokens.length === 0, `Retired reader styling remains loaded: ${retiredStyleTokens.join(", ")}`);
       linkSession = new PdfTabSession({
         native: {
@@ -254,9 +254,9 @@ Object.assign(window, { readerHarness: {
       "Link overlays did not publish from the two-page fixture");
       const overlayMilliseconds = performance.now() - started;
       const overlays = [...linkHost.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay")];
-      const retiredSessionApi = ["toggleHints", "cancelHints", "handleHintKey", "hintsVisible", "visibleLinkCount", "linkDecorationsVisible", "dismissLinkDecorations"].filter((name) => name in linkSession);
-      const retiredSnapshotFields = ["hintsVisible", "visibleLinkCount"].filter((name) => name in linkSession.snapshot.content);
-      requireInvariant(retiredSessionApi.length === 0 && retiredSnapshotFields.length === 0, `Retired hint API remains: ${[...retiredSessionApi, ...retiredSnapshotFields].join(", ")}`);
+      const retiredSessionApi = ["toggleHints", "cancelHints", "handleHintKey", "hintsVisible", "visibleLinkCount", "linkDecorationsVisible", "dismissLinkDecorations", "indicatorPublicationPending", "linkIndicatorVisible", "dismissLinkIndicator"].filter((name) => name in linkSession);
+      const retiredSnapshotFields = ["hintsVisible", "visibleLinkCount", "indicatorPublicationPending", "linkIndicatorVisible"].filter((name) => name in linkSession.snapshot.content);
+      requireInvariant(retiredSessionApi.length === 0 && retiredSnapshotFields.length === 0, `Retired reader API remains: ${[...retiredSessionApi, ...retiredSnapshotFields].join(", ")}`);
       const labels = overlays.map((overlay) => overlay.getAttribute("aria-label"));
       requireInvariant(overlays.length === 4, `Expected four supported ordinary link overlays, found ${overlays.length}`);
       requireInvariant(labels.join("|") === "PDF link 1|PDF link 2|PDF link 3|PDF link 4", `Unexpected visible link order: ${labels.join(", ")}`);
@@ -266,6 +266,7 @@ Object.assign(window, { readerHarness: {
         linkHints: linkHost.querySelectorAll(".pdf-link-hint").length,
         hintActiveLayers: linkHost.querySelectorAll(".pdf-link-hints-active").length,
         hintDataAttributes: linkHost.querySelectorAll("[data-hint-label], [data-hint-target]").length,
+        destinationIndicators: linkHost.querySelectorAll(".pdf-destination-indicator").length,
       };
       requireInvariant(Object.values(retiredDom).every((count) => count === 0), `Retired reader UI was published: ${JSON.stringify(retiredDom)}`);
 
@@ -285,9 +286,10 @@ Object.assign(window, { readerHarness: {
       "Clicking PDF link 2 did not verify page-two navigation and history");
       const pageAfterClick = linkSession.snapshot.reader.page;
       const canHistoryBackAfterClick = linkSession.canHistoryBack;
-      await waitFor(() => linkSession!.linkIndicatorVisible, "Verified point-link indicator was not published");
-      linkSession.dismissLinkIndicator();
-      requireInvariant(!linkSession.linkIndicatorVisible, "Destination indicator did not dismiss through the retired-feature replacement API");
+      await frame();
+      await frame();
+      const destinationIndicatorsAfterClick = linkHost.querySelectorAll(".pdf-destination-indicator").length;
+      requireInvariant(destinationIndicatorsAfterClick === 0, "Retired destination indicator was published after internal navigation");
 
       const historyBack = await linkSession.navigateHistoryBack();
       const pageAfterBack = linkSession.snapshot.reader.page;
@@ -313,7 +315,7 @@ Object.assign(window, { readerHarness: {
           outcomes: [...internalNavigations],
           pageAfterClick,
           canHistoryBackAfterClick,
-          indicatorPublishedAndDismissed: true,
+          destinationIndicatorsAfterClick,
           historyBack: historyBack.kind,
           pageAfterBack,
           historyForward: historyForward.kind,
@@ -332,6 +334,348 @@ Object.assign(window, { readerHarness: {
     requireInvariant(nativeCancelCalls === 1 && nativeCloseCalls === 1, `Link native teardown count was ${nativeCancelCalls}/${nativeCloseCalls}`);
     requireInvariant(activeRegistryRevision === undefined && registries.size === 0, "In-memory external-link authority survived teardown");
     requireInvariant(scenario !== undefined, "Link scenario did not produce measurements");
+    return {
+      ...scenario!,
+      teardown: { nativeCancelCalls, nativeCloseCalls, reservationCount: settledResources.reservationCount },
+      disposed: true,
+    };
+  },
+  async runLinkLanding() {
+    const landingFixture = "link-landing-3-page.pdf";
+    const landingResponse = await fetch(`/fixtures/pdf/${landingFixture}`);
+    requireInvariant(landingResponse.ok, `Link landing fixture load failed: ${landingResponse.status}`);
+    const landingBytes = new Uint8Array(await landingResponse.arrayBuffer());
+    await finish();
+    host.hidden = true;
+
+    const landingHost = document.createElement("section");
+    landingHost.className = "reader-surface tab-host";
+    landingHost.tabIndex = 0;
+    landingHost.style.cssText = "width:800px;height:600px;box-sizing:border-box";
+    document.body.append(landingHost);
+    const landingResources = new ResourceReservationManager();
+    const landingStatuses: string[] = [];
+    const landingRegistries = new Map<number, number>();
+    const landingNavigations: LandingNavigation[] = [];
+    const landingOpened = { sessionId: "headless-link-landing", documentGeneration: 1, length: landingBytes.length, displayName: landingFixture };
+    let landingSession: PdfTabSession | undefined;
+    let activeLandingRegistry: number | undefined;
+    let nativeCancelCalls = 0;
+    let nativeCloseCalls = 0;
+    let scenario: Record<string, unknown> | undefined;
+    type LandingNavigation = {
+      readonly page: number;
+      readonly destination: readonly unknown[];
+      readonly outcome: Awaited<ReturnType<PdfTabSession["navigateToDestination"]>>;
+    };
+    let pendingNavigation: {
+      readonly resolve: (navigation: LandingNavigation) => void;
+      readonly reject: (error: unknown) => void;
+      readonly timer: ReturnType<typeof setTimeout>;
+    } | undefined;
+    const waitFor = async (condition: () => boolean, message: string) => {
+      const deadline = performance.now() + 30_000;
+      while (!condition()) {
+        requireInvariant(performance.now() < deadline, `${message}: ${JSON.stringify({ page: landingSession?.snapshot.reader.page, frames: [...landingHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((page) => page.dataset.page), statuses: landingStatuses })}`);
+        await frame();
+      }
+    };
+    const armNavigation = (): Promise<LandingNavigation> => {
+      requireInvariant(pendingNavigation === undefined, "Link landing callback waiter was already armed");
+      return new Promise<LandingNavigation>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (pendingNavigation?.resolve === resolve) pendingNavigation = undefined;
+          reject(new Error("Link landing navigation callback timed out"));
+        }, 30_000);
+        pendingNavigation = { resolve, reject, timer };
+      });
+    };
+    const settlePendingNavigation = (pending: NonNullable<typeof pendingNavigation>, navigation?: LandingNavigation, error?: unknown): void => {
+      clearTimeout(pending.timer);
+      if (pendingNavigation === pending) pendingNavigation = undefined;
+      if (navigation !== undefined) pending.resolve(navigation);
+      else pending.reject(error ?? new Error("Link landing navigation failed"));
+    };
+    const dataNumber = (canvas: HTMLCanvasElement, key: "scale" | "rotation" | "naturalHeight" | "devicePixelRatio"): number => {
+      const value = Number(canvas.dataset[key]);
+      requireInvariant(Number.isFinite(value), `Page ${canvas.dataset.page ?? "?"} canvas has invalid data-${key}`);
+      return value;
+    };
+    const pointGeometry = (pageNumber: number, point: { readonly x: number; readonly y: number }) => {
+      const pageFrame = landingHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${pageNumber}']`);
+      requireInvariant(pageFrame !== null, `Page ${pageNumber} frame was not materialized`);
+      const canvas = pageFrame!.querySelector<HTMLCanvasElement>(`:scope > canvas[data-page='${pageNumber}']`);
+      requireInvariant(canvas !== null && Number(canvas.dataset.page) === pageNumber, `Page ${pageNumber} raster canvas was not materialized`);
+      const scale = dataNumber(canvas!, "scale");
+      const rotation = dataNumber(canvas!, "rotation");
+      const naturalHeight = dataNumber(canvas!, "naturalHeight");
+      requireInvariant(scale > 0 && naturalHeight > 0 && rotation === 0, `Unexpected page ${pageNumber} canvas geometry`);
+      const targetDocument = {
+        x: pageFrame!.offsetLeft + canvas!.offsetLeft + point.x * scale,
+        y: pageFrame!.offsetTop + canvas!.offsetTop + (naturalHeight - point.y) * scale,
+      };
+      const midpoint = { x: landingHost.clientWidth / 2, y: landingHost.clientHeight / 2 };
+      const maximumScroll = {
+        x: Math.max(0, landingHost.scrollWidth - landingHost.clientWidth),
+        y: Math.max(0, landingHost.scrollHeight - landingHost.clientHeight),
+      };
+      const desiredScroll = { x: targetDocument.x - midpoint.x, y: targetDocument.y - midpoint.y };
+      const achievableScroll = {
+        x: Math.min(maximumScroll.x, Math.max(0, desiredScroll.x)),
+        y: Math.min(maximumScroll.y, Math.max(0, desiredScroll.y)),
+      };
+      const axisClamp = (desired: number, maximum: number): "start" | "end" | "none" =>
+        desired < -1 ? "start" : desired > maximum + 1 ? "end" : "none";
+      const clamp = { x: axisClamp(desiredScroll.x, maximumScroll.x), y: axisClamp(desiredScroll.y, maximumScroll.y) };
+      const targetViewport = { x: targetDocument.x - landingHost.scrollLeft, y: targetDocument.y - landingHost.scrollTop };
+      const achievableViewport = { x: targetDocument.x - achievableScroll.x, y: targetDocument.y - achievableScroll.y };
+      const error = { x: Math.abs(targetViewport.x - achievableViewport.x), y: Math.abs(targetViewport.y - achievableViewport.y) };
+      requireInvariant(Math.abs(landingHost.scrollLeft - achievableScroll.x) <= 1 && Math.abs(landingHost.scrollTop - achievableScroll.y) <= 1,
+        `Page ${pageNumber} target did not reach its achievable scroll position: ${JSON.stringify({ desiredScroll, achievableScroll, actual: { x: landingHost.scrollLeft, y: landingHost.scrollTop } })}`);
+      requireInvariant(error.x <= 1 && error.y <= 1, `Page ${pageNumber} target missed its achievable viewport point: ${JSON.stringify(error)}`);
+      if (clamp.x === "none") requireInvariant(Math.abs(targetViewport.x - midpoint.x) <= 1, `Page ${pageNumber} target was not horizontally centered`);
+      if (clamp.y === "none") requireInvariant(Math.abs(targetViewport.y - midpoint.y) <= 1, `Page ${pageNumber} target was not vertically centered`);
+      requireInvariant(targetViewport.x >= -1 && targetViewport.x <= landingHost.clientWidth + 1
+        && targetViewport.y >= -1 && targetViewport.y <= landingHost.clientHeight + 1,
+      `Page ${pageNumber} target is outside viewport bounds: ${JSON.stringify(targetViewport)}`);
+      return {
+        point,
+        canvas: { page: Number(canvas!.dataset.page), scale, rotation, naturalHeight },
+        targetDocument,
+        targetViewport,
+        midpoint,
+        viewportBounds: { left: 0, top: 0, right: landingHost.clientWidth, bottom: landingHost.clientHeight },
+        desiredScroll,
+        achievableScroll,
+        actualScroll: { x: landingHost.scrollLeft, y: landingHost.scrollTop },
+        maximumScroll,
+        clamp,
+        error,
+      };
+    };
+    const assertXyzDestination = (navigation: LandingNavigation, page: number, x: number, y: number): void => {
+      const mode = navigation.destination[1];
+      const name = typeof mode === "object" && mode !== null && "name" in mode
+        ? String((mode as { readonly name?: unknown }).name)
+        : String(mode ?? "");
+      requireInvariant(navigation.page === page && name === "XYZ"
+        && navigation.destination[2] === x && navigation.destination[3] === y,
+      `Unexpected page ${page} XYZ callback destination: ${JSON.stringify(navigation.destination)}`);
+    };
+    const clickLink = (label: string): Promise<LandingNavigation> => {
+      const button = landingHost.querySelector<HTMLButtonElement>(`.pdf-link-overlay[aria-label='${label}']`)!;
+      requireInvariant(button.isConnected && button.type === "button" && !button.disabled, `${label} is not an active annotation button`);
+      const navigation = armNavigation();
+      button.click();
+      return navigation;
+    };
+
+    try {
+      landingSession = new PdfTabSession({
+        native: {
+          openPdfDialog: async () => landingOpened,
+          cancelSession: async (metadata) => {
+            requireInvariant(metadata.sessionId === landingOpened.sessionId, "Link landing cancellation targeted the wrong native session");
+            nativeCancelCalls += 1;
+            return { barrierId: 7 };
+          },
+          closeSession: async (metadata, barrierId) => {
+            requireInvariant(metadata.sessionId === landingOpened.sessionId && barrierId === 7, "Link landing close authority was invalid");
+            nativeCloseCalls += 1;
+            activeLandingRegistry = undefined;
+            landingRegistries.clear();
+          },
+        },
+        pdf: {
+          annotationMode: AnnotationMode.DISABLE,
+          getDocument: (options) => getDocument({ ...options, url: undefined, range: undefined, data: landingBytes.slice() }) as unknown as PdfLoadingTask,
+        },
+        resources: landingResources,
+        canvasHost: landingHost,
+        createContentOptions: () => ({
+          onSearchResults: () => undefined,
+          requestSearchLanding: async () => { throw new Error("Search is outside the link landing scenario"); },
+          navigateToPage: () => { throw new Error("Page commands are outside the link landing scenario"); },
+          navigateToDestination: async (page, destination, cause, guard) => {
+            const pending = pendingNavigation;
+            requireInvariant(pending !== undefined, "Internal annotation navigation bypassed the awaited callback");
+            if (landingSession === undefined) {
+              const outcome = { kind: "rejected" as const };
+              settlePendingNavigation(pending!, { page, destination: [...destination], outcome });
+              return outcome;
+            }
+            try {
+              const outcome = await landingSession.navigateToDestination(page, destination, cause, guard);
+              const navigation = { page, destination: [...destination], outcome };
+              landingNavigations.push(navigation);
+              settlePendingNavigation(pending!, navigation);
+              return outcome;
+            } catch (error) {
+              settlePendingNavigation(pending!, undefined, error);
+              throw error;
+            }
+          },
+          resolveDestinationPage: async (reference) => landingSession?.resolveDestinationPage(reference) ?? null,
+          prepareExternalLinks: async (entries, registryRevision) => {
+            requireInvariant(entries.length === 0, "Internal-only landing fixture published external link authority");
+            landingRegistries.set(registryRevision, entries.length);
+          },
+          commitExternalLinks: async (registryRevision) => {
+            requireInvariant(landingRegistries.has(registryRevision), `Landing registry ${registryRevision} committed before preparation`);
+            activeLandingRegistry = registryRevision;
+          },
+          finalizeExternalLinks: async (registryRevision) => {
+            requireInvariant(landingRegistries.has(registryRevision), `Landing registry ${registryRevision} finalized without authority`);
+          },
+          abortExternalLinks: async (registryRevision) => {
+            landingRegistries.delete(registryRevision);
+            if (activeLandingRegistry === registryRevision) activeLandingRegistry = undefined;
+          },
+          openExternal: async () => { throw new Error("Internal-only landing fixture attempted external activation"); },
+        }),
+        onStatus: (status) => { if (landingStatuses.at(-1) !== status) landingStatuses.push(status); },
+      });
+
+      await publishActivateAndAdoptPdfTab(() => undefined, landingSession, () => landingSession!.adopt(landingOpened, 1));
+      await landingSession.activate();
+      await waitFor(() => landingSession!.snapshot.reader.page === 1
+        && landingSession!.snapshot.reader.pageCount === 3
+        && landingHost.querySelectorAll<HTMLButtonElement>('.pdf-link-overlay[aria-label^="PDF link "]').length === 3,
+      "Landing annotations did not publish from page one");
+      requireInvariant(landingHost.clientHeight === 600, `Link landing viewport height is ${landingHost.clientHeight}, expected 600`);
+      const labels = [...landingHost.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay")].map((button) => button.getAttribute("aria-label"));
+      requireInvariant(labels.join("|") === "PDF link 1|PDF link 2|PDF link 3", `Unexpected landing link order: ${labels.join(", ")}`);
+      const page3ResidentBeforeClick = landingHost.querySelector(":scope > .pdf-page-frame[data-page='3']") !== null;
+      requireInvariant(!page3ResidentBeforeClick, "Page three was already resident before the fresh-page link click");
+      const retiredIndicatorApi = ["indicatorPublicationPending", "linkIndicatorVisible", "dismissLinkIndicator"].filter((name) => name in landingSession!);
+      requireInvariant(retiredIndicatorApi.length === 0 && landingHost.querySelector(".pdf-destination-indicator") === null,
+        `Retired destination indicator surface remains: ${retiredIndicatorApi.join(", ")}`);
+
+      const centeredNavigation = await clickLink("PDF link 1");
+      assertXyzDestination(centeredNavigation, 2, 306, 40);
+      requireInvariant(centeredNavigation.outcome.kind === "verified" && centeredNavigation.page === 2,
+        `Centered annotation outcome was ${centeredNavigation.outcome.kind} on page ${centeredNavigation.page}`);
+      const centered = pointGeometry(2, { x: 306, y: 40 });
+      requireInvariant(centered.clamp.y === "none", `Interior page-two target was unexpectedly clamped: ${centered.clamp.y}`);
+      requireInvariant(landingSession.snapshot.reader.page === 2 && landingSession.canHistoryBack && !landingSession.canHistoryForward,
+        "Centered link did not commit canonical page-two history");
+
+      const page3Frame = landingHost.querySelector<HTMLElement>(":scope > .pdf-page-frame[data-page='3']");
+      requireInvariant(page3Frame !== null, "Centered landing returned before page three materialized");
+      const page3Canvas = page3Frame!.querySelector<HTMLCanvasElement>(":scope > canvas[data-page='3']");
+      requireInvariant(page3Canvas !== null && page3Canvas.width > 0 && page3Canvas.height > 0, "Visible page three has no committed raster canvas");
+      const page3Scale = dataNumber(page3Canvas!, "scale");
+      const page3Rotation = dataNumber(page3Canvas!, "rotation");
+      const page3NaturalHeight = dataNumber(page3Canvas!, "naturalHeight");
+      const page3Dpr = dataNumber(page3Canvas!, "devicePixelRatio");
+      requireInvariant(page3Rotation === 0 && page3Scale > 0 && page3NaturalHeight > 0 && page3Dpr >= 1, "Page three raster metadata is invalid");
+      const page3Top = page3Frame!.offsetTop - landingHost.scrollTop;
+      const page3Bottom = page3Top + page3Frame!.offsetHeight;
+      requireInvariant(page3Bottom > 0 && page3Top < landingHost.clientHeight, `Page three is not visible after centered landing: ${page3Top}-${page3Bottom}`);
+      const markerViewport = {
+        x: page3Frame!.offsetLeft + page3Canvas!.offsetLeft + 60 * page3Scale - landingHost.scrollLeft,
+        y: page3Frame!.offsetTop + page3Canvas!.offsetTop + (page3NaturalHeight - 674) * page3Scale - landingHost.scrollTop,
+      };
+      requireInvariant(markerViewport.x >= 0 && markerViewport.x <= landingHost.clientWidth
+        && markerViewport.y >= 0 && markerViewport.y <= landingHost.clientHeight,
+      `Page three raster sentinel is not visible: ${JSON.stringify(markerViewport)}`);
+      const sampleX = Math.max(0, Math.min(page3Canvas!.width - 3, Math.round(60 * page3Scale * page3Dpr) - 1));
+      const sampleY = Math.max(0, Math.min(page3Canvas!.height - 3, Math.round((page3NaturalHeight - 674) * page3Scale * page3Dpr) - 1));
+      const rasterSample = page3Canvas!.getContext("2d")!.getImageData(sampleX, sampleY, 3, 3).data;
+      const paintedPixelOffset = Array.from({ length: 9 }, (_unused, index) => index * 4).find((offset) =>
+        rasterSample[offset + 3]! > 0 && (rasterSample[offset]! < 245 || rasterSample[offset + 1]! < 245 || rasterSample[offset + 2]! < 245));
+      requireInvariant(paintedPixelOffset !== undefined, "Visible page-three raster sentinel contains no painted pixels");
+      const paintedPixel = [...rasterSample.slice(paintedPixelOffset!, paintedPixelOffset! + 4)];
+      const page3TextLayer = page3Frame!.querySelector<HTMLElement>(".pdf-page-text-layer .textLayer");
+      requireInvariant(page3TextLayer !== null && page3TextLayer.childElementCount > 0
+        && page3TextLayer.textContent?.includes("Link landing visible page three") === true,
+      "Visible page three text layer was not published before navigation success");
+      const destinationIndicatorsAfterLanding = landingHost.querySelectorAll(".pdf-destination-indicator").length;
+      requireInvariant(destinationIndicatorsAfterLanding === 0, "Retired destination indicator was published for centered landing");
+
+      const centeredBack = await landingSession.navigateHistoryBack();
+      requireInvariant(centeredBack.kind === "verifiedLanding" && landingSession.snapshot.reader.page === 1 && landingSession.canHistoryForward,
+        `Centered landing history back failed: ${centeredBack.kind}`);
+      const centeredForward = await landingSession.navigateHistoryForward();
+      requireInvariant(centeredForward.kind === "verifiedLanding" && landingSession.snapshot.reader.page === 2 && landingSession.canHistoryBack,
+        `Centered landing history forward failed: ${centeredForward.kind}`);
+      const returnToSource = await landingSession.navigateHistoryBack();
+      requireInvariant(returnToSource.kind === "verifiedLanding" && landingSession.snapshot.reader.page === 1,
+        `Could not return to source for boundary links: ${returnToSource.kind}`);
+
+      await waitFor(() => landingHost.querySelector<HTMLButtonElement>(".pdf-link-overlay[aria-label='PDF link 3']") !== null,
+        "Last-boundary annotation was not available for click");
+      const lastBoundaryNavigation = await clickLink("PDF link 3");
+      assertXyzDestination(lastBoundaryNavigation, 3, 306, 12);
+      requireInvariant(lastBoundaryNavigation.outcome.kind === "verified" && lastBoundaryNavigation.page === 3,
+        `Last-boundary annotation outcome was ${lastBoundaryNavigation.outcome.kind}`);
+      const lastBoundary = pointGeometry(3, { x: 306, y: 12 });
+      requireInvariant(lastBoundary.clamp.y === "end" && landingSession.canHistoryBack,
+        `Last-page boundary did not clamp at the document end: ${lastBoundary.clamp.y}`);
+      const lastBoundaryBack = await landingSession.navigateHistoryBack();
+      requireInvariant(lastBoundaryBack.kind === "verifiedLanding" && landingSession.snapshot.reader.page === 1,
+        `Last-boundary history back failed: ${lastBoundaryBack.kind}`);
+
+      await waitFor(() => landingHost.querySelector<HTMLButtonElement>(".pdf-link-overlay[aria-label='PDF link 2']") !== null,
+        "First-boundary annotation was not available for click");
+      const firstBoundaryNavigation = await clickLink("PDF link 2");
+      assertXyzDestination(firstBoundaryNavigation, 1, 306, 780);
+      requireInvariant((firstBoundaryNavigation.outcome.kind === "verified" || firstBoundaryNavigation.outcome.kind === "same-location")
+        && firstBoundaryNavigation.page === 1,
+      `First-boundary annotation outcome was ${firstBoundaryNavigation.outcome.kind}`);
+      const firstBoundary = pointGeometry(1, { x: 306, y: 780 });
+      requireInvariant(firstBoundary.clamp.y === "start", `First-page boundary did not clamp at the document start: ${firstBoundary.clamp.y}`);
+      let firstBoundaryBack: string | undefined;
+      if (firstBoundaryNavigation.outcome.kind === "verified") {
+        requireInvariant(landingSession.canHistoryBack, "Verified first-boundary landing did not commit history");
+        const result = await landingSession.navigateHistoryBack();
+        firstBoundaryBack = result.kind;
+        requireInvariant(result.kind === "verifiedLanding" && landingSession.snapshot.reader.page === 1,
+          `First-boundary history back failed: ${result.kind}`);
+      } else {
+        requireInvariant(landingSession.snapshot.reader.page === 1, "Same-location first boundary changed the active page");
+      }
+
+      scenario = {
+        fixture: landingFixture,
+        fixtureBytes: landingBytes.length,
+        viewport: { width: landingHost.clientWidth, height: landingHost.clientHeight },
+        labels,
+        page3ResidentBeforeClick,
+        centeredNavigation: { page: centeredNavigation.page, kind: centeredNavigation.outcome.kind },
+        centered,
+        page3: {
+          frameTop: page3Top,
+          frameBottom: page3Bottom,
+          canvas: { page: Number(page3Canvas!.dataset.page), scale: page3Scale, rotation: page3Rotation, naturalHeight: page3NaturalHeight, width: page3Canvas!.width, height: page3Canvas!.height },
+          markerViewport,
+          paintedPixel,
+          text: page3TextLayer!.textContent,
+        },
+        history: { centeredBack: centeredBack.kind, centeredForward: centeredForward.kind, returnToSource: returnToSource.kind },
+        boundaries: {
+          first: { outcome: firstBoundaryNavigation.outcome.kind, geometry: firstBoundary, historyBack: firstBoundaryBack },
+          last: { outcome: lastBoundaryNavigation.outcome.kind, geometry: lastBoundary, historyBack: lastBoundaryBack.kind },
+        },
+        indicator: { retiredApi: retiredIndicatorApi, domCount: destinationIndicatorsAfterLanding },
+        navigationCallbacks: landingNavigations.map(({ page, outcome }) => ({ page, kind: outcome.kind })),
+        statuses: [...landingStatuses],
+      };
+    } finally {
+      if (pendingNavigation !== undefined) {
+        clearTimeout(pendingNavigation.timer);
+        pendingNavigation = undefined;
+      }
+      try { await landingSession?.close(); }
+      finally { landingHost.remove(); }
+    }
+
+    const settledResources = landingResources.snapshot();
+    landingResources.assertEmpty();
+    requireInvariant(settledResources.reservationCount === 0, `Link landing retained ${settledResources.reservationCount} resources`);
+    requireInvariant(nativeCancelCalls === 1 && nativeCloseCalls === 1, `Link landing native teardown count was ${nativeCancelCalls}/${nativeCloseCalls}`);
+    requireInvariant(activeLandingRegistry === undefined && landingRegistries.size === 0, "Link landing registry authority survived teardown");
+    requireInvariant(scenario !== undefined, "Link landing scenario did not produce measurements");
     return {
       ...scenario!,
       teardown: { nativeCancelCalls, nativeCloseCalls, reservationCount: settledResources.reservationCount },

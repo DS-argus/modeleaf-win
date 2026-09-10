@@ -60,6 +60,17 @@ const streamText = (
     },
   });
 };
+const configureHostGeometry = (
+  host: HTMLElement,
+  geometry: { readonly clientWidth: number; readonly clientHeight: number; readonly scrollWidth: number; readonly scrollHeight: number },
+): void => {
+  Object.defineProperties(host, {
+    clientWidth: { configurable: true, value: geometry.clientWidth },
+    clientHeight: { configurable: true, value: geometry.clientHeight },
+    scrollWidth: { configurable: true, value: geometry.scrollWidth },
+    scrollHeight: { configurable: true, value: geometry.scrollHeight },
+  });
+};
 
 const setup = (
   pages: PdfContentPage[],
@@ -932,35 +943,6 @@ describe("PdfContentController", () => {
     expect(subject.openExternal).not.toHaveBeenCalled();
     expect(subject.navigateToPage).toHaveBeenCalledWith(2);
     expect(subject.statuses.filter((message) => /unsupported/i.test(message))).toHaveLength(3);
-  });
-  it("shows a transient indicator only for a verified point destination", async () => {
-    const navigateDestination = vi.fn(async () => ({ kind: "verified" as const, point: { pageNumber: 1, x: 10, y: 20 } }));
-    const subject = setup([
-      page("x", [{ subtype: "Link", rect: [1, 1, 2, 2], dest: [0, { name: "XYZ" }, 10, 20, null] }]),
-      page("overscan"),
-    ], undefined, navigateDestination);
-    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
-    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
-    await vi.waitFor(() => expect(subject.host.querySelector(".pdf-destination-indicator")).not.toBeNull());
-    const indicator = subject.host.querySelector<HTMLElement>(".pdf-destination-indicator")!;
-    expect(navigateDestination).toHaveBeenCalledOnce();
-    expect(indicator.dataset).toMatchObject({ style: "pulse-ring", color: "red" });
-    expect(indicator.style.pointerEvents).toBe("none");
-    const overscanCanvas = document.createElement("canvas");
-    await subject.controller.renderPage({
-      pageNumber: 2, page: await subject.pdf.getPage(2), viewport, canvas: overscanCanvas, retainedPages: [1, 2],
-      commitCanvas: () => true,
-    });
-    expect(subject.host.contains(indicator)).toBe(true);
-    expect(subject.controller.linkIndicatorVisible).toBe(true);
-    subject.controller.dismissLinkIndicator();
-    expect(subject.controller.linkIndicatorVisible).toBe(false);
-    expect(subject.host.querySelector(".pdf-destination-indicator")).toBeNull();
-    subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")?.click();
-    await vi.waitFor(() => expect(subject.controller.linkIndicatorVisible).toBe(true));
-    await subject.controller.unmount();
-    expect(subject.controller.linkIndicatorVisible).toBe(false);
-    expect(subject.host.querySelector(".pdf-destination-indicator")).toBeNull();
   });
   it("uses reader-owned page authority for worker-cloned indirect references", async () => {
     const reference = { num: 12, gen: 0 };
@@ -1973,8 +1955,9 @@ describe("PdfContentController", () => {
     expect(subject.host.querySelector(".pdf-content-layer")).toBeNull();
     expect(subject.resources.snapshot().totals["text-page-bytes"]).toBe(0);
   });
-  it("binds destination intent to one render and preserves null axes", async () => {
+  it("centers each finite XYZ axis and records the displayed viewport center", async () => {
     const subject = setup([page("one"), page("two")]);
+    configureHostGeometry(subject.host, { clientWidth: 40, clientHeight: 20, scrollWidth: 500, scrollHeight: 500 });
     subject.host.scrollLeft = 7;
     subject.host.scrollTop = 9;
     const transformed = vi.fn((x: number, y: number) => [x * 3, y * 3] as const);
@@ -1984,7 +1967,7 @@ describe("PdfContentController", () => {
       convertToPdfPoint: (x: number, y: number) => [x / 3, y / 3] as const,
     };
 
-    subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, 2]);
+    const partialIntent = subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, 2]);
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
@@ -1992,9 +1975,10 @@ describe("PdfContentController", () => {
       canvas: subject.canvas,
     });
     expect(subject.host.scrollLeft).toBe(7);
-    expect(subject.host.scrollTop).toBe(60);
+    expect(subject.host.scrollTop).toBe(50);
+    expect(subject.controller.takeDestinationLanding(partialIntent!)).toEqual({ pageIndex: 0, x: 9, y: 20 });
 
-    subject.controller.queueDestination(2, [1, { name: "XYZ" }, 30, 40, null]);
+    const pointIntent = subject.controller.queueDestination(2, [1, { name: "XYZ" }, 30, 40, null]);
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
@@ -2009,36 +1993,49 @@ describe("PdfContentController", () => {
       viewport: destinationViewport,
       canvas: subject.canvas,
     });
-    expect(subject.host.scrollLeft).toBe(90);
-    expect(subject.host.scrollTop).toBe(120);
+    expect(subject.host.scrollLeft).toBe(70);
+    expect(subject.host.scrollTop).toBe(110);
+    expect(subject.controller.takeDestinationLanding(pointIntent!)).toEqual({ pageIndex: 1, x: 30, y: 40 });
   });
-  it("records a canonical landing for whole-page Fit destinations", async () => {
+  it("clamps centered XYZ destinations at both document edges and records the reachable center", async () => {
     const subject = setup([page("one")]);
+    configureHostGeometry(subject.host, { clientWidth: 100, clientHeight: 80, scrollWidth: 180, scrollHeight: 160 });
+
+    const lowerIntent = subject.controller.queueDestination(1, [0, { name: "XYZ" }, -50, -40, null]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 0, top: 0 });
+    expect(subject.controller.takeDestinationLanding(lowerIntent!)).toEqual({ pageIndex: 0, x: 50, y: 40 });
+
+    const upperIntent = subject.controller.queueDestination(1, [0, { name: "XYZ" }, 500, 500, null]);
+    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 80, top: 80 });
+    expect(subject.controller.takeDestinationLanding(upperIntent!)).toEqual({ pageIndex: 0, x: 130, y: 120 });
+  });
+  it.each(["Fit", "FitB"] as const)("keeps %s at the page origin and records its displayed center", async (name) => {
+    const subject = setup([page("one")]);
+    configureHostGeometry(subject.host, { clientWidth: 100, clientHeight: 80, scrollWidth: 500, scrollHeight: 500 });
     const fitViewport = {
       ...viewport,
       convertToPdfPoint: vi.fn((x: number, y: number) => [x, y] as const),
     };
     await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport: fitViewport, canvas: subject.canvas });
-    const intent = subject.controller.queueDestination(1, [0, { name: "Fit" }]);
+    subject.host.scrollLeft = 30;
+    subject.host.scrollTop = 40;
+    const intent = subject.controller.queueDestination(1, [0, { name }]);
     expect(intent).toBeDefined();
     expect(subject.controller.applyQueuedDestinationToResidentPage(1)).toBe(true);
-    expect(subject.controller.takeDestinationLanding(intent!)).toEqual({ pageIndex: 0, x: 0, y: 0 });
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 0, top: 0 });
+    expect(subject.controller.takeDestinationLanding(intent!)).toEqual({ pageIndex: 0, x: 50, y: 40 });
     const scrollSettlement = subject.controller.awaitDestinationScroll(intent!);
     subject.host.dispatchEvent(new Event("scroll"));
     await scrollSettlement;
-    subject.host.scrollTop = 10;
-    const cancelledIntent = subject.controller.queueDestination(1, [0, { name: "Fit" }]);
-    expect(cancelledIntent).toBeDefined();
-    expect(subject.controller.applyQueuedDestinationToResidentPage(1)).toBe(true);
-    const cancelledSettlement = subject.controller.awaitDestinationScroll(cancelledIntent!);
-    subject.controller.cancelDestination();
-    await cancelledSettlement;
   });
-  it("maps partial destinations through the inverse viewport under rotation", async () => {
+  it("centers only the visual axis supplied by a partial rotated XYZ destination", async () => {
     const subject = setup([page("one")]);
-    const convertToPdfPoint = vi.fn(() => [70, 80] as const);
+    configureHostGeometry(subject.host, { clientWidth: 40, clientHeight: 20, scrollWidth: 500, scrollHeight: 500 });
+    const convertToPdfPoint = vi.fn((x: number, y: number) => [y, x] as const);
     const convertToViewportPoint = vi.fn((x: number, y: number) => [y, x] as const);
-    const rotatedViewport = { ...viewport, convertToPdfPoint, convertToViewportPoint };
+    const rotatedViewport = { ...viewport, rotation: 90, convertToPdfPoint, convertToViewportPoint };
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
@@ -2049,7 +2046,7 @@ describe("PdfContentController", () => {
     subject.host.scrollTop = 29;
     convertToPdfPoint.mockClear();
     convertToViewportPoint.mockClear();
-    subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, null]);
+    const partialIntent = subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 60, null]);
 
     await subject.controller.renderPage({
       pageNumber: 1,
@@ -2059,15 +2056,28 @@ describe("PdfContentController", () => {
     });
 
     expect(convertToPdfPoint).toHaveBeenCalledWith(17, 29);
-    expect(convertToViewportPoint).toHaveBeenCalledWith(70, 20);
-    expect(subject.host.scrollLeft).toBe(20);
-    expect(subject.host.scrollTop).toBe(70);
+    expect(convertToViewportPoint).toHaveBeenCalledWith(29, 60);
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 40, top: 29 });
+    expect(subject.controller.takeDestinationLanding(partialIntent!)).toEqual({ pageIndex: 0, x: 39, y: 60 });
+
+    subject.host.scrollLeft = 33;
+    subject.host.scrollTop = 44;
+    const retainedIntent = subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, null, null]);
+    await subject.controller.renderPage({
+      pageNumber: 1,
+      page: await subject.pdf.getPage(1),
+      viewport: rotatedViewport,
+      canvas: subject.canvas,
+    });
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 33, top: 44 });
+    expect(subject.controller.takeDestinationLanding(retainedIntent!)).toEqual({ pageIndex: 0, x: 54, y: 53 });
   });
-  it("uses the nested page-frame origin for destination preservation and landing", async () => {
+  it("uses the nested page-frame origin while centering a rotated destination axis", async () => {
     const subject = setup([page("one")]);
-    const convertToPdfPoint = vi.fn((x: number, y: number) => [x, y] as const);
+    configureHostGeometry(subject.host, { clientWidth: 40, clientHeight: 20, scrollWidth: 1_000, scrollHeight: 1_000 });
+    const convertToPdfPoint = vi.fn((x: number, y: number) => [y, x] as const);
     const convertToViewportPoint = vi.fn((x: number, y: number) => [y, x] as const);
-    const nestedViewport = { ...viewport, convertToPdfPoint, convertToViewportPoint };
+    const nestedViewport = { ...viewport, rotation: 90, convertToPdfPoint, convertToViewportPoint };
     await subject.controller.renderPage({
       pageNumber: 1,
       page: await subject.pdf.getPage(1),
@@ -2089,7 +2099,7 @@ describe("PdfContentController", () => {
     });
     subject.host.scrollLeft = 200;
     subject.host.scrollTop = 400;
-    subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, null]);
+    const intent = subject.controller.queueDestination(1, [0, { name: "XYZ" }, null, 20, null]);
 
     await subject.controller.renderPage({
       pageNumber: 1,
@@ -2099,15 +2109,16 @@ describe("PdfContentController", () => {
     });
 
     expect(convertToPdfPoint).toHaveBeenCalledWith(70, 80);
-    expect(convertToViewportPoint).toHaveBeenCalledWith(70, 20);
-    expect(subject.host.scrollLeft).toBe(150);
-    expect(subject.host.scrollTop).toBe(390);
+    expect(convertToViewportPoint).toHaveBeenCalledWith(80, 20);
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 130, top: 400 });
+    expect(subject.controller.takeDestinationLanding(intent!)).toEqual({ pageIndex: 0, x: 90, y: 20 });
   });
-  it("lands FitR on the viewport-space minimum corner under rotation", async () => {
+  it("keeps FitR on the viewport-space minimum corner under rotation", async () => {
     const subject = setup([page("one")]);
+    configureHostGeometry(subject.host, { clientWidth: 40, clientHeight: 20, scrollWidth: 500, scrollHeight: 500 });
     const convertToViewportPoint = vi.fn((x: number, y: number) => [y, 100 - x] as const);
-    const fitViewport = { ...viewport, convertToViewportPoint };
-    subject.controller.queueDestination(1, [0, { name: "FitR" }, 10, 20, 40, 80]);
+    const fitViewport = { ...viewport, rotation: 90, convertToViewportPoint };
+    const intent = subject.controller.queueDestination(1, [0, { name: "FitR" }, 10, 20, 40, 80]);
 
     await subject.controller.renderPage({
       pageNumber: 1,
@@ -2118,8 +2129,8 @@ describe("PdfContentController", () => {
 
     expect(convertToViewportPoint).toHaveBeenNthCalledWith(1, 10, 20);
     expect(convertToViewportPoint).toHaveBeenNthCalledWith(2, 40, 80);
-    expect(subject.host.scrollLeft).toBe(20);
-    expect(subject.host.scrollTop).toBe(60);
+    expect({ left: subject.host.scrollLeft, top: subject.host.scrollTop }).toEqual({ left: 20, top: 60 });
+    expect(subject.controller.takeDestinationLanding(intent!)).toEqual({ pageIndex: 0, x: 40, y: 70 });
   });
   it("keeps complete destination identities exact for nearby points and fit operands", async () => {
     const subject = setup([page("x", [

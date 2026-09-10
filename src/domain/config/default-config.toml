@@ -46,7 +46,6 @@
 "config.writeDefault" = []
 "config.resetDefault" = []
 "theme.picker" = ["T"]
-"indicator.picker" = ["I"]
 "update.show" = ["U"]
 
 [navigation]
