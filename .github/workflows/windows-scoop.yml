@@ -15,17 +15,21 @@
       "runs-on": "windows-latest",
       "timeout-minutes": 45,
       "defaults": { "run": { "shell": "pwsh" } },
-      "env": {
-        "CARGO_BUILD_JOBS": "2",
-        "CARGO_TARGET_DIR": "${{ runner.temp }}/modeleaf-tests",
-        "MODELEAF_RELEASE_TARGET": "${{ runner.temp }}/modeleaf-standalone",
-        "MODELEAF_PACKAGE_OUTPUT": "${{ runner.temp }}/modeleaf-scoop"
-      },
+      "env": { "CARGO_BUILD_JOBS": "2" },
       "steps": [
         {
           "name": "Check out source",
           "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
           "with": { "persist-credentials": false }
+        },
+        {
+          "name": "Set isolated output directories",
+          "env": {
+            "CARGO_TARGET_DIR": "${{ runner.temp }}/modeleaf-tests",
+            "MODELEAF_RELEASE_TARGET": "${{ runner.temp }}/modeleaf-standalone",
+            "MODELEAF_PACKAGE_OUTPUT": "${{ runner.temp }}/modeleaf-scoop"
+          },
+          "run": "\"CARGO_TARGET_DIR=$env:CARGO_TARGET_DIR\" >> $env:GITHUB_ENV\n\"MODELEAF_RELEASE_TARGET=$env:MODELEAF_RELEASE_TARGET\" >> $env:GITHUB_ENV\n\"MODELEAF_PACKAGE_OUTPUT=$env:MODELEAF_PACKAGE_OUTPUT\" >> $env:GITHUB_ENV"
         },
         {
           "name": "Set up pinned Node.js",
@@ -52,7 +56,7 @@
           "name": "Build standalone candidate",
           "env": {
             "CI": "false",
-            "CARGO_TARGET_DIR": "${{ runner.temp }}/modeleaf-standalone"
+            "CARGO_TARGET_DIR": "${{ env.MODELEAF_RELEASE_TARGET }}"
           },
           "run": "npm run tauri -- build --no-bundle"
         },
@@ -67,7 +71,7 @@
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
             "name": "modeleaf-scoop-review-${{ github.sha }}",
-            "path": "${{ runner.temp }}/modeleaf-scoop/",
+            "path": "${{ env.MODELEAF_PACKAGE_OUTPUT }}",
             "if-no-files-found": "error",
             "retention-days": 7,
             "compression-level": 0,

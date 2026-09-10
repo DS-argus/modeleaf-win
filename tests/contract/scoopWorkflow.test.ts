@@ -83,18 +83,33 @@ describe("private Scoop preparation workflow", () => {
     expect(index("Prepare ZIP and Scoop metadata")).toBeLessThan(index("Retain review artifacts without publishing"));
   });
 
+  it("uses runner context only after execution has a runner", () => {
+    expect(job.env).toEqual({ CARGO_BUILD_JOBS: "2" });
+    const setup = step("Set isolated output directories");
+    expect(setup.env).toEqual({
+      CARGO_TARGET_DIR: "${{ runner.temp }}/modeleaf-tests",
+      MODELEAF_RELEASE_TARGET: "${{ runner.temp }}/modeleaf-standalone",
+      MODELEAF_PACKAGE_OUTPUT: "${{ runner.temp }}/modeleaf-scoop",
+    });
+    for (const name of Object.keys(setup.env!)) {
+      expect(setup.run).toContain(`${name}=$env:${name}`);
+    }
+    expect(setup.run).toContain("$env:GITHUB_ENV");
+    expect(index("Set isolated output directories")).toBeLessThan(index("Test Rust"));
+  });
   it("isolates test/build state and uploads only short-lived private review output", () => {
     expect(job["runs-on"]).toBe("windows-latest");
     expect(job["timeout-minutes"]).toBeLessThanOrEqual(45);
     expect(job.env.CARGO_BUILD_JOBS).toBe("2");
     const buildTarget = step("Build standalone candidate").env?.CARGO_TARGET_DIR;
-    expect(buildTarget).toBe(job.env.MODELEAF_RELEASE_TARGET);
-    expect(buildTarget).not.toBe(job.env.CARGO_TARGET_DIR);
+    expect(buildTarget).toBe("${{ env.MODELEAF_RELEASE_TARGET }}");
+    const directories = step("Set isolated output directories").env!;
+    expect(directories.MODELEAF_RELEASE_TARGET).not.toBe(directories.CARGO_TARGET_DIR);
     expect(step("Prepare ZIP and Scoop metadata").run).toContain("-OutputDirectory $env:MODELEAF_PACKAGE_OUTPUT");
     const upload = step("Retain review artifacts without publishing");
     expect(upload.if).toBe("${{ github.event.repository.private == true }}");
     expect(upload.with).toMatchObject({
-      path: "${{ runner.temp }}/modeleaf-scoop/",
+      path: "${{ env.MODELEAF_PACKAGE_OUTPUT }}",
       "if-no-files-found": "error",
       "retention-days": 7,
       "include-hidden-files": false,
