@@ -1,6 +1,8 @@
 # Third-party notices
 
-This is a reviewed inventory for the direct production dependencies and copied production assets currently checked into this repository. It deliberately does not state a Modeleaf product license and does not enumerate or infer transitive dependency terms. The verifier reads the machine-review block below; update its exact resolved metadata and this human-readable notice together after an authoritative review.
+Modeleaf for Windows is licensed under the [MIT License](LICENSE). The third-party dependencies and copied assets below retain their own license terms.
+
+This is a reviewed inventory for the direct production dependencies and copied production assets currently checked into this repository. It does not enumerate or infer transitive dependency terms. The verifier reads the machine-review block below; update its exact resolved metadata and this human-readable notice together after an authoritative review.
 
 ## Direct production dependencies
 
