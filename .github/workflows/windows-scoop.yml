@@ -1,0 +1,80 @@
+{
+  "name": "Windows Scoop preparation",
+  "on": {
+    "pull_request": { "branches": ["main"] },
+    "push": { "branches": ["main"] },
+    "workflow_dispatch": {}
+  },
+  "permissions": { "contents": "read" },
+  "concurrency": {
+    "group": "windows-scoop-${{ github.ref }}",
+    "cancel-in-progress": true
+  },
+  "jobs": {
+    "verify-and-package": {
+      "runs-on": "windows-latest",
+      "timeout-minutes": 45,
+      "defaults": { "run": { "shell": "pwsh" } },
+      "env": {
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_TARGET_DIR": "${{ runner.temp }}/modeleaf-tests",
+        "MODELEAF_RELEASE_TARGET": "${{ runner.temp }}/modeleaf-standalone",
+        "MODELEAF_PACKAGE_OUTPUT": "${{ runner.temp }}/modeleaf-scoop"
+      },
+      "steps": [
+        {
+          "name": "Check out source",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": { "persist-credentials": false }
+        },
+        {
+          "name": "Set up pinned Node.js",
+          "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+          "with": { "node-version-file": "package.json", "cache": "npm" }
+        },
+        {
+          "name": "Set up pinned Rust",
+          "run": "rustup toolchain install 1.97.1 --profile minimal --component clippy --component rustfmt\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\nrustup override set 1.97.1"
+        },
+        {
+          "name": "Set up pinned npm",
+          "run": "$version = (Get-Content package.json -Raw | ConvertFrom-Json).engines.npm\nif ($version -notmatch '^\\d+\\.\\d+\\.\\d+$') { throw 'An exact npm version is required.' }\nnpm install --global \"npm@$version\""
+        },
+        { "name": "Install locked dependencies", "run": "npm ci" },
+        { "name": "Verify copied assets and notices", "run": "npm run legal:verify" },
+        { "name": "Audit production dependencies", "run": "npm run security:verify" },
+        { "name": "Test frontend and packaging", "run": "npm test -- --maxWorkers=2" },
+        { "name": "Build frontend", "run": "npm run build" },
+        { "name": "Check Rust formatting", "run": "cargo fmt --check --manifest-path src-tauri/Cargo.toml" },
+        { "name": "Lint Rust", "run": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings" },
+        { "name": "Test Rust", "run": "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=2" },
+        {
+          "name": "Build standalone candidate",
+          "env": {
+            "CI": "false",
+            "CARGO_TARGET_DIR": "${{ runner.temp }}/modeleaf-standalone"
+          },
+          "run": "npm run tauri -- build --no-bundle"
+        },
+        { "name": "Reject modified build inputs", "run": "git diff --exit-code\nif ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }\ngit diff --check" },
+        {
+          "name": "Prepare ZIP and Scoop metadata",
+          "run": "& ./tools/windows/package-scoop.ps1 -ExecutablePath \"$env:MODELEAF_RELEASE_TARGET/release/modeleaf.exe\" -OutputDirectory $env:MODELEAF_PACKAGE_OUTPUT -RepositorySlug $env:GITHUB_REPOSITORY"
+        },
+        {
+          "name": "Retain review artifacts without publishing",
+          "if": "${{ github.event.repository.private == true }}",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "modeleaf-scoop-review-${{ github.sha }}",
+            "path": "${{ runner.temp }}/modeleaf-scoop/",
+            "if-no-files-found": "error",
+            "retention-days": 7,
+            "compression-level": 0,
+            "include-hidden-files": false
+          }
+        }
+      ]
+    }
+  }
+}
