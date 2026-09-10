@@ -3,6 +3,7 @@ name = "modeleaf"
 version = "0.1.0"
 description = "Keyboard-first read-only PDF viewer for Windows"
 authors = ["DS-argus"]
+license = "MIT"
 edition = "2021"
 rust-version = "1.77.2"
 
