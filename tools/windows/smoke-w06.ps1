@@ -76,17 +76,20 @@ function Get-ReaderUiNodes { $root=[System.Windows.Automation.AutomationElement]
 function Assert-W08Fixture { if([IO.Path]::GetFileName($pdf) -ine 'links.pdf'){throw 'W08 requires the committed links.pdf fixture'};if($fixtureHash -ne 'dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4'){throw 'W08 links.pdf SHA-256 binding mismatch'};Add-Event 'w08:fixture-binding' 'committed-links-pdf-sha256-verified' }
 function Run-W08Scenario {
   Assert-W08Fixture
-  Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^PDF link [a-z]+$'}).Count -eq 4 } $ActionTimeoutMs 'Visible supported PDF annotation authority did not publish'
+  Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^PDF link [0-9]+$'}).Count -eq 4 } $ActionTimeoutMs 'Visible supported PDF annotation authority did not publish'
   Add-Event 'w08:annotation-authority' 'exact-four-supported-of-six-display-link-annotations'
-  Capture-VisualHash 'w08-authority-baseline'|Out-Null
-  Send-ReaderKey 0x46 $false $false 'w08:hints-open'
-  Capture-VisualHash 'w08-hints-visible'|Out-Null
-  if($visualHashes['w08-authority-baseline'] -eq $visualHashes['w08-hints-visible']){throw 'W08 hint overlay did not change the visible reader'}
-  Add-Event 'w08:hints-visible' 'keyboard-opened-and-visually-nonuniform'
-  Send-ReaderKey 0x1B $false $false 'w08:hints-dismiss'
-  Capture-VisualHash 'w08-hints-dismissed'|Out-Null
-  if($visualHashes['w08-hints-visible'] -eq $visualHashes['w08-hints-dismissed']){throw 'W08 hint dismissal did not change the visible reader'}
-  Add-Event 'w08:hints-dismissal' 'escape-dismissed-overlay'
+  Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^Page 1 of 2'}).Count -gt 0 } $ActionTimeoutMs 'W08 initial page status was not one'
+  $target=@(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -eq 'PDF link 2'})
+  if($target.Count -ne 1){throw 'W08 internal annotation target was not unique'}
+  $activation=$null
+  if(-not $target[0].TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$activation)){throw 'W08 ordinary link activation is unavailable'}
+  ([System.Windows.Automation.InvokePattern]$activation).Invoke()
+  Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^Page 2 of 2'}).Count -gt 0 } $ActionTimeoutMs 'W08 internal link did not navigate to page two'
+  Add-Event 'w08:ordinary-link-navigation' 'internal-annotation-activated-and-page-two-published'
+  Assert-FixtureUnchanged 'w08-link-activation'
+  Send-ReaderKey 0x47 $false $false 'w08:return-first-prefix'
+  Send-ReaderKey 0x47 $false $false 'w08:return-first-page'
+  Wait-Until { @(Get-ReaderUiNodes|Where-Object{[string]$_.Current.Name -match '^Page 1 of 2'}).Count -gt 0 } $ActionTimeoutMs 'W08 failed to restore page one'
   Assert-FixtureUnchanged 'w08-complete'
 }
 $script=(Resolve-Path -LiteralPath $MyInvocation.MyCommand.Path).Path

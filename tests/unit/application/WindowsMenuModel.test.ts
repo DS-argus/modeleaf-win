@@ -4,7 +4,7 @@ import { validateProductConfig } from "../../../src/domain/config/ConfigValidato
 import type { ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
 const configResult = validateProductConfig({});
 if (!configResult.ok) throw new Error("built-in config invalid");
-const state: ActionRuntimeContext = { hasDocument: false, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
+const state: ActionRuntimeContext = { hasDocument: false, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false };
 describe("WindowsMenuModel", () => {
   it("groups one registry projection in stable Windows menu order", () => {
     const menu = buildWindowsMenuModel(state, configResult.value);

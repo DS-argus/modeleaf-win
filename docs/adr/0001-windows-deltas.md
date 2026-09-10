@@ -31,11 +31,26 @@ The first release uses the native Windows titlebar and places the app tab strip 
 
 ### Paths and durable state
 
-Configuration is stored at `appConfigDir()/config.toml`; state is stored at `appLocalDataDir()/state.json`. These APIs already include the bundle identifier, so no extra product-name subdirectory is appended. State owns only `selected_theme`, `recent_files`, and `link_destination_indicator`; unknown top-level state fields are retained. Session, windows, tabs, page, zoom, rotation, history, and TOC UI state are never persisted.
+Configuration is stored at `appConfigDir()/config.toml`; state is stored at `appLocalDataDir()/state.json`. These APIs already include the bundle identifier, so no extra product-name subdirectory is appended. State owns only `selected_theme` and `recent_files`; unknown top-level state fields, including retired indicator metadata, are retained. Session, windows, tabs, page, zoom, rotation, history, and TOC UI state are never persisted.
 
+Owner amendment, Issue #53 (2026-09-09): Recent rows expose a bounded `displayPath` containing the native-owned full file path for display only, alongside `displayName` and opaque `recentId`. This supersedes the filename-only recent projection, not the filesystem authority boundary: opening still accepts only the opaque ID, never a renderer path. Remove the Browse border but retain its keyboard focus indicator. Middle-truncate only the directory; keep the complete filename visible and reduce the row font size when necessary. Filename-only filtering, ordering, durable state, and open/clear transactions remain unchanged. Reader shortcuts `y`, `yy`, and `of` are deferred additions tracked in Issue #55, not implemented by this amendment.
+### Retired TOC and keyboard hints — Issue #53
+
+The owner retires embedded TOC and `f` keyboard link hints until later redevelopment, while explicitly retaining ordinary PDF link clicks. Remove `toc.toggle`, `toc.scrollDown`, `toc.scrollUp`, and `link.hint` without aliases. Together with the seven previously removed pane actions, the Windows contract has **50 actions, 46 configurable and four fixed**. Release `t`, `J`, `K`, and `f`; retain lowercase `j`/`k`, uppercase `F`, ordinary internal/external link activation, destination indicators, native authorization, and navigation history. Do not rewrite user config/state or add `y`/`yy`/`of`.
+
+The complete retired implementation and tests are preserved at `7e00424d30c5ffeab5a846d087236371644af53a`, indexed by `docs/windows-porting/deferred-toc-link-hints.md`. W08 now verifies ordinary annotation activation; W10 uses retirement/absence and retained-reader regression gates instead of claiming TOC parity. Immutable macOS TOC/hint descriptions remain redevelopment references, not active Windows requirements.
+### Centered complete link landings and retired indicator — Issue #53
+
+Owner amendment (2026-09-10, issue comment5611619154) supersedes the earlier keep-indicator decision. Point-link destinations should appear around the viewport center, constrained by the real document edges. The destination transaction must materialize the bounded visible landing window before reporting verified success, without requiring a manual scroll. Canonical actual-landing history, cancellation, ordinary external/internal clicks and native authorization remain authoritative; fit-destination semantics are not replaced with arbitrary point offsets.
+
+Remove destination-indicator DOM/styles/timers/APIs, picker/settings model, `indicator.picker`, default `I`, and native read/commit indicator commands. The current Windows registry has **49 actions:45 configurable and four fixed**. Preserve search highlights and focus rings. Retired indicator source/tests are archived at `dedcff8513e034efb904ef7d50fd59cc11444798` for redevelopment alongside link hints. No dormant feature flags or aliases.
+
+State now owns only `selected_theme` and `recent_files`. Existing `link_destination_indicator` bytes are ordinary unknown metadata preserved by existing atomic state merges, not actively decoded/applied/written. No migration, deletion, or user-state modification accompanies retirement.
 ### Windows key grammar and defaults
 
 The key grammar uses `C=Ctrl`, `A=Alt`, and `S=Shift`; `Win` is not a configurable modifier. A macOS `D` modifier is a migration error, not a silent conversion to Ctrl. The default templates use Ctrl for Open/Close/Print/New, palette, and tab selection; `Alt+Left`/`Alt+Right` for app-owned history; `Alt+F4` for current-window close; and `<C-b>` as the command prefix. The four fixed prompt/search bindings remain non-configurable.
+
+Owner amendment, Issue #53 (2026-09-09): default `document.open` is `Ctrl+Shift+O` (`<C-S-o>`), replacing `Ctrl+O` without a default alias. Explicit user keymap overrides remain authoritative; no user config/state migration is performed. History remains `Alt+Left`/`Alt+Right`. The Open chooser removes its Browse glyph and separates Browse from Recent with a theme-aware divider. Regular window tabs use equal 184px slots and 26px height, with filename ellipsis and accessible full names rather than filename-dependent widths.
 
 ### Opaque PDF transport remains pending W02 evidence
 

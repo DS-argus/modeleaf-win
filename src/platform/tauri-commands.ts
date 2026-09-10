@@ -1,4 +1,3 @@
-import { validateIndicatorSettings, type IndicatorSettings } from "../domain/links/IndicatorSettings";
 import { parseAndValidateConfigToml, type ConfigTomlResult } from "../domain/config/ConfigFile";
 
 export type NativeInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -13,22 +12,6 @@ const READ_TAGS = new Set(["MISSING", "LOADED", "TOO_LARGE", "INVALID_UTF8", "ST
 const WRITE_TAGS = new Set(["CREATED", "ALREADY_EXISTS", "TOO_LARGE", "LOCK_TIMEOUT", "STORAGE_FAILED"]);
 const RESET_TAGS = new Set(["REPLACED", "UNCHANGED", "MISSING", "TOO_LARGE", "LOCK_TIMEOUT", "STORAGE_FAILED"]);
 
-export async function readIndicatorState(invoke: NativeInvoke): Promise<IndicatorSettings | undefined> {
-  const value = await invoke<unknown>("read_indicator_state");
-  if (value === null) return undefined;
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw contractError();
-  const source = value as Record<string, unknown>;
-  if (Object.keys(source).some((key) => !["style", "color", "size", "duration_ms"].includes(key))) throw contractError();
-  const validated = validateIndicatorSettings({ style: source.style, color: source.color, size: source.size, durationMilliseconds: source.duration_ms });
-  if (!validated.ok) throw contractError();
-  return validated.value;
-}
-export async function commitIndicatorState(invoke: NativeInvoke, value: IndicatorSettings): Promise<void> {
-  const validated = validateIndicatorSettings(value);
-  if (!validated.ok) throw contractError();
-  const result = await invoke<unknown>("commit_indicator_state", { value: { style: validated.value.style, color: validated.value.color, size: validated.value.size, duration_ms: validated.value.durationMilliseconds } });
-  if (result !== null) throw contractError();
-}
 export async function readProductConfig(invoke: NativeInvoke): Promise<ConfigLoadOutcome> {
   const value = await invoke<unknown>("read_config");
   const object = tagged(value, READ_TAGS);
@@ -45,7 +28,7 @@ export async function writeDefaultProductConfig(invoke: NativeInvoke): Promise<C
 export async function resetProductConfig(invoke: NativeInvoke): Promise<ConfigResetOutcome> {
   return decodeSimple(await invoke<unknown>("reset_config"), RESET_TAGS) as ConfigResetOutcome;
 }
-export interface RecentEntry { readonly recentId: string; readonly displayName: string }
+export interface RecentEntry { readonly recentId: string; readonly displayName: string; readonly displayPath: string }
 export type RecentListOutcome =
   | { readonly tag: "READY"; readonly revision: string; readonly entries: readonly RecentEntry[] }
   | { readonly tag: "STATE_UNAVAILABLE"; readonly reason: "STATE_UNREADABLE" | "STATE_INVALID_ROOT" | "RECENT_FIELD_INVALID" };
@@ -89,6 +72,9 @@ export function decodeRecentStateChanged(value: unknown): Extract<RecentListOutc
   const outcome = decodeRecentList(value);
   if (outcome.tag !== "READY") throw contractError();
   return outcome;
+}
+export async function clearRecentDocuments(invoke: NativeInvoke): Promise<RecentRecordOutcome> {
+  return decodeRecentRecord(await invoke<unknown>("clear_recent_documents"));
 }
 export async function recordRecentDocument(invoke: NativeInvoke, sessionId: string, documentGeneration: number, ownerGeneration: number): Promise<RecentRecordOutcome> {
   if (!REQUEST_ID.test(sessionId) || !Number.isSafeInteger(documentGeneration) || documentGeneration < 1 || !Number.isSafeInteger(ownerGeneration) || ownerGeneration < 1) throw contractError();
@@ -151,11 +137,12 @@ function decodeRecentEntries(value: unknown): readonly RecentEntry[] {
     const prototype = Object.getPrototypeOf(entry);
     if (prototype !== Object.prototype && prototype !== null) throw contractError();
     const object = entry as Record<string, unknown>;
-    exactKeys(object, ["recentId", "displayName"]);
+    exactKeys(object, ["recentId", "displayName", "displayPath"]);
     if (typeof object.recentId !== "string" || !RECENT_ID.test(object.recentId) || ids.has(object.recentId)) throw contractError();
     if (typeof object.displayName !== "string" || object.displayName.length === 0 || object.displayName.length > 255 || /[\\/\p{Cc}]/u.test(object.displayName)) throw contractError();
+    if (typeof object.displayPath !== "string" || object.displayPath.length === 0 || object.displayPath.length > 32_767 || /\p{Cc}/u.test(object.displayPath)) throw contractError();
     ids.add(object.recentId);
-    return Object.freeze({ recentId: object.recentId, displayName: object.displayName.normalize("NFC") });
+    return Object.freeze({ recentId: object.recentId, displayName: object.displayName.normalize("NFC"), displayPath: object.displayPath });
   });
   return Object.freeze(entries);
 }

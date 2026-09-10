@@ -3,11 +3,11 @@ export const NAVIGATION_HISTORY_TOLERANCE = 0.5;
 const TOLERANCE_EPSILON = 1e-9;
 
 export interface NavigationSnapshot { readonly pageIndex: number; readonly x: number; readonly y: number; }
-export type NavigationCause = "page-prompt" | "page-first" | "page-last" | "internal-link" | "link-hint" | "outline" | "search" | "ordinary-scroll" | "page-next" | "page-previous" | "zoom" | "fit" | "rotation" | "external-link";
+export type NavigationCause = "page-prompt" | "page-first" | "page-last" | "internal-link" | "search" | "ordinary-scroll" | "page-next" | "page-previous" | "zoom" | "fit" | "rotation" | "external-link";
 export type NavigationPrepareResult = { readonly kind: "prepared"; readonly transaction: NavigationTransaction } | { readonly kind: "excluded" } | { readonly kind: "same-location" } | { readonly kind: "search-epoch-recorded" } | { readonly kind: "invalid" };
 export interface NavigationTransaction { readonly id: number; readonly generation: number; readonly kind: "jump" | "back" | "forward"; readonly origin: NavigationSnapshot; readonly target: NavigationSnapshot; readonly cause?: NavigationCause; readonly searchEpoch?: number; }
 export type NavigationCommitResult = "committed" | "same-location" | "rolled-back" | "stale" | "failed-verification";
-const RECORDED_CAUSES: ReadonlySet<NavigationCause> = new Set(["page-prompt", "page-first", "page-last", "internal-link", "link-hint", "outline", "search"]);
+const RECORDED_CAUSES: ReadonlySet<NavigationCause> = new Set(["page-prompt", "page-first", "page-last", "internal-link", "search"]);
 
 /** Two stacks plus the owner-supplied live position; preparation never mutates either stack. */
 export class NavigationHistory {

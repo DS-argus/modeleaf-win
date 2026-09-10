@@ -41,9 +41,11 @@ Your configuration lives at `%APPDATA%\com.dsargus.modeleaf\config.toml`.
 
 Press the reload binding. If the file has an error, Modeleaf reports the specific problem and **keeps your previous working settings**. It never silently falls back to defaults, so a typo cannot lose your keymap.
 
+The default Open shortcut is `Ctrl+Shift+O`. A `keymap.document.open` entry in your config overrides that default, including an explicit old `Ctrl+O` binding. Menu, Help, and the empty-state hint show your active binding; updating the app does not rewrite your config.
+
 ### An error mentions the `D` modifier
 
-`D` is the macOS Command key and has no Windows equivalent. Modeleaf will not silently convert it to `Ctrl`, because that would collide with `Ctrl+O` and the history shortcuts. Choose an explicit Windows binding instead.
+`D` is the macOS Command key and has no Windows equivalent. Modeleaf will not silently convert it to `Ctrl`, because that could collide with explicit user bindings. Choose an explicit Windows binding instead.
 
 ### Restore the defaults
 
@@ -71,10 +73,10 @@ If update checking fails — no network, unreachable server, unexpected response
 
 ## Data
 
-Modeleaf stores exactly three things at `%LOCALAPPDATA%\com.dsargus.modeleaf\state.json`:
+Modeleaf currently owns two fields in `%LOCALAPPDATA%\com.dsargus.modeleaf\state.json`:
 
 1. Your selected theme
 2. Your recent files list
-3. Your link-destination indicator preference
 
+The destination indicator is retired. Any old indicator preference remains preserved as unknown metadata during unrelated state updates; it is not applied or edited by the current app.
 It does not store windows, sessions, tabs, page positions, zoom, rotation, history, or table-of-contents state. Every reading session starts clean by design.

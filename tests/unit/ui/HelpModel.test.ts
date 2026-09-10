@@ -6,18 +6,23 @@ import { buildHelpRows } from "../../../src/ui/HelpModel";
 const unavailableContext: ActionRuntimeContext = {
   hasDocument: false, canCreateSession: false, canOpenDocument: false, canCreateWindow: false,
   tabCount: 1, modalOpen: true, updateAvailable: false, configExists: false,
-  searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0,
+  searchActive: false, canHistoryBack: false, canHistoryForward: false,
 };
 
 describe("HelpModel", () => {
-  it("groups the nine registry tab selection rows into one presentation row", () => {
+  it("projects the retained 49-action registry and groups its nine tab selection actions", () => {
     const rows = buildHelpRows();
     const selectionRows = rows.filter(({ label }) => label === "Select Tab 1–9");
     const visible = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
+    const rowIds: readonly string[] = rows.map(({ id }) => id);
 
+    expect(ACTION_DESCRIPTORS).toHaveLength(49);
+    expect(visible).toHaveLength(45);
     expect(selectionRows).toEqual([expect.objectContaining({ id: "tab.select.1", category: "Tabs", shortcut: "Ctrl+1 … Ctrl+9", enabled: true })]);
-    expect(rows).toHaveLength(visible.length - 8);
-    expect(rows.filter(({ id }) => /^tab\.select\.[2-9]$/u.test(id))).toEqual([]);
+    expect(rows).toHaveLength(37);
+    expect(rowIds).toEqual(visible.map(({ id }) => id).filter((id) => !/^tab\.select\.[2-9]$/u.test(id)));
+    for (const retiredId of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"]) expect(rowIds).not.toContain(retiredId);
+    expect(rows).not.toContainEqual(expect.objectContaining({ id: "indicator.picker", enabled: true }));
     expect(rows).toContainEqual(expect.objectContaining({ category: "Pages", id: "page.first", shortcut: "g g", label: "First Page", enabled: true }));
   });
   it("spells uppercase bindings as explicit Shift shortcuts", () => {

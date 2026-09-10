@@ -53,3 +53,20 @@ export function queueRelativeTabActivation<TId>(
   // Resolve adjacency inside the serialized work item so rapid N/P presses are relative to the latest committed tab.
   return enqueue(() => activate(adjacentId(direction)));
 }
+
+export interface TabCloseOperations<TId> {
+  readonly activeId: () => TId;
+  readonly cancelPending: () => void;
+  readonly closeWorkspace: (id: TId) => boolean;
+  readonly publish: () => void;
+  readonly activateCurrent: () => Promise<void>;
+}
+
+/** A successor needs visible geometry before its suspended presentation can restore. */
+export async function performTabClose<TId>(id: TId, operations: TabCloseOperations<TId>): Promise<void> {
+  const wasActive = Object.is(id, operations.activeId());
+  if (wasActive) operations.cancelPending();
+  if (!operations.closeWorkspace(id)) return;
+  operations.publish();
+  if (wasActive) await operations.activateCurrent();
+}

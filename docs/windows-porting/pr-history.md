@@ -74,7 +74,7 @@ PR은 당시 목표와 실패 맥락을 알려 주지만 최종 계약은 아니
 ### [#5 N5 slice 2: unified ⌘O overlay (Browse + recent, filename fuzzy)](https://github.com/DS-argus/modeleaf/pull/5)
 
 - 가져올 것: Browse와 recents를 하나의 Open surface로 통합.
-- Windows delta: `Ctrl+O`, native dialog, Explorer handoff.
+- Windows delta: 기본 Open은 Issue #53 owner amendment 이후 `Ctrl+Shift+O`; native dialog, Explorer handoff 유지.
 
 ### [#6 N5 slice 3: missing-file inline error + prune, Ctrl+c clear, key hints, highlight](https://github.com/DS-argus/modeleaf/pull/6)
 

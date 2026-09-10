@@ -23,3 +23,21 @@ export function rollbackOpenAdoptionOwnership<TId>(settledId: TId, priorActiveId
   operations.close(settledId);
   if (priorActiveId !== undefined && !Object.is(priorActiveId, settledId) && operations.has(priorActiveId)) operations.activate(priorActiveId);
 }
+
+/** The native request still owns terminal rollback after the PDF has committed. */
+export class OpenAdoptionPresentationError extends Error {
+  constructor(cause: unknown) {
+    super("OPEN_ADOPTION_PRESENTATION_FAILED", { cause });
+    this.name = "OpenAdoptionPresentationError";
+  }
+}
+
+export async function adoptWithCommittedPresentation<T>(adopt: () => Promise<T>, present: () => Promise<void>): Promise<T> {
+  const result = await adopt();
+  try {
+    await present();
+  } catch (error) {
+    throw new OpenAdoptionPresentationError(error);
+  }
+  return result;
+}

@@ -5,7 +5,7 @@ import { createRootKeyboardRouter, type RootKeyboardContext, type RootKeyboardEv
 const validated = validateProductConfig({});
 if (!validated.ok) throw new Error("built-in config invalid");
 const config = validated.value;
-const runtime = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0 };
+const runtime = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false, canHistoryBack: false, canHistoryForward: false };
 function keyboard(key: string, overrides: Partial<RootKeyboardEvent> = {}) {
   let prevented = false;
   const event: RootKeyboardEvent = { key, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, repeat: false, preventDefault: () => { prevented = true; }, ...overrides };
@@ -33,9 +33,32 @@ function harness(overrides: Partial<RootKeyboardContext> = {}) {
 
 describe("RootKeyboardRouter", () => {
   it("prevents only handled bindings", () => {
-    const h = harness(); const open = keyboard("o", { ctrlKey: true }); h.router.handleKeyDown(open.event);
+    const h = harness(); const open = keyboard("O", { ctrlKey: true, shiftKey: true }); h.router.handleKeyDown(open.event);
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual(["document.open"]);
     const unknown = keyboard("q"); h.router.handleKeyDown(unknown.event); expect(unknown.prevented()).toBe(false);
+  });
+  it("leaves f, t, Shift+J, and Shift+K unclaimed after retiring reader hints", () => {
+    const h = harness();
+    const retired = [
+      keyboard("f"),
+      keyboard("t"),
+      keyboard("J", { shiftKey: true }),
+      keyboard("K", { shiftKey: true }),
+    ];
+    for (const value of retired) {
+      expect(h.router.handleKeyDown(value.event)).toBe(false);
+      expect(value.prevented()).toBe(false);
+    }
+    expect(h.dispatched).toEqual([]);
+  });
+  it("keeps lowercase j/k scrolling and uppercase F Fit Page routing", () => {
+    const h = harness();
+    const retained = [keyboard("j"), keyboard("k"), keyboard("F", { shiftKey: true })];
+    for (const value of retained) {
+      expect(h.router.handleKeyDown(value.event)).toBe(true);
+      expect(value.prevented()).toBe(true);
+    }
+    expect(h.dispatched).toEqual(["scroll.down", "scroll.up", "view.fitPage"]);
   });
   it.each([{ isComposing: true }, { keyCode: 229 }, { altGraph: true }, { key: "Dead" }, { ctrlKey: true, altKey: true, altGraph: true }])("leaves IME/dead/AltGraph input native-owned: %o", (overrides) => {
     const h = harness(); const value = keyboard("x", overrides); h.router.handleKeyDown(value.event);
@@ -169,7 +192,7 @@ describe("RootKeyboardRouter", () => {
     expect(h.dispatched).toEqual([]);
   });
   it("consumes unavailable modal bindings without dispatch", () => {
-    const h = harness({ runtime: { ...runtime, modalOpen: true } }); const open = keyboard("o", { ctrlKey: true }); h.router.handleKeyDown(open.event);
+    const h = harness({ runtime: { ...runtime, modalOpen: true } }); const open = keyboard("O", { ctrlKey: true, shiftKey: true }); h.router.handleKeyDown(open.event);
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual([]); expect(h.disabled).toEqual(["document.open:Close the current dialog"]);
   });
   it("claims unbound decimal and backspace input only for page-prompt ownership", () => {
@@ -229,5 +252,22 @@ describe("RootKeyboardRouter", () => {
     const event = keyboard("ArrowLeft", { altKey: true, ...overrides });
     h.router.handleKeyDown(event.event);
     expect(event.prevented()).toBe(true); expect(h.dispatched).toEqual([]);
+  });
+  it("does not dispatch Open for the obsolete default Ctrl+O chord", () => {
+    const h = harness();
+    const old = keyboard("o", { ctrlKey: true });
+    expect(h.router.handleKeyDown(old.event)).toBe(false);
+    expect(old.prevented()).toBe(false);
+    expect(h.dispatched).toEqual([]);
+  });
+  it("keeps an explicit user Open override authoritative", () => {
+    const custom = validateProductConfig({ keymap: { "document.open": ["<C-o>"] } });
+    if (!custom.ok) throw new Error("custom config invalid");
+    const dispatched: string[] = [];
+    const router = createRootKeyboardRouter({ config: custom.value, getContext: () => ({ windowId: "a", routeRevision: "a", generation: 1, inputContext: "navigation", runtime }), onDispatch: id => dispatched.push(id) });
+    expect(router.handleKeyDown(keyboard("O", { ctrlKey: true, shiftKey: true }).event)).toBe(false);
+    expect(router.handleKeyDown(keyboard("o", { ctrlKey: true }).event)).toBe(true);
+    expect(dispatched).toEqual(["document.open"]);
+    router.dispose();
   });
 });

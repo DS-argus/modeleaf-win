@@ -3,6 +3,13 @@ export interface PageMetric {
   readonly height: number;
 }
 
+export interface PageGeometry extends PageMetric {
+  readonly pageNumber: number;
+  readonly top: number;
+}
+
+export interface DocumentGeometry extends PageMetric {}
+
 export interface PageWindowPlan {
   readonly generation: number;
   /** Pages requested for the current viewport, whether or not they are rendered yet. */
@@ -23,7 +30,7 @@ export interface VisiblePageGeometry {
 export interface PageWindowCheckpoint {
   readonly plannedPages: readonly number[];
   readonly residentPages: readonly number[];
-  readonly measuredHeights: readonly (readonly [number, number])[];
+  readonly measuredMetrics: readonly (readonly [number, PageMetric])[];
 }
 export interface ViewportPageRange {
   /** Undefined only when this window has no pages. */
@@ -34,11 +41,11 @@ export interface ViewportPageRange {
 
 export interface ContinuousPageWindowOptions {
   readonly pageCount: number;
+  readonly estimatedPageWidth?: number;
   readonly estimatedPageHeight: number;
   readonly pageGap: number;
   readonly maxResidentPages: number;
   readonly overscanPages: number;
-  readonly maxRememberedMetrics?: number;
 }
 
 function positiveFinite(value: number, label: string): number {
@@ -54,14 +61,16 @@ function nonNegativeInteger(value: number, label: string): number {
 function setsEqual(left: ReadonlySet<number>, right: ReadonlySet<number>): boolean {
   return left.size === right.size && [...left].every((page) => right.has(page));
 }
+
 export class ContinuousPageWindow {
   private readonly pageCount: number;
+  private readonly estimatedPageWidth: number;
   private readonly estimatedPageHeight: number;
   private readonly pageGap: number;
   private readonly maxResidentPages: number;
   private readonly overscanPages: number;
-  private readonly maxRememberedMetrics: number;
-  private readonly measuredHeights = new Map<number, number>();
+  /** Layout metadata is document-scoped and deliberately independent of raster residency. */
+  private readonly measuredMetrics = new Map<number, PageMetric>();
   private planned = new Set<number>();
   private resident = new Set<number>();
   private readonly inFlight = new Map<number, number>();
@@ -69,70 +78,70 @@ export class ContinuousPageWindow {
 
   public constructor(options: ContinuousPageWindowOptions) {
     this.pageCount = nonNegativeInteger(options.pageCount, "pageCount");
+    this.estimatedPageWidth = positiveFinite(options.estimatedPageWidth ?? 1, "estimatedPageWidth");
     this.estimatedPageHeight = positiveFinite(options.estimatedPageHeight, "estimatedPageHeight");
     this.pageGap = nonNegativeInteger(options.pageGap, "pageGap");
     this.maxResidentPages = Math.max(1, nonNegativeInteger(options.maxResidentPages, "maxResidentPages"));
     this.overscanPages = nonNegativeInteger(options.overscanPages, "overscanPages");
-    this.maxRememberedMetrics = Math.max(
-      this.maxResidentPages,
-      nonNegativeInteger(options.maxRememberedMetrics ?? 256, "maxRememberedMetrics"),
-    );
   }
 
   public updateMetric(pageNumber: number, metric: PageMetric): void {
-    this.assertPage(pageNumber);
-    positiveFinite(metric.width, "metric.width");
-    const height = positiveFinite(metric.height, "metric.height");
-    this.measuredHeights.delete(pageNumber);
-    this.measuredHeights.set(pageNumber, height);
-    while (this.measuredHeights.size > this.maxRememberedMetrics) {
-      const oldest = this.measuredHeights.keys().next().value as number | undefined;
-      if (oldest === undefined) break;
-      this.measuredHeights.delete(oldest);
-    }
+    this.updateMetrics([{ pageNumber, metric }]);
+  }
+
+  /** Validates a geometry batch before publishing any of it. */
+  public updateMetrics(updates: readonly { readonly pageNumber: number; readonly metric: PageMetric }[]): void {
+    const validated = updates.map(({ pageNumber, metric }) => {
+      this.assertPage(pageNumber);
+      return Object.freeze({
+        pageNumber,
+        metric: Object.freeze({
+          width: positiveFinite(metric.width, "metric.width"),
+          height: positiveFinite(metric.height, "metric.height"),
+        }),
+      });
+    });
+    for (const { pageNumber, metric } of validated) this.measuredMetrics.set(pageNumber, metric);
   }
 
   public checkpoint(): PageWindowCheckpoint {
     return Object.freeze({
       plannedPages: Object.freeze([...this.planned].sort((a, b) => a - b)),
       residentPages: Object.freeze([...this.resident].sort((a, b) => a - b)),
-      measuredHeights: Object.freeze([...this.measuredHeights.entries()].map((entry) => Object.freeze(entry))),
+      measuredMetrics: Object.freeze([...this.measuredMetrics.entries()].map(([page, metric]) =>
+        Object.freeze([page, Object.freeze({ ...metric })] as const))),
     });
   }
 
   public restore(checkpoint: PageWindowCheckpoint, physicallyResidentPages: readonly number[] = checkpoint.residentPages): PageWindowPlan {
-    for (const page of [...checkpoint.plannedPages, ...checkpoint.residentPages]) this.assertPage(page);
+    for (const page of [...checkpoint.plannedPages, ...checkpoint.residentPages, ...physicallyResidentPages]) this.assertPage(page);
+    const checkpointResidents = new Set(checkpoint.residentPages);
+    const physicalResidents = new Set(physicallyResidentPages);
+    if (physicalResidents.size !== physicallyResidentPages.length) throw new Error("Physical resident pages must be unique");
+    for (const page of physicalResidents) {
+      if (!checkpointResidents.has(page)) throw new Error(`Page ${page} is not in the checkpoint`);
+    }
+    const metrics = checkpoint.measuredMetrics.map(([page, metric]) => {
+      this.assertPage(page);
+      return Object.freeze([page, Object.freeze({
+        width: positiveFinite(metric.width, "measured width"),
+        height: positiveFinite(metric.height, "measured height"),
+      })] as const);
+    });
+
     this.planned = new Set(checkpoint.plannedPages);
-    for (const page of physicallyResidentPages) {
-      this.assertPage(page);
-      if (!checkpoint.residentPages.includes(page)) throw new Error(`Page ${page} is not in the checkpoint`);
-    }
-    this.resident = new Set(physicallyResidentPages);
+    this.resident = physicalResidents;
     this.inFlight.clear();
-    this.measuredHeights.clear();
-    for (const [page, height] of checkpoint.measuredHeights) {
-      this.assertPage(page);
-      this.measuredHeights.set(page, positiveFinite(height, "measured height"));
-    }
+    this.measuredMetrics.clear();
+    for (const [page, metric] of metrics) this.measuredMetrics.set(page, metric);
     this.generation += 1;
-    const pages = [...this.planned].sort((a, b) => a - b);
-    if (pages.length === 0) return { generation: this.generation, plannedPages: [], residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
-    const first = pages[0]!;
-    const last = pages.at(-1)!;
-    return {
-      generation: this.generation,
-      plannedPages: pages,
-      residentPages: [...this.resident].sort((a, b) => a - b),
-      materializePages: checkpoint.residentPages.filter((page) => !this.resident.has(page)),
-      evictPages: [],
-      topSpacer: this.offsetForPage(first),
-      bottomSpacer: Math.max(0, this.totalHeight() - this.offsetForPage(last) - this.heightForPage(last)),
-    };
+    return this.currentPlan(checkpoint.residentPages.filter((page) => !this.resident.has(page)));
   }
+
   /** Clears CSS page metrics after a scale or rotation change. */
   public resetMetricsForTransform(): readonly number[] {
     const invalidated = [...this.resident].sort((a, b) => a - b);
-    this.measuredHeights.clear();
+    this.measuredMetrics.clear();
     this.resident.clear();
     this.inFlight.clear();
     this.generation += 1;
@@ -175,53 +184,27 @@ export class ContinuousPageWindow {
 
   /** Describes a prospective window without changing generation, ownership, or in-flight work. */
   public previewPlan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
-    if (this.pageCount === 0) return { generation: this.generation, plannedPages: [], residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
-    this.assertPage(firstVisiblePage);
-    this.assertPage(lastVisiblePage);
-    const firstVisible = Math.min(firstVisiblePage, lastVisiblePage);
-    const lastVisible = Math.max(firstVisiblePage, lastVisiblePage);
-    const pages: number[] = [];
-    for (let page = firstVisible; page <= lastVisible; page += 1) pages.push(page);
-    for (let distance = 1; distance <= this.overscanPages; distance += 1) {
-      const before = firstVisible - distance;
-      const after = lastVisible + distance;
-      if (before >= 1) pages.unshift(before);
-      if (after <= this.pageCount) pages.push(after);
-    }
+    if (this.pageCount === 0) return this.emptyPlan(this.generation);
+    const pages = this.pagesForViewport(firstVisiblePage, lastVisiblePage);
     const next = new Set(pages);
     const samePlan = setsEqual(next, this.planned);
-    const firstResident = pages[0]!;
-    const lastResident = pages.at(-1)!;
-    return {
-      generation: samePlan ? this.generation : this.generation + 1,
-      plannedPages: pages,
-      residentPages: [...this.resident].sort((a, b) => a - b),
-      materializePages: pages.filter((page) => !this.resident.has(page) && (!samePlan || !this.inFlight.has(page))),
-      evictPages: [...this.resident].filter((page) => !next.has(page)).sort((a, b) => a - b),
-      topSpacer: this.offsetForPage(firstResident),
-      bottomSpacer: Math.max(0, this.totalHeight() - this.offsetForPage(lastResident) - this.heightForPage(lastResident)),
-    };
+    return this.describePlan(
+      pages,
+      samePlan ? this.generation : this.generation + 1,
+      pages.filter((page) => !this.resident.has(page) && (!samePlan || !this.inFlight.has(page))),
+      [...this.resident].filter((page) => !next.has(page)).sort((a, b) => a - b),
+    );
   }
+
   public plan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
     if (this.pageCount === 0) {
       this.planned.clear();
       this.resident.clear();
       this.inFlight.clear();
       this.generation += 1;
-      return { generation: this.generation, plannedPages: [], residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
+      return this.emptyPlan(this.generation);
     }
-    this.assertPage(firstVisiblePage);
-    this.assertPage(lastVisiblePage);
-    const firstVisible = Math.min(firstVisiblePage, lastVisiblePage);
-    const lastVisible = Math.max(firstVisiblePage, lastVisiblePage);
-    const pages: number[] = [];
-    for (let page = firstVisible; page <= lastVisible; page += 1) pages.push(page);
-    for (let distance = 1; distance <= this.overscanPages; distance += 1) {
-      const before = firstVisible - distance;
-      const after = lastVisible + distance;
-      if (before >= 1) pages.unshift(before);
-      if (after <= this.pageCount) pages.push(after);
-    }
+    const pages = this.pagesForViewport(firstVisiblePage, lastVisiblePage);
     const next = new Set(pages);
     if (!setsEqual(next, this.planned)) {
       this.generation += 1;
@@ -230,17 +213,7 @@ export class ContinuousPageWindow {
     const materializePages = pages.filter((page) => !this.resident.has(page) && !this.inFlight.has(page));
     const evictPages = [...this.resident].filter((page) => !next.has(page)).sort((a, b) => a - b);
     this.planned = next;
-    const firstResident = pages[0]!;
-    const lastResident = pages.at(-1)!;
-    return {
-      generation: this.generation,
-      plannedPages: pages,
-      residentPages: [...this.resident].sort((a, b) => a - b),
-      materializePages,
-      evictPages,
-      topSpacer: this.offsetForPage(firstResident),
-      bottomSpacer: Math.max(0, this.totalHeight() - this.offsetForPage(lastResident) - this.heightForPage(lastResident)),
-    };
+    return this.describePlan(pages, this.generation, materializePages, evictPages);
   }
 
   /**
@@ -255,32 +228,33 @@ export class ContinuousPageWindow {
     }
     if (this.pageCount === 0) return { firstVisiblePage: undefined, lastVisiblePage: undefined };
 
-    const documentHeight = this.totalHeight();
+    const documentHeight = this.documentGeometry().height;
     const start = Math.min(Math.max(0, scrollTop), documentHeight);
     const end = Math.min(documentHeight, start + viewportHeight);
     let firstVisiblePage: number | undefined;
     let lastVisiblePage: number | undefined;
     let nearestPage = 1;
     let nearestDistance = Number.POSITIVE_INFINITY;
-    let top = 0;
 
+    let pageTop = 0;
     for (let pageNumber = 1; pageNumber <= this.pageCount; pageNumber += 1) {
-      const bottom = top + this.heightForPage(pageNumber);
-      if (bottom > start && top < end) {
+      const geometry = { top: pageTop, height: this.measuredMetrics.get(pageNumber)?.height ?? this.estimatedPageHeight };
+      pageTop += geometry.height + this.pageGap;
+      const bottom = geometry.top + geometry.height;
+      if (bottom > start && geometry.top < end) {
         firstVisiblePage ??= pageNumber;
         lastVisiblePage = pageNumber;
       }
 
       const distance = bottom < start
         ? start - bottom
-        : top > end
-          ? top - end
+        : geometry.top > end
+          ? geometry.top - end
           : 0;
       if (distance < nearestDistance) {
         nearestPage = pageNumber;
         nearestDistance = distance;
       }
-      top = bottom + this.pageGap;
     }
 
     if (firstVisiblePage === undefined || lastVisiblePage === undefined) {
@@ -288,6 +262,7 @@ export class ContinuousPageWindow {
     }
     return { firstVisiblePage, lastVisiblePage };
   }
+
   public pageNearestViewportCenter(geometry: readonly VisiblePageGeometry[], viewportCenter: number): number | undefined {
     if (!Number.isFinite(viewportCenter) || geometry.length === 0) return undefined;
     let nearest: VisiblePageGeometry | undefined;
@@ -305,25 +280,78 @@ export class ContinuousPageWindow {
     return nearest?.pageNumber;
   }
 
+  public pageGeometry(pageNumber: number): PageGeometry {
+    this.assertPage(pageNumber);
+    const metric = this.measuredMetrics.get(pageNumber);
+    return Object.freeze({
+      pageNumber,
+      top: this.offsetForPage(pageNumber),
+      width: metric?.width ?? this.estimatedPageWidth,
+      height: metric?.height ?? this.estimatedPageHeight,
+    });
+  }
+
+  public documentGeometry(): DocumentGeometry {
+    if (this.pageCount === 0) return Object.freeze({ width: 0, height: 0 });
+    let width = this.estimatedPageWidth;
+    let height = this.pageCount * this.estimatedPageHeight + (this.pageCount - 1) * this.pageGap;
+    for (const metric of this.measuredMetrics.values()) {
+      width = Math.max(width, metric.width);
+      height += metric.height - this.estimatedPageHeight;
+    }
+    return Object.freeze({ width, height: Math.max(0, height) });
+  }
+
   public offsetForPage(pageNumber: number): number {
     this.assertPage(pageNumber);
     let offset = (pageNumber - 1) * (this.estimatedPageHeight + this.pageGap);
-    for (const [page, height] of this.measuredHeights) {
+    for (const [page, metric] of this.measuredMetrics) {
       if (page >= pageNumber) continue;
-      offset += height - this.estimatedPageHeight;
+      offset += metric.height - this.estimatedPageHeight;
     }
     return Math.max(0, offset);
   }
-
-  private heightForPage(pageNumber: number): number {
-    return this.measuredHeights.get(pageNumber) ?? this.estimatedPageHeight;
+  private pagesForViewport(firstVisiblePage: number, lastVisiblePage: number): number[] {
+    this.assertPage(firstVisiblePage);
+    this.assertPage(lastVisiblePage);
+    const firstVisible = Math.min(firstVisiblePage, lastVisiblePage);
+    const lastVisible = Math.max(firstVisiblePage, lastVisiblePage);
+    const pages = Array.from({ length: lastVisible - firstVisible + 1 }, (_unused, index) => firstVisible + index);
+    for (let distance = 1; distance <= this.overscanPages; distance += 1) {
+      if (firstVisible - distance >= 1) pages.unshift(firstVisible - distance);
+      if (lastVisible + distance <= this.pageCount) pages.push(lastVisible + distance);
+    }
+    return pages;
   }
 
-  private totalHeight(): number {
-    if (this.pageCount === 0) return 0;
-    let total = this.pageCount * this.estimatedPageHeight + (this.pageCount - 1) * this.pageGap;
-    for (const height of this.measuredHeights.values()) total += height - this.estimatedPageHeight;
-    return Math.max(0, total);
+  private currentPlan(materializePages: readonly number[]): PageWindowPlan {
+    const pages = [...this.planned].sort((a, b) => a - b);
+    return this.describePlan(pages, this.generation, materializePages, []);
+  }
+
+  private describePlan(
+    pages: readonly number[],
+    generation: number,
+    materializePages: readonly number[],
+    evictPages: readonly number[],
+  ): PageWindowPlan {
+    if (pages.length === 0) return this.emptyPlan(generation);
+    const first = pages[0]!;
+    const last = pages.at(-1)!;
+    const lastGeometry = this.pageGeometry(last);
+    return {
+      generation,
+      plannedPages: pages,
+      residentPages: [...this.resident].sort((a, b) => a - b),
+      materializePages,
+      evictPages,
+      topSpacer: this.offsetForPage(first),
+      bottomSpacer: Math.max(0, this.documentGeometry().height - lastGeometry.top - lastGeometry.height),
+    };
+  }
+
+  private emptyPlan(generation: number): PageWindowPlan {
+    return { generation, plannedPages: [], residentPages: [], materializePages: [], evictPages: [], topSpacer: 0, bottomSpacer: 0 };
   }
 
   private assertPage(pageNumber: number): void {

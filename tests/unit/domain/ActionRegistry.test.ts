@@ -11,18 +11,42 @@ import {
   getActionRuntimeAvailability,
   isActionAvailable,
 } from "../../../src/domain/actions/ActionRegistry";
+import { DEFAULT_BINDINGS } from "../../../src/domain/actions/DefaultBindings";
 
 const snapshot = JSON.parse(readFileSync(
   join(process.cwd(), "tests/contract/snapshots/action-ids.json"),
   "utf8",
 )) as { readonly ids: readonly string[]; readonly count: number };
 
+const RETIRED_ACTION_IDS = ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"] as const;
+
 describe("ActionRegistry", () => {
-  it("matches the exact frozen 54-action order with no duplicates", () => {
+  it("matches the exact frozen 49-action order with no duplicates", () => {
     expect(ACTION_IDS).toEqual(snapshot.ids);
     expect(ACTION_IDS).toHaveLength(snapshot.count);
-    expect(new Set(ACTION_IDS).size).toBe(54);
+    expect(new Set(ACTION_IDS).size).toBe(49);
     expect(ACTION_DESCRIPTORS.map(({ id }) => id)).toEqual(ACTION_IDS);
+  });
+
+  it("omits retired actions and leaves their shortcuts unassigned", () => {
+    const registeredIds = new Set<string>(ACTION_IDS);
+    const describedIds = new Set<string>(ACTION_DESCRIPTORS.map(({ id }) => id));
+    for (const id of RETIRED_ACTION_IDS) {
+      expect(registeredIds.has(id)).toBe(false);
+      expect(describedIds.has(id)).toBe(false);
+    }
+
+    const assignedSequences = new Set(Object.values(DEFAULT_BINDINGS).flat());
+    for (const sequence of ["t", "J", "K", "f", "y", "yy", "of", "I"]) {
+      expect(assignedSequences.has(sequence)).toBe(false);
+    }
+    expect(DEFAULT_BINDINGS["scroll.down"]).toContain("j");
+    expect(DEFAULT_BINDINGS["scroll.up"]).toContain("k");
+    expect(DEFAULT_BINDINGS["view.fitPage"]).toEqual(["F"]);
+    expect(DEFAULT_BINDINGS["history.back"]).toEqual(["<A-Left>"]);
+    expect(DEFAULT_BINDINGS["history.forward"]).toEqual(["<A-Right>"]);
+    expect(DEFAULT_BINDINGS["document.open"]).toEqual(["<C-S-o>"]);
+    expect(DEFAULT_BINDINGS["document.open"]).not.toContain("<C-o>");
   });
 
   it("has exactly the four frozen fixed-binding actions", () => {
@@ -32,16 +56,16 @@ describe("ActionRegistry", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(50);
+    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(45);
   });
 
   it("exposes exactly four input contexts and context-scoped availability", () => {
     expect(INPUT_CONTEXTS).toEqual(["navigation", "pagePrompt", "searchPrompt", "searchResults"]);
     expect(isActionAvailable("prompt.commit", "pagePrompt")).toBe(true);
     expect(isActionAvailable("prompt.commit", "navigation")).toBe(false);
-    expect(isActionAvailable("toc.toggle", "navigation")).toBe(true);
-    expect(isActionAvailable("toc.toggle", "searchResults")).toBe(true);
-    expect(isActionAvailable("toc.toggle", "pagePrompt")).toBe(false);
+    expect(isActionAvailable("page.next", "navigation")).toBe(true);
+    expect(isActionAvailable("page.next", "searchResults")).toBe(true);
+    expect(isActionAvailable("page.next", "pagePrompt")).toBe(false);
     expect(isActionAvailable("document.open", "searchPrompt")).toBe(true);
   });
 
@@ -50,7 +74,7 @@ describe("ActionRegistry", () => {
   });
 
   it("returns explicit runtime availability reasons for capacities and ownership", () => {
-    const ready = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: true, configExists: true, searchActive: true, canHistoryBack: true, canHistoryForward: true, linkCount: 2 };
+    const ready = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: true, configExists: true, searchActive: true, canHistoryBack: true, canHistoryForward: true };
     expect(getActionRuntimeAvailability("document.print", ready)).toEqual({ enabled: true });
     expect(getActionRuntimeAvailability("document.print", { ...ready, hasDocument: false })).toEqual({ enabled: false, reason: "No document open" });
     expect(getActionRuntimeAvailability("document.open", { ...ready, canCreateSession: false })).toEqual({ enabled: false, reason: "Document capacity unavailable" });
@@ -62,7 +86,6 @@ describe("ActionRegistry", () => {
     expect(getActionRuntimeAvailability("search.cancel", { ...ready, searchActive: false })).toEqual({ enabled: false, reason: "No active search" });
     expect(getActionRuntimeAvailability("history.back", { ...ready, canHistoryBack: false })).toEqual({ enabled: false, reason: "No back history" });
     expect(getActionRuntimeAvailability("history.forward", { ...ready, canHistoryForward: false })).toEqual({ enabled: false, reason: "No forward history" });
-    expect(getActionRuntimeAvailability("link.hint", { ...ready, linkCount: 0 })).toEqual({ enabled: false, reason: "No links on page" });
     expect(getActionRuntimeAvailability("update.show", { ...ready, updateAvailable: false })).toEqual({ enabled: false, reason: "No update available" });
     expect(getActionRuntimeAvailability("document.open", { ...ready, modalOpen: true })).toEqual({ enabled: false, reason: "Close the current dialog" });
     expect(getActionRuntimeAvailability("app.quit", { ...ready, modalOpen: true })).toEqual({ enabled: true });

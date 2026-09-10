@@ -9,7 +9,7 @@ const config = configResult.value;
 const state = (overrides: Partial<ActionRuntimeContext> = {}): ActionRuntimeContext => ({
   hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true,
   tabCount: 2, modalOpen: false, updateAvailable: false, configExists: false,
-  searchActive: false, canHistoryBack: false, canHistoryForward: false, linkCount: 0, ...overrides,
+  searchActive: false, canHistoryBack: false, canHistoryForward: false, ...overrides,
 });
 
 const command = (rows: ReturnType<typeof projectPaletteCommands>, id: string) => rows.find((row) => row.id === id);
@@ -31,7 +31,7 @@ describe("CommandCatalog", () => {
     const projections = [projectMenuCommands(state(), config), projectPaletteCommands(state(), config), projectHelpCommands(state(), config)];
     const openRows = projections.map((rows) => rows.find(({ id }) => id === "document.open"));
     expect(openRows).toEqual([openRows[0], openRows[0], openRows[0]]);
-    expect(openRows[0]?.shortcuts).toEqual(["Ctrl+O"]);
+    expect(openRows[0]?.shortcuts).toEqual(["Ctrl+Shift+O"]);
   });
   it("keeps foreign modals and menu projection blocked", () => {
     const modalState = state({ modalOpen: true });

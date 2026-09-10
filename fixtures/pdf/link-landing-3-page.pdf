@@ -1,0 +1,75 @@
+%PDF-1.7
+%ÄÅÇÉ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 3 /Kids [4 0 R 9 0 R 11 0 R] >>
+endobj
+3 0 obj
+<< /Title (Modeleaf deterministic golden fixtures) /Creator (Modeleaf) /Producer (Modeleaf) /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 5 0 R /Annots [6 0 R 7 0 R 8 0 R] >>
+endobj
+5 0 obj
+<< /Length 243 >>
+stream
+BT /F1 14 Tf 48 740 Td (Link landing source page one) Tj ET
+BT /F1 12 Tf 48 700 Td (Center page two near bottom) Tj ET
+BT /F1 12 Tf 48 660 Td (Clamp first page upper boundary) Tj ET
+BT /F1 12 Tf 48 620 Td (Clamp last page lower boundary) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 690 270 714] /A << /S /GoTo /D [9 0 R /XYZ 306 40 null] >> >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 650 270 674] /A << /S /GoTo /D [4 0 R /XYZ 306 780 null] >> >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [48 610 270 634] /A << /S /GoTo /D [11 0 R /XYZ 306 12 null] >> >>
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 10 0 R >>
+endobj
+10 0 obj
+<< /Length 133 >>
+stream
+BT /F1 14 Tf 48 720 Td (Link landing target page two) Tj ET
+BT /F1 12 Tf 48 60 Td (Centered target marker near page two bottom) Tj ET
+endstream
+endobj
+11 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 12 0 R >>
+endobj
+12 0 obj
+<< /Length 133 >>
+stream
+% link-landing-page-3-raster-v1
+0 0.5 1 rg
+48 650 192 48 re f
+0 0 0 rg
+BT /F1 14 Tf 48 720 Td (Link landing visible page three) Tj ET
+endstream
+endobj
+xref
+0 13
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000134 00000 n 
+0000000307 00000 n 
+0000000510 00000 n 
+0000000804 00000 n 
+0000000922 00000 n 
+0000001041 00000 n 
+0000001160 00000 n 
+0000001336 00000 n 
+0000001521 00000 n 
+0000001698 00000 n 
+trailer
+<< /Size 13 /Root 1 0 R /Info 3 0 R /ID [<4d4f44454c454146474f4c44454e3031> <4d4f44454c454146474f4c44454e3031>] >>
+startxref
+1883
+%%EOF

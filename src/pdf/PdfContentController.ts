@@ -4,8 +4,6 @@ import {
   type ResourceReservation,
   ResourceReservationManager,
 } from "./ResourceBudget";
-import { appendHintInput, generateHintLabels, type HintKeyInput } from "../domain/links/LinkHints";
-import { DEFAULT_INDICATOR_SETTINGS, validateIndicatorSettings, type IndicatorSettings } from "../domain/links/IndicatorSettings";
 import { isValidPdfDestination } from "./PdfDestination";
 export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: boolean; readonly fontName?: string; readonly dir?: string; readonly transform?: readonly number[]; readonly width?: number; readonly height?: number; readonly [key: string]: unknown; }
 export interface PdfContentTextContent { readonly items: readonly PdfContentTextItem[]; readonly styles?: Readonly<Record<string, unknown>>; readonly lang?: string; }
@@ -15,21 +13,18 @@ export interface PdfContentDocument { readonly numPages: number; getPage(pageNum
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
-export type PdfLinkActivationCause = "internal-link" | "link-hint" | "outline";
-export type PdfDestinationNavigationOutcome =
-  | { readonly kind: "verified"; readonly point?: { readonly pageNumber: number; readonly x: number; readonly y: number } }
-  | { readonly kind: "rejected" | "same-location" | "stale" | "failed" };
+export type PdfLinkActivationCause = "internal-link";
+export type PdfDestinationNavigationOutcome = { readonly kind: "verified" | "rejected" | "same-location" | "stale" | "failed" };
 export interface PdfSearchGeometry { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 interface PdfSearchGeometryRange { readonly start: number; readonly end: number; readonly originX: number; readonly originY: number; readonly advanceX: number; readonly advanceY: number; readonly thicknessX: number; readonly thicknessY: number; readonly width: number; readonly height: number; readonly reverse: boolean; }
 export interface PdfSearchResult { readonly pageNumber: number; readonly index: number; readonly length: number; readonly geometry?: PdfSearchGeometry; }
 export type PdfSearchLandingOutcome = "displayedDistinct" | "displayedSame" | "failedWithoutMovement" | "displayedAfterUnverifiedMovement" | "stale";
 export interface PdfSearchLandingRequest { readonly searchGeneration: number; readonly selectionSequence: number; readonly resultIndex: number; readonly result: PdfSearchResult; readonly provenance: "initial" | "next" | "previous" | "restore"; }
-export interface PdfSearchResultsUpdate { readonly searchGeneration: number; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly hasSearchableText: boolean; }
+export interface PdfSearchResultsUpdate { readonly searchGeneration: number; readonly query: string; readonly results: readonly PdfSearchResult[]; readonly hasSearchableText: boolean; readonly searchPending: boolean; readonly searchIncomplete: boolean; }
 export interface PdfContentControllerOptions {
   readonly host: HTMLElement;
   readonly resources: ResourceReservationManager;
   readonly onStatus: (message: string) => void;
-  readonly indicatorSettings?: () => IndicatorSettings;
   readonly navigateToPage: (pageNumber: number) => void;
   readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean) => Promise<PdfDestinationNavigationOutcome>;
   readonly resolveDestinationPage?: (reference: unknown) => Promise<number | null>;
@@ -50,8 +45,6 @@ export interface PdfContentSnapshot {
   readonly currentResult: number;
   readonly searchPending: boolean;
   readonly searchIncomplete: boolean;
-  readonly hintsVisible: boolean;
-  readonly visibleLinkCount: number;
 }
 
 interface ResidentContentEntry {
@@ -62,7 +55,7 @@ interface ResidentContentEntry {
   readonly viewport: PdfContentViewport;
   readonly canvas: HTMLCanvasElement;
   readonly reservation: ResourceReservation;
-  readonly hintGroups: LinkGroup[];
+  readonly linkGroups: LinkGroup[];
 }
 
 interface LinkGroup {
@@ -70,7 +63,6 @@ interface LinkGroup {
   readonly key: string;
   readonly annotation: PdfContentAnnotation;
   readonly annotationId: string;
-  hintLabel: string;
   registryRevision: number | undefined;
   readonly rectangles: readonly DOMRect[];
 }
@@ -99,6 +91,7 @@ interface PublishedRegistryFinalizer {
   reason: unknown;
 }
 const MAX_RESULTS = 10_000;
+const SEARCH_RESULT_PUBLICATION_GROWTH = 2;
 const SEARCH_HIGHLIGHT_NAME = "modeleaf-pdf-search-hits";
 const CURRENT_SEARCH_HIGHLIGHT_NAME = "modeleaf-pdf-search-current";
 type HighlightRegistry = {
@@ -306,10 +299,6 @@ export class PdfContentController {
     readonly destination: readonly unknown[];
   } | undefined;
   private destinationScrollSettlement: { readonly intentId: number; readonly promise: Promise<void>; readonly finish: () => void } | undefined;
-  private indicatorElement: HTMLElement | undefined;
-  private indicatorTimer: ReturnType<typeof setTimeout> | undefined;
-  private indicatorPublishTimer: ReturnType<typeof setTimeout> | undefined;
-  private indicatorGeneration = 0;
   private destinationSequence = 0;
   private linkActivationSequence = 0;
   private readonly resolvedDestinationPages = new WeakMap<PdfContentAnnotation, number>();
@@ -344,16 +333,15 @@ export class PdfContentController {
     readonly message: string;
   } | undefined;
   private partialSearchReason: string | undefined;
-  private hintsVisible = false;
   private interactionsEnabled = true;
   private interactionEpoch = 0;
   private registryQuarantined: { readonly revision: number; readonly reason: unknown } | undefined;
   private readonly publishedRegistryFinalizers = new Map<number, PublishedRegistryFinalizer>();
   private unsettledVisibleTextCleanup: Promise<void> | undefined;
-  private hintGroups: LinkGroup[] = [];
+  private visibleLinkGroups: LinkGroup[] = [];
   private readonly visiblePageNumbers = new Set<number>();
-  private hintInput = "";
   private readonly linkActivationSettlements = new Set<Promise<void>>();
+  private readonly externalDispatchSettlements = new Set<Promise<void>>();
   private readonly deferredRegistryCleanups = new Map<number, DeferredRegistryCleanup>();
   private mountedEpoch = 0;
   private closingEpoch: number | undefined;
@@ -369,12 +357,10 @@ export class PdfContentController {
       currentResult: this.currentResult,
       searchPending: this.searchPending,
       searchIncomplete: this.searchIncomplete,
-      hintsVisible: this.hintsVisible, visibleLinkCount: this.hintGroups.length,
     };
   }
 
   public mount(document: PdfContentDocument, generation: number, sessionId: string): void {
-    this.dismissLinkDecorations();
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
@@ -399,7 +385,6 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
-    this.dismissLinkDecorations();
     this.interactionsEnabled = false;
     this.interactionEpoch += 1;
     this.renderSequence += 1;
@@ -447,7 +432,6 @@ export class PdfContentController {
   }
 
   public async unmount(): Promise<void> {
-    this.dismissLinkDecorations();
     this.closingEpoch = this.mountedEpoch;
     const document = this.document;
     const generation = this.generation;
@@ -618,7 +602,7 @@ export class PdfContentController {
       annotationLayer.style.height = `${request.viewport.height}px`;
       if (!this.isCurrent(generation, document) || sequence !== this.renderSequence) return;
       layer.append(textLayer, annotationLayer);
-      const hintGroups = await awaitOwned(
+      const linkGroups = await awaitOwned(
         this.appendLinkGroups(annotationLayer, annotations, request.viewport, request.pageNumber, sequence, generation, document),
         Math.max(1, deadline - Date.now()),
       );
@@ -652,9 +636,9 @@ export class PdfContentController {
       }
       const presentationRoot = textLayer.closest<HTMLElement>(".pdf-page-frame") ?? layer;
       for (const [residentPage, entry] of this.residentEntries) {
-        if (retainedPages.has(residentPage)) for (const group of entry.hintGroups) group.registryRevision = registryPublication.revision;
+        if (retainedPages.has(residentPage)) for (const group of entry.linkGroups) group.registryRevision = registryPublication.revision;
       }
-      hintGroups.forEach((group) => { group.registryRevision = registryPublication!.revision; });
+      linkGroups.forEach((group) => { group.registryRevision = registryPublication!.revision; });
       const previousEntry = this.residentEntries.get(request.pageNumber);
       if (previousEntry !== undefined) this.evictPage(request.pageNumber);
       this.externalEntriesByPage = nextExternalEntries;
@@ -666,10 +650,10 @@ export class PdfContentController {
       this.visibleTextReservation = undefined;
       this.residentEntries.set(request.pageNumber, {
         pageNumber: request.pageNumber, layer: presentationRoot, textLayer, annotationLayer, viewport: request.viewport,
-        canvas: request.canvas, reservation: reserved.reservation, hintGroups,
+        canvas: request.canvas, reservation: reserved.reservation, linkGroups,
       });
       if (this.visiblePageNumbers.size === 0 && this.residentEntries.size === 1) this.visiblePageNumbers.add(request.pageNumber);
-      this.updateHintVisibility();
+      this.refreshVisibleLinks();
       ownsReservation = false;
       this.renderedPage = request.pageNumber;
       this.evictedPage = undefined;
@@ -712,7 +696,7 @@ export class PdfContentController {
     this.renderedCanvas = entry.canvas;
     this.renderedPage = entry.pageNumber;
     try {
-      this.updateHintVisibility();
+      this.refreshVisibleLinks();
       this.applyHighlights();
     } catch (error) {
       this.options.onStatus(`PDF resident decoration limited: ${error instanceof Error ? error.message : String(error)}`);
@@ -726,38 +710,30 @@ export class PdfContentController {
     pageNumbers.forEach((page) => this.visiblePageNumbers.add(page));
     const groups = [...this.residentEntries.values()]
       .filter((entry) => visible.has(entry.pageNumber))
-      .flatMap((entry) => entry.hintGroups)
+      .flatMap((entry) => entry.linkGroups)
       .sort((left, right) => left.pageNumber - right.pageNumber
         || this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!)
         || this.compareStrings(left.key, right.key)
         || this.compareStrings(left.annotationId, right.annotationId));
-    const hasSameOrderedGroups = groups.length === this.hintGroups.length
-      && groups.every((group, index) => group === this.hintGroups[index]);
-    this.hintGroups = groups;
-    if (!hasSameOrderedGroups) {
-      const labels = generateHintLabels(groups.length);
-      groups.forEach((group, index) => { group.hintLabel = labels[index]!; });
-    }
-    const labelById = new Map(groups.map((group) => [group.annotationId, group.hintLabel] as const));
+    this.visibleLinkGroups = groups;
+    const indexByAnnotationId = new Map(groups.map((group, index) => [group.annotationId, index + 1] as const));
     for (const entry of this.residentEntries.values()) {
-      entry.annotationLayer.querySelectorAll<HTMLElement>("[data-annotation-id]").forEach((element) => {
-        const label = labelById.get(element.dataset.annotationId ?? "");
-        if (element.classList.contains("pdf-link-hint")) {
-          element.textContent = label ?? "";
-          element.dataset.hintLabel = label ?? "";
-          element.style.display = this.hintsVisible && label !== undefined ? "block" : "none";
-        } else if (label !== undefined) {
-          element.dataset.hintTarget = label;
-          element.setAttribute("aria-label", `PDF link ${label}`);
+      entry.annotationLayer.querySelectorAll<HTMLElement>(".pdf-link-overlay[data-annotation-id]").forEach((element) => {
+        const index = indexByAnnotationId.get(element.dataset.annotationId ?? "");
+        if (index === undefined) {
+          delete element.dataset.linkIndex;
+          element.setAttribute("aria-label", "PDF link");
+        } else {
+          element.dataset.linkIndex = String(index);
+          element.setAttribute("aria-label", `PDF link ${index}`);
         }
       });
-      entry.layer.classList.toggle("pdf-link-hints-active", this.hintsVisible && entry.hintGroups.some((group) => labelById.has(group.annotationId)));
     }
     return groups.length;
   }
   /** Releases one resident page's overlays and reservation without disturbing siblings. */
   public evictPage(pageNumber: number): boolean {
-    const remainingVisiblePages = [...new Set(this.hintGroups.filter((group) => group.pageNumber !== pageNumber).map((group) => group.pageNumber))];
+    const remainingVisiblePages = [...new Set(this.visibleLinkGroups.filter((group) => group.pageNumber !== pageNumber).map((group) => group.pageNumber))];
     const entry = this.residentEntries.get(pageNumber);
     if (entry === undefined) return false;
     this.residentEntries.delete(pageNumber);
@@ -773,9 +749,7 @@ export class PdfContentController {
       this.renderedViewport = undefined;
       this.renderedCanvas = undefined;
       this.renderedPage = undefined;
-      this.hintGroups = [];
-      this.hintsVisible = false;
-      this.hintInput = "";
+      this.visibleLinkGroups = [];
     }
     this.activateVisiblePages(remainingVisiblePages);
     return true;
@@ -785,7 +759,7 @@ export class PdfContentController {
     const pages = new Set(pageNumbers);
     if ([...pages].some((page) => !Number.isSafeInteger(page) || page < 1)) throw new Error("PDF_RESIDENT_PAGE_INVALID");
     const priorRevisions = new Map<LinkGroup, number | undefined>();
-    for (const entry of this.residentEntries.values()) for (const group of entry.hintGroups) priorRevisions.set(group, group.registryRevision);
+    for (const entry of this.residentEntries.values()) for (const group of entry.linkGroups) priorRevisions.set(group, group.registryRevision);
     const publication = this.stageExternalLinks(
       [...this.externalEntriesByPage].filter(([page]) => pages.has(page)).flatMap(([, entries]) => entries),
       Date.now() + SEARCH_TIMEOUT_MS,
@@ -798,7 +772,7 @@ export class PdfContentController {
       throw error;
     }
     for (const [page, entry] of this.residentEntries) {
-      if (pages.has(page)) for (const group of entry.hintGroups) group.registryRevision = publication.revision;
+      if (pages.has(page)) for (const group of entry.linkGroups) group.registryRevision = publication.revision;
     }
     let finalized = false;
     return {
@@ -823,7 +797,7 @@ export class PdfContentController {
     transaction.finalize();
   }
   public invalidateSearch(): void {
-    this.searchSequence += 1;
+    const sequence = ++this.searchSequence;
     this.cancelActiveSearch();
     this.releaseResultReservations();
     this.query = "";
@@ -835,7 +809,8 @@ export class PdfContentController {
     this.evictedPage = undefined;
     this.evictedCurrentResult = undefined;
     this.partialSearchReason = undefined;
-    this.applyHighlights();
+    this.publishSearchResults(sequence, false);
+    this.clearHighlights();
   }
 
   private canvasScrollOrigin(canvas: HTMLCanvasElement): readonly [number, number] {
@@ -929,12 +904,19 @@ export class PdfContentController {
       : String(mode ?? "");
     const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
     const canvasOrigin = this.canvasScrollOrigin(request.canvas);
-    const scrollTo = (point: readonly number[]): void => {
+    const scrollTo = (
+      point: readonly number[],
+      placement: { readonly centerX: boolean; readonly centerY: boolean } = { centerX: false, centerY: false },
+    ): void => {
       if (!Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
       const beforeLeft = this.options.host.scrollLeft;
       const beforeTop = this.options.host.scrollTop;
-      const targetLeft = Math.max(0, canvasOrigin[0] + point[0]!);
-      const targetTop = Math.max(0, canvasOrigin[1] + point[1]!);
+      const maxScrollLeft = Math.max(0, this.options.host.scrollWidth - this.options.host.clientWidth);
+      const maxScrollTop = Math.max(0, this.options.host.scrollHeight - this.options.host.clientHeight);
+      const requestedLeft = canvasOrigin[0] + point[0]! - (placement.centerX ? this.options.host.clientWidth / 2 : 0);
+      const requestedTop = canvasOrigin[1] + point[1]! - (placement.centerY ? this.options.host.clientHeight / 2 : 0);
+      const targetLeft = Math.min(maxScrollLeft, Math.max(0, requestedLeft));
+      const targetTop = Math.min(maxScrollTop, Math.max(0, requestedTop));
       this.destinationScrollSettlement?.finish();
       let resolveScroll!: () => void;
       const promise = new Promise<void>((resolve) => { resolveScroll = resolve; });
@@ -993,7 +975,12 @@ export class PdfContentController {
     const targetX = x ?? current[0];
     const targetY = y ?? current[1];
     if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
-    scrollTo(request.viewport.convertToViewportPoint(targetX, targetY));
+    const rotation = ((request.viewport.rotation % 360) + 360) % 360;
+    const swapsAxes = rotation === 90 || rotation === 270;
+    scrollTo(request.viewport.convertToViewportPoint(targetX, targetY), {
+      centerX: name === "XYZ" && (swapsAxes ? destinationY !== undefined : destinationX !== undefined),
+      centerY: name === "XYZ" && (swapsAxes ? destinationX !== undefined : destinationY !== undefined),
+    });
   }
   public async search(query: string, restoreEvictedResult = false): Promise<void> {
     const deadline = Date.now() + SEARCH_TIMEOUT_MS;
@@ -1009,7 +996,7 @@ export class PdfContentController {
     this.searchIncomplete = false;
     if (!restoreEvictedResult) this.evictedCurrentResult = undefined;
     this.partialSearchReason = undefined;
-    this.applyHighlights(deadline);
+    this.clearHighlights();
     if (encoder.encode(source).byteLength > RESOURCE_LIMITS.maxTextPageBytes) {
       this.options.onStatus("TEXT_LIMIT");
       return;
@@ -1017,35 +1004,50 @@ export class PdfContentController {
     const normalized = normalizePdfSearchQuery(query);
     if (normalized.length === 0) return;
     this.query = normalized;
+    this.searchPending = true;
     this.options.onStatus(`Searching “${normalized}”…`);
+    this.publishSearchResults(sequence, false);
+    const failBeforeExtraction = (message: string): void => {
+      if (sequence !== this.searchSequence) return;
+      this.searchPending = false;
+      this.searchIncomplete = true;
+      this.publishSearchResults(sequence, false);
+      this.options.onStatus(message);
+    };
     const previous = this.activeSearchSettlement;
     if (previous !== undefined) {
       try {
         await this.withDeadline(previous, Math.max(1, deadline - Date.now()));
       } catch {
-        if (sequence === this.searchSequence) this.options.onStatus("Search cleanup timed out.");
+        failBeforeExtraction("Search cleanup timed out.");
         return;
       }
     }
     if (sequence !== this.searchSequence) return;
     const cleanupFailure = this.searchCleanupFailure;
     if (cleanupFailure !== undefined && cleanupFailure.document === this.document && cleanupFailure.generation === this.generation) {
-      this.options.onStatus(cleanupFailure.message);
+      failBeforeExtraction(cleanupFailure.message);
       return;
     }
     const generation = this.generation;
     const document = this.document;
     const sessionId = this.sessionId;
-    assertDeadline(deadline);
-    this.applyHighlights(deadline);
-    if (generation === undefined || document === undefined || sessionId === undefined) return;
+    if (Date.now() >= deadline) {
+      failBeforeExtraction("Search timed out.");
+      return;
+    }
+    this.clearHighlights();
+    if (generation === undefined || document === undefined || sessionId === undefined) {
+      failBeforeExtraction("Search is unavailable.");
+      return;
+    }
     const extractor = this.options.resources.reserve({ kind: "search-extractor", amount: 1, sessionId });
     const documentText = this.options.resources.reserve({ kind: "text-document-bytes", amount: RESOURCE_LIMITS.maxTextDocumentBytes, sessionId });
     const reservationFailure = !extractor.ok ? extractor.tag : !documentText.ok ? documentText.tag : undefined;
     if (reservationFailure !== undefined) {
       if (extractor.ok) this.options.resources.release(extractor.reservation);
       if (documentText.ok) this.options.resources.release(documentText.reservation);
-      this.options.onStatus(reservationFailure);
+      failBeforeExtraction(reservationFailure);
       return;
     }
     if (!extractor.ok || !documentText.ok) return;
@@ -1054,8 +1056,46 @@ export class PdfContentController {
     this.activeSearchSettlement = settlement;
     const documentBytes = { value: 0 };
     let hasExtractedText = false;
-    this.searchPending = true;
     let deferredSearchCleanup: Promise<void> | undefined;
+    let lastPublishedResultCount = 0;
+    let lastPublishedHasText = false;
+    let lastPublishedPending = true;
+    let lastPublishedIncomplete = false;
+    let nextPublicationResultCount = 1;
+    let initialLandingStarted = false;
+    const publishDiscoveredResults = (force: boolean): void => {
+      if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+      const changed = this.results.length !== lastPublishedResultCount
+        || hasExtractedText !== lastPublishedHasText
+        || this.searchPending !== lastPublishedPending
+        || this.searchIncomplete !== lastPublishedIncomplete;
+      if (!changed || (!force && this.results.length < nextPublicationResultCount)) return;
+      this.publishSearchResults(sequence, hasExtractedText);
+      lastPublishedResultCount = this.results.length;
+      lastPublishedHasText = hasExtractedText;
+      lastPublishedPending = this.searchPending;
+      lastPublishedIncomplete = this.searchIncomplete;
+      if (this.results.length > 0) {
+        nextPublicationResultCount = Math.min(
+          MAX_RESULTS + 1,
+          Math.max(this.results.length + 1, this.results.length * SEARCH_RESULT_PUBLICATION_GROWTH),
+        );
+      }
+    };
+    const beginInitialLanding = (): void => {
+      if (restoreEvictedResult || initialLandingStarted || this.currentResult >= 0 || this.pendingResultIndex !== undefined) return;
+      const index = this.results.findIndex((result) => result.geometry !== undefined);
+      if (index < 0) return;
+      initialLandingStarted = true;
+      publishDiscoveredResults(true);
+      if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+      const landing = this.selectMatch(index, "initial", generation, document, sequence);
+      void landing.catch((error: unknown) => {
+        if (this.isCurrent(generation, document) && sequence === this.searchSequence) {
+          this.options.onStatus(`Search result landing failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      });
+    };
     const awaitPageOwned = async <T>(operation: Promise<T>): Promise<T> => {
       let settled = false;
       const tracked = operation.finally(() => { settled = true; });
@@ -1089,23 +1129,46 @@ export class PdfContentController {
           this.results.push({ pageNumber, index: originalStart, length: originalEnd - originalStart, ...(geometry === undefined ? {} : { geometry }) });
           index = folded.value.indexOf(normalized, index + Math.max(1, normalized.length));
         }
+        beginInitialLanding();
+        publishDiscoveredResults(false);
         await (this.options.scheduleSearchWork?.() ?? new Promise<void>((resolve) => setTimeout(resolve, 0)));
         if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
       }
       assertDeadline(deadline);
       if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
-      this.options.onSearchResults({ searchGeneration: sequence, query: this.query, results: [...this.results], hasSearchableText: hasExtractedText });
+      this.searchPending = false;
       if (this.results.length === 0) {
+        publishDiscoveredResults(true);
         this.options.onStatus(hasExtractedText ? `No matches · “${this.query}”` : `No searchable text · “${this.query}”`);
       } else {
-        if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
         this.applyHighlights(deadline);
-        const preferredIndex = restoreEvictedResult && this.evictedCurrentResult !== undefined ? Math.min(this.evictedCurrentResult, this.results.length - 1) : 0;
-        const index = this.results[preferredIndex]?.geometry !== undefined ? preferredIndex : this.results.findIndex((result) => result.geometry !== undefined);
-        if (index < 0) { this.options.onStatus("Search result location unavailable."); return; }
-        const selected = await this.selectMatch(index, restoreEvictedResult ? "restore" : "initial", generation, document, sequence);
-        if (restoreEvictedResult && selected !== null) this.evictedCurrentResult = undefined;
-        else if (restoreEvictedResult) { this.evictedCurrentResult = preferredIndex; this.searchIncomplete = true; }
+        if (restoreEvictedResult) {
+          const preferredIndex = this.evictedCurrentResult === undefined ? 0 : Math.min(this.evictedCurrentResult, this.results.length - 1);
+          const index = this.results[preferredIndex]?.geometry !== undefined ? preferredIndex : this.results.findIndex((result) => result.geometry !== undefined);
+          if (index < 0) {
+            publishDiscoveredResults(true);
+            this.options.onStatus("Search result location unavailable.");
+            return;
+          }
+          const selected = await this.selectMatch(index, "restore", generation, document, sequence);
+          if (!this.isCurrent(generation, document) || sequence !== this.searchSequence) return;
+          if (selected !== null) this.evictedCurrentResult = undefined;
+          else {
+            this.evictedCurrentResult = preferredIndex;
+            this.searchIncomplete = true;
+          }
+          publishDiscoveredResults(true);
+          if (selected === null) this.options.onStatus("Search result location unavailable.");
+        } else {
+          publishDiscoveredResults(true);
+          if (this.pendingResultIndex !== undefined) {
+            this.options.onStatus(`Search complete · ${this.results.length} ${this.results.length === 1 ? "match" : "matches"} · “${this.query}”`);
+          } else if (this.currentResult >= 0) {
+            this.reportCurrentMatch("");
+          } else {
+            this.options.onStatus("Search result location unavailable.");
+          }
+        }
       }
     } catch (error) {
       let cause = error instanceof Error ? error.message : "Search could not be completed.";
@@ -1115,11 +1178,14 @@ export class PdfContentController {
         deferredSearchCleanup = this.unsettledSearchCleanup;
       }
       if (this.isCurrent(generation, document) && sequence === this.searchSequence) {
+        this.searchPending = false;
+        this.searchIncomplete = true;
+        if (this.results.length > 0) this.partialSearchReason = cause;
+        publishDiscoveredResults(true);
         if (this.results.length > 0) {
-          this.options.onSearchResults({ searchGeneration: sequence, query: this.query, results: [...this.results], hasSearchableText: hasExtractedText });
-          this.partialSearchReason = cause;
-          this.searchIncomplete = true;
-          if (Date.now() < deadline) this.applyHighlights(deadline);
+          if (Date.now() < deadline) {
+            try { this.applyHighlights(deadline); } catch { /* The primary search failure remains authoritative. */ }
+          }
           this.options.onStatus(`Search results are partial: ${cause}`);
         } else {
           this.options.onStatus(cause);
@@ -1141,8 +1207,9 @@ export class PdfContentController {
   }
   public async nextMatch(reverse = false): Promise<PdfSearchResult | null> {
     const generation = this.generation; const document = this.document; const sequence = this.searchSequence;
-    if (this.results.length === 0 || generation === undefined || document === undefined || this.searchPending || this.searchIncomplete) return null;
-    const baseIndex = this.pendingResultIndex ?? this.currentResult;
+    if (this.results.length === 0 || generation === undefined || document === undefined || this.searchIncomplete) return null;
+    const cursor = this.pendingResultIndex ?? this.currentResult;
+    const baseIndex = cursor >= 0 ? cursor : reverse ? 0 : -1;
     let index = baseIndex;
     for (let offset = 0; offset < this.results.length; offset += 1) {
       index = (index + (reverse ? -1 : 1) + this.results.length) % this.results.length;
@@ -1169,107 +1236,15 @@ export class PdfContentController {
     this.currentResult = index; this.pendingResultIndex = undefined; this.reportCurrentMatch(""); this.applyHighlights(); return result;
   }
 
-  public toggleHints(): void {
-    if (!this.hintsVisible && this.hintGroups.length === 0) {
-      this.options.onStatus("No links are available on this page.");
-      return;
-    }
-    this.hintsVisible = !this.hintsVisible;
-    this.hintInput = "";
-    this.updateHintVisibility();
-  }
-
-  public cancelHints(): void {
-    this.hintsVisible = false;
-    this.hintInput = "";
-    this.updateHintVisibility();
-  }
   public clearVisibleLinkAuthority(): void {
     this.visiblePageNumbers.clear();
-    this.hintsVisible = false;
-    this.hintInput = "";
-    this.hintGroups = [];
+    this.visibleLinkGroups = [];
     for (const entry of this.residentEntries.values()) {
-      entry.annotationLayer.querySelectorAll<HTMLElement>("[data-hint-label]").forEach((hint) => { hint.style.display = "none"; });
-      entry.layer.classList.remove("pdf-link-hints-active");
+      entry.annotationLayer.querySelectorAll<HTMLElement>(".pdf-link-overlay[data-annotation-id]").forEach((element) => {
+        delete element.dataset.linkIndex;
+        element.setAttribute("aria-label", "PDF link");
+      });
     }
-  }
-  public get indicatorPublicationPending(): boolean { return this.indicatorPublishTimer !== undefined; }
-  public get linkDecorationsVisible(): boolean { return this.hintsVisible || this.indicatorElement !== undefined; }
-  public dismissLinkDecorations(): void {
-    this.cancelHints();
-    this.indicatorGeneration += 1;
-    if (this.indicatorPublishTimer !== undefined) clearTimeout(this.indicatorPublishTimer);
-    this.indicatorPublishTimer = undefined;
-    if (this.indicatorTimer !== undefined) clearTimeout(this.indicatorTimer);
-    this.indicatorTimer = undefined;
-    this.indicatorElement?.remove();
-    this.indicatorElement = undefined;
-  }
-
-  private showDestinationIndicator(point: { readonly pageNumber: number; readonly x: number; readonly y: number }): void {
-    this.dismissLinkDecorations();
-    const entry = this.residentEntries.get(point.pageNumber);
-    if (entry === undefined) return;
-    const configured = this.options.indicatorSettings?.() ?? DEFAULT_INDICATOR_SETTINGS;
-    const validated = validateIndicatorSettings(configured);
-    if (!validated.ok) return;
-    const settings = validated.value;
-    const [x, y] = entry.viewport.convertToViewportPoint(point.x, point.y);
-    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x > entry.viewport.width || y > entry.viewport.height) return;
-    const indicator = documentCreate("div", "pdf-destination-indicator");
-    indicator.dataset.style = settings.style;
-    indicator.dataset.color = settings.color;
-    indicator.setAttribute("aria-hidden", "true");
-    indicator.style.position = "absolute";
-    indicator.style.pointerEvents = "none";
-    indicator.style.left = `${x - settings.size / 2}px`;
-    indicator.style.top = `${y - settings.size / 2}px`;
-    indicator.style.width = `${settings.size}px`;
-    indicator.style.height = `${settings.size}px`;
-    if (settings.color.startsWith("#")) indicator.style.setProperty("--indicator-color", settings.color);
-    else if (settings.color === "auto-contrast" && typeof getComputedStyle === "function") {
-      const values = getComputedStyle(entry.layer).backgroundColor.match(/[\d.]+/g)?.map(Number);
-      const alpha = values?.[3] ?? 1;
-      const channels = alpha === 0 ? [255, 255, 255] : values?.slice(0, 3);
-      if (channels?.length === 3 && channels.every(Number.isFinite)) {
-        const luminance = (0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!) / 255;
-        indicator.style.setProperty("--indicator-color", luminance > 0.5 ? "#000" : "#fff");
-      }
-    }
-    indicator.style.setProperty("--indicator-duration", `${settings.durationMilliseconds}ms`);
-    entry.annotationLayer.append(indicator);
-    this.indicatorElement = indicator;
-    const generation = ++this.indicatorGeneration;
-    this.indicatorTimer = setTimeout(() => {
-      if (generation !== this.indicatorGeneration) return;
-      indicator.remove();
-      if (this.indicatorElement === indicator) this.indicatorElement = undefined;
-      this.indicatorTimer = undefined;
-    }, settings.durationMilliseconds);
-  }
-  public handleHintKey(input: string | HintKeyInput): boolean {
-    const event = typeof input === "string" ? { key: input } : input;
-    if (event.ctrlKey || event.altKey || event.metaKey || event.altGraph || event.isComposing || event.keyCode === 229
-      || event.key === "Dead" || event.key === "Process" || event.key === "Unidentified") return false;
-    if (!this.hintsVisible && !(event.key === "Escape" && this.indicatorElement !== undefined)) return false;
-    if (event.key === "Escape") { this.dismissLinkDecorations(); return true; }
-    if (event.key === "Backspace") {
-      this.hintInput = this.hintInput.slice(0, -1);
-      return true;
-    }
-    const next = appendHintInput(this.hintInput, event);
-    if (next === null) return true;
-    const matches = this.hintGroups.map((group, index) => ({ index, label: group.hintLabel }))
-      .filter((candidate) => candidate.label.startsWith(next));
-    if (matches.length === 0) return true;
-    if (matches.length === 1) {
-      void this.activateLink(this.hintGroups[matches[0]!.index]!, "link-hint");
-      this.cancelHints();
-      return true;
-    }
-    this.hintInput = next;
-    return true;
   }
   private async appendLinkGroups(
     layer: HTMLElement,
@@ -1299,13 +1274,12 @@ export class PdfContentController {
         key: candidate.key,
         annotation: candidate.annotation,
         annotationId: candidate.annotationId,
-        hintLabel: "",
         registryRevision: undefined,
         rectangles: [candidate.rect],
       });
     }
-    const hintGroups = groups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!) || this.compareStrings(left.key, right.key) || this.compareStrings(left.annotationId, right.annotationId));
-    hintGroups.forEach((group) => {
+    const linkGroups = groups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!) || this.compareStrings(left.key, right.key) || this.compareStrings(left.annotationId, right.annotationId));
+    linkGroups.forEach((group) => {
       group.rectangles.forEach((rect) => {
         const target = documentCreate("button", "pdf-link-overlay");
         target.type = "button";
@@ -1315,9 +1289,8 @@ export class PdfContentController {
         target.style.width = `${rect.width}px`;
         target.style.height = `${rect.height}px`;
         target.style.pointerEvents = "auto";
-        target.dataset.hintTarget = group.hintLabel;
         target.dataset.annotationId = group.annotationId;
-        target.setAttribute("aria-label", `PDF link ${group.hintLabel}`);
+        target.setAttribute("aria-label", "PDF link");
         const annotationColor = group.annotation.color;
         if (annotationColor !== undefined && annotationColor.length >= 3) {
           const channels = [annotationColor[0], annotationColor[1], annotationColor[2]].map(Number);
@@ -1335,19 +1308,8 @@ export class PdfContentController {
         });
         layer.append(target);
       });
-      const first = group.rectangles[0];
-      if (first === undefined) return;
-      const hint = documentCreate("span", "pdf-link-hint");
-      hint.textContent = group.hintLabel;
-      hint.dataset.hintLabel = group.hintLabel;
-      hint.dataset.annotationId = group.annotationId;
-      hint.style.position = "absolute";
-      hint.style.left = `${first.left}px`;
-      hint.style.top = `${first.top}px`;
-      hint.style.display = this.hintsVisible ? "block" : "none";
-      layer.append(hint);
     });
-    return hintGroups;
+    return linkGroups;
   }
 
   private async activateLink(group: LinkGroup, cause: PdfLinkActivationCause): Promise<void> {
@@ -1362,8 +1324,8 @@ export class PdfContentController {
       && this.interactionsEnabled
       && this.isCurrent(generation, document);
     const isActive = (): boolean => isOwnerActive()
-      && this.hintGroups.includes(group)
-      && this.residentEntries.get(group.pageNumber)?.hintGroups.includes(group) === true;
+      && this.visibleLinkGroups.includes(group)
+      && this.residentEntries.get(group.pageNumber)?.linkGroups.includes(group) === true;
 
     if (annotation.url !== undefined) {
       if (!isExternalUrl(annotation.url)) { this.options.onStatus("Unsupported PDF link destination."); this.markLinkOutcome(group, "unsupported"); }
@@ -1376,7 +1338,7 @@ export class PdfContentController {
         } catch (error) {
           rawActivation = Promise.reject(error);
         }
-        this.trackLinkActivation(rawActivation.then(() => undefined, () => undefined));
+        this.trackLinkActivation("external", rawActivation.then(() => undefined, () => undefined));
         this.reportLinkActivation(
           this.withDeadline(rawActivation, LINK_ACTIVATION_TIMEOUT_MS, "LINK_LAUNCH_TIMEOUT"),
           operationSequence,
@@ -1388,13 +1350,13 @@ export class PdfContentController {
       return;
     }
     if (annotation.action !== undefined || annotation.dest === undefined) {
-      if (this.hintGroups.includes(group)) { this.options.onStatus("Unsupported PDF link action."); this.markLinkOutcome(group, "unsupported"); }
+      if (this.visibleLinkGroups.includes(group)) { this.options.onStatus("Unsupported PDF link action."); this.markLinkOutcome(group, "unsupported"); }
       return;
     }
 
     let releaseSettlement!: () => void;
     const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
-    this.trackLinkActivation(settlement);
+    this.trackLinkActivation("internal", settlement);
     let rawSettlement = Promise.resolve();
     const deadline = Date.now() + LINK_ACTIVATION_TIMEOUT_MS;
     const remaining = (): number => {
@@ -1423,13 +1385,7 @@ export class PdfContentController {
         this.markLinkOutcome(group, "unsupported");
       } else {
         const outcome = await awaitRaw(this.options.navigateToDestination(pageNumber, destination, cause, isOwnerActive));
-        if (isOwnerActive() && outcome.kind === "verified" && outcome.point !== undefined) {
-          const point = outcome.point;
-          this.indicatorPublishTimer = setTimeout(() => {
-            this.indicatorPublishTimer = undefined;
-            if (isOwnerActive()) this.showDestinationIndicator(point);
-          }, 0);
-        } else if (isOwnerActive() && outcome.kind !== "verified" && outcome.kind !== "same-location" && outcome.kind !== "stale") {
+        if (isOwnerActive() && outcome.kind !== "verified" && outcome.kind !== "same-location" && outcome.kind !== "stale") {
           this.options.onStatus("PDF link destination could not be reached.");
           this.markLinkOutcome(group, `failed ${outcome.kind}`);
         }
@@ -1537,7 +1493,7 @@ export class PdfContentController {
     return left < right ? -1 : left > right ? 1 : 0;
   }
 
-  private updateHintVisibility(): void {
+  private refreshVisibleLinks(): void {
     const pages = [...this.visiblePageNumbers];
     this.activateVisiblePages(pages);
   }
@@ -1614,8 +1570,8 @@ export class PdfContentController {
       operation = foreground.then(() => undefined, () => undefined);
       return foreground;
     };
-    const awaitPendingActivations = (): Promise<void> => {
-      const settlements = [...this.linkActivationSettlements];
+    const awaitPendingExternalDispatches = (): Promise<void> => {
+      const settlements = [...this.externalDispatchSettlements];
       return settlements.length === 0 ? Promise.resolve() : Promise.allSettled(settlements).then(() => undefined);
     };
     const staged = enqueue(async () => {
@@ -1623,7 +1579,7 @@ export class PdfContentController {
         terminate();
         throw new Error("PDF link registry is quarantined until unmount.");
       }
-      await this.withDeadline(awaitPendingActivations(), remaining(), "PDF link registry publication timed out.");
+      await this.withDeadline(awaitPendingExternalDispatches(), remaining(), "PDF link registry publication timed out.");
       remaining();
       if (this.isClosing() || this.registryQuarantined !== undefined) {
         terminate();
@@ -1685,7 +1641,7 @@ export class PdfContentController {
           }
           remaining();
           if (phase !== "committed") throw new Error("LINK_REGISTRY_PHASE");
-          await this.withDeadline(awaitPendingActivations(), remaining(), "PDF link registry publication timed out.");
+          await this.withDeadline(awaitPendingExternalDispatches(), remaining(), "PDF link registry publication timed out.");
           if (this.isClosing()) {
             this.retainSkippedPublishedRegistryFinalizer(revision, undefined);
             terminate();
@@ -1717,10 +1673,22 @@ export class PdfContentController {
       rollback,
     };
   }
+  private publishSearchResults(searchGeneration: number, hasSearchableText: boolean): void {
+    if (searchGeneration !== this.searchSequence) return;
+    this.options.onSearchResults({
+      searchGeneration,
+      query: this.query,
+      results: [...this.results],
+      hasSearchableText,
+      searchPending: this.searchPending,
+      searchIncomplete: this.searchIncomplete,
+    });
+  }
   private reportCurrentMatch(suffix: string): void {
+    const progress = this.searchPending ? " · Searching…" : "";
     const disclosure = suffix || (this.partialSearchReason === undefined ? "" : ` Search results are partial: ${this.partialSearchReason}`);
     this.options.onStatus(
-      `${this.currentResult + 1} / ${this.results.length} · “${this.query}”${disclosure}`,
+      `${this.currentResult + 1} / ${this.results.length} · “${this.query}”${progress}${disclosure}`,
     );
   }
   private clearHighlights(): void {
@@ -1878,13 +1846,15 @@ export class PdfContentController {
     this.renderedCanvas = undefined;
     this.visibleTextReservation = undefined;
     this.renderedPage = undefined;
-    this.hintGroups = [];
-    this.hintsVisible = false;
-    this.hintInput = "";
+    this.visibleLinkGroups = [];
   }
-  private trackLinkActivation(settlement: Promise<void>): void {
+  private trackLinkActivation(kind: "internal" | "external", settlement: Promise<void>): void {
     this.linkActivationSettlements.add(settlement);
-    void settlement.then(() => this.linkActivationSettlements.delete(settlement));
+    if (kind === "external") this.externalDispatchSettlements.add(settlement);
+    void settlement.then(() => {
+      this.linkActivationSettlements.delete(settlement);
+      if (kind === "external") this.externalDispatchSettlements.delete(settlement);
+    });
   }
 
   private deferRegistryCleanup(revision: number, operation: Promise<void>): void {
@@ -1975,7 +1945,9 @@ export class PdfContentController {
     for (const entry of this.residentEntries.values()) {
       for (const target of entry.layer.querySelectorAll<HTMLElement>(".pdf-link-overlay")) {
         if (target.dataset.annotationId !== group.annotationId) continue;
-        target.setAttribute("aria-label", `PDF link ${target.dataset.hintTarget ?? ""} ${outcome}`.trim());
+        const index = target.dataset.linkIndex;
+        const label = index === undefined ? "PDF link" : `PDF link ${index}`;
+        target.setAttribute("aria-label", `${label} ${outcome}`);
       }
     }
   }

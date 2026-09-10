@@ -24,6 +24,7 @@ export const FIXTURE_NAMES = [
   "locked.pdf",
   "empty.pdf",
   "links.pdf",
+  "link-landing-3-page.pdf",
   "link-duplicates.pdf",
   "outline.pdf",
   "interactive.pdf",
@@ -231,6 +232,43 @@ function linksPdf(duplicates = false) {
     { resources: font, content: "q Q\n" },
   ]);
 }
+function linkLandingPdf() {
+  // document() assigns page objects 4, 9, and 11 when page one owns three annotations.
+  const annotations = [
+    "<< /Type /Annot /Subtype /Link /Rect [48 690 270 714] /A << /S /GoTo /D [9 0 R /XYZ 306 40 null] >> >>",
+    "<< /Type /Annot /Subtype /Link /Rect [48 650 270 674] /A << /S /GoTo /D [4 0 R /XYZ 306 780 null] >> >>",
+    "<< /Type /Annot /Subtype /Link /Rect [48 610 270 634] /A << /S /GoTo /D [11 0 R /XYZ 306 12 null] >> >>",
+  ];
+  return document([
+    {
+      resources: font,
+      content: [
+        "BT /F1 14 Tf 48 740 Td (Link landing source page one) Tj ET",
+        "BT /F1 12 Tf 48 700 Td (Center page two near bottom) Tj ET",
+        "BT /F1 12 Tf 48 660 Td (Clamp first page upper boundary) Tj ET",
+        "BT /F1 12 Tf 48 620 Td (Clamp last page lower boundary) Tj ET",
+      ].join("\n"),
+      annots: annotations,
+    },
+    {
+      resources: font,
+      content: [
+        "BT /F1 14 Tf 48 720 Td (Link landing target page two) Tj ET",
+        "BT /F1 12 Tf 48 60 Td (Centered target marker near page two bottom) Tj ET",
+      ].join("\n"),
+    },
+    {
+      resources: font,
+      content: [
+        "% link-landing-page-3-raster-v1",
+        "0 0.5 1 rg",
+        "48 650 192 48 re f",
+        "0 0 0 rg",
+        "BT /F1 14 Tf 48 720 Td (Link landing visible page three) Tj ET",
+      ].join("\n"),
+    },
+  ]);
+}
 function outlinePdf() {
   const pages = [
     {
@@ -392,6 +430,7 @@ export function createGoldenFixtures() {
       },
     ],
     ["links.pdf", { bytes: linksPdf() }],
+    ["link-landing-3-page.pdf", { bytes: linkLandingPdf() }],
     ["link-duplicates.pdf", { bytes: linksPdf(true) }],
     ["outline.pdf", { bytes: outlinePdf() }],
     ["interactive.pdf", { bytes: interactivePdf() }],
@@ -466,6 +505,25 @@ function expected(name) {
         unresolved: true,
         foreign: true,
         text_only_url: true,
+      },
+    };
+  if (name === "link-landing-3-page.pdf")
+    return {
+      ...base,
+      pages: 3,
+      expected_text: [
+        "Link landing source page one",
+        "Link landing target page two",
+        "Link landing visible page three",
+      ],
+      expected_annotations: { links: 3, forms: 0, media: 0 },
+      sentinel: {
+        target: { page: 2, mode: "XYZ", x: 306, y: 40 },
+        first_boundary: { page: 1, mode: "XYZ", x: 306, y: 780 },
+        last_boundary: { page: 3, mode: "XYZ", x: 306, y: 12 },
+        viewport_height_css: 600,
+        page_3_visible_after_center: true,
+        page_3_raster: "link-landing-page-3-raster-v1",
       },
     };
   if (name === "link-duplicates.pdf")

@@ -1,4 +1,4 @@
-export type OverlayId = "commandPalette" | "search" | "help" | "theme" | "indicator" | "update" | "recent";
+export type OverlayId = "commandPalette" | "search" | "help" | "theme" | "update" | "recent";
 export type WindowOwnerId = string;
 export type FocusTargetId = string;
 export interface SuspendedPrompt { readonly kind: "page" | "search"; readonly text: string; readonly selectionStart: number; readonly selectionEnd: number }

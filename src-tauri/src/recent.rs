@@ -8,6 +8,7 @@ use serde::Serialize;
 use std::io;
 use std::path::{Path, PathBuf};
 
+const MAX_DISPLAY_PATH_UTF16_UNITS: usize = 32_767;
 pub const MAX_RECENT_DOCUMENTS: usize = MAX_RECENT_FILES;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -15,6 +16,7 @@ pub const MAX_RECENT_DOCUMENTS: usize = MAX_RECENT_FILES;
 pub struct RecentDocument {
     recent_id: String,
     display_name: String,
+    display_path: String,
 }
 impl RecentDocument {
     pub fn recent_id(&self) -> &str {
@@ -22,6 +24,9 @@ impl RecentDocument {
     }
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+    pub fn display_path(&self) -> &str {
+        &self.display_path
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -142,7 +147,7 @@ struct StoredRecent {
     canonical_path: PathBuf,
 }
 
-/// Native-only path authority. Renderer projections contain only opaque IDs and leaf names.
+/// Native path authority; projected paths are bounded display metadata and only opaque IDs resolve.
 pub struct RecentStore {
     state: StateFileStore,
     records: Vec<StoredRecent>,
@@ -213,6 +218,7 @@ impl RecentStore {
                 Some(RecentDocument {
                     recent_id: record.recent_id.clone(),
                     display_name: safe_display_name(&record.canonical_path)?,
+                    display_path: safe_display_path(&record.canonical_path)?,
                 })
             })
             .collect()
@@ -245,6 +251,8 @@ impl RecentStore {
         }
         let canonical_path = normalize_canonical_path(canonical_path)?;
         let display_name = safe_display_name(&canonical_path).ok_or(RecentStoreError::NotPdf)?;
+        let display_path =
+            safe_display_path(&canonical_path).ok_or(RecentStoreError::PathRejected)?;
         let timestamp = format_recent_timestamp(&SystemClock).map_err(state_error)?;
         self.state
             .record_recent_success(RecentFile {
@@ -272,9 +280,33 @@ impl RecentStore {
         Ok(RecentDocument {
             recent_id,
             display_name,
+            display_path,
         })
     }
 
+    pub fn clear_all_and_save(&mut self) -> Result<bool, RecentStoreError> {
+        self.ensure_writable()?;
+        let persisted_changed = match self.state.clear_recents() {
+            Ok(changed) => changed,
+            Err(StateFileError::Invalid) => {
+                let reason = RecentStateReason::StateInvalidRoot;
+                self.health = Some(reason);
+                return Err(RecentStoreError::StateUnavailable(reason));
+            }
+            Err(StateFileError::RecentInvalid) => {
+                let reason = RecentStateReason::RecentFieldInvalid;
+                self.health = Some(reason);
+                return Err(RecentStoreError::StateUnavailable(reason));
+            }
+            Err(error) => return Err(state_error(error)),
+        };
+        let changed = persisted_changed || !self.records.is_empty();
+        self.records.clear();
+        if changed {
+            self.committed();
+        }
+        Ok(changed)
+    }
     pub fn prune_missing_id(&mut self, recent_id: &str) -> Result<bool, RecentStoreError> {
         self.ensure_writable()?;
         let Some(index) = self
@@ -329,6 +361,8 @@ fn valid_persisted_recent<L: LocalPathPolicy>(value: &RecentFile, policy: &L) ->
     path.is_absolute()
         && is_pdf(path)
         && value.last_opened_at.parse::<u64>().is_ok()
+        && safe_display_name(path).is_some()
+        && safe_display_path(path).is_some()
         && policy.validate_syntax(path).is_ok()
         && matches!(
             policy.classify_syntax(path),
@@ -356,10 +390,39 @@ fn new_recent_id() -> String {
     format!("recent-{:032x}", rand::random::<u128>())
 }
 fn safe_display_name(path: &Path) -> Option<String> {
-    path.file_name()?
-        .to_str()
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
+    let value = path.file_name()?.to_string_lossy();
+    if value.is_empty() {
+        return None;
+    }
+    Some(
+        value
+            .chars()
+            .map(|character| {
+                if character.is_control() || character == '/' || character == '\\' {
+                    '\u{FFFD}'
+                } else {
+                    character
+                }
+            })
+            .collect(),
+    )
+}
+fn safe_display_path(path: &Path) -> Option<String> {
+    let value: String = path
+        .to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                '\u{FFFD}'
+            } else {
+                character
+            }
+        })
+        .collect();
+    if value.is_empty() || value.encode_utf16().count() > MAX_DISPLAY_PATH_UTF16_UNITS {
+        return None;
+    }
+    Some(value)
 }
 fn is_pdf(path: &Path) -> bool {
     path.extension()
