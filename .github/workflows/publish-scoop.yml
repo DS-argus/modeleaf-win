@@ -1,0 +1,57 @@
+{
+  "name": "Publish reviewed experimental Scoop release",
+  "on": { "push": { "tags": ["v*"] } },
+  "permissions": { "contents": "read" },
+  "concurrency": { "group": "publish-scoop-${{ github.ref }}", "cancel-in-progress": false },
+  "jobs": {
+    "publish": {
+      "if": "github.event.repository.private == false && vars.MODELEAF_APPROVED_RELEASE_SHA != '' && vars.MODELEAF_APPROVED_ZIP_SHA256 != ''",
+      "runs-on": "windows-latest",
+      "timeout-minutes": 15,
+      "permissions": { "contents": "write", "actions": "read" },
+      "env": {
+        "APPROVED_SOURCE_SHA": "${{ vars.MODELEAF_APPROVED_RELEASE_SHA }}",
+        "APPROVED_ZIP_SHA256": "${{ vars.MODELEAF_APPROVED_ZIP_SHA256 }}"
+      },
+      "steps": [
+        {
+          "name": "Check out tagged source",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": { "persist-credentials": false }
+        },
+        {
+          "name": "Set up pinned Node.js",
+          "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+          "with": { "node-version-file": "package.json" }
+        },
+        {
+          "name": "Find the approved main artifact",
+          "id": "candidate",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "with": {
+            "script": "if (context.payload.repository.private !== false || context.eventName !== 'push' || !context.ref.startsWith('refs/tags/v')) throw new Error('Publication requires a public repository and an existing version tag.');\nconst approved = process.env.APPROVED_SOURCE_SHA.toLowerCase();\nif (!/^[0-9a-f]{40}$/.test(approved) || !/^[0-9a-fA-F]{64}$/.test(process.env.APPROVED_ZIP_SHA256)) throw new Error('Exact source and ZIP approval are required.');\nconst commit = await github.rest.repos.getCommit({ ...context.repo, ref: context.ref });\nif (commit.data.sha !== approved) throw new Error('Tag source differs from owner-approved source.');\nconst runs = await github.rest.actions.listWorkflowRuns({ ...context.repo, workflow_id: 'windows-scoop.yml', head_sha: approved, status: 'success', per_page: 100 });\nconst run = runs.data.workflow_runs.find(r => r.head_sha === approved && r.head_branch === 'main' && r.conclusion === 'success' && ['push', 'workflow_dispatch'].includes(r.event));\nif (!run) throw new Error('No successful main preparation run matches the approved source.');\nconst name = 'modeleaf-scoop-review-' + approved;\nconst response = await github.rest.actions.listWorkflowRunArtifacts({ ...context.repo, run_id: run.id, per_page: 100 });\nconst artifacts = response.data.artifacts.filter(a => a.name === name && !a.expired);\nif (artifacts.length !== 1) throw new Error('The reviewed preparation artifact is missing, expired or ambiguous.');\ncore.setOutput('run-id', String(run.id));\ncore.setOutput('artifact-name', name);"
+          }
+        },
+        {
+          "name": "Download exact reviewed bytes",
+          "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "with": {
+            "github-token": "${{ github.token }}",
+            "run-id": "${{ steps.candidate.outputs.run-id }}",
+            "name": "${{ steps.candidate.outputs.artifact-name }}",
+            "path": "${{ runner.temp }}/modeleaf-reviewed-release",
+            "digest-mismatch": "error"
+          }
+        },
+        {
+          "name": "Validate and publish through a draft",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "env": { "ARTIFACT_DIRECTORY": "${{ runner.temp }}/modeleaf-reviewed-release" },
+          "with": {
+            "script": "const { join } = require('node:path');\nconst { pathToFileURL } = require('node:url');\nconst { readFile } = require('node:fs/promises');\nconst { createHash } = require('node:crypto');\nconst { validateScoopRelease } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/prepare-scoop-release.mjs')).href);\nif (context.payload.repository.private !== false || !context.ref.startsWith('refs/tags/v')) throw new Error('Public tag approval is required.');\nconst tag = context.ref.slice('refs/tags/'.length);\nconst validated = await validateScoopRelease({ artifacts: process.env.ARTIFACT_DIRECTORY, repository: context.repo.owner + '/' + context.repo.repo, tag, sourceCommit: process.env.APPROVED_SOURCE_SHA, zipSha256: process.env.APPROVED_ZIP_SHA256 });\nconst commit = await github.rest.repos.getCommit({ ...context.repo, ref: context.ref });\nif (commit.data.sha !== validated.sourceCommit) throw new Error('Tag changed after candidate selection.');\nconst assets = [];\nfor (const name of validated.assetBasenames) {\n  const data = await readFile(join(process.env.ARTIFACT_DIRECTORY, name));\n  const digest = 'sha256:' + createHash('sha256').update(data).digest('hex');\n  if (name.endsWith('.zip') && digest !== 'sha256:' + validated.zipSha256) throw new Error('ZIP changed after validation.');\n  assets.push({ name, data, digest });\n}\nconst releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });\nif (releases.some(existing => existing.tag_name === tag)) throw new Error('A release already exists for this tag; no assets were changed.');\nconst release = await github.rest.repos.createRelease({ ...context.repo, tag_name: tag, target_commitish: validated.sourceCommit, name: 'Modeleaf ' + validated.version + ' — experimental Windows release', body: validated.releaseNotes, draft: true, prerelease: true, make_latest: 'false' });\nfor (const asset of assets) {\n  const uploaded = await github.rest.repos.uploadReleaseAsset({ ...context.repo, release_id: release.data.id, name: asset.name, data: asset.data, headers: { 'content-type': 'application/octet-stream', 'content-length': asset.data.length } });\n  if (uploaded.data.state !== 'uploaded' || uploaded.data.size !== asset.data.length || uploaded.data.digest !== asset.digest) throw new Error('Uploaded asset verification failed; release remains a draft.');\n}\nawait github.rest.repos.updateRelease({ ...context.repo, release_id: release.data.id, draft: false, prerelease: true, make_latest: 'false' });\ncore.info('Published reviewed experimental release: ' + release.data.html_url);"
+          }
+        }
+      ]
+    }
+  }
+}

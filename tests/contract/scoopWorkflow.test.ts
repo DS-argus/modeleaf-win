@@ -39,7 +39,7 @@ function index(name: string): number {
   return steps.findIndex((entry) => entry.name === name);
 }
 
-describe("private Scoop preparation workflow", () => {
+describe("Scoop preparation workflow", () => {
   it("never grants publication authority or runs on release/tag events", () => {
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(Object.keys(workflow.on).sort()).toEqual(["pull_request", "push", "workflow_dispatch"]);
@@ -98,7 +98,7 @@ describe("private Scoop preparation workflow", () => {
     expect(setup.run).toContain("$env:GITHUB_ENV");
     expect(index("Set isolated output directories")).toBeLessThan(index("Test Rust"));
   });
-  it("isolates test/build state and uploads only short-lived private review output", () => {
+  it("isolates test/build state and retains private or main-only short-lived review output", () => {
     expect(job["runs-on"]).toBe("windows-latest");
     expect(job["timeout-minutes"]).toBeLessThanOrEqual(45);
     expect(job.env.CARGO_BUILD_JOBS).toBe("2");
@@ -108,7 +108,7 @@ describe("private Scoop preparation workflow", () => {
     expect(directories.MODELEAF_RELEASE_TARGET).not.toBe(directories.CARGO_TARGET_DIR);
     expect(step("Prepare ZIP and Scoop metadata").run).toContain("-OutputDirectory $env:MODELEAF_PACKAGE_OUTPUT");
     const upload = step("Retain review artifacts without publishing");
-    expect(upload.if).toBe("${{ github.event.repository.private == true }}");
+    expect(upload.if).toBe("${{ github.event.repository.private == true || github.ref == 'refs/heads/main' }}");
     expect(upload.with).toMatchObject({
       path: "${{ env.MODELEAF_PACKAGE_OUTPUT }}",
       "if-no-files-found": "error",
