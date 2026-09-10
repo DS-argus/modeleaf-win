@@ -125,12 +125,13 @@ describe("release checklist", () => {
     expect(checklist).toContain("HUMAN-ONLY");
   });
 
-  it("states plainly that nothing has been released", () => {
-    expect(checklist).toMatch(/not (been )?released|unreleased/iu);
+  it("keeps candidate verification distinct from publication and final owner approval", () => {
+    expect(checklist).toContain("Treat a candidate as **unreleased** until its matching GitHub prerelease and verified assets exist.");
+    expect(checklist).toContain("final owner review immediately before public conversion");
   });
 
-  it("does not claim any manual validation was performed", () => {
-    // The checklist records what must happen, never what did happen.
+  it("does not certify unperformed native validation", () => {
+    // Basic owner use does not certify these specific native scenarios.
     expect(checklist).not.toMatch(/verified on a clean VM|SmartScreen passed|Narrator verified/iu);
   });
 });

@@ -12,12 +12,16 @@ const REPOSITORY_SLUG = "fixture-owner/modeleaf-fixture";
 const ZIP_BASENAME = `modeleaf-${PACKAGE_VERSION}-windows-x64.zip`;
 const packageScript = fileURLToPath(new URL("../../../tools/windows/package-scoop.ps1", import.meta.url));
 const stagingPrefix = ".modeleaf-scoop-staging-";
+// Native process startup is not a reader-performance assertion. Every child
+// remains bounded; the full ZIP round trip gets a separate overall deadline.
+const NATIVE_COMMAND_TIMEOUT_MS = 30_000;
 
 type FixtureOptions = {
   packageVersion?: string;
   tauriVersion?: string;
   cargoVersion?: string;
   omitThirdPartyNotices?: boolean;
+  thirdPartyNotices?: string;
   executableBytes?: Buffer;
 };
 
@@ -74,7 +78,7 @@ function malformedPeWithEscapingOffset(): Buffer {
 }
 
 function git(repository: string, args: string[]): string {
-  return execFileSync("git", ["-c", `core.hooksPath=${join(repository, ".disabled-test-hooks")}`, "-c", "commit.gpgsign=false", ...args], { cwd: repository, encoding: "utf8", windowsHide: true }).trim();
+  return execFileSync("git", ["-c", `core.hooksPath=${join(repository, ".disabled-test-hooks")}`, "-c", "commit.gpgsign=false", ...args], { cwd: repository, encoding: "utf8", windowsHide: true, timeout: NATIVE_COMMAND_TIMEOUT_MS }).trim();
 }
 
 async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
@@ -111,7 +115,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   ].join("\n"));
   repositoryFiles.set("LICENSE", "MIT License\n\nPermission is hereby granted for this disposable test fixture.\n");
   if (!options.omitThirdPartyNotices) {
-    repositoryFiles.set("THIRD_PARTY_NOTICES.md", "# Third-party notices\n\nFixture notices.\n");
+    repositoryFiles.set("THIRD_PARTY_NOTICES.md", options.thirdPartyNotices ?? "# Third-party notices\n\nFixture notices.\n");
   }
   repositoryFiles.set("public/assets/pdfjs-6.2.108/cmaps/LICENSE", "CMap fixture license\n");
   repositoryFiles.set("public/assets/pdfjs-6.2.108/iccs/LICENSE", "ICC fixture license\n");
@@ -183,7 +187,7 @@ function runPackager(fixture: Fixture, repositorySlug = REPOSITORY_SLUG, useDefa
   ], {
     cwd: fixture.base,
     encoding: "utf8",
-    windowsHide: true,
+    windowsHide: true, timeout: NATIVE_COMMAND_TIMEOUT_MS,
   });
 }
 
@@ -231,7 +235,7 @@ async function inspectAndExtractZip(fixture: Fixture, zipPath: string): Promise<
     "-File", helper,
     "-ZipPath", zipPath,
     "-Destination", extracted,
-  ], { encoding: "utf8", windowsHide: true });
+  ], { encoding: "utf8", windowsHide: true, timeout: NATIVE_COMMAND_TIMEOUT_MS });
   requireSuccess(result);
   const entries = (result.stdout ?? "")
     .split(/\r?\n/u)
@@ -256,7 +260,8 @@ const windowsSuite = describe.skipIf(process.platform !== "win32");
 
 windowsSuite("Windows Scoop package preparation", () => {
   it("creates only the curated ZIP and truthful manifest, checksums, and receipt without changing sources", async () => {
-    const fixture = await createFixture();
+    const notices = await readFile(fileURLToPath(new URL("../../../THIRD_PARTY_NOTICES.md", import.meta.url)), "utf8");
+    const fixture = await createFixture({ thirdPartyNotices: notices });
     try {
       const unrelatedLicense = join(fixture.repository, "public/assets/pdfjs-6.2.108/wasm/LICENSE_LOCAL_PRIVATE");
       await writeFile(unrelatedLicense, "Untracked test-only private decoy; never include in an artifact.\n");
@@ -328,7 +333,7 @@ windowsSuite("Windows Scoop package preparation", () => {
     } finally {
       await rm(fixture.base, { recursive: true, force: true });
     }
-  });
+  }, 90_000);
 
   it("resolves the repository root when the optional argument is omitted", async () => {
     const fixture = await createFixture();

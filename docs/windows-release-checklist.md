@@ -1,113 +1,98 @@
 # Windows release checklist
 
-**Status: NOT RELEASED.** This repository is not release-ready: the [parity matrix](parity-matrix.md) records incomplete acceptance gates. Private development builds and review artifacts do not establish a public release, a signed installer, or completed native validation.
+The owner authorized an **initial experimental Windows release** after accepting basic app use; see [Issue #64](https://github.com/DS-argus/modeleaf-win/issues/64). This explicitly permits initial distribution before full parity, signing, and native acceptance are complete. It does not certify those gates or waive the final owner review immediately before public conversion.
 
-This document records what a release requires. It never records that a release happened.
+This checklist does not establish that a release happened. Treat a candidate as **unreleased** until its matching GitHub prerelease and verified assets exist. The [parity matrix](parity-matrix.md) remains the source of incomplete product acceptance.
 
-## What automated verification already covers
+## Automated preparation
 
-These run in the normal local gate and need no human:
+[Windows Scoop preparation](../.github/workflows/windows-scoop.yml) runs frontend tests/build, copied-asset/license checks, the dependency audit, Rust formatting/lint/tests, and a separate standalone build on Windows. Its token is read-only; it never tags, publishes a release, or changes visibility.
 
-| Item | Where |
-| --- | --- |
-| NSIS current-user, x64, download bootstrapper | `tests/contract/releaseContract.test.ts` |
-| `.pdf` association registered as Viewer, and nothing else claimed | same |
-| Version consistency across `tauri.conf.json`, `package.json`, `Cargo.toml` | same |
-| No signing credentials or updater endpoint committed | same |
-| No foreign-platform install phrasing in Windows-facing text | same |
-| Update comparison for same / older / prerelease / malformed / offline | `tests/unit/ui/UpdateNoticeModel.test.ts` |
-| Notify-only: no install, restart, or self-update affordance exists | same |
+Review artifacts are retained for seven days. While the repository is private, its PR and main artifacts remain private. After the separately approved public conversion, only main builds upload preparation artifacts; those CI downloads are then public, but are not signed or accepted releases. Public PR builds do not upload candidates. Rebuild and review again when an artifact expires; do not silently substitute another source or hash.
 
-## Private Scoop preparation
-
-The owner has authorized GitHub Actions. [Windows Scoop preparation](../.github/workflows/windows-scoop.yml) runs the automated gate and a separate standalone build on Windows. It has read-only repository permissions, no tag/release/visibility operations, and retains review artifacts for seven days **only while the repository is private**. Its workflow file uses JSON syntax, a YAML subset, so the complete structure can be checked without another parser dependency.
-
-The packager can also run locally after a successful standalone build:
+The packager can also run after a successful standalone build:
 
 ```powershell
 $out = Join-Path $env:TEMP ("modeleaf-scoop-" + [guid]::NewGuid().ToString("N"))
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows/package-scoop.ps1 -ExecutablePath src-tauri/target/release/modeleaf.exe -OutputDirectory $out
 ```
 
-It prepares an executable/license-only ZIP, `modeleaf.json`, `SHA256SUMS`, and a source-bound receipt. Existing output directories are rejected. Product versions must agree, source inputs remain unchanged, and PE header validation does **not** establish signature validity or native behavior. Generated download URLs are proposed release locations, not live downloads. No Scoop installation, data migration, file association, bucket update, signing setup or publication occurs here.
+It creates exactly four outputs: the executable/license-only ZIP, `modeleaf.json`, `SHA256SUMS`, and `package-receipt.json`. Existing output directories are rejected. PE header validation is only header validation: signature and native acceptance remain `not-verified`. The ZIP contains no source PDFs. Generated URLs are proposed locations, not availability evidence.
 
-These artifacts are preparation evidence only. The latest reader may still be in an unmerged PR; the recorded source revision identifies what was actually built. The following native/legal/publication gates remain required.
+### Native dependency notices
 
-## HUMAN-ONLY gates
+The ZIP's `THIRD_PARTY_NOTICES.md` includes full source-bound native dependency notices, including Unicode-3.0, WebView2 MIT copyrights, DPI's libm attribution, and MPL-2.0 source-availability links. `legal:verify` rejects stale Cargo.lock bindings, changed license text, or a missing/modified appendix. This is a reproducible notice inventory, not legal certification.
 
-Every item below requires a person. None can be satisfied by this repository's tests, and none may be reported as evidence unless a human actually performed it.
+After dependency changes, use **cargo-about 0.9.2**, review the output and source-bound clarifications in `tools/legal/about.toml`, then regenerate:
 
-### 1. Authenticode signing — HUMAN-ONLY
+```powershell
+cargo about generate --locked --fail --manifest-path src-tauri/Cargo.toml --config tools/legal/about.toml --format json --output-file .gjc/evidence/native-licenses.json
+node tools/legal/runtime-notices.mjs --import .gjc/evidence/native-licenses.json --write
+npm run legal:verify
+```
 
-Requires a code-signing certificate that is deliberately **not** present in this repository. `releaseContract.test.ts` asserts that no `certificateThumbprint`, `signCommand`, `digestAlgorithm`, or `timestampUrl` is configured, so an accidental commit of signing material fails the gate.
+Do not commit the raw cargo-about report: it contains local paths. The importer strips that metadata and rejects generic copyright placeholders. Commit only the normalized inventory and notice changes after review. No dependency was upgraded to add these notices.
 
-- [ ] Sign the installer and the executable with a valid certificate
-- [ ] Verify the timestamp countersignature
-- [ ] Confirm both artifacts report a valid signature in Windows properties
+## Reviewed tag publication
 
-### 2. Clean Windows VM validation — HUMAN-ONLY
+[Tag publication](../.github/workflows/publish-scoop.yml) promotes the exact bytes from a successful **main** preparation run; it does not rebuild at the tag or promote PR artifacts. The repository must already be public, and both owner-reviewed repository variables must be set:
 
-Requires a fresh Windows 10 and Windows 11 x64 VM with no prior Modeleaf install and no WebView2 runtime preinstalled.
+- `MODELEAF_APPROVED_RELEASE_SHA`: the exact main commit, also targeted by the version tag.
+- `MODELEAF_APPROVED_ZIP_SHA256`: the actual reviewed ZIP digest, not a value copied without checking its bytes.
 
-- [ ] Install on a clean Windows 11 VM without elevation
-- [ ] Confirm the WebView2 bootstrapper fetches and installs the runtime
-- [ ] Launch and open a PDF
-- [ ] Open With → Modeleaf on a `.pdf` from Explorer
-- [ ] Confirm Modeleaf did **not** seize the system default PDF handler
-- [ ] Upgrade-install over the existing version and confirm settings survive
-- [ ] Uninstall, then confirm only Modeleaf's own registration was removed
-- [ ] Repeat on Windows 10 x64
+The validator checks source/version/hash/byte count/checksum agreement, the four-file allowlist, and the narrow Scoop manifest contract. It rejects executable hooks, arbitrary targets, unknown fields, and fabricated signature/native status. Publication refuses existing releases, including drafts. It creates a draft, uploads and verifies all four assets, and only then exposes an experimental prerelease. Any upload failure leaves an unpublished draft for inspection; it is not overwritten automatically.
 
-### 3. SmartScreen reputation — HUMAN-ONLY
+For a published `v0.1.0`, the supported installation command is:
 
-Reputation accrues from download volume and signing history over time. Signing does not clear SmartScreen immediately, and §15 names assuming otherwise as a failure mode.
+```powershell
+scoop install https://github.com/DS-argus/modeleaf-win/releases/download/v0.1.0/modeleaf.json
+```
 
-- [ ] Download the signed installer through a browser on a clean VM
-- [ ] Record the exact SmartScreen prompt shown
-- [ ] Record it as a known first-release condition rather than a defect
+This is a versioned manifest URL, not a maintained bucket or an automatic-update channel. Windows 11 x64 and an installed Microsoft Edge WebView2 Runtime are required. The ZIP/Scoop path does not install WebView2, change PDF associations, or provide the separate NSIS installer.
 
-### 4. Narrator and accessibility — HUMAN-ONLY
+### Initial experimental execution checklist
 
-The suite proves structural semantics: button roles, disabled states, `aria-current`, landmarks, and theme contrast ratios. It cannot prove what a screen reader announces.
+- [ ] Successful main CI contains the merged reader and publication implementation
+- [ ] Review exact source, ZIP bytes/SHA-256, manifest, receipt, licenses, and limitations before artifact expiration
+- [ ] Complete the repository-content/history privacy and redistribution review; acceptance of three historical local PDFs is not blanket licensing of other material
+- [ ] Owner reviews the final receipt and explicitly approves public visibility immediately before conversion
+- [ ] Set the two exact approval variables and create the matching version tag only after that review
+- [ ] Verify all four published asset downloads and the manifest ZIP hash
+- [ ] Record actual Scoop installation results separately from metadata/unit/CI checks
 
-- [ ] Navigate the reader, tab strip, palette, help, and dialogs with Narrator
-- [ ] Confirm enabled controls are announced with the correct action and name
-- [ ] Confirm disabled controls are announced as disabled
-- [ ] Confirm the update banner is announced without interrupting reading
-- [ ] Verify Windows high-contrast (forced-colors) rendering
-- [ ] Verify 150% and 200% text scaling
+No visibility conversion, tag, or public release follows merely from committing this workflow. Never label a missing, expired, mismatched, failed, or unperformed check as success.
 
-### 5. Packaged behavior — HUMAN-ONLY
+## Known initial limitations
 
-Browser and JSDOM coverage does not substitute for packaged WebView2 behavior.
+Basic app use was accepted by the owner. Full native input/multiwindow scenarios, native DPI/text scaling, Narrator, clean-machine installation, and executable-signature validation remain unverified. Live configuration application, full-document printing, and update retrieval are incomplete; the reported Browse-pointer issue remains unresolved. TOC, keyboard link hints, and link-destination indicators are not included. The current build does not implement automatic updates.
 
-- [ ] Print a 1-page, a 12-page, and a 300-page fixture through Microsoft Print to PDF; confirm page count and order
-- [ ] Confirm reader state is unchanged after printing
-- [ ] Open two windows; confirm tabs, history, and handles stay independent
-- [ ] Launch a second instance with a file argument; confirm no second process and each path opens exactly once
-- [ ] Confirm source PDF SHA-256 values are unchanged after every scenario
+## Further native and production acceptance — HUMAN-ONLY
 
-### 6. Scoop installation — HUMAN-ONLY
+These remain open work, not claimed prerequisites that the owner somehow performed by accepting basic use. Browser, unit, and CI results do not certify them.
 
-The private ZIP/manifest preparation checks do not perform a real Scoop installation or replace the existing NSIS gates.
+### Authenticode and SmartScreen
 
-- [ ] Confirm the approved release commit contains the latest reader changes, not an older main baseline
-- [ ] Complete redistribution/license review for the executable and every bundled dependency
-- [ ] Verify the executable signature inside the final ZIP and confirm the ZIP matches the published manifest SHA-256
-- [ ] Install through Scoop on clean Windows 11 x64; verify WebView2 prerequisites and truthful missing-runtime guidance
-- [ ] Launch from the shim and Start menu shortcut, open a fixture, then verify source hashes unchanged
-- [ ] Exercise Scoop update and uninstall without losing application settings or modifying file associations
-- [ ] Verify the final public download URL and bucket; generated candidate URLs alone are not availability evidence
+- [ ] Deliberately authorize signing setup; no signing certificate or secret is configured by this release work
+- [ ] Sign and verify the final executable/installer and timestamp countersignature
+- [ ] Record the actual SmartScreen prompt after a browser download on clean Windows 11; signing does not guarantee established reputation
 
-## Release execution — requires separate owner approval
+### Clean Windows installation
 
-Do not perform any of these without explicit approval, per `AGENTS.md` §12.
+- [ ] On clean Windows 11 x64, verify truthful missing-WebView2 guidance for ZIP/Scoop and the separately tested NSIS bootstrapper
+- [ ] Install through Scoop, launch from shim and Start menu, and open a fixture
+- [ ] Check upgrade/uninstall behavior without losing settings or changing associations; no bucket update mechanism is claimed
+- [ ] Separately verify NSIS current-user install, Open With registration without seizing defaults, upgrade, and uninstall
 
-- [ ] All W00–W13 gates complete with retained evidence
-- [ ] No parity row partial, blocked, or undocumented
-- [ ] Owner approves release execution
-- [ ] Owner reviews the final repository contents/history and explicitly approves public visibility immediately before conversion
-- [ ] Tag created
-- [ ] GitHub Release published with the signed installer
+### Narrator, display, and packaged behavior
 
-Until every box above is checked by a human, this product is unreleased.
+- [ ] Navigate reader, tabs, palette, help, and dialogs with Narrator and record announcements
+- [ ] Verify forced colors, native DPI combinations, and 150%/200% text scaling
+- [ ] Test 1-, 12-, and 300-page printing through Microsoft Print to PDF; verify counts/order and unchanged reader state after the printing defect is fixed
+- [ ] Verify independent windows and exactly-once second-instance file ingress
+- [ ] Confirm source PDF SHA-256 values remain unchanged after each scenario
+
+### Production-complete criteria
+
+- [ ] W00–W13 gates complete with retained evidence and no partial, blocked, or undocumented parity rows
+- [ ] All applicable native, installer, legal, signing, and accessibility evidence retained
+- [ ] Owner separately approves any production-ready claim, signing setup, installer publication, or change to the notify-only update boundary
