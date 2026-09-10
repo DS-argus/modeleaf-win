@@ -58,6 +58,7 @@ describe("private Scoop preparation workflow", () => {
     ]);
     for (const action of actions) expect(action.uses).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/u);
     expect(step("Check out source").with?.["persist-credentials"]).toBe(false);
+    expect(step("Check out source").with?.["fetch-depth"]).toBe(0);
     expect(step("Set up pinned Node.js").with?.["node-version-file"]).toBe("package.json");
   });
 
