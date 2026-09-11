@@ -102,8 +102,7 @@ fn pdf_dialog_relay_runs_picker_after_scheduling_callback_returns() {
                     *dispatch_thread_for_task.lock().unwrap() = Some(std::thread::current().id());
                     task();
                     callback_returned_for_dispatch.store(true, Ordering::SeqCst);
-                    let (picker, completion) =
-                        queued_for_dispatch.lock().unwrap().take().unwrap();
+                    let (picker, completion) = queued_for_dispatch.lock().unwrap().take().unwrap();
                     completion(picker(1));
                 })
                 .map_err(|_| ())?

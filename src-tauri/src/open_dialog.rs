@@ -30,17 +30,14 @@ where
     S: FnOnce(PostedDialogPicker, PostedDialogCompletion) -> Result<(), SE> + Send + 'static,
     F: FnOnce(isize) -> PdfDialogResult + Send + 'static,
 {
-    let (sender, mut receiver) = tauri::async_runtime::channel::<
-        Result<PdfDialogResult, PdfDialogDispatchError>,
-    >(1);
+    let (sender, mut receiver) =
+        tauri::async_runtime::channel::<Result<PdfDialogResult, PdfDialogDispatchError>>(1);
     let schedule_failure_sender = sender.clone();
     dispatch(Box::new(move || {
         let completion: PostedDialogCompletion = Box::new(move |result| {
             let _ = sender.try_send(Ok(result));
         });
-        let scheduled = catch_unwind(AssertUnwindSafe(|| {
-            schedule(Box::new(picker), completion)
-        }));
+        let scheduled = catch_unwind(AssertUnwindSafe(|| schedule(Box::new(picker), completion)));
         if !matches!(scheduled, Ok(Ok(()))) {
             let _ = schedule_failure_sender.try_send(Err(PdfDialogDispatchError::DispatchFailed));
         }
@@ -200,12 +197,7 @@ mod posted_dispatch {
             Ok(())
         }
 
-        fn take_queued(
-            &mut self,
-            owner_hwnd: isize,
-            token: usize,
-            owner_thread: u32,
-        ) -> Option<T> {
+        fn take_queued(&mut self, owner_hwnd: isize, token: usize, owner_thread: u32) -> Option<T> {
             let slot = self.slots.get_mut(&owner_hwnd)?;
             if slot.token != token
                 || slot.owner_thread != owner_thread
@@ -229,11 +221,7 @@ mod posted_dispatch {
             matches
         }
 
-        fn remove_matching(
-            &mut self,
-            owner_hwnd: isize,
-            token: usize,
-        ) -> Option<PostedPhase<T>> {
+        fn remove_matching(&mut self, owner_hwnd: isize, token: usize) -> Option<PostedPhase<T>> {
             if !self
                 .slots
                 .get(&owner_hwnd)
@@ -266,11 +254,7 @@ mod posted_dispatch {
     }
 
     fn remove_slot(owner_hwnd: isize, token: usize) -> Option<PostedPhase<DialogWork>> {
-        POSTED_DIALOGS.with(|registry| {
-            registry
-                .borrow_mut()
-                .remove_matching(owner_hwnd, token)
-        })
+        POSTED_DIALOGS.with(|registry| registry.borrow_mut().remove_matching(owner_hwnd, token))
     }
 
     fn remove_hook(hwnd: HWND) -> bool {
@@ -316,15 +300,8 @@ mod posted_dispatch {
             return Err(PdfDialogDispatchError::DispatchFailed);
         }
 
-        if unsafe {
-            GetWindowSubclass(
-                owner,
-                Some(dialog_subclass_proc),
-                DIALOG_SUBCLASS_ID,
-                None,
-            )
-        }
-        .as_bool()
+        if unsafe { GetWindowSubclass(owner, Some(dialog_subclass_proc), DIALOG_SUBCLASS_ID, None) }
+            .as_bool()
             && !remove_hook(owner)
         {
             rollback(owner_hwnd, owner, token, false);
@@ -332,12 +309,7 @@ mod posted_dispatch {
         }
 
         if !unsafe {
-            SetWindowSubclass(
-                owner,
-                Some(dialog_subclass_proc),
-                DIALOG_SUBCLASS_ID,
-                token,
-            )
+            SetWindowSubclass(owner, Some(dialog_subclass_proc), DIALOG_SUBCLASS_ID, token)
         }
         .as_bool()
         {
@@ -393,9 +365,8 @@ mod posted_dispatch {
 
         let picked = catch_unwind(AssertUnwindSafe(|| picker(owner_hwnd)));
         let Ok(mut result) = picked else {
-            let removed = POSTED_DIALOGS.with(|registry| {
-                registry.borrow_mut().finish_running(owner_hwnd, token)
-            });
+            let removed = POSTED_DIALOGS
+                .with(|registry| registry.borrow_mut().finish_running(owner_hwnd, token));
             if removed {
                 let _ = remove_hook(hwnd);
             }
@@ -406,9 +377,8 @@ mod posted_dispatch {
         let owner_still_valid = validated_owner(owner_hwnd)
             .map(|(_, thread)| thread == owner_thread)
             .unwrap_or(false);
-        let finished = POSTED_DIALOGS.with(|registry| {
-            registry.borrow_mut().finish_running(owner_hwnd, token)
-        });
+        let finished =
+            POSTED_DIALOGS.with(|registry| registry.borrow_mut().finish_running(owner_hwnd, token));
         let hook_removed = !finished || remove_hook(hwnd);
         if !finished || !owner_still_valid {
             result = Err(PdfDialogError::OwnerUnavailable);
@@ -506,10 +476,7 @@ mod posted_dispatch {
             let mut registry = PostedRegistry::new(1);
             registry.admit(11, 7, 101, "work").unwrap();
             assert_eq!(registry.take_queued(11, 7, 101), Some("work"));
-            assert_eq!(
-                registry.remove_matching(11, 7),
-                Some(PostedPhase::Running)
-            );
+            assert_eq!(registry.remove_matching(11, 7), Some(PostedPhase::Running));
             assert!(!registry.finish_running(11, 7));
         }
 

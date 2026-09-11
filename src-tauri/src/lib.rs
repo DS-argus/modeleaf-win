@@ -16,9 +16,7 @@ use crate::commands::config::{
 use crate::commands::state::StateFileStore;
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
-use open_dialog::{
-    choose_pdf_file, dispatch_pdf_dialog, post_pdf_dialog, PdfDialogError,
-};
+use open_dialog::{choose_pdf_file, dispatch_pdf_dialog, post_pdf_dialog, PdfDialogError};
 use open_request::{
     resolve_second_instance_paths, OpenFailureId, OpenRequestCoordinator, OpenRequestError,
     OpenRequestId,

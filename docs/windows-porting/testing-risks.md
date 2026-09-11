@@ -412,7 +412,7 @@ Before restoring parity for the revised reader, separately authorize and retain 
 
 ## 13. Issue #71 native Browse pointer gate
 
-Issue #71 moves `IFileOpenDialog.Show` from a blocking worker onto the Tauri main-thread dispatcher so the live owner HWND and picker execute on the same UI thread. Cross-thread modal dispatch remains a hypothesis until the reported corporate-cloud symptom is reproduced against a packaged candidate; the code change alone is not cursor-visibility evidence.
+Issue #71 moves `IFileOpenDialog.Show` from a blocking worker onto the owner UI thread through a posted native HWND message. The Tauri main-thread callback only registers and posts work; it returns before the subclass enters the modal picker, avoiding retention of Tao's event callback. Cross-thread modal dispatch remains a hypothesis until the reported corporate-cloud symptom is reproduced against a packaged candidate; the code change alone is not cursor-visibility evidence.
 
 Focused Rust contract scope:
 
@@ -430,3 +430,5 @@ Focused Rust contract scope:
 4. Record the packaged build identity, Windows/WebView2 versions, observations or capture, and source PDF SHA-256 before/after.
 
 Do not substitute unit/source assertions for this native observation, and do not use `ShowCursor`, `SetCursor`, or process-global cursor-state changes as remediation.
+
+Nested native modal dialogs can delay an outer request's completion until the inner `Show` unwinds. Owner destruction invalidates the request token and prevents late selection admission, but does not promise immediate completion of an already-running outer picker. Native verification must close/cancel window A while window B's picker is open, then dismiss B and verify the surviving window can open a new picker; distinguish delayed completion from framework event starvation.
