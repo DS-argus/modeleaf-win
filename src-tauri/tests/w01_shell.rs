@@ -84,14 +84,13 @@ fn native_pdf_dialog_picker_runs_only_on_the_dispatched_thread() {
             std::thread::Builder::new()
                 .name("test-dialog-ui-thread".into())
                 .spawn(move || {
-                    *dispatch_thread_for_task.lock().unwrap() =
-                        Some(std::thread::current().id());
+                    *dispatch_thread_for_task.lock().unwrap() = Some(std::thread::current().id());
                     task();
                 })
                 .map_err(|_| ())?
                 .join()
                 .map_err(|_| ())?;
-            Ok(())
+            Ok::<(), ()>(())
         },
         move || {
             *picker_thread_for_task.lock().unwrap() = Some(std::thread::current().id());
@@ -109,6 +108,17 @@ fn native_pdf_dialog_picker_runs_only_on_the_dispatched_thread() {
 #[test]
 fn native_pdf_dialog_dispatch_preserves_cancel_and_picker_failure() {
     use modeleaf_lib::open_dialog::{dispatch_pdf_dialog, PdfDialogError};
+    let selected = tauri::async_runtime::block_on(dispatch_pdf_dialog(
+        |task| {
+            task();
+            Ok::<(), ()>(())
+        },
+        || Ok(Some(std::path::PathBuf::from("selected.pdf"))),
+    ));
+    assert_eq!(
+        selected,
+        Ok(Ok(Some(std::path::PathBuf::from("selected.pdf"))))
+    );
 
     let cancelled = tauri::async_runtime::block_on(dispatch_pdf_dialog(
         |task| {
@@ -147,10 +157,7 @@ fn native_pdf_dialog_dispatch_failure_and_dropped_task_are_terminal() {
             Ok(None)
         },
     ));
-    assert_eq!(
-        dispatch_failed,
-        Err(PdfDialogDispatchError::DispatchFailed)
-    );
+    assert_eq!(dispatch_failed, Err(PdfDialogDispatchError::DispatchFailed));
     assert!(!picker_called.load(Ordering::SeqCst));
 
     let task_dropped = tauri::async_runtime::block_on(dispatch_pdf_dialog(

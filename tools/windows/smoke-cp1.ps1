@@ -65,9 +65,9 @@ public static class ModeleafNativeWindow {
     if (control) result &= PostMessageW(target, 0x0100, (IntPtr)0x11, IntPtr.Zero);
     if (shift) result &= PostMessageW(target, 0x0100, (IntPtr)0x10, IntPtr.Zero);
     result &= PostMessageW(target, 0x0100, (IntPtr)virtualKey, IntPtr.Zero);
-    result &= PostMessageW(target, 0x0101, (IntPtr)virtualKey, (IntPtr)0xC0000001);
-    if (shift) result &= PostMessageW(target, 0x0101, (IntPtr)0x10, (IntPtr)0xC0000001);
-    if (control) result &= PostMessageW(target, 0x0101, (IntPtr)0x11, (IntPtr)0xC0000001);
+    result &= PostMessageW(target, 0x0101, (IntPtr)virtualKey, new IntPtr(unchecked((int)0xC0000001)));
+    if (shift) result &= PostMessageW(target, 0x0101, (IntPtr)0x10, new IntPtr(unchecked((int)0xC0000001)));
+    if (control) result &= PostMessageW(target, 0x0101, (IntPtr)0x11, new IntPtr(unchecked((int)0xC0000001)));
     return result;
   }
 
