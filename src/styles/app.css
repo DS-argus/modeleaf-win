@@ -161,23 +161,22 @@ html, body { overflow: hidden; }
 }
 
 .pdf-link-overlay {
-  --pdf-link-color: var(--theme-accent);
+  --pdf-link-border-color: transparent;
+  appearance: none;
   z-index: 3;
   min-width: 1px;
   min-height: 1px;
   padding: 0;
-  border: 2px solid color-mix(in srgb, var(--pdf-link-color) 82%, transparent);
-  background: color-mix(in srgb, var(--pdf-link-color) 16%, transparent);
-  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--pdf-link-color) 92%, transparent);
+  border: 0 solid var(--pdf-link-border-color);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   cursor: pointer;
 }
 
-.pdf-link-overlay:hover,
 .pdf-link-overlay:focus-visible {
-  border-color: var(--pdf-link-color);
-  background: color-mix(in srgb, var(--pdf-link-color) 28%, transparent);
-  box-shadow: inset 0 -3px 0 var(--pdf-link-color), 0 0 0 1px color-mix(in srgb, var(--pdf-link-color) 65%, transparent);
-  outline: none;
+  outline: 2px solid var(--theme-focus-indicator);
+  outline-offset: 1px;
 }
 kbd {
   padding: 1px 6px;
@@ -454,6 +453,8 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-footer { overflow-wrap: anywhere; }
 }
 @media (forced-colors: active) {
+  .pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }
+  .pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }
   .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
   .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
   #search-dialog { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }

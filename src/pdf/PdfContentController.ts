@@ -7,7 +7,7 @@ import {
 import { isValidPdfDestination } from "./PdfDestination";
 export interface PdfContentTextItem { readonly str?: string; readonly hasEOL?: boolean; readonly fontName?: string; readonly dir?: string; readonly transform?: readonly number[]; readonly width?: number; readonly height?: number; readonly [key: string]: unknown; }
 export interface PdfContentTextContent { readonly items: readonly PdfContentTextItem[]; readonly styles?: Readonly<Record<string, unknown>>; readonly lang?: string; }
-export interface PdfContentAnnotation { readonly subtype?: string; readonly rect?: readonly number[]; readonly url?: string; readonly id?: string; readonly dest?: unknown; readonly action?: string; readonly color?: readonly number[] | Uint8ClampedArray; readonly borderStyle?: { readonly width?: number; readonly style?: number }; }
+export interface PdfContentAnnotation { readonly subtype?: string; readonly rect?: readonly number[]; readonly url?: string; readonly id?: string; readonly dest?: unknown; readonly action?: string; readonly color?: readonly number[] | Uint8ClampedArray | null; readonly borderStyle?: { readonly width?: number; readonly style?: number }; }
 export interface PdfContentPage { getTextContent(): Promise<PdfContentTextContent>; streamTextContent?(): ReadableStream<PdfContentTextContent>; getAnnotations(options?: { readonly intent?: "display" }): Promise<readonly PdfContentAnnotation[]>; }
 export interface PdfContentDocument { readonly numPages: number; getPage(pageNumber: number): Promise<PdfContentPage>; getDestination?(name: string): Promise<unknown>; getPageIndex?(reference: unknown): Promise<number>; cachedPageNumber?(reference: unknown): number | null; }
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
@@ -1291,18 +1291,25 @@ export class PdfContentController {
         target.style.pointerEvents = "auto";
         target.dataset.annotationId = group.annotationId;
         target.setAttribute("aria-label", "PDF link");
-        const annotationColor = group.annotation.color;
-        if (annotationColor !== undefined && annotationColor.length >= 3) {
-          const channels = [annotationColor[0], annotationColor[1], annotationColor[2]].map(Number);
-          if (channels.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255)) {
-            target.style.setProperty("--pdf-link-color", `rgb(${channels.map((channel) => Math.round(channel)).join(" ")})`);
+        const borderWidth = group.annotation.borderStyle?.width;
+        if (typeof borderWidth !== "number" || !Number.isFinite(borderWidth)) {
+          target.dataset.pdfBorder = "missing";
+        } else if (borderWidth <= 0) {
+          target.dataset.pdfBorder = "zero";
+          target.dataset.pdfBorderWidth = String(borderWidth);
+        } else {
+          target.dataset.pdfBorder = "positive";
+          target.dataset.pdfBorderWidth = String(borderWidth);
+          target.style.borderWidth = `${Math.min(4, Math.max(1, borderWidth))}px`;
+          target.style.borderStyle = group.annotation.borderStyle?.style === 2 ? "dashed" : "solid";
+          const annotationColor = group.annotation.color;
+          if (annotationColor !== undefined && annotationColor !== null && annotationColor.length >= 3) {
+            const channels = [annotationColor[0], annotationColor[1], annotationColor[2]].map(Number);
+            if (channels.every((channel) => Number.isFinite(channel) && channel >= 0 && channel <= 255)) {
+              target.style.setProperty("--pdf-link-border-color", `rgb(${channels.map((channel) => Math.round(channel)).join(" ")})`);
+            }
           }
         }
-        const borderWidth = group.annotation.borderStyle?.width;
-        if (typeof borderWidth === "number" && Number.isFinite(borderWidth) && borderWidth > 0) {
-          target.style.borderWidth = `${Math.min(4, Math.max(1, borderWidth))}px`;
-        }
-        if (group.annotation.borderStyle?.style === 2) target.style.borderStyle = "dashed";
         target.addEventListener("click", () => {
           if (this.interactionsEnabled && this.isCurrent(generation, document) && !this.isClosing()) void this.activateLink(group, "internal-link");
         });
