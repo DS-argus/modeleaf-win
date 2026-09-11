@@ -327,7 +327,7 @@ markdown-links-and-diff-check
 
 ### Files
 
-- Browse valid/invalid/locked/empty
+- Browse valid/invalid/locked/empty; Issue #71 select/cancel/Escape/reopen, pointer visibility, focus return, and two-window HWND ownership (packaged corporate-cloud evidence pending)
 - drag/drop
 - Explorer double-click and Open With, app closed/open
 - Unicode/long/UNC path
@@ -409,3 +409,24 @@ Follow-up scenarios additionally cover the previously missed shell transition:
 Fixture SHA-256: `91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab`. Keep source bytes unchanged. The harness is not a packaged transport benchmark or a substitute for the Windows matrix above.
 
 Before restoring parity for the revised reader, separately authorize and retain packaged Windows evidence for: initial top/fit and mixed keyboard input, wheel/d/u at both edges, F then repeated +/- at supported DPI/rotation, cross-page search and query cancellation, and Ctrl+Shift+O → Ctrl+Shift+C with recent-state broadcast/restart behavior. Use disposable state for recent clearing; it must not erase PDFs, theme, indicator settings, or unknown state siblings. Rust fault tests additionally cover malformed state and pre-replace failure with durable/cache/revision rollback. Do not launch/stop an existing application or claim these native checks passed from Chromium/JSDOM results.
+
+## 13. Issue #71 native Browse pointer gate
+
+Issue #71 moves `IFileOpenDialog.Show` from a blocking worker onto the Tauri main-thread dispatcher so the live owner HWND and picker execute on the same UI thread. Cross-thread modal dispatch remains a hypothesis until the reported corporate-cloud symptom is reproduced against a packaged candidate; the code change alone is not cursor-visibility evidence.
+
+Focused Rust contract scope:
+
+- reject null, stale, and wrong-thread owner HWNDs before COM dialog creation;
+- run the picker operation only inside the dispatched callback;
+- preserve cancel and picker-failure terminals;
+- return terminal failures when main-thread dispatch is rejected or its callback is dropped;
+- balance every successful `CoInitializeEx`, including `S_FALSE`, with `CoUninitialize`.
+
+**Native status: pending.** Retain packaged Windows evidence from the affected corporate-cloud environment for all of the following before advancing parity:
+
+1. Open `Ctrl+Shift+O` → `Browse…` and confirm the pointer remains visible over both Modeleaf and the native picker.
+2. Select a committed PDF, then repeat with Cancel, Escape, and reopen; verify focus returns and the native open epoch is released exactly once after each terminal.
+3. With two Modeleaf windows, launch Browse from each window and verify the picker is modal to the initiating live HWND without disabling or admitting into the other window.
+4. Record the packaged build identity, Windows/WebView2 versions, observations or capture, and source PDF SHA-256 before/after.
+
+Do not substitute unit/source assertions for this native observation, and do not use `ShowCursor`, `SetCursor`, or process-global cursor-state changes as remediation.

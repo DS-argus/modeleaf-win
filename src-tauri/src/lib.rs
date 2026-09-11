@@ -16,7 +16,7 @@ use crate::commands::config::{
 use crate::commands::state::StateFileStore;
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
-use open_dialog::choose_pdf_file;
+use open_dialog::{choose_pdf_file, dispatch_pdf_dialog, PdfDialogError};
 use open_request::{
     resolve_second_instance_paths, OpenFailureId, OpenRequestCoordinator, OpenRequestError,
     OpenRequestId,
@@ -774,23 +774,27 @@ async fn open_pdf_dialog(
     window: Window,
     coordinator: State<'_, OpenRequestCoordinator>,
 ) -> Result<NativeDialogOutcome, OpenRequestError> {
-    let owner_hwnd = match window.hwnd() {
-        Ok(hwnd) if !hwnd.0.is_null() => hwnd.0 as isize,
-        _ => {
+    let dispatch_window = window.clone();
+    let owner_window = window.clone();
+    let chosen = match dispatch_pdf_dialog(
+        move |task| dispatch_window.run_on_main_thread(task),
+        move || {
+            let owner_hwnd = match owner_window.hwnd() {
+                Ok(hwnd) if !hwnd.0.is_null() => hwnd.0 as isize,
+                _ => return Err(PdfDialogError::OwnerUnavailable),
+            };
+            choose_pdf_file(owner_hwnd)
+        },
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
             return Ok(NativeDialogOutcome::DialogFailed {
-                reason: NativeDialogFailureReason::OwnerUnavailable,
+                reason: NativeDialogFailureReason::WorkerFailed,
             })
         }
     };
-    let chosen =
-        match tauri::async_runtime::spawn_blocking(move || choose_pdf_file(owner_hwnd)).await {
-            Ok(result) => result,
-            Err(_) => {
-                return Ok(NativeDialogOutcome::DialogFailed {
-                    reason: NativeDialogFailureReason::WorkerFailed,
-                })
-            }
-        };
     Ok(match chosen {
         Ok(Some(path)) => match coordinator.ingest_path(window.label(), &path) {
             Ok(notice) => NativeDialogOutcome::Admitted {
@@ -801,7 +805,10 @@ async fn open_pdf_dialog(
             },
         },
         Ok(None) => NativeDialogOutcome::Cancelled,
-        Err(_) => NativeDialogOutcome::DialogFailed {
+        Err(PdfDialogError::OwnerUnavailable) => NativeDialogOutcome::DialogFailed {
+            reason: NativeDialogFailureReason::OwnerUnavailable,
+        },
+        Err(PdfDialogError::PickerFailed) => NativeDialogOutcome::DialogFailed {
             reason: NativeDialogFailureReason::PickerFailed,
         },
     })
