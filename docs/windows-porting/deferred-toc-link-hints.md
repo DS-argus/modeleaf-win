@@ -8,9 +8,9 @@ The owner explicitly confirmed that ordinary PDF link clicks and destination nav
 
 ## Immutable implementation backup
 
-The complete prior implementation is retained in Git at **`7e00424d30c5ffeab5a846d087236371644af53a`** ([browse source](https://github.com/DS-argus/modeleaf-win/tree/7e00424d30c5ffeab5a846d087236371644af53a)). It contains the verified reader follow-up from `ac2efd75ab0f010f3cb42ee44d40522b70d59867`; the later commit changes evidence wording only.
+The complete prior implementation is retained in the owner's private Git backup at original commit **`7e00424d30c5ffeab5a846d087236371644af53a`**. It contains the verified reader follow-up from `ac2efd75ab0f010f3cb42ee44d40522b70d59867`; the later commit changes evidence wording only. Issue #68's privacy cleanup removes its old remote branch anchor: a fresh public clone is not expected to contain that archive commit. Do not re-push the unfiltered archive or its personal reference captures.
 
-Inspect any saved file without restoring it into the active product:
+In the private archive checkout only, inspect any saved file without restoring it into the active product:
 
 ```text
 git show 7e00424d30c5ffeab5a846d087236371644af53a:src/main.ts
@@ -39,7 +39,7 @@ Do not retain dormant copies, hidden feature switches, compatibility aliases, or
 
 ### Destination-indicator reference map
 
-The owner additionally retired the destination indicator on 2026-09-10 (Issue #53 comment5611619154). The prior keep-indicator decision is superseded. Its last implementation is archived at **`dedcff8513e034efb904ef7d50fd59cc11444798`**:
+The owner additionally retired the destination indicator on 2026-09-10 (Issue #53 comment5611619154). The prior keep-indicator decision is superseded. Its last implementation is retained in the same private backup at **`dedcff8513e034efb904ef7d50fd59cc11444798`**:
 
 - `src/pdf/PdfContentController.ts`, `PdfTabSession.ts`: destination indicator publication, timers and cancellation, formerly shared with ordinary link landing.
 - `src/domain/links/IndicatorSettings.ts`, `src/ui/IndicatorPickerModel.ts`: settings validation and preview transactions.

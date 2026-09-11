@@ -1,7 +1,8 @@
 import Ajv2020 from "ajv/dist/2020.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -51,6 +52,22 @@ interface ArtifactFixtureRef {
 const records = (): EvidenceRecord[] => recordNames.map((name) =>
   JSON.parse(readFileSync(`${recordsRoot}${name}`, "utf8")) as EvidenceRecord);
 
+function removedHistoricalPaths(repository: string): string[] {
+  const trees = new Set(execFileSync("git", ["log", "--format=%T", "HEAD"], {
+    cwd: repository, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+  }).split(/\r?\n/u).filter(Boolean));
+  const removed = ["Assets/macos-version-ui", "BACKLOG.md", ".internal/docs/dependency-licenses.txt", ".internal/docs/windows-port.md"];
+  const found = new Set<string>();
+  for (const tree of trees) {
+    const paths = execFileSync("git", ["ls-tree", "-r", "--name-only", "-z", tree], {
+      cwd: repository, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+    }).split("\0").filter(Boolean);
+    for (const path of paths) {
+      if (removed.some((prefix) => path === prefix || path.startsWith(`${prefix}/`))) found.add(path);
+    }
+  }
+  return [...found].sort();
+}
 describe("W02 evidence contract", () => {
   it("validates every mandatory hard-gate record against the canonical discriminated schema", () => {
     expect(readdirSync(recordsRoot).filter((name) => name.endsWith(".json")).sort()).toEqual(recordNames);
@@ -121,7 +138,15 @@ describe("W02 evidence contract", () => {
     const loaded = records();
     const commit = loaded[0]!.app.commit;
     expect(loaded.every((record) => record.app.commit === commit && record.app.dirty === false)).toBe(true);
-    const sourceFiles = execFileSync("git", ["ls-tree", "-r", "--name-only", commit, "--", "src", "src-tauri/src"], { cwd: root, encoding: "utf8" })
+    const rewrite = JSON.parse(readFileSync(join(root, "docs/evidence/history-rewrite.json"), "utf8")) as {
+      readonly historicalSourceCommits: Readonly<Record<string, string>>;
+    };
+    const sourceCommit = rewrite.historicalSourceCommits[commit];
+    expect(sourceCommit, "Recorded W02 source must have an explicit reviewed history mapping").toMatch(/^[0-9a-f]{40}$/u);
+    if (!sourceCommit) throw new Error("Missing W02 historical source mapping");
+    // Preserve the measured record identity; only Git lookup uses the filtered
+    // commit. The original source-tree fingerprint below remains authoritative.
+    const sourceFiles = execFileSync("git", ["ls-tree", "-r", "--name-only", sourceCommit, "--", "src", "src-tauri/src"], { cwd: root, encoding: "utf8" })
       .split(/\r?\n/u).filter(Boolean);
     sourceFiles.push("package.json", "package-lock.json", "src-tauri/tauri.conf.json", "public/assets/pdfjs-6.2.108/pdfjs-assets-6.2.108.json");
     sourceFiles.sort((left, right) => left.localeCompare(right));
@@ -129,7 +154,7 @@ describe("W02 evidence contract", () => {
     for (const path of sourceFiles) {
       digest.update(path);
       digest.update(Buffer.from([0]));
-      digest.update(execFileSync("git", ["show", `${commit}:${path}`], { cwd: root, encoding: "buffer" }));
+      digest.update(execFileSync("git", ["show", `${sourceCommit}:${path}`], { cwd: root, encoding: "buffer" }));
       digest.update(Buffer.from([0]));
     }
     const expectedSource = loaded[0]!.app.sourceTreeSha256;
@@ -163,4 +188,28 @@ describe("W02 evidence contract", () => {
     }
     expect(prohibited).toEqual([]);
   });
+  it("keeps removed private captures and obsolete files out of publishable ancestry", () => {
+    expect(removedHistoricalPaths(root)).toEqual([]);
+  });
+
+  it("finds removed historical names even when their blobs survive under an allowed name", () => {
+    const repository = mkdtempSync(join(tmpdir(), "modeleaf-history-paths-"));
+    const git = (...args: string[]): string => execFileSync("git", [
+      "-c", `core.hooksPath=${join(repository, "disabled-hooks")}`, "-c", "commit.gpgsign=false",
+      "-c", "user.name=History Test", "-c", "user.email=history@example.invalid", ...args,
+    ], { cwd: repository, encoding: "utf8", windowsHide: true, timeout: 30_000 });
+    try {
+      git("init", "--quiet");
+      writeFileSync(join(repository, "BACKLOG.md"), "Synthetic historical fixture\n");
+      git("add", "BACKLOG.md");
+      git("commit", "--quiet", "-m", "Add synthetic history fixture");
+      const originalBlob = git("rev-parse", "HEAD:BACKLOG.md").trim();
+      git("mv", "BACKLOG.md", "retained.txt");
+      git("commit", "--quiet", "-m", "Rename without changing the blob");
+      expect(git("rev-parse", "HEAD:retained.txt").trim()).toBe(originalBlob);
+      expect(removedHistoricalPaths(repository)).toEqual(["BACKLOG.md"]);
+    } finally {
+      rmSync(repository, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

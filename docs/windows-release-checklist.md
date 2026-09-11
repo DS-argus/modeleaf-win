@@ -4,6 +4,11 @@ The owner authorized an **initial experimental Windows release** after accepting
 
 This checklist does not establish that a release happened. Treat a candidate as **unreleased** until its matching GitHub prerelease and verified assets exist. The [parity matrix](parity-matrix.md) remains the source of incomplete product acceptance.
 
+## Pre-publication history cleanup
+
+Issue #68 removes unused personal reference captures and obsolete planning files from the publishable Git ancestry. Original historical measurement records are preserved: [history-rewrite.json](evidence/history-rewrite.json) maps the W02 source commit to its filtered equivalent, and the original source-tree SHA-256 is still recomputed and required to match. Original archive/PR commit identifiers remain historical provenance, not promises of public object availability. The external macOS baseline is unchanged.
+
+A history rewrite invalidates every previous source-bound release candidate. Use a newly verified main build, not an old ZIP receipt. Do not merge old local branches back into rewritten main: they can restore removed objects. Private backups and local user work are not public release inputs. Deleting main history or remote branches does not erase GitHub's hidden PR refs or caches; confirm server-side removal separately before claiming complete erasure or approving public visibility.
 ## Automated preparation
 
 [Windows Scoop preparation](../.github/workflows/windows-scoop.yml) runs frontend tests/build, copied-asset/license checks, the dependency audit, Rust formatting/lint/tests, and a separate standalone build on Windows. Its token is read-only; it never tags, publishes a release, or changes visibility.
