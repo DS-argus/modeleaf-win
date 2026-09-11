@@ -69,15 +69,30 @@ fn native_pdf_dialog_rejects_invalid_owner_handles() {
 }
 
 #[test]
-fn native_pdf_dialog_picker_runs_only_on_the_dispatched_thread() {
-    use modeleaf_lib::open_dialog::dispatch_pdf_dialog;
+fn pdf_dialog_relay_runs_picker_after_scheduling_callback_returns() {
+    use modeleaf_lib::open_dialog::{
+        dispatch_pdf_dialog, PostedDialogCompletion, PostedDialogPicker,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    type QueuedDialog = (PostedDialogPicker, PostedDialogCompletion);
+
     let caller_thread = std::thread::current().id();
+    let callback_returned = Arc::new(AtomicBool::new(false));
+    let picker_saw_returned_callback = Arc::new(AtomicBool::new(false));
+    let queued: Arc<Mutex<Option<QueuedDialog>>> = Arc::new(Mutex::new(None));
     let dispatch_thread = Arc::new(Mutex::new(None));
     let picker_thread = Arc::new(Mutex::new(None));
+
+    let callback_returned_for_dispatch = callback_returned.clone();
+    let callback_returned_for_schedule = callback_returned.clone();
+    let callback_returned_for_picker = callback_returned.clone();
+    let picker_saw_returned_callback_for_picker = picker_saw_returned_callback.clone();
+    let queued_for_dispatch = queued.clone();
+    let queued_for_schedule = queued.clone();
     let dispatch_thread_for_task = dispatch_thread.clone();
-    let picker_thread_for_task = picker_thread.clone();
+    let picker_thread_for_picker = picker_thread.clone();
 
     let outcome = tauri::async_runtime::block_on(dispatch_pdf_dialog(
         move |task| {
@@ -86,19 +101,35 @@ fn native_pdf_dialog_picker_runs_only_on_the_dispatched_thread() {
                 .spawn(move || {
                     *dispatch_thread_for_task.lock().unwrap() = Some(std::thread::current().id());
                     task();
+                    callback_returned_for_dispatch.store(true, Ordering::SeqCst);
+                    let (picker, completion) =
+                        queued_for_dispatch.lock().unwrap().take().unwrap();
+                    completion(picker(1));
                 })
                 .map_err(|_| ())?
                 .join()
                 .map_err(|_| ())?;
             Ok::<(), ()>(())
         },
-        move || {
-            *picker_thread_for_task.lock().unwrap() = Some(std::thread::current().id());
+        move |picker, completion| {
+            assert!(!callback_returned_for_schedule.load(Ordering::SeqCst));
+            let mut queued = queued_for_schedule.lock().unwrap();
+            assert!(queued.is_none());
+            *queued = Some((picker, completion));
+            Ok::<(), ()>(())
+        },
+        move |_| {
+            picker_saw_returned_callback_for_picker.store(
+                callback_returned_for_picker.load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
+            *picker_thread_for_picker.lock().unwrap() = Some(std::thread::current().id());
             Ok(None)
         },
     ));
 
     assert_eq!(outcome, Ok(Ok(None)));
+    assert!(picker_saw_returned_callback.load(Ordering::SeqCst));
     let dispatch_thread = dispatch_thread.lock().unwrap().unwrap();
     let picker_thread = picker_thread.lock().unwrap().unwrap();
     assert_eq!(picker_thread, dispatch_thread);
@@ -106,14 +137,19 @@ fn native_pdf_dialog_picker_runs_only_on_the_dispatched_thread() {
 }
 
 #[test]
-fn native_pdf_dialog_dispatch_preserves_cancel_and_picker_failure() {
+fn native_pdf_dialog_dispatch_preserves_select_cancel_and_picker_failure() {
     use modeleaf_lib::open_dialog::{dispatch_pdf_dialog, PdfDialogError};
+
     let selected = tauri::async_runtime::block_on(dispatch_pdf_dialog(
         |task| {
             task();
             Ok::<(), ()>(())
         },
-        || Ok(Some(std::path::PathBuf::from("selected.pdf"))),
+        |picker, completion| {
+            completion(picker(1));
+            Ok::<(), ()>(())
+        },
+        |_| Ok(Some(std::path::PathBuf::from("selected.pdf"))),
     ));
     assert_eq!(
         selected,
@@ -125,7 +161,11 @@ fn native_pdf_dialog_dispatch_preserves_cancel_and_picker_failure() {
             task();
             Ok::<(), ()>(())
         },
-        || Ok(None),
+        |picker, completion| {
+            completion(picker(1));
+            Ok::<(), ()>(())
+        },
+        |_| Ok(None),
     ));
     assert_eq!(cancelled, Ok(Ok(None)));
 
@@ -134,13 +174,17 @@ fn native_pdf_dialog_dispatch_preserves_cancel_and_picker_failure() {
             task();
             Ok::<(), ()>(())
         },
-        || Err(PdfDialogError::PickerFailed),
+        |picker, completion| {
+            completion(picker(1));
+            Ok::<(), ()>(())
+        },
+        |_| Err(PdfDialogError::PickerFailed),
     ));
     assert_eq!(failed, Ok(Err(PdfDialogError::PickerFailed)));
 }
 
 #[test]
-fn native_pdf_dialog_dispatch_failure_and_dropped_task_are_terminal() {
+fn native_pdf_dialog_dispatch_setup_and_dropped_work_are_terminal() {
     use modeleaf_lib::open_dialog::{dispatch_pdf_dialog, PdfDialogDispatchError};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -152,7 +196,8 @@ fn native_pdf_dialog_dispatch_failure_and_dropped_task_are_terminal() {
             drop(task);
             Err(())
         },
-        move || {
+        |_, _| Ok::<(), ()>(()),
+        move |_| {
             picker_called_after_failure.store(true, Ordering::SeqCst);
             Ok(None)
         },
@@ -160,12 +205,44 @@ fn native_pdf_dialog_dispatch_failure_and_dropped_task_are_terminal() {
     assert_eq!(dispatch_failed, Err(PdfDialogDispatchError::DispatchFailed));
     assert!(!picker_called.load(Ordering::SeqCst));
 
+    let setup_failed = tauri::async_runtime::block_on(dispatch_pdf_dialog(
+        |task| {
+            task();
+            Ok::<(), ()>(())
+        },
+        |picker, completion| {
+            drop(picker);
+            drop(completion);
+            Err(())
+        },
+        |_| Ok(None),
+    ));
+    assert_eq!(setup_failed, Err(PdfDialogDispatchError::DispatchFailed));
+
     let task_dropped = tauri::async_runtime::block_on(dispatch_pdf_dialog(
         |task| {
             drop(task);
             Ok::<(), ()>(())
         },
-        || Ok(None),
+        |_, _| Ok::<(), ()>(()),
+        |_| Ok(None),
     ));
     assert_eq!(task_dropped, Err(PdfDialogDispatchError::ResultDropped));
+
+    let posted_work_dropped = tauri::async_runtime::block_on(dispatch_pdf_dialog(
+        |task| {
+            task();
+            Ok::<(), ()>(())
+        },
+        |picker, completion| {
+            drop(picker);
+            drop(completion);
+            Ok::<(), ()>(())
+        },
+        |_| Ok(None),
+    ));
+    assert_eq!(
+        posted_work_dropped,
+        Err(PdfDialogDispatchError::ResultDropped)
+    );
 }

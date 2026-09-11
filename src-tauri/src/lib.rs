@@ -16,7 +16,9 @@ use crate::commands::config::{
 use crate::commands::state::StateFileStore;
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
-use open_dialog::{choose_pdf_file, dispatch_pdf_dialog, PdfDialogError};
+use open_dialog::{
+    choose_pdf_file, dispatch_pdf_dialog, post_pdf_dialog, PdfDialogError,
+};
 use open_request::{
     resolve_second_instance_paths, OpenFailureId, OpenRequestCoordinator, OpenRequestError,
     OpenRequestId,
@@ -778,13 +780,18 @@ async fn open_pdf_dialog(
     let owner_window = window.clone();
     let chosen = match dispatch_pdf_dialog(
         move |task| dispatch_window.run_on_main_thread(task),
-        move || {
+        move |picker, completion| {
             let owner_hwnd = match owner_window.hwnd() {
                 Ok(hwnd) if !hwnd.0.is_null() => hwnd.0 as isize,
-                _ => return Err(PdfDialogError::OwnerUnavailable),
+                _ => {
+                    drop(picker);
+                    completion(Err(PdfDialogError::OwnerUnavailable));
+                    return Ok(());
+                }
             };
-            choose_pdf_file(owner_hwnd)
+            post_pdf_dialog(owner_hwnd, picker, completion)
         },
+        choose_pdf_file,
     )
     .await
     {
