@@ -42,13 +42,29 @@ Do not commit the raw cargo-about report: it contains local paths. The importer 
 
 The validator checks source/version/hash/byte count/checksum agreement, the four-file allowlist, and the narrow Scoop manifest contract. It rejects executable hooks, arbitrary targets, unknown fields, and fabricated signature/native status. Publication refuses existing releases, including drafts. It creates a draft, uploads and verifies all four assets, and only then exposes an experimental prerelease. Any upload failure leaves an unpublished draft for inspection; it is not overwritten automatically.
 
-For a published `v0.1.0`, the supported installation command is:
+After the release and the matching bucket manifest are published, the supported installation and update commands are:
 
 ```powershell
-scoop install https://github.com/DS-argus/modeleaf-win/releases/download/v0.1.0/modeleaf.json
+scoop bucket add modeleaf https://github.com/DS-argus/scoop-bucket
+scoop install modeleaf/modeleaf
+
+scoop update
+scoop update modeleaf
 ```
 
-This is a versioned manifest URL, not a maintained bucket or an automatic-update channel. Windows 11 x64 and an installed Microsoft Edge WebView2 Runtime are required. The ZIP/Scoop path does not install WebView2, change PDF associations, or provide the separate NSIS installer.
+The dedicated bucket is maintained at `DS-argus/scoop-bucket`, with its current reviewed manifest at `bucket/modeleaf.json`. `scoop update` refreshes bucket metadata; `scoop update modeleaf` applies the available version only when invoked by the user. This does not add an in-app automatic updater. Windows 11 x64 and an installed Microsoft Edge WebView2 Runtime are required. The ZIP/Scoop path does not install WebView2, change PDF associations, or provide the separate NSIS installer.
+
+### Verified bucket promotion
+
+Keep both repositories private until final owner approval. An empty private bucket is preparation, not evidence that installation works. After the actual release is public, generate its manifest from the reviewed four-file candidate and verified public downloads:
+
+```powershell
+node tools/releases/prepare-scoop-bucket.mjs --artifacts <reviewed-artifact-directory> --tag <vSemVer> --source-commit <approved-40-hex-SHA> --zip-sha256 <approved-64-hex-SHA256> --output <new-staging-directory>
+```
+
+The helper refuses unpublished/draft releases, unexpected assets, source/hash disagreement, download corruption and existing output directories. It writes only `bucket/modeleaf.json` into the new staging directory after every public asset matches the reviewed bytes. It never changes Git, visibility, releases, or credentials.
+
+Create/select a bucket Issue and dedicated branch/worktree; copy the generated file into `bucket/modeleaf.json`, review the exact URL/version/hash diff, and merge a focused PR. Repeat after each release. No cross-repository token or unchecked latest-release scraper is required. Never promote a prerelease merely because it exists: it must be the explicitly reviewed source and ZIP. The bucket may lag release publication until this step succeeds; report failures rather than claiming installation is available.
 
 ### Initial experimental execution checklist
 
@@ -58,6 +74,8 @@ This is a versioned manifest URL, not a maintained bucket or an automatic-update
 - [ ] Owner reviews the final receipt and explicitly approves public visibility immediately before conversion
 - [ ] Set the two exact approval variables and create the matching version tag only after that review
 - [ ] Verify all four published asset downloads and the manifest ZIP hash
+- [ ] Verify public release assets with the bucket helper, review and merge `bucket/modeleaf.json` in the dedicated bucket
+- [ ] Confirm both repositories are public only under the owner's approval and the documented bucket install command resolves
 - [ ] Record actual Scoop installation results separately from metadata/unit/CI checks
 
 No visibility conversion, tag, or public release follows merely from committing this workflow. Never label a missing, expired, mismatched, failed, or unperformed check as success.
@@ -80,7 +98,7 @@ These remain open work, not claimed prerequisites that the owner somehow perform
 
 - [ ] On clean Windows 11 x64, verify truthful missing-WebView2 guidance for ZIP/Scoop and the separately tested NSIS bootstrapper
 - [ ] Install through Scoop, launch from shim and Start menu, and open a fixture
-- [ ] Check upgrade/uninstall behavior without losing settings or changing associations; no bucket update mechanism is claimed
+- [ ] Check upgrade/uninstall behavior without losing settings or changing associations; check the published bucket manifest version before upgrading
 - [ ] Separately verify NSIS current-user install, Open With registration without seizing defaults, upgrade, and uninstall
 
 ### Narrator, display, and packaged behavior

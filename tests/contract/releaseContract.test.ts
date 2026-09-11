@@ -134,4 +134,17 @@ describe("release checklist", () => {
     // Basic owner use does not certify these specific native scenarios.
     expect(checklist).not.toMatch(/verified on a clean VM|SmartScreen passed|Narrator verified/iu);
   });
+  it("documents the dedicated bucket without claiming unpublished installation", () => {
+    const readme = readFileSync(join(root, "README.md"), "utf8");
+    for (const text of [readme, checklist]) {
+      expect(text).toContain("scoop bucket add modeleaf https://github.com/DS-argus/scoop-bucket");
+      expect(text).toContain("scoop install modeleaf/modeleaf");
+      expect(text).toContain("scoop update modeleaf");
+    }
+    expect(readme).toContain("are published");
+    expect(checklist).toContain("Keep both repositories private until final owner approval");
+    expect(checklist).toContain("prepare-scoop-bucket.mjs");
+    expect(checklist).toContain("bucket/modeleaf.json");
+    expect(checklist).toContain("does not add an in-app automatic updater");
+  });
 });
