@@ -109,6 +109,9 @@ Layout 변경, window resize, raw user scroll 또는 newer navigation은 in-flig
 - destination indicator나 keyboard link-hint overlay를 표시하지 않는다.
 - text selection은 native cursor와 selection UX를 사용한다.
 - annotation link 위에서는 pointer cursor를 보인다.
+- ordinary annotation hit target은 app-authored idle border, background, shadow를 추가하지 않고 hover는 pointer cursor로만 알린다.
+- PDF border metadata가 없거나 width 0이면 transparent 상태를 유지한다. 현재 canvas annotation rendering이 disabled인 동안 positive source-authored border metadata는 overlay가 소유하며 canvas와 overlay가 중복해서 그리지 않는다.
+- annotation link의 keyboard focus는 idle presentation을 바꾸지 않는 theme focus outline을 사용한다. forced colors에서도 idle target box는 나타나지 않고 system `Highlight` color로 focus를 표시한다.
 - context menu는 선택이 있으면 Copy만, 없으면 빈 allowlist를 보인다.
 - PDF surface가 keyboard focus를 가지면 1px theme focus indicator를 보인다.
 - inactive pane PDF surface에는 focus ring이 없다.

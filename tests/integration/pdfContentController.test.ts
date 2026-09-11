@@ -739,28 +739,69 @@ describe("PdfContentController", () => {
     firstLink.click();
     await vi.waitFor(() => expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 3, expect.any(String), expect.any(Number)));
   });
-  it("keeps PDF links mouse-clickable and applies valid annotation appearance", async () => {
-    const subject = setup([page("link", [{
-      subtype: "Link",
-      rect: [10, 10, 40, 24],
-      url: "https://example.test/mouse",
-      color: new Uint8ClampedArray([0, 90, 255]),
-      borderStyle: { width: 3, style: 2 },
-    }])]);
-    await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
+  it("classifies source borders without boxing missing or zero-width links and keeps activation semantics", async () => {
+    const subject = setup([page("links", [
+      {
+        subtype: "Link",
+        rect: [10, 10, 40, 24],
+        url: "https://example.test/missing-border",
+        color: new Uint8ClampedArray([255, 0, 0]),
+        borderStyle: { style: 2 },
+      },
+      {
+        subtype: "Link",
+        rect: [10, 30, 40, 44],
+        dest: [0, { name: "Fit" }],
+        color: null,
+        borderStyle: { width: 0, style: 2 },
+      },
+      {
+        subtype: "Link",
+        rect: [10, 50, 40, 64],
+        url: "https://example.test/positive-border",
+        color: new Uint8ClampedArray([0, 90, 255]),
+        borderStyle: { width: 3, style: 2 },
+      },
+    ])]);
+    document.body.append(subject.host);
+    try {
+      await subject.controller.renderPage({ pageNumber: 1, page: await subject.pdf.getPage(1), viewport, canvas: subject.canvas });
 
-    const overlay = subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!;
-    expect(overlay.type).toBe("button");
-    expect(overlay.style.pointerEvents).toBe("auto");
-    expect(overlay.style.getPropertyValue("--pdf-link-color")).toBe("rgb(0 90 255)");
-    expect(overlay.style.borderWidth).toBe("3px");
-    expect(overlay.style.borderStyle).toBe("dashed");
+      const overlays = [...subject.host.querySelectorAll<HTMLButtonElement>(".pdf-link-overlay")];
+      expect(overlays).toHaveLength(3);
+      const missing = overlays[0]!;
+      const zero = overlays[1]!;
+      const positive = overlays[2]!;
+      expect(overlays.map((overlay) => overlay.dataset.pdfBorder)).toEqual(["missing", "zero", "positive"]);
+      expect(overlays.map((overlay) => overlay.dataset.pdfBorderWidth)).toEqual([undefined, "0", "3"]);
+      for (const overlay of overlays) {
+        expect(overlay.type).toBe("button");
+        expect(overlay.tabIndex).toBe(0);
+        expect(overlay.style.pointerEvents).toBe("auto");
+      }
+      expect(missing.style.getPropertyValue("--pdf-link-border-color")).toBe("");
+      expect(missing.style.borderWidth).toBe("");
+      expect(missing.style.borderStyle).toBe("");
+      expect(zero.style.getPropertyValue("--pdf-link-border-color")).toBe("");
+      expect(zero.style.borderWidth).toBe("");
+      expect(zero.style.borderStyle).toBe("");
+      expect(positive.style.getPropertyValue("--pdf-link-border-color")).toBe("rgb(0 90 255)");
+      expect(positive.style.borderWidth).toBe("3px");
+      expect(positive.style.borderStyle).toBe("dashed");
 
-    overlay.click();
-    await Promise.resolve();
-    expect(subject.openExternal).toHaveBeenCalledWith("page-1-render-2-annotation-0", 1, expect.any(String), expect.any(Number));
-    await vi.waitFor(() => expect(subject.statuses).toContain("PDF link opened (dispatch 1)."));
-    expect(overlay.getAttribute("aria-label")).toBe("PDF link 1 opened dispatch 1");
+      missing.focus();
+      expect(document.activeElement).toBe(missing);
+      missing.click();
+      await vi.waitFor(() => expect(missing.getAttribute("aria-label")).toBe("PDF link 1 opened dispatch 1"));
+      zero.click();
+      await vi.waitFor(() => expect(subject.navigateToPage).toHaveBeenCalledWith(1));
+      positive.click();
+      await vi.waitFor(() => expect(positive.getAttribute("aria-label")).toBe("PDF link 3 opened dispatch 2"));
+      expect(subject.openExternal).toHaveBeenNthCalledWith(1, "page-1-render-2-annotation-0", 1, expect.any(String), 1);
+      expect(subject.openExternal).toHaveBeenNthCalledWith(2, "page-1-render-2-annotation-2", 1, expect.any(String), 2);
+    } finally {
+      subject.host.remove();
+    }
   });
   it.each([undefined, 2] as const)("fails closed for an invalid native dispatch receipt %s", async (receipt) => {
     const subject = setup([page("link", [{ subtype: "Link", rect: [10, 10, 40, 24], url: "https://example.test/receipt" }])]);
