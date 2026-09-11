@@ -25,13 +25,18 @@ Requires **Windows 11 x64** and **Microsoft Edge WebView2 Runtime**.
 
 Published builds appear in [Releases](https://github.com/DS-argus/modeleaf-win/releases). The initial Windows release is **experimental**, not parity-complete or native-certified.
 
-After `v0.1.0` is published, install that exact version with Scoop:
+After the experimental release and its [Scoop bucket](https://github.com/DS-argus/scoop-bucket) are published, install with PowerShell:
 
 ```powershell
-scoop install https://github.com/DS-argus/modeleaf-win/releases/download/v0.1.0/modeleaf.json
+scoop bucket add modeleaf https://github.com/DS-argus/scoop-bucket
+scoop install modeleaf/modeleaf
+
+# Update an installed version after a new release reaches the bucket
+scoop update
+scoop update modeleaf
 ```
 
-This is a versioned manifest URL, not an automatic-update bucket. Live configuration, full-document printing, and update retrieval remain incomplete. See the [verification and release checklist](docs/windows-release-checklist.md) and [parity matrix](docs/parity-matrix.md) for limitations.
+Scoop updates are user-invoked and become available after the bucket manifest is updated. The app does not update itself. Live configuration, full-document printing, and in-app update retrieval remain incomplete. See the [verification and release checklist](docs/windows-release-checklist.md) and [parity matrix](docs/parity-matrix.md) for limitations.
 
 ## Keys (defaults)
 
