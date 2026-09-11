@@ -226,11 +226,17 @@ try {
   $process = Start-Process -FilePath $exe -PassThru
   Add-Event "launch" "started"
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  $windowReady = $false
   do {
     Start-Sleep -Milliseconds 200
     $process.Refresh()
-  } while ($process.MainWindowHandle -eq [IntPtr]::Zero -and -not $process.HasExited -and [DateTime]::UtcNow -lt $deadline)
+    $rect = New-Object ModeleafNativeWindow+RECT
+    $windowReady = $process.MainWindowHandle -ne [IntPtr]::Zero -and
+      [ModeleafNativeWindow]::GetWindowRect($process.MainWindowHandle, [ref]$rect) -and
+      ($rect.Right - $rect.Left) -ge 320 -and ($rect.Bottom - $rect.Top) -ge 240
+  } while (-not $windowReady -and -not $process.HasExited -and [DateTime]::UtcNow -lt $deadline)
   if ($process.HasExited) { throw "Modeleaf exited before opening a window" }
+  if (-not $windowReady) { throw "Modeleaf window bounds did not become valid within 20 seconds" }
   Focus-App
   Capture-Window "cp1-empty"
 
