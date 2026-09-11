@@ -214,7 +214,11 @@ describe("Scoop release validation and notes", () => {
     expect(result.releaseNotes).toContain(
       `scoop install https://github.com/${REPOSITORY}/releases/download/${TAG}/modeleaf.json`,
     );
-    expect(result.releaseNotes).toContain("does not create or imply an automatic Scoop bucket or update channel");
+    expect(result.releaseNotes).toContain("scoop bucket add modeleaf https://github.com/DS-argus/scoop-bucket");
+    expect(result.releaseNotes).toContain("scoop install modeleaf/modeleaf");
+    expect(result.releaseNotes).toContain("scoop update modeleaf");
+    expect(result.releaseNotes).toContain("availability can lag the release");
+    expect(result.releaseNotes).toContain("The app does not update itself");
     expect(result.releaseNotes).not.toMatch(/\bis signed\b|\bsigned release\b|fully certified/iu);
   });
 
