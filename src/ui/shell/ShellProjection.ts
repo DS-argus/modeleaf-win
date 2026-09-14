@@ -8,8 +8,22 @@ export interface EmptyReaderState { readonly testId: "empty-reader"; readonly he
 export type ShellProjectionResult =
   | { readonly ok: true; readonly active: ActiveShellRoute; readonly emptyState?: EmptyReaderState; readonly landmarks: readonly ShellLandmark[] }
   | { readonly ok: false; readonly code: "WINDOW_ID_INVALID" | "TAB_ID_DUPLICATE" | "ACTIVE_TAB_MISSING" };
-export type ShellStatusInput = { readonly disabledReason?: string; readonly pendingSequence?: string; readonly hasDocument: boolean };
 export type CurrentWindowCloseIntent = { readonly type: "window.close"; readonly windowId: WindowId };
+export interface ShellStatusInput {
+  readonly hasDocument: boolean;
+  readonly zoomMode: "custom" | "fit-width" | "fit-page";
+  readonly searchPromptOpen: boolean;
+  readonly query: string;
+  readonly status: string;
+  readonly pendingSequence?: string;
+}
+export interface ShellStatusProjection {
+  readonly message: string;
+  readonly pending: string;
+  readonly fitPage: boolean;
+  readonly fitWidth: boolean;
+  readonly search: boolean;
+}
 
 export const SHELL_LANDMARKS: readonly ShellLandmark[] = Object.freeze([
   Object.freeze({ id: "app-shell", role: "application", label: "Modeleaf PDF reader" }),
@@ -31,10 +45,14 @@ export function projectWindowShell(snapshot: WindowShellSnapshot): ShellProjecti
   const active = Object.freeze({ windowId: snapshot.windowId, ...(tab === undefined ? {} : { tab }) });
   return Object.freeze({ ok: true, active, ...((tab?.hasDocument ?? false) ? {} : { emptyState: EMPTY_READER }), landmarks: SHELL_LANDMARKS });
 }
-export function projectShellStatus(input: ShellStatusInput): string {
-  if (input.pendingSequence !== undefined && input.pendingSequence.length > 0) return `Pending: ${input.pendingSequence}`;
-  if (input.disabledReason !== undefined) return input.disabledReason;
-  return input.hasDocument ? "Ready" : "No document open";
+export function projectShellStatus(input: ShellStatusInput): ShellStatusProjection {
+  return {
+    message: input.status,
+    pending: input.pendingSequence ? `Pending: ${input.pendingSequence}` : "",
+    fitPage: input.hasDocument && input.zoomMode === "fit-page",
+    fitWidth: input.hasDocument && input.zoomMode === "fit-width",
+    search: input.hasDocument && (input.searchPromptOpen || input.query.length > 0),
+  };
 }
 export function currentWindowCloseIntent(windowId: WindowId): CurrentWindowCloseIntent {
   if (windowId.trim().length === 0) throw new Error("WINDOW_ID_INVALID");
