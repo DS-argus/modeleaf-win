@@ -14,6 +14,7 @@ import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelectio
 import { fitRecentPath } from "./ui/RecentPathPresentation";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
+import { renderCommandPalette } from "./ui/CommandPaletteRenderer";
 import { bindSearchPrompt } from "./ui/SearchPromptController";
 import { buildHelpRows } from "./ui/HelpModel";
 import { buildWindowsMenuModel } from "./application/commands/WindowsMenuModel";
@@ -88,7 +89,7 @@ root.innerHTML = `
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">j or k previews a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><p class="overlay-footer theme-footer">${THEME_PICKER_FOOTER.map(({ key, action }) => `<kbd>${key}</kbd> ${action}`).join(" · ")}</p><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" class="search-prompt" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><label id="search-title" class="visually-hidden" for="search-input">Search PDF text</label><span class="search-prefix" aria-hidden="true">/</span><input id="search-input" type="search" spellcheck="false" aria-label="Search PDF text" placeholder="Search PDF text"><p class="search-footer"><kbd>Enter</kbd> search · <kbd>Esc</kbd> close</p></form></dialog>
-  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
+  <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+j/k</kbd> move · <kbd>Ctrl+Shift+c</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
   <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
@@ -1055,30 +1056,10 @@ function dispatchPaletteEntry(index = paletteActiveIndex): void {
 function renderPalette(): void {
   const entries = paletteEntries();
   paletteActiveIndex = Math.min(paletteActiveIndex, Math.max(0, entries.length - 1));
-  paletteList.replaceChildren(...entries.map((entry, index) => {
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "overlay-list-entry command-palette-entry";
-    button.setAttribute("aria-selected", String(index === paletteActiveIndex));
-    button.setAttribute("aria-disabled", String(!entry.enabled));
-    const label = document.createElement("span");
-    label.textContent = entry.label;
-    const shortcut = document.createElement("span");
-    shortcut.className = "command-palette-entry-shortcut";
-    shortcut.textContent = entry.shortcut;
-    if (!entry.enabled && entry.disabledReason !== undefined) {
-      const reason = document.createElement("span");
-      reason.className = "command-palette-entry-reason";
-      reason.textContent = entry.disabledReason;
-      button.setAttribute("aria-description", entry.disabledReason);
-      button.append(reason);
-    }
-    button.append(label, shortcut);
-    button.addEventListener("click", () => { paletteActiveIndex = index; dispatchPaletteEntry(); });
-    item.append(button);
-    return item;
-  }));
+  renderCommandPalette(paletteList, entries, paletteActiveIndex, (index) => {
+    paletteActiveIndex = index;
+    dispatchPaletteEntry(index);
+  });
   paletteList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
 }
 function renderFileOpener(): void {

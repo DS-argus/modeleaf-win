@@ -15,8 +15,18 @@ const state = (overrides: Partial<ActionRuntimeContext> = {}): ActionRuntimeCont
 const command = (rows: ReturnType<typeof projectPaletteCommands>, id: string) => rows.find((row) => row.id === id);
 
 describe("CommandCatalog", () => {
+  it("hides config, history and update entries even when available without removing their actions", () => {
+    const available = state({ configExists: true, updateAvailable: true, canHistoryBack: true, canHistoryForward: true });
+    const hidden = ["config.reload", "config.writeDefault", "config.resetDefault", "history.back", "history.forward", "update.show"];
+    for (const project of [projectMenuCommands, projectPaletteCommands, projectHelpCommands]) {
+      const rows = project(available, config);
+      for (const id of hidden) expect(command(rows, id)).toBeUndefined();
+      expect(command(rows, "theme.picker")).toBeDefined();
+    }
+    for (const id of hidden) expect(ACTION_DESCRIPTORS.some((action) => action.id === id)).toBe(true);
+  });
   it("projects palette and help in authoritative registry order", () => {
-    const expected = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable").map(({ id }) => id);
+    const expected = ACTION_DESCRIPTORS.filter(({ bindingConfiguration, id }) => bindingConfiguration === "configurable" && !/^(config|history|update)\./u.test(id)).map(({ id }) => id);
     expect(projectPaletteCommands(state(), config).map(({ id }) => id)).toEqual(expected);
     expect(projectHelpCommands(state(), config).map(({ id }) => id)).toEqual(expected);
   });
@@ -31,7 +41,25 @@ describe("CommandCatalog", () => {
     const projections = [projectMenuCommands(state(), config), projectPaletteCommands(state(), config), projectHelpCommands(state(), config)];
     const openRows = projections.map((rows) => rows.find(({ id }) => id === "document.open"));
     expect(openRows).toEqual([openRows[0], openRows[0], openRows[0]]);
-    expect(openRows[0]?.shortcuts).toEqual(["Ctrl+Shift+O"]);
+    expect(openRows[0]?.shortcuts).toEqual(["Ctrl+Shift+o"]);
+  });
+  it.each([
+    ["g", "g"], ["G", "Shift+g"], ["<S-g>", "Shift+g"],
+    ["<C-g>", "Ctrl+g"], ["<C-S-g>", "Ctrl+Shift+g"],
+    ["<C-A-S-z>", "Ctrl+Alt+Shift+z"], ["<C-b>r", "Ctrl+b r"],
+    ["gg", "g g"], ["gG", "g Shift+g"], ["<A-F4>", "Alt+F4"],
+    ["<C-Left>", "Ctrl+Left"], ["<S-Tab>", "Shift+Tab"], ["가", "가"], ["?", "?"],
+  ])("displays %s as %s without inventing modifiers", (binding, expected) => {
+    const effective = { ...config, keymap: { ...config.keymap, "page.next": [binding] } };
+    for (const project of [projectMenuCommands, projectPaletteCommands, projectHelpCommands]) {
+      expect(command(project(state(), effective), "page.next")?.shortcuts).toEqual([expected]);
+    }
+  });
+  it("displays every uppercase ASCII letter as Shift plus its lowercase key", () => {
+    for (const upper of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") {
+      const effective = { ...config, keymap: { ...config.keymap, "page.next": [upper] } };
+      expect(command(projectHelpCommands(state(), effective), "page.next")?.shortcuts).toEqual([`Shift+${upper.toLowerCase()}`]);
+    }
   });
   it("keeps foreign modals and menu projection blocked", () => {
     const modalState = state({ modalOpen: true });
@@ -70,10 +98,10 @@ describe("CommandCatalog", () => {
       projectHelpCommands(modalState, config, { modalOwner: "help" }),
     ]) {
       expect(command(rows, "document.print")).toMatchObject({ enabled: false, disabledReason: "No document open" });
-      expect(command(rows, "history.back")).toMatchObject({ enabled: false, disabledReason: "No document open" });
+      expect(command(rows, "history.back")).toBeUndefined();
       expect(command(rows, "document.open")).toMatchObject({ enabled: false, disabledReason: "Document capacity unavailable" });
-      expect(command(rows, "config.writeDefault")).toMatchObject({ enabled: false, disabledReason: "Config already exists" });
-      expect(command(rows, "update.show")).toMatchObject({ enabled: false, disabledReason: "No update available" });
+      expect(command(rows, "config.writeDefault")).toBeUndefined();
+      expect(command(rows, "update.show")).toBeUndefined();
     }
   });
   it("preserves the nine individual tab selection projections", () => {

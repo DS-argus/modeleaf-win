@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { THEMES } from "../../src/domain/theme/Theme";
 import {
   AccessibilityController, focusRestoreTarget,
   readerAccessibilityName,
@@ -212,6 +213,117 @@ describe("search prompt production binding", () => {
     expect(styles).toContain("@media (forced-colors: active)");
     expect(styles).toContain("#search-dialog { color: CanvasText");
     expect(styles).toContain("white-space: normal;");
+  });
+  it("centers search line boxes without offsets and preserves the narrow footer row", () => {
+    const formRule = styles.match(/#search-dialog form \{([^}]+)\}/)?.[1];
+    expect(formRule).toContain("align-items: center;");
+    expect(formRule).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
+    const narrowRules = styles.slice(styles.indexOf("@media (max-width: 480px)"), styles.indexOf("@media (forced-colors: active)"));
+    expect(narrowRules).toContain("grid-template-columns: auto minmax(0, 1fr);");
+    expect(narrowRules).toContain(".search-footer { grid-column: 1 / -1;");
+    const searchRules = styles.slice(styles.indexOf("#search-dialog {"), styles.indexOf(".mac-overlay {"));
+    expect(searchRules).not.toMatch(/translateY|\btop:|margin-top:|appearance:/);
+    expect(mainSource).not.toContain('class="search-prompt mac-overlay"');
+  });
+  it("limits transparency and contrast corrections to real overlay panels", () => {
+    const panelRule = styles.match(/\.prompt, #search-dialog, \.mac-overlay \{([^}]+)\}/)?.[1];
+    expect(panelRule).toContain("--overlay-panel-alpha: 85%;");
+    expect(panelRule).toContain("--overlay-contrast: white;");
+    expect(panelRule).toContain("--overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));");
+    expect(panelRule).toContain("--overlay-muted: color-mix(in srgb, var(--theme-foreground) 70%, var(--overlay-contrast));");
+    expect(panelRule).not.toMatch(/\bopacity:|\bfilter:/);
+    expect(styles).toContain('[data-theme="catppuccin-latte"] :is(.prompt, #search-dialog, .mac-overlay) { --overlay-contrast: black; }');
+    expect(styles).toContain("background: color-mix(in srgb, var(--theme-inactive-tab) var(--overlay-panel-alpha), transparent);");
+    expect(styles).toContain("background: color-mix(in srgb, var(--theme-active-tab) var(--overlay-panel-alpha), transparent);");
+    expect(styles).toContain("#search-dialog input::placeholder { color: var(--overlay-muted); opacity: 1; }");
+    expect(styles).toContain(".list-overlay input::placeholder { color: var(--overlay-muted); opacity: 1; }");
+    expect(styles).toContain("dialog::backdrop { background: rgb(7 8 14 / 44%); }");
+    expect(styles).toContain("backdrop-filter: blur(18px) saturate(120%);");
+  });
+  it("separates themed footer descriptions from readable Windows key labels", () => {
+    expect(styles).toContain("--overlay-secondary-accent: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));");
+    for (const selector of [".search-footer", ".overlay-footer"]) {
+      const rule = styles.slice(styles.indexOf(`${selector} {`)).split("}")[0];
+      expect(rule).toContain("color: var(--overlay-secondary-accent);");
+      expect(styles).toContain(`${selector} kbd { padding: 0; color: var(--overlay-text);`);
+    }
+    expect(mainSource).toContain("Ctrl+j/k</kbd> move");
+    expect(mainSource).toContain("Ctrl+Shift+c</kbd> clear history");
+  });
+  it("gives help descriptions and palette shortcuts distinct themed roles without fading disabled rows", () => {
+    expect(styles).toContain(".help-group dt { color: var(--overlay-secondary-accent); }");
+    expect(styles).toContain(".help-group dd { margin: 0; color: var(--overlay-text);");
+    expect(styles).toContain(".command-palette-entry-shortcut { color: var(--overlay-secondary-accent);");
+    expect(styles).toContain('.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-accent); }');
+    expect(styles).toContain(".command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text);");
+    expect(styles).not.toContain('.command-palette-entry[aria-disabled="true"] { opacity:');
+    expect(styles).toContain("#command-palette-dialog[open] { display: flex; flex-direction: column; }");
+    expect(styles).toContain("#command-palette-dialog form { display: flex; flex-direction: column; min-height: 0; }");
+    expect(styles).toContain("#command-palette-dialog input { flex-shrink: 0; }");
+    expect(styles).toContain(".command-palette-list { min-height: 0;");
+    expect(styles).not.toContain("command-palette-section-title");
+    const heading = styles.slice(styles.indexOf(".help-group h2 {")).split("}")[0];
+    expect(heading).toContain("border-bottom: 1px solid");
+    expect(heading).toContain("font-weight: 650;");
+  });
+  it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
+    const weight = (name: string): number => {
+      const declaration = styles.match(new RegExp(`--overlay-${name}: ([^;]+);`))?.[1];
+      const value = Number(declaration?.match(/(\d+)%/)?.[1]) / 100;
+      expect(Number.isFinite(value)).toBe(true);
+      return value;
+    };
+    const rgb = (hex: string): number[] => hex.slice(1).match(/../g)!.map((channel) => parseInt(channel, 16));
+    const mix = (front: number[], back: number[], alpha: number): number[] => front.map((v, i) => v * alpha + back[i]! * (1 - alpha));
+    const luminance = (color: number[]): number => color.reduce((sum, channel, i) => {
+      const value = channel / 255;
+      return sum + (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i]!;
+    }, 0);
+    const contrast = (a: number[], b: number[]): number => {
+      const values = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (values[0]! + 0.05) / (values[1]! + 0.05);
+    };
+    for (const theme of THEMES) {
+      const palette = theme.palette;
+      const end = theme.id === "catppuccin-latte" ? [0, 0, 0] : [255, 255, 255];
+      const text = mix(rgb(palette.foreground), end, weight("text"));
+      const muted = mix(rgb(palette.foreground), end, weight("muted"));
+      const accent = mix(rgb(palette.accent), end, weight("accent"));
+      const focus = mix(rgb(palette["focus-indicator"]), end, weight("focus"));
+      const footer = mix(rgb(palette.accent), end, weight("secondary-accent"));
+      for (const back of [[0, 0, 0], [255, 255, 255]]) {
+        const prompt = mix(rgb(palette["inactive-tab"]), back, weight("panel-alpha"));
+        const panel = mix(rgb(palette["active-tab"]), mix([7, 8, 14], back, 0.44), weight("panel-alpha"));
+        const selected = mix(rgb(palette.accent), panel, 0.28);
+        const themeSelected = mix(rgb(palette.accent), panel, 0.18);
+        const help = mix(rgb(palette["inactive-tab"]), panel, 0.62);
+        for (const bg of [prompt, panel, help, rgb(palette["inactive-tab"])]) {
+          expect(contrast(text, bg), `${theme.id} text`).toBeGreaterThanOrEqual(4.5);
+          expect(contrast(muted, bg), `${theme.id} muted/placeholder`).toBeGreaterThanOrEqual(4.5);
+          expect(contrast(focus, bg), `${theme.id} focus`).toBeGreaterThanOrEqual(3);
+        }
+        for (const bg of [prompt, panel]) {
+          expect(contrast(footer, bg), `${theme.id} footer description`).toBeGreaterThanOrEqual(4.5);
+        }
+        expect(contrast(footer, help), `${theme.id} help description`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, mix(rgb(palette.accent), panel, 0.19)), `${theme.id} selected palette shortcut`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(text, selected), `${theme.id} selected row/shortcut`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, themeSelected), `${theme.id} selected theme`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, help), `${theme.id} help heading`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(focus, selected), `${theme.id} selected focus`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
+  it("uses system colors for search key labels and opaque overlay panels in forced colors", () => {
+    const forcedRules = styles.slice(styles.indexOf("@media (forced-colors: active)"), styles.indexOf("@media (min-resolution:"));
+    expect(forcedRules).toContain(".search-footer, .search-footer kbd { color: CanvasText; }");
+    expect(forcedRules).toContain(".mac-overlay { color: CanvasText; background: Canvas;");
+    expect(forcedRules).toContain('.mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }');
+    expect(forcedRules).toContain("--overlay-muted: CanvasText;");
+    expect(forcedRules).toContain("--overlay-secondary-accent: CanvasText;");
+    expect(forcedRules).toContain("--overlay-focus: Highlight;");
+    expect(forcedRules).toContain('.command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }');
+    expect(forcedRules).toContain("#search-dialog input:focus-visible { outline: 2px solid Highlight;");
   });
   it("cancels the prompt on Escape without clearing active search or moving the reader", () => {
     const dialog = document.createElement("dialog");

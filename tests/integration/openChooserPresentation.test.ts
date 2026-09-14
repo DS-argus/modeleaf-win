@@ -28,8 +28,9 @@ describe("Open chooser presentation", () => {
     expect(styles).not.toContain(".file-opener-browse-glyph");
     const browseRule = styles.slice(styles.indexOf(".file-opener-browse {"), styles.indexOf("}", styles.indexOf(".file-opener-browse {")) + 1);
     expect(browseRule).not.toContain("border");
-    expect(styles).toContain(".file-opener-entry:not(:disabled):focus-visible { outline: 2px solid var(--theme-focus-indicator)");
-    expect(styles).toContain(".file-opener-recents-heading { margin: 7px 0 1px; padding: 7px 9px 0; color: var(--theme-muted-text); border-top: 1px solid var(--theme-border);");
+    expect(styles).toContain(".mac-overlay :is(input, .theme-option, .overlay-list-entry):focus-visible {");
+    expect(styles).toContain("outline: 2px solid var(--overlay-focus);");
+    expect(styles).toContain(".file-opener-recents-heading { margin: 7px 0 1px; padding: 7px 9px 0; color: var(--overlay-muted); border-top: 1px solid var(--theme-border);");
   });
 
   it("fits paths from a restored base font after visible layout and width changes", () => {
@@ -57,7 +58,7 @@ describe("Open chooser presentation", () => {
     expect(mainSource).toContain('placeholder="Filter recent PDFs"');
     expect(mainSource).toContain('button.setAttribute("aria-selected", String(selected))');
     expect(mainSource).toContain('button.setAttribute("aria-current", selected ? "true" : "false")');
-    expect(mainSource).toContain("Ctrl+J/K</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close");
+    expect(mainSource).toContain("Ctrl+j/k</kbd> move · <kbd>Ctrl+Shift+c</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close");
     expect(mainSource).toContain('diagnostic[0].setAttribute("role", "status")');
     expect(mainSource).toContain('diagnostic[0].setAttribute("aria-live", "polite")');
   });

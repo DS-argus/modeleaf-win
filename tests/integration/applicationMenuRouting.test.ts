@@ -82,8 +82,8 @@ describe("application menu production-render/router integration", () => {
     const label = button.querySelector(".windows-menu-label")!;
     const shortcut = button.querySelector<HTMLElement>(".windows-menu-shortcut")!;
     expect(label.textContent).toBe("Open PDF…");
-    expect(shortcut.textContent).toBe("Ctrl+Shift+O");
-    expect(button.getAttribute("aria-label")).toBe("Open PDF…, Ctrl+Shift+O");
+    expect(shortcut.textContent).toBe("Ctrl+Shift+o");
+    expect(button.getAttribute("aria-label")).toBe("Open PDF…, Ctrl+Shift+o");
     expect(shortcut.hidden).toBe(false);
     publish();
     expect(button.querySelector(".windows-menu-label")).toBe(label);
