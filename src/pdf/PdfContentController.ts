@@ -24,7 +24,8 @@ export interface PdfSearchResultsUpdate { readonly searchGeneration: number; rea
 export interface PdfContentControllerOptions {
   readonly host: HTMLElement;
   readonly resources: ResourceReservationManager;
-  readonly onStatus: (message: string) => void;
+  readonly onStatus: (message: string, source?: "search") => void;
+  readonly onSearchCleared?: () => void;
   readonly navigateToPage: (pageNumber: number) => void;
   readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean) => Promise<PdfDestinationNavigationOutcome>;
   readonly resolveDestinationPage?: (reference: unknown) => Promise<number | null>;
@@ -348,6 +349,7 @@ export class PdfContentController {
 
   public constructor(private readonly options: PdfContentControllerOptions) {}
 
+  public get searchQuery(): string { return this.query; }
   public get snapshot(): PdfContentSnapshot {
     return {
       pageNumber: this.renderedPage ?? this.evictedPage ?? null,
@@ -811,6 +813,7 @@ export class PdfContentController {
     this.partialSearchReason = undefined;
     this.publishSearchResults(sequence, false);
     this.clearHighlights();
+    this.options.onSearchCleared?.();
   }
 
   private canvasScrollOrigin(canvas: HTMLCanvasElement): readonly [number, number] {
@@ -998,21 +1001,21 @@ export class PdfContentController {
     this.partialSearchReason = undefined;
     this.clearHighlights();
     if (encoder.encode(source).byteLength > RESOURCE_LIMITS.maxTextPageBytes) {
-      this.options.onStatus("TEXT_LIMIT");
+      this.options.onStatus("TEXT_LIMIT", "search");
       return;
     }
     const normalized = normalizePdfSearchQuery(query);
-    if (normalized.length === 0) return;
+    if (normalized.length === 0) { this.options.onSearchCleared?.(); return; }
     this.query = normalized;
     this.searchPending = true;
-    this.options.onStatus(`Searching “${normalized}”…`);
+    this.options.onStatus(`Searching “${normalized}”…`, "search");
     this.publishSearchResults(sequence, false);
     const failBeforeExtraction = (message: string): void => {
       if (sequence !== this.searchSequence) return;
       this.searchPending = false;
       this.searchIncomplete = true;
       this.publishSearchResults(sequence, false);
-      this.options.onStatus(message);
+      this.options.onStatus(message, "search");
     };
     const previous = this.activeSearchSettlement;
     if (previous !== undefined) {
@@ -1092,7 +1095,7 @@ export class PdfContentController {
       const landing = this.selectMatch(index, "initial", generation, document, sequence);
       void landing.catch((error: unknown) => {
         if (this.isCurrent(generation, document) && sequence === this.searchSequence) {
-          this.options.onStatus(`Search result landing failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.options.onStatus(`Search result landing failed: ${error instanceof Error ? error.message : String(error)}`, "search");
         }
       });
     };
@@ -1139,7 +1142,7 @@ export class PdfContentController {
       this.searchPending = false;
       if (this.results.length === 0) {
         publishDiscoveredResults(true);
-        this.options.onStatus(hasExtractedText ? `No matches · “${this.query}”` : `No searchable text · “${this.query}”`);
+        this.options.onStatus(hasExtractedText ? `No matches · “${this.query}”` : `No searchable text · “${this.query}”`, "search");
       } else {
         this.applyHighlights(deadline);
         if (restoreEvictedResult) {
@@ -1147,7 +1150,7 @@ export class PdfContentController {
           const index = this.results[preferredIndex]?.geometry !== undefined ? preferredIndex : this.results.findIndex((result) => result.geometry !== undefined);
           if (index < 0) {
             publishDiscoveredResults(true);
-            this.options.onStatus("Search result location unavailable.");
+            this.options.onStatus("Search result location unavailable.", "search");
             return;
           }
           const selected = await this.selectMatch(index, "restore", generation, document, sequence);
@@ -1158,15 +1161,15 @@ export class PdfContentController {
             this.searchIncomplete = true;
           }
           publishDiscoveredResults(true);
-          if (selected === null) this.options.onStatus("Search result location unavailable.");
+          if (selected === null) this.options.onStatus("Search result location unavailable.", "search");
         } else {
           publishDiscoveredResults(true);
           if (this.pendingResultIndex !== undefined) {
-            this.options.onStatus(`Search complete · ${this.results.length} ${this.results.length === 1 ? "match" : "matches"} · “${this.query}”`);
+            this.options.onStatus(`Search complete · ${this.results.length} ${this.results.length === 1 ? "match" : "matches"} · “${this.query}”`, "search");
           } else if (this.currentResult >= 0) {
             this.reportCurrentMatch("");
           } else {
-            this.options.onStatus("Search result location unavailable.");
+            this.options.onStatus("Search result location unavailable.", "search");
           }
         }
       }
@@ -1186,9 +1189,9 @@ export class PdfContentController {
           if (Date.now() < deadline) {
             try { this.applyHighlights(deadline); } catch { /* The primary search failure remains authoritative. */ }
           }
-          this.options.onStatus(`Search results are partial: ${cause}`);
+          this.options.onStatus(`Search results are partial: ${cause}`, "search");
         } else {
-          this.options.onStatus(cause);
+          this.options.onStatus(cause, "search");
         }
       }
     } finally {
@@ -1215,7 +1218,7 @@ export class PdfContentController {
       index = (index + (reverse ? -1 : 1) + this.results.length) % this.results.length;
       if (this.results[index]?.geometry !== undefined) return this.selectMatch(index, reverse ? "previous" : "next", generation, document, sequence);
     }
-    this.options.onStatus("Search result location unavailable.");
+    this.options.onStatus("Search result location unavailable.", "search");
     return null;
   }
 
@@ -1223,7 +1226,7 @@ export class PdfContentController {
     const result = this.results[index];
     if (result === undefined || !this.isCurrent(generation, document) || sequence !== this.searchSequence) return null;
     if (result.geometry === undefined) {
-      this.options.onStatus("Search result location unavailable.");
+      this.options.onStatus("Search result location unavailable.", "search");
       return null;
     }
     this.pendingResultIndex = index;
@@ -1696,6 +1699,7 @@ export class PdfContentController {
     const disclosure = suffix || (this.partialSearchReason === undefined ? "" : ` Search results are partial: ${this.partialSearchReason}`);
     this.options.onStatus(
       `${this.currentResult + 1} / ${this.results.length} · “${this.query}”${progress}${disclosure}`,
+      "search",
     );
   }
   private clearHighlights(): void {

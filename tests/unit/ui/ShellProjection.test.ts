@@ -27,9 +27,21 @@ describe("ShellProjection", () => {
     expect(currentWindowCloseIntent("window-a")).toEqual({ type: "window.close", windowId: "window-a" });
     expect(currentWindowCloseIntent("window-b")).not.toEqual(currentWindowCloseIntent("window-a"));
   });
-  it("prioritizes pending and disabled status over ready state", () => {
-    expect(projectShellStatus({ hasDocument: true, pendingSequence: "g" })).toBe("Pending: g");
-    expect(projectShellStatus({ hasDocument: true, disabledReason: "No back history" })).toBe("No back history");
-    expect(projectShellStatus({ hasDocument: false })).toBe("No document open");
+  it.each([
+    [false, "fit-page", true, "query", false, false, false],
+    [false, "fit-width", true, "query", false, false, false],
+    [true, "fit-width", true, "", false, true, true],
+    [true, "custom", false, "query", false, false, true],
+    [true, "fit-page", false, "query", true, false, true],
+    [true, "fit-page", false, "", true, false, false],
+    [true, "fit-width", false, "", false, true, false],
+    [true, "custom", false, "", false, false, false],
+  ] as const)("projects typed modes (%s, %s, %s, %s)", (hasDocument, zoomMode, searchPromptOpen, query, fitPage, fitWidth, search) => {
+    expect(projectShellStatus({ hasDocument, zoomMode, searchPromptOpen, query, status: "Searching · Fit page · Fit width", pendingSequence: "g" })).toEqual({
+      message: "Searching · Fit page · Fit width", pending: "Pending: g", fitPage, fitWidth, search,
+    });
+  });
+  it.each(["Searching…", "No matches", "No searchable text", "Search results are partial: TEXT_LIMIT", "Search failed"])("retains applied search independently of diagnostics: %s", (status) => {
+    expect(projectShellStatus({ hasDocument: true, zoomMode: "fit-width", searchPromptOpen: false, query: "needle", status })).toEqual({ message: status, pending: "", fitPage: false, fitWidth: true, search: true });
   });
 });

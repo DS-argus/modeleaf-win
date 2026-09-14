@@ -29,6 +29,7 @@ import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwn
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
+import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
@@ -100,6 +101,17 @@ const emptyReader = required<HTMLElement>("#empty-reader");
 const emptyReaderOpen = required<HTMLButtonElement>("#empty-reader-open");
 const emptyReaderShortcut = required<HTMLElement>("#empty-reader-shortcut");
 const status = required<HTMLElement>("#status");
+const shellStatus = createShellStatusRenderer(status, () => {
+  const session = active().session;
+  const reader = session.reader.snapshot;
+  return {
+    hasDocument: reader.hasDocument,
+    zoomMode: reader.zoomMode,
+    searchPromptOpen: overlayOwner.active?.id === "search",
+    query: session.query,
+    status: reader.status,
+  };
+});
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
 const helpRows = required<HTMLElement>("#help-rows");
@@ -114,6 +126,7 @@ const paletteDialog = required<HTMLDialogElement>("#command-palette-dialog");
 const paletteInput = required<HTMLInputElement>("#palette-input");
 const SHELL_WINDOW_ID = "current-window";
 let cancelPendingShellInput: () => void = () => undefined;
+let syncPendingShellInput: () => void = () => undefined;
 let focusOwnerSequence = 0;
 let overlayOwner: OverlayOwnerState = createOverlayOwner(SHELL_WINDOW_ID, "empty-reader-open");
 function focusTargetId(element: HTMLElement | null): string | undefined {
@@ -714,6 +727,7 @@ async function showUpdateNotice(): Promise<void> {
   render();
 }
 function render(): void {
+  syncPendingShellInput();
   const current = active();
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
@@ -734,7 +748,7 @@ function render(): void {
     emptyReaderShortcut.textContent = shortcut ?? "";
     emptyReaderOpen.title = openCommand.disabledReason ?? "";
   }
-  status.textContent = snapshot.status;
+  shellStatus.render();
   emptyReader.hidden = shell.emptyState === undefined;
   emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
   if (snapshot.reader.helpVisible && overlayOwner.active?.id !== "help") claimOverlay("help");
@@ -780,10 +794,10 @@ function cancelPagePromptOwnership(): void {
   const transaction = revoked.transaction;
   pagePromptTransaction = revoked.live;
   suspendedPagePrompt = revoked.suspended;
+  cancelPendingShellInput();
   if (transaction === undefined) return;
   pagePromptRevision += 1;
   transaction.payload.session.cancelPendingNavigation();
-  cancelPendingShellInput();
 }
 async function activateCurrentTab(focus = false): Promise<void> { const current = active(); await current.session.activate(); render(); if (focus) current.host.focus({ preventScroll: true }); }
 function switchTabNow(id: TabId): Promise<void> {
@@ -1505,9 +1519,10 @@ const rootKeyboard = createRootKeyboardRouter({
     return true;
   },
   onDisabled: (_id, reason) => { active().session.reader.setStatus(reason); render(); },
-  onState: (state) => { status.textContent = state.kind === "pending" ? `Pending: ${state.sequence}` : active().session.snapshot.status; },
+  onState: (state) => { shellStatus.setPendingSequence(state.kind === "pending" ? state.sequence : ""); },
 });
 cancelPendingShellInput = rootKeyboard.cancelPending;
+syncPendingShellInput = rootKeyboard.syncContext;
 window.addEventListener("keydown", (event) => {
   const target = event.target instanceof Element ? event.target : null;
   const claimed = rootKeyboard.handleKeyDown({

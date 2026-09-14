@@ -145,7 +145,7 @@ HiDPI acceptance:
 1. `? help`
 2. page `current / total`
 3. zoom `%`
-4. `FIT PAGE` 또는 `SEARCH` mode pill
+4. `FIT PAGE` 또는 `FIT WIDTH` mode pill, 검색 중이면 `SEARCH` pill 추가
 5. pending prefix
 6. flexible spacer
 7. update banner
@@ -159,6 +159,18 @@ HiDPI acceptance:
 - update banner click과 `U`는 같은 `update.show` action을 실행한다.
 - Homebrew 문구는 Windows status/overlay에 나타나지 않는다.
 - status bar의 clickable items는 button semantics와 visible focus를 갖는다.
+
+Issue #78 owner delta — persistent mode badges:
+
+- `FIT PAGE`는 active document의 typed `zoomMode === "fit-page"` 동안만 표시한다. Fit Width/custom/Actual Size와 문서 close에서는 표시하지 않는다.
+- `SEARCH`는 active document의 search prompt가 열렸거나 applied query가 남아 있는 동안 표시한다. pending/0건/no-text/partial/error에서도 query가 남으면 유지한다. prompt Escape는 applied query를 지우지 않는다.
+- Owner follow-up: `FIT WIDTH`는 active document의 typed `zoomMode === "fit-width"` 동안 표시한다. `FIT PAGE`와는 상호 배타적이며, 어느 fit 배지든 `SEARCH`와 함께 표시할 수 있다. custom/Actual Size/문서 없음에서는 두 fit 배지를 모두 끈다.
+- 일반 page status 생성 지점에서 중복 `Fit page`/`Fit width` 문구를 제거한다. page/rotation과 custom 배율은 유지한다. 임의 오류·진단 문구를 정규식으로 지우지 않으며 모드도 문구나 배율에서 추정하지 않는다.
+- 기존 Windows footer의 기본 28px는 유지한다. 긴 진단/확대 글자는 줄바꿈하고 필요한 만큼 status row만 늘린다. 문구를 잘라내거나 글자를 축소하거나 pending으로 진단을 대체하지 않는다.
+- badge는 텍스트 span이며 별도 live region/tab stop/button이 아니다. 기존 footer의 `role=status`, `aria-live=polite`, `aria-atomic=true`를 유지하고 변경 없는 DOM은 다시 쓰지 않는다.
+- theme foreground/statusline/accent token을 사용한다. SEARCH는 성공 상태를 뜻하지 않으며 label과 dashed border로 구별한다. forced-colors에서는 CanvasText/Canvas와 solid/dashed 경계를 유지한다.
+- search clear는 생성 시 search 소유로 표시된 현재 문구만 정리한다. 최신 unrelated 오류는 보존하며, 탭 변경/active close에서는 이전 탭의 keyboard prefix를 취소한다.
+- 검증 범위와 미완료 native/Narrator 항목은 [`issue78-fit-width.json`](../evidence/issue78-fit-width.json)을 따른다. Browser DPR/text-size/forced-colors emulation은 Windows 설정/Narrator 검증을 대신하지 않는다.
 
 ## 8. Overlay 공통 계약
 

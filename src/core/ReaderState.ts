@@ -25,6 +25,7 @@ export interface ReaderSnapshot {
 }
 
 export class ReaderState {
+  private statusSource: "search" | undefined;
   private snapshotValue: ReaderSnapshot = {
     hasDocument: false,
     page: 0,
@@ -50,6 +51,7 @@ export class ReaderState {
     if (!Number.isSafeInteger(pageCount) || pageCount < 1) {
       throw new RangeError("pageCount must be a positive safe integer");
     }
+    this.statusSource = undefined;
     this.snapshotValue = {
       ...this.snapshotValue,
       hasDocument: true,
@@ -65,6 +67,7 @@ export class ReaderState {
   }
 
   closeDocument(): void {
+    this.statusSource = undefined;
     this.snapshotValue = {
       ...this.snapshotValue,
       hasDocument: false,
@@ -157,8 +160,15 @@ export class ReaderState {
     this.refreshPageStatus();
   }
 
-  setStatus(status: string): void {
+  setStatus(status: string, source?: "search"): void {
+    this.statusSource = source;
     this.snapshotValue = { ...this.snapshotValue, status };
+  }
+
+  clearSearchStatus(): boolean {
+    if (this.statusSource !== "search") return false;
+    this.refreshPageStatus();
+    return true;
   }
 
   private navigateTo(requestedPage: number): void {
@@ -166,6 +176,7 @@ export class ReaderState {
       return;
     }
     const page = Math.max(1, Math.min(this.snapshotValue.pageCount, requestedPage));
+    this.statusSource = undefined;
     this.snapshotValue = {
       ...this.snapshotValue,
       page,
@@ -274,10 +285,8 @@ export class ReaderState {
     customScale: number,
     rotationQuarterTurns: number,
   ): string {
-    const zoom = zoomMode === "custom"
-      ? `Custom ${this.formatScale(customScale)}`
-      : zoomMode === "fit-width" ? "Fit width" : "Fit page";
-    return `Page ${page} of ${pageCount} · ${zoom} · ${rotationQuarterTurns * 90}°`;
+    const zoom = zoomMode === "custom" ? ` · Custom ${this.formatScale(customScale)}` : "";
+    return `Page ${page} of ${pageCount}${zoom} · ${rotationQuarterTurns * 90}°`;
   }
 
   private formatScale(scale: number): string {
