@@ -40,7 +40,7 @@ export interface PdfTabSessionOptions {
     session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">,
     ownerGeneration: number,
     reader: ReaderState,
-  ) => Omit<PdfContentControllerOptions, "host" | "resources" | "onStatus">;
+  ) => Omit<PdfContentControllerOptions, "host" | "resources" | "onStatus" | "onSearchCleared">;
   readonly onStatus?: (status: string) => void;
 }
 export type PdfTabNavigationDecision = { readonly kind: "verifiedLanding" | "preflightRejected" | "compensatedFailure" | "uncompensatedInvariantFailure" | "unavailable" | "noOp" | "stale" | "failed-verification" | "excluded" | "search-epoch-recorded" | "invalid" | "rolled-back" };
@@ -398,7 +398,7 @@ export class PdfTabSession {
     if (content === undefined) return { kind: "ignore" };
     const query = normalizePdfSearchQuery(source);
     if (query.length === 0) {
-      this.reader.setStatus("Enter text to search.");
+      this.reader.setStatus("Enter text to search.", "search");
       return { kind: "ignore" };
     }
     this.searchLandingOwnerRevision += 1;
@@ -521,7 +521,7 @@ export class PdfTabSession {
     if (!this.closed && this.isForegroundActive()) this.content?.invalidateSearch();
     this.endSearchLandingEpoch();
   }
-  public get query(): string { return this.content?.snapshot.query ?? ""; }
+  public get query(): string { return this.content?.searchQuery ?? ""; }
   public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
   public renderCurrentView(): Promise<boolean> {
     return this.openingFitRenderPending ? this.renderOpeningFitPage() : this.renderCurrentViewPreservingAnchor();
@@ -876,7 +876,15 @@ export class PdfTabSession {
   }
 
   private createContent(session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">, ownerGeneration: number): PdfContentController {
-    return new PdfContentController({ ...this.options.createContentOptions(session, ownerGeneration, this.reader), host: this.options.canvasHost, resources: this.options.resources, onStatus: (status) => this.setStatus(status) });
+    return new PdfContentController({
+      ...this.options.createContentOptions(session, ownerGeneration, this.reader),
+      host: this.options.canvasHost,
+      resources: this.options.resources,
+      onStatus: (status, source) => this.setStatus(status, source),
+      onSearchCleared: () => {
+        if (this.reader.clearSearchStatus()) this.options.onStatus?.(this.reader.snapshot.status);
+      },
+    });
   }
 
   private contentKey(session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">): string {
@@ -1097,5 +1105,5 @@ export class PdfTabSession {
     this.readerStatusVersion += 1;
     this.setStatus(status);
   }
-  private setStatus(status: string): void { this.reader.setStatus(status); this.options.onStatus?.(status); }
+  private setStatus(status: string, source?: "search"): void { this.reader.setStatus(status, source); this.options.onStatus?.(status); }
 }

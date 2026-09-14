@@ -1,0 +1,85 @@
+{
+  "issue": 78,
+  "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+  "acceptance": "partial-native-matrix-pending",
+  "implementation": [
+    "Typed active-document zoom mode and prompt/applied query project independent persistent FIT PAGE and SEARCH badges.",
+    "One footer renderer retains current diagnostics alongside pending input and does not rebuild unchanged nodes.",
+    "Scalar content query forwarding does not copy search result arrays.",
+    "Search producers tag owned messages; clearing never clears an untagged newer message, including identical wording.",
+    "Keyboard ownership is synchronized before shell publication, including input during asynchronous tab deactivation."
+  ],
+  "localGates": [
+    { "command": "npm test", "result": "pass", "files": 82, "tests": 894 },
+    { "command": "npm run build", "result": "pass" },
+    { "command": "cargo fmt --check --manifest-path src-tauri/Cargo.toml", "result": "pass" },
+    { "command": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings", "environment": { "CARGO_BUILD_JOBS": "1" }, "result": "pass" },
+    { "command": "cargo test --manifest-path src-tauri/Cargo.toml", "environment": { "CARGO_BUILD_JOBS": "1" }, "result": "pass", "topLevelTests": 146, "additionalSubprocessHelperTests": 2 },
+    { "command": "git diff --check", "result": "pass" }
+  ],
+  "warningsAndRetries": [
+    "Initial unrestricted Rust test compilation exhausted memory and produced metadata/rlib failures; bounded single-job rerun passed without source or assertion suppression.",
+    "Initial asset sync found no worktree-local pdfjs-dist; npm ci installed the lockfile-local dependencies before successful builds.",
+    "Vite reports a bundle larger than 500 kB; Node PDF.js tests recommend the legacy build; Windows linker reports import-library creation output. These warnings were not suppressed.",
+    "Initial full frontend run caught the fixed-row source contract and a duplicate forced-colors block; the row assertion was updated for deliberate diagnostic wrapping and badge rules were moved into the existing forced-colors block."
+  ],
+  "browserLayout": {
+    "runtime": "Hidden Chromium with production ShellStatusRenderer, app.css and seven existing theme palettes",
+    "cssViewports": [[480, 360], [1040, 760]],
+    "emulatedDpr": [1, 1.25, 1.5, 2],
+    "footerTextScale": [1, 2],
+    "themes": 7,
+    "cases": 112,
+    "diagnostic": "PDF registry cleanup failed: followed by five repetitions of very-long-diagnostic-without-truncation",
+    "simultaneous": ["FIT PAGE", "SEARCH", "Pending: g"],
+    "clippedOrOverflowingCases": 0,
+    "minimumMeasuredTextContrast": 4.637946737237018,
+    "maximumFooterHeightCssPx": 246.15625,
+    "contrastMethod": "Computed sRGB foreground/background colors sampled through a one-pixel canvas, WCAG relative luminance ratio",
+    "forcedColors": "CDP Emulation.setEmulatedMedia forced-colors=active at 480x360, DPR 2, footer text 24px: CanvasText/Canvas, solid FIT PAGE and dashed SEARCH borders, no badge focus targets",
+    "limitation": "DPR and footer font-size emulation are not native monitor DPI or Windows accessibility text-scale certification."
+  },
+  "native": {
+    "runtime": "Standalone Tauri debug executable, bundled frontend/PDF.js, real WebView2 and native argv PDF transport",
+    "buildCommand": "npm exec tauri -- build --debug --no-bundle --config .internal/evidence/status78/tauri-qa.json",
+    "buildEnvironment": { "CARGO_BUILD_JOBS": "1", "CI": "true" },
+    "configOverride": { "identifier": "com.modeleaf.status78-qa", "productName": "Modeleaf Status QA" },
+    "isolation": "Separate application identifier avoids changing the ordinary application's durable state. No IPC implementation or PDF transport is mocked.",
+    "exeSha256": "03ab66c2f98ed3e236fceabac79945b633f63b05aaf444265db8fef621f691e2",
+    "driver": "Loopback-only WebView2 CDP attachment. Final recheck invokes production menu click handlers and dispatches prompt Enter/Escape events; these are not physical keyboard acceptance evidence.",
+    "defaultObservedContentViewport": { "width": 648, "height": 1125, "devicePixelRatio": 1.2999999523162842 },
+    "minimumOuterWindowPhysicalPx": [480, 360],
+    "minimumObservedContentViewport": { "width": 358, "height": 248, "devicePixelRatio": 1.2999999523162842, "footerHeightCssPx": 45.637020111083984, "horizontalOverflow": false },
+    "finalBuildChecks": [
+      "Fit Page shows FIT PAGE; prompt-only search shows both badges.",
+      "Prompt Escape with no applied query removes SEARCH.",
+      "Applied no-match query closes prompt but retains both badges and No matches diagnostic.",
+      "Clear Search removes search-owned No matches wording and SEARCH, retaining FIT PAGE.",
+      "Fit Width removes FIT PAGE.",
+      "Minimum native window retains full no-match diagnostic and both non-focusable badges.",
+      "Owned window closes through native WM_CLOSE and exits within 15 seconds."
+    ],
+    "earlierBuildChecks": [
+      "Trusted CDP keyboard events exercised prompt Escape, applied query, Fit Width and custom zoom.",
+      "Native single-instance argv opened the second immutable fixture; A Pending:g to B and B Pending:g to active close retained no foreign prefix; A's FIT PAGE/SEARCH restored. The later deferred-deactivation race fix has separate automated coverage.",
+      "OS SendKeys/keybd_event smoke attempts did not reliably dispatch to the reader and are not counted as passed keyboard tests."
+    ],
+    "screenshots": [
+      { "path": "issue78-native-both.png", "sha256": "e16088562499d2c69e89de5690e8ce14715ca41e8e996123560311a031a626f7" },
+      { "path": "issue78-native-minimum.png", "sha256": "02fbaf60b6ddd9584cadaf1fcaec1298fb44414319bd3d95da698aece9d92315" }
+    ],
+    "screenshotScope": "WebView content captures, not native titlebar screenshots. Native titlebar configuration is unchanged."
+  },
+  "fixtures": [
+    { "path": "fixtures/pdf/text-3-page.pdf", "baselineAndAfterSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd" },
+    { "path": "fixtures/pdf/fixture-S-text-10.pdf", "baselineAndAfterSha256": "c8f5e6331212d02864333a7d58b7dee804f1c8a1f51b32451d16a50cd84ffdfa" }
+  ],
+  "review": "Independent read-only architect review: CLEAR after correcting entry-time and asynchronous handoff prefix ownership races.",
+  "remainingGates": [
+    "Native 100/125/150/200% monitor DPI matrix and monitor moves",
+    "Windows 200% accessibility text-scale and OS high-contrast matrix across all themes",
+    "Narrator audible duplicate-announcement and focus audit",
+    "Physical Enter/IME/Escape/pending keyboard acceptance on an interactive Windows desktop"
+  ],
+  "delivery": "Draft PR until remaining native acceptance is completed; no broader parity or release claim."
+}
