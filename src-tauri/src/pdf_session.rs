@@ -74,6 +74,7 @@ pub struct ExternalLinkRegistration {
     pub target: String,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CancelBarrier {
     pub barrier_id: u64,
 }
