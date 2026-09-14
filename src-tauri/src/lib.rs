@@ -16,7 +16,7 @@ use crate::commands::config::{
 use crate::commands::state::StateFileStore;
 use crate::local_path::SystemLocalPathPolicy;
 use external_link::{launch_external_link, shutdown_external_link_dispatcher, ExternalLinkError};
-use open_dialog::choose_pdf_file;
+use open_dialog::{choose_pdf_file, dispatch_pdf_dialog, post_pdf_dialog, PdfDialogError};
 use open_request::{
     resolve_second_instance_paths, OpenFailureId, OpenRequestCoordinator, OpenRequestError,
     OpenRequestId,
@@ -448,7 +448,10 @@ async fn create_app_window(
         .map_err(|_| CreateAppWindowError::Capacity)?;
     let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
         .title("Modeleaf")
-        .additional_browser_args("--force-renderer-accessibility")
+        // Keep keyboard-to-native transitions from inheriting WebView2's hidden cursor (#71).
+        .additional_browser_args(
+            "--force-renderer-accessibility --disable-features=HideCursorWhileTyping",
+        )
         .visible(false)
         .decorations(true)
         .resizable(true)
@@ -774,23 +777,32 @@ async fn open_pdf_dialog(
     window: Window,
     coordinator: State<'_, OpenRequestCoordinator>,
 ) -> Result<NativeDialogOutcome, OpenRequestError> {
-    let owner_hwnd = match window.hwnd() {
-        Ok(hwnd) if !hwnd.0.is_null() => hwnd.0 as isize,
-        _ => {
+    let dispatch_window = window.clone();
+    let owner_window = window.clone();
+    let chosen = match dispatch_pdf_dialog(
+        move |task| dispatch_window.run_on_main_thread(task),
+        move |picker, completion| {
+            let owner_hwnd = match owner_window.hwnd() {
+                Ok(hwnd) if !hwnd.0.is_null() => hwnd.0 as isize,
+                _ => {
+                    drop(picker);
+                    completion(Err(PdfDialogError::OwnerUnavailable));
+                    return Ok(());
+                }
+            };
+            post_pdf_dialog(owner_hwnd, picker, completion)
+        },
+        choose_pdf_file,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => {
             return Ok(NativeDialogOutcome::DialogFailed {
-                reason: NativeDialogFailureReason::OwnerUnavailable,
+                reason: NativeDialogFailureReason::WorkerFailed,
             })
         }
     };
-    let chosen =
-        match tauri::async_runtime::spawn_blocking(move || choose_pdf_file(owner_hwnd)).await {
-            Ok(result) => result,
-            Err(_) => {
-                return Ok(NativeDialogOutcome::DialogFailed {
-                    reason: NativeDialogFailureReason::WorkerFailed,
-                })
-            }
-        };
     Ok(match chosen {
         Ok(Some(path)) => match coordinator.ingest_path(window.label(), &path) {
             Ok(notice) => NativeDialogOutcome::Admitted {
@@ -801,7 +813,10 @@ async fn open_pdf_dialog(
             },
         },
         Ok(None) => NativeDialogOutcome::Cancelled,
-        Err(_) => NativeDialogOutcome::DialogFailed {
+        Err(PdfDialogError::OwnerUnavailable) => NativeDialogOutcome::DialogFailed {
+            reason: NativeDialogFailureReason::OwnerUnavailable,
+        },
+        Err(PdfDialogError::PickerFailed) => NativeDialogOutcome::DialogFailed {
             reason: NativeDialogFailureReason::PickerFailed,
         },
     })

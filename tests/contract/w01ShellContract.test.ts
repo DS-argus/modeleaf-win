@@ -35,7 +35,7 @@ describe("W01 secure shell contract", () => {
       minHeight: 360,
       decorations: true,
       visible: false,
-      additionalBrowserArgs: "--force-renderer-accessibility",
+      additionalBrowserArgs: "--force-renderer-accessibility --disable-features=HideCursorWhileTyping",
     });
     expect(directive(csp, "default-src")).toEqual(["'self'"]);
     expect(directive(csp, "script-src")).toEqual([]);
@@ -71,7 +71,7 @@ describe("W01 secure shell contract", () => {
       source.indexOf("#[derive(Clone, Default)]\npub struct SecondInstanceIngress", commandStart),
     );
     const claim = command.indexOf("claim_window");
-    const environment = command.indexOf('.additional_browser_args("--force-renderer-accessibility")');
+    const environment = command.search(/\.additional_browser_args\(\s*"--force-renderer-accessibility --disable-features=HideCursorWhileTyping"\s*,?\s*\)/);
     const build = command.indexOf(".build()");
     const setup = command.indexOf("disable_browser_accelerators");
     const show = command.indexOf("window.show()");
