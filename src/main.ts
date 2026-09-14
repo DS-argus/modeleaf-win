@@ -1,6 +1,7 @@
 import "./styles/app.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import { TabWorkspace, type TabId } from "./core/TabWorkspace";
 import type { Action } from "./core/Action";
@@ -179,7 +180,11 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
     else if (effect.type === "focus") restoreOwnedFocus(effect.target);
   }
 }
-const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu, onCommand: (actionId) => dispatchActionId(actionId as ActionId) });
+const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu,
+  canOpen: () => overlayOwner.active === undefined && !nativePickerOpen,
+  onOpen: () => cancelPendingShellInput(),
+  onCommand: (actionId) => dispatchActionId(actionId as ActionId),
+});
 function claimOverlay(id: OverlayId): void {
   applicationMenuOwner.close();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
@@ -371,6 +376,7 @@ function ownsPagePrompt(transaction: PagePromptTransaction): boolean {
 }
 let configExists = false;
 let nativeOpenPending = false;
+let nativePickerOpen = false;
 const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = {
   DOCUMENT_TOO_LARGE: "This PDF exceeds reader resource limits.",
   MISSING_FILE: "This PDF no longer exists.",
@@ -382,12 +388,12 @@ const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = 
 };
 function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !("tag" in value)) return undefined;
-  const tag = value.tag;
+  const tag = value.tag === "SELECTION_REJECTED" && "reason" in value ? value.reason : value.tag;
   return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "REMOTE_PATH" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
-function reportOpenInvokeFailure(error?: unknown): void {
+function reportOpenInvokeFailure(error?: unknown, fallbackStatus = "The PDF could not be opened."): void {
   const tag = openFailureTag(error);
-  active().session.reader.setStatus(tag === undefined ? "The PDF could not be opened." : OPEN_FAILURE_STATUS[tag]);
+  active().session.reader.setStatus(tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
   const openError = tag === undefined ? undefined : nativeOpenError(tag);
   const accessibleError = openError === "unsupportedLocation" ? "document-locality-denied"
     : openError === "malformedDocument" || openError === "unreadableFile" || openError === "missingFile" ? "document-invalid"
@@ -450,19 +456,61 @@ function commandAvailabilityContext(): ActionRuntimeContext {
   };
 }
 function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): void {
-  windowsMenu.replaceChildren(...model.map((section) => {
-    const group = document.createElement("details");
-    const summary = document.createElement("summary"); summary.textContent = section.label;
-    const commands = document.createElement("div"); commands.className = "windows-menu-commands"; commands.setAttribute("role", "menu");
-    commands.replaceChildren(...section.commands.map((command) => {
-      const button = document.createElement("button"); button.type = "button"; button.setAttribute("role", "menuitem"); button.disabled = !command.enabled;
-      button.textContent = command.shortcuts.length === 0 ? command.title : `${command.title}  ${command.shortcuts.join(", ")}`;
-      if (!command.enabled && command.disabledReason !== undefined) { button.title = command.disabledReason; button.setAttribute("aria-description", command.disabledReason); }
-      button.dataset.menuCommand = command.id;
-      return button;
-    }));
-    group.append(summary, commands); return group;
-  }));
+  const retainedSections = new Set(model.map(({ id }) => id as string));
+  for (const group of Array.from(windowsMenu.children)) {
+    if (!retainedSections.has((group as HTMLElement).dataset.menuSection ?? "")) group.remove();
+  }
+  for (const [index, section] of model.entries()) {
+    let group = windowsMenu.querySelector<HTMLDetailsElement>(`details[data-menu-section="${section.id}"]`);
+    if (group === null) {
+      group = document.createElement("details");
+      group.dataset.menuSection = section.id;
+      const summary = document.createElement("summary");
+      summary.setAttribute("aria-haspopup", "menu");
+      const commands = document.createElement("div");
+      commands.className = "windows-menu-commands";
+      commands.hidden = true;
+      commands.inert = true;
+      commands.setAttribute("role", "menu");
+      group.append(summary, commands);
+    }
+    if (windowsMenu.children[index] !== group) windowsMenu.insertBefore(group, windowsMenu.children[index] ?? null);
+    const summary = group.querySelector("summary")!;
+    if (summary.textContent !== section.label) summary.textContent = section.label;
+    const commands = group.querySelector<HTMLElement>(".windows-menu-commands")!;
+    commands.setAttribute("aria-label", section.label);
+    const retainedCommands = new Set(section.commands.map(({ id }) => id as string));
+    for (const button of Array.from(commands.children)) {
+      if (!retainedCommands.has((button as HTMLElement).dataset.menuCommand ?? "")) button.remove();
+    }
+    for (const [commandIndex, command] of section.commands.entries()) {
+      let button = commands.querySelector<HTMLButtonElement>(`button[data-menu-command="${command.id}"]`);
+      if (button === null) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "menuitem");
+        button.dataset.menuCommand = command.id;
+        const label = document.createElement("span");
+        label.className = "windows-menu-label";
+        const shortcut = document.createElement("span");
+        shortcut.className = "windows-menu-shortcut";
+        button.append(label, shortcut);
+      }
+      button.disabled = !command.enabled;
+      const label = button.querySelector<HTMLElement>(".windows-menu-label")!;
+      const shortcut = button.querySelector<HTMLElement>(".windows-menu-shortcut")!;
+      if (label.textContent !== command.title) label.textContent = command.title;
+      const shortcutText = command.shortcuts.join(", ");
+      if (shortcut.textContent !== shortcutText) shortcut.textContent = shortcutText;
+      shortcut.hidden = shortcutText.length === 0;
+      button.setAttribute("aria-label", shortcutText.length === 0 ? command.title : `${command.title}, ${shortcutText}`);
+      button.title = command.disabledReason ?? "";
+      if (!command.enabled && command.disabledReason !== undefined) button.setAttribute("aria-description", command.disabledReason);
+      else button.removeAttribute("aria-description");
+      if (commands.children[commandIndex] !== button) commands.insertBefore(button, commands.children[commandIndex] ?? null);
+    }
+  }
+  applicationMenuOwner.reconcile();
 }
 function renderHelpRows(): void {
   const groups = new Map<string, ReturnType<typeof buildHelpRows>>();
@@ -706,7 +754,6 @@ function render(): void {
   emptyReader.hidden = shell.emptyState === undefined;
   emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
   if (snapshot.reader.helpVisible && overlayOwner.active?.id !== "help") claimOverlay("help");
-  windowsMenu.inert = shell.emptyState !== undefined;
   tabStrip.inert = shell.emptyState !== undefined;
   if (!snapshot.reader.helpVisible && overlayOwner.active?.id === "help") releaseOverlay("help");
   renderHelpRows();
@@ -918,7 +965,14 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
 }
 const shellOpen = createShellOpenCoordinator({
   listen,
-  invoke: (command, args) => invoke(command, args),
+  invoke: async (command, args) => {
+    if (command !== "open_pdf_dialog") return invoke(command, args);
+    nativePickerOpen = true;
+    applicationMenuOwner.close();
+    cancelPendingShellInput();
+    try { return await invoke(command, args); }
+    finally { nativePickerOpen = false; }
+  },
   dialog: {
     setPending: (pending) => { nativeOpenPending = pending; render(); },
     reportFailure: reportOpenInvokeFailure,
@@ -931,26 +985,42 @@ const shellOpen = createShellOpenCoordinator({
 emptyReaderOpen.addEventListener("click", () => dispatchActionId("document.open"));
 void invoke<{ readonly tag?: string }>("read_config").then((outcome) => { configExists = outcome.tag === "LOADED"; render(); }, () => undefined);
 const RECENT_STATE_UNAVAILABLE = "Recent documents are unavailable because application state could not be read.";
+let recentStateHealth: "LOADING" | "READY" | "UNAVAILABLE" = "LOADING";
+function reportRecentStateUnavailable(): void {
+  const hasValidSnapshot = recentStateHealth !== "LOADING" && fileOpenerModel.prepared.tag === "READY";
+  recentStateHealth = "UNAVAILABLE";
+  fileOpenerModel = hasValidSnapshot
+    ? retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE)
+    : createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: RECENT_STATE_UNAVAILABLE }, fileOpenerModel.generation);
+  if (overlayOwner.active?.id === "recent") renderFileOpener();
+  accessibility.flush();
+  politeAnnouncements.textContent = RECENT_STATE_UNAVAILABLE;
+}
 let recentSnapshotUnlisten: (() => void) | undefined;
 const recentListenerReady = listen("recent-state-changed", (event) => {
   try {
     const outcome = decodeRecentStateChanged(event.payload);
+    recentStateHealth = "READY";
     fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries });
     if (overlayOwner.active?.id === "recent") renderFileOpener();
-  } catch (error) {
-    reportOpenInvokeFailure(error);
+  } catch {
+    reportRecentStateUnavailable();
   }
-}).then((unlisten) => { recentSnapshotUnlisten = unlisten; }, (error) => { reportOpenInvokeFailure(error); });
+}).then((unlisten) => {
+  recentSnapshotUnlisten = unlisten;
+}, () => {
+  reportRecentStateUnavailable();
+});
 const initialRecentsReady = recentListenerReady.then(() => listRecentDocuments(invoke)).then((outcome) => {
   if (outcome.tag === "READY") {
-    fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries });
-  } else if (fileOpenerModel.prepared.tag === "READY" && fileOpenerModel.prepared.snapshot.revision === "0") {
-    fileOpenerModel = createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: RECENT_STATE_UNAVAILABLE }, fileOpenerModel.generation);
+    const diagnostic = recentStateHealth === "UNAVAILABLE" ? RECENT_STATE_UNAVAILABLE : undefined;
+    fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries }, diagnostic);
+    if (diagnostic === undefined) recentStateHealth = "READY";
+  } else {
+    reportRecentStateUnavailable();
   }
 }, () => {
-  if (fileOpenerModel.prepared.tag === "READY" && fileOpenerModel.prepared.snapshot.revision === "0") {
-    fileOpenerModel = createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: RECENT_STATE_UNAVAILABLE }, fileOpenerModel.generation);
-  }
+  reportRecentStateUnavailable();
 });
 function paletteEntries(): readonly CommandPaletteCommandEntry[] {
   return buildCommandPaletteEntries(commandAvailabilityContext(), [], paletteInput.value, shellConfig, overlayOwner.active?.id === "commandPalette" ? { modalOwner: "palette" } : {})
@@ -1172,10 +1242,8 @@ function dispatchFileOpenerEntry(): void {
     nativeOpenPending = false;
     const diagnostic = "The recent PDF could not be opened.";
     fileOpenerModel = retainChooserFailure(fileOpenerModel, generation, diagnostic);
-    active().session.reader.setStatus(diagnostic);
     renderFileOpener();
-    render();
-    reportOpenInvokeFailure(error);
+    reportOpenInvokeFailure(error, diagnostic);
   });
 }
 async function openFileOpener(): Promise<void> {
@@ -1183,6 +1251,9 @@ async function openFileOpener(): Promise<void> {
   await initialRecentsReady;
   if (nativeOpenPending || overlayOwner.active !== undefined) return;
   fileOpenerModel = createOpenChooser(fileOpenerModel.prepared, fileOpenerModel.generation + 1);
+  if (recentStateHealth === "UNAVAILABLE" && fileOpenerModel.prepared.tag === "READY") {
+    fileOpenerModel = retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE);
+  }
   fileOpenerInput.value = "";
   claimOverlay("recent");
   renderFileOpener();
@@ -1228,7 +1299,7 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
   })();
   return quitRequest;
 }
-void listen<{ readonly requestId?: number }>("window-close-requested", (event) => {
+void getCurrentWindow().listen<{ readonly requestId?: number }>("window-close-requested", (event) => {
   if (typeof event.payload.requestId === "number" && Number.isSafeInteger(event.payload.requestId)) void requestApplicationQuit(false, true, event.payload.requestId);
 }).then(
   (unlisten) => { if (shellDisposing) unlisten(); else { windowCloseUnlisten = unlisten; void invoke("window_close_ready"); } },

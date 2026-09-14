@@ -933,3 +933,44 @@ fn reject_defers_workspace_release_until_external_link_settles() {
 fn target_loss_keeps_native_session_until_aggregate_drain_settles() {
     deferred_cleanup_after_external_activation(false);
 }
+
+#[test]
+fn serialized_cancel_barrier_releases_capacity_across_repeated_renderer_closes() {
+    let (coordinator, workspace, sessions) = coordinator();
+    let owner = workspace.active_owner("reader").unwrap();
+    let path = fixture(77);
+    for _ in 0..12 {
+        let notice = coordinator.ingest_path("reader", &path).unwrap();
+        let claimed = coordinator
+            .claim("reader", notice.request_id.clone())
+            .unwrap();
+        coordinator
+            .acknowledge("reader", notice.request_id)
+            .unwrap();
+        let barrier = sessions
+            .cancel(&owner, &claimed.session_id, claimed.document_generation)
+            .unwrap();
+        let wire = serde_json::to_value(&barrier).unwrap();
+        assert_eq!(wire, serde_json::json!({ "barrierId": barrier.barrier_id }));
+        let repeated = sessions
+            .cancel(&owner, &claimed.session_id, claimed.document_generation)
+            .unwrap();
+        assert_eq!(serde_json::to_value(repeated).unwrap(), wire);
+        let renderer_barrier = wire["barrierId"].as_u64().unwrap();
+        sessions
+            .close(
+                &owner,
+                &claimed.session_id,
+                claimed.document_generation,
+                renderer_barrier,
+            )
+            .unwrap();
+        workspace
+            .release_session(&owner, &claimed.session_id)
+            .unwrap();
+        assert!(sessions.assert_empty());
+        assert_eq!(workspace.budget().sessions, 0);
+        assert_eq!(workspace.budget().windows, 1);
+    }
+    std::fs::remove_file(path).unwrap();
+}

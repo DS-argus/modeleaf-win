@@ -1,0 +1,83 @@
+{
+  "issue": 77,
+  "appVersion": "0.1.1",
+  "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+  "scopeAmendments": [
+    "Pointer-open menus close outside their title/flyout; closed lists are explicitly hidden and inert",
+    "Command labels and shortcuts use distinct left/right columns; disabled rows are visibly subdued",
+    "Picker ownership is separate from pending PDF adoption and command availability",
+    "Correct two confirmed recents error-reporting misclassifications",
+    "Correct native cancellation DTO serialization preventing session release"
+  ],
+  "diagnosedDefects": {
+    "nativeCapacity": {
+      "cause": "CancelBarrier emitted barrier_id but the renderer consumed barrierId, preventing close_pdf_session from receiving its required barrier",
+      "before": "Fresh packaged process opened and closed the small fixture eight times; the ninth open failed with This PDF exceeds reader resource limits",
+      "redTest": "Serialized JSON was {barrier_id: 1}, not the required {barrierId: 1}",
+      "fix": "Producer uses serde camelCase; capacity limits and ownership rules are unchanged",
+      "after": "After upstream synchronization, 22 packaged open/close operations passed in one process: five CLI/Recent pairs followed by twelve additional consecutive CLI cycles",
+      "regression": "src-tauri/tests/cp4_open_request.rs::serialized_cancel_barrier_releases_capacity_across_repeated_renderer_closes crosses JSON serialization and checks empty native sessions plus zero workspace sessions after each of twelve cycles"
+    },
+    "menuDuringAdoption": "nativeOpenPending spans the entire admission/adoption/ack epoch. The menu now blocks only the actual open_pdf_dialog invocation; per-command availability still uses pending state",
+    "recentsReporting": "Recent subscription/decode faults no longer overwrite active PDF status with a PDF-open error; recent invocation rejection retains its specific fallback",
+    "pickerRejections": "Known SELECTION_REJECTED reasons such as SESSION_CAPACITY and MISSING_FILE now retain their specific message instead of becoming a generic PDF-open error",
+    "stackedFlyouts": "The user's stacked-menu screenshot was not reproduced in the short original-build native baseline pass. Corrected ownership explicitly synchronizes hidden/inert/display state and repeated actual native pointer cycles verify all closed lists are absent",
+    "wrappedTransit": "Flyouts attach directly below the selected title. With wrapped titles, covering lower-row titles is resolved by pointer-out close or keyboard section switching rather than requiring transit across another title"
+  },
+  "localGates": {
+    "frontend": "npm test -- --maxWorkers=2: 85 suites, 928 tests passed",
+    "build": "npm run build: passed",
+    "format": "cargo fmt --check --manifest-path src-tauri/Cargo.toml: passed",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -j 1 -- -D warnings: passed",
+    "rustTests": "cargo test --manifest-path src-tauri/Cargo.toml -j 1: passed",
+    "hygiene": "git diff --check: passed"
+  },
+  "browser": {
+    "runtime": "Microsoft Edge 153.0.4234.32",
+    "command": "node .internal/evidence/issue77/browser-check.mjs",
+    "casesPassed": 224,
+    "matrix": "480x360 and 1040x760 CSS viewports; DPR 1/1.25/1.5/2; 100/200 percent root text; seven themes; forced colors off/on",
+    "checks": ["Closed-list layout and accessibility absence", "Continuous pointer transit and outside close", "Keyboard focus visibility and routing", "Left/right label and shortcut geometry", "Stable publication identity", "One visible flyout"],
+    "screenshot": "docs/evidence/issue77-menu-480-text200.png"
+  },
+  "packagedWindows": {
+    "runtime": "WebView2 152.0.4191.66",
+    "url": "http://tauri.localhost/",
+    "isolation": "Separate QA bundle identifier, application state and explicit WebView2 data directory; no user PDFs or state edited",
+    "build": "CI=true CARGO_BUILD_JOBS=1 node node_modules/@tauri-apps/cli/tauri.js build --debug --no-bundle --config .internal/evidence/issue77/native-qa.json",
+    "commands": ["node .internal/evidence/issue77/native-check.mjs", "node .internal/evidence/issue77/native-capacity.mjs"],
+    "menuCyclesPassed": 60,
+    "mixedOpenCloseOperationsPassed": 10,
+    "additionalConsecutiveCliOpenCloseOperationsPassed": 12,
+    "postUpstreamValidation": "All local gates, the browser matrix, and 22 packaged open/close operations in one process were rerun after merging origin/main 0687b89d4b5e56cfc13becd99ea86d3bf97839c9",
+    "checks": ["Actual title-to-flyout and outside pointer movement", "Hidden/inert closed lists", "Help/Theme/Open chooser close-before-overlay", "Summary Enter, section arrows and Escape", "Disabled Print and right-aligned shortcuts", "Real PDF canvases on CLI and Recent opens", "Last-document close returns to empty state"],
+    "windowSizing": "Native client resize requests 624x468 and 480x360; observed WebView2 devicePixelRatio approximately 1.3. These are not claims of a complete OS DPI matrix",
+    "consoleOrPageErrorsInFinalScenarios": [],
+    "screenshot": "docs/evidence/issue77-menu-native.png"
+  },
+  "windowCloseIsolation": {
+    "cause": "Global listen defaulted to Any, allowing another window's close request to dispose the surviving renderer before native WINDOW_CLOSE_STALE rejection",
+    "fix": "Only window-close-requested now uses getCurrentWindow().listen; intentional global quit/theme/recents listeners and native validation are unchanged",
+    "regression": "tests/integration/windowCloseIsolation.test.ts executes production lifecycle callbacks with real Tauri JS registration, both close directions, intentional global quit and malformed IDs",
+    "nativeRuntime": "WebView2 152.0.4191.66",
+    "command": "node .internal/evidence/issue77/window-close-native.mjs",
+    "nativeCasesPassed": 6,
+    "cases": ["Close new window with native WM_CLOSE", "Close new window with foreground native Alt+F4", "Close new window through Close Window menu", "Repeat native new-window close", "Close original window and retain secondary", "Create and close another window from surviving secondary"],
+    "survivorChecks": ["Hover displays one non-inert flyout", "ArrowDown focuses Open PDF", "Escape closes menu", "Real fixture PDF opens and closes after each foreign-window closure"],
+    "nativePageErrors": [],
+    "captionClickLimitation": "WM_CLOSE exercises the native CloseRequested path used by X; physical caption-button pointer hit-testing was not asserted"
+  },
+  "sourcePdfInvariant": {
+    "fixture": "fixtures/pdf/text-3-page.pdf",
+    "beforeAndAfterSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+    "goldenFixtureContracts": "passed"
+  },
+  "mergeApproval": {
+    "authority": "Owner explicitly approved completing PR #81 and merging into main after functional verification",
+    "narrator": "Not required for Issue #77 by owner direction; accessibility semantics are retained",
+    "deferred": ["UIA full audit", "Complete actual Windows DPI/text matrix", "Inactive-window first-click pointer audit", "Native picker/caption/snap/system-key audit beyond the recorded scenarios"],
+    "boundary": "Deferred checks are not claimed as passed and do not block this owner-approved issue merge. This is not release or publication approval."
+  },
+  "warningsNotSuppressed": ["Installed Node/npm differ from pinned engine", "Vite chunk exceeds 500kB", "Rust linker stdout warning", "Existing fixture/PDF.js and Git line-ending warnings"],
+  "limitations": "The capacity leak and reporting defects are proven and repaired. This does not establish that every possible PDF-open failure or the exact stacked-pixel screenshot has the same cause. Native smoke evidence does not replace the remaining manual acceptance."
+}

@@ -228,6 +228,7 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 - 명령 실행 전에 context와 availability를 확인한다.
 - open insertion, meaningful navigation, split duplicate는 prepare → perform → verify → commit/rollback transaction으로 구현한다.
 - window별 root store를 생성하고 app-wide service handle만 공유한다.
+- `window-close-requested`는 실제 native window label을 대상으로 현재 창에서만 구독한다 (`getCurrentWindow().listen`). 전역 event `listen`의 기본 `Any` target은 다른 창을 대상으로 보낸 종료 이벤트도 받으므로 window-local teardown에 사용하지 않는다. 전체 `quit-requested` 및 공유 theme/recents 이벤트는 의도한 전역 범위를 유지한다.
 - overlay focus ownership과 복원을 state machine으로 관리한다.
 - application overlay visibility/focus는 window별 `overlayOwner` reducer가 단독 소유하며 동시에 하나만 활성화한다.
 - Windows file picker는 app overlay가 아니라 별도 native open epoch다. Browse는 chooser를 release한 뒤 HWND-owned picker를 시작하고, epoch는 terminal ack/reject/cancel에서 정확히 한 번 해제한다.
