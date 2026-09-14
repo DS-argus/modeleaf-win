@@ -1,6 +1,7 @@
 import "./styles/app.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import { TabWorkspace, type TabId } from "./core/TabWorkspace";
 import type { Action } from "./core/Action";
@@ -1317,7 +1318,7 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
   })();
   return quitRequest;
 }
-void listen<{ readonly requestId?: number }>("window-close-requested", (event) => {
+void getCurrentWindow().listen<{ readonly requestId?: number }>("window-close-requested", (event) => {
   if (typeof event.payload.requestId === "number" && Number.isSafeInteger(event.payload.requestId)) void requestApplicationQuit(false, true, event.payload.requestId);
 }).then(
   (unlisten) => { if (shellDisposing) unlisten(); else { windowCloseUnlisten = unlisten; void invoke("window_close_ready"); } },

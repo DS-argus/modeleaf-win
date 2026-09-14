@@ -25,7 +25,7 @@
     "wrappedTransit": "Flyouts attach directly below the selected title. With wrapped titles, covering lower-row titles is resolved by pointer-out close or keyboard section switching rather than requiring transit across another title"
   },
   "localGates": {
-    "frontend": "npm test -- --maxWorkers=2: 84 suites, 924 tests passed",
+    "frontend": "npm test -- --maxWorkers=2: 85 suites, 928 tests passed",
     "build": "npm run build: passed",
     "format": "cargo fmt --check --manifest-path src-tauri/Cargo.toml: passed",
     "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -j 1 -- -D warnings: passed",
@@ -55,12 +55,24 @@
     "consoleOrPageErrorsInFinalScenarios": [],
     "screenshot": "docs/evidence/issue77-menu-native.png"
   },
+  "windowCloseIsolation": {
+    "cause": "Global listen defaulted to Any, allowing another window's close request to dispose the surviving renderer before native WINDOW_CLOSE_STALE rejection",
+    "fix": "Only window-close-requested now uses getCurrentWindow().listen; intentional global quit/theme/recents listeners and native validation are unchanged",
+    "regression": "tests/integration/windowCloseIsolation.test.ts executes production lifecycle callbacks with real Tauri JS registration, both close directions, intentional global quit and malformed IDs",
+    "nativeRuntime": "WebView2 152.0.4191.66",
+    "command": "node .internal/evidence/issue77/window-close-native.mjs",
+    "nativeCasesPassed": 6,
+    "cases": ["Close new window with native WM_CLOSE", "Close new window with foreground native Alt+F4", "Close new window through Close Window menu", "Repeat native new-window close", "Close original window and retain secondary", "Create and close another window from surviving secondary"],
+    "survivorChecks": ["Hover displays one non-inert flyout", "ArrowDown focuses Open PDF", "Escape closes menu", "Real fixture PDF opens and closes after each foreign-window closure"],
+    "nativePageErrors": [],
+    "captionClickLimitation": "WM_CLOSE exercises the native CloseRequested path used by X; physical caption-button pointer hit-testing was not asserted"
+  },
   "sourcePdfInvariant": {
     "fixture": "fixtures/pdf/text-3-page.pdf",
     "beforeAndAfterSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
     "goldenFixtureContracts": "passed"
   },
-  "remainingNativeAcceptance": ["Narrator/UIA full audit", "Actual Windows 100/125/150/200 percent DPI and 200 percent text settings", "Two-window independence and inactive-window first click", "Native picker cancellation/selection automation and titlebar/snap/system-key audit"],
+  "remainingNativeAcceptance": ["Narrator/UIA full audit", "Actual Windows 100/125/150/200 percent DPI and 200 percent text settings", "Inactive-window first-click pointer audit", "Native picker cancellation/selection automation and titlebar/snap/system-key audit"],
   "warningsNotSuppressed": ["Installed Node/npm differ from pinned engine", "Vite chunk exceeds 500kB", "Rust linker stdout warning", "Existing fixture/PDF.js and Git line-ending warnings"],
   "limitations": "The capacity leak and reporting defects are proven and repaired. This does not establish that every possible PDF-open failure or the exact stacked-pixel screenshot has the same cause. Native smoke evidence does not replace the remaining manual acceptance."
 }
