@@ -424,7 +424,7 @@ Focused Rust contract scope:
 - return terminal failures when main-thread dispatch is rejected or its callback is dropped;
 - balance every successful `CoInitializeEx`, including `S_FALSE`, with `CoUninitialize`.
 
-**Native status: pending.** Retain packaged Windows evidence from the affected corporate-cloud environment for all of the following before advancing parity:
+**Issue #71 verification evidence:** the operator reported that the following manual checklist worked on the hash-verified production candidate. [`issue71-cursor.json`](../evidence/issue71-cursor.json) records the exact attestation and its limits. Supplemental state-isolated packaged tests visibly rendered `text-3-page.pdf`, retained its SHA-256 before/after, verified owned picker/one-Escape focus return, and captured the cursor during Enter/Space-opened native dialogs. OS-composited recording and injected input are explicitly distinct from the operator's physical verification; no remote-client recording was supplied. The checklist remains the regression contract, and broader parity/release gates are unchanged:
 
 1. Release the Open shortcut fully, then repeat filter-focus Enter, Tab-to-Browse Enter, focused-Browse Space, and a physical mouse click. Confirm the pointer remains visible over both Modeleaf and the native picker in empty and PDF-open windows. Synthetic input is a diagnostic comparison, not physical-input acceptance.
 2. Select a committed PDF, then repeat with Cancel, Escape, and reopen; verify focus returns and the native open epoch is released exactly once after each terminal.

@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "issue": 71,
+  "sourceHead": "1c2857e8cf61311f5b92e257df3ef9e68757e263",
+  "integrationBase": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+  "productionExecutableSha256": "1a6d5b30904ee00ab1246c41755387ae3fe1714004601502f81822e3925b1217",
+  "runtimeVersionObserved": "152.0.4191.66",
+  "correction": {
+    "featureDisabled": "HideCursorWhileTyping",
+    "scope": ["initial WebView", "additional WebViews"],
+    "unchanged": ["Windows pointer settings", "keyboard dispatch", "focus restoration", "native dialog lifecycle", "PDF authority"]
+  },
+  "operatorAcceptance": {
+    "kind": "user-reported-physical-acceptance",
+    "initialReport": "오 잘된다",
+    "afterChecklistReport": "다 잘되는 것 가 ㅌ어.",
+    "checklistPresented": [
+      "Release Ctrl+Shift+O; filter Enter, Browse-button Enter, Browse-button Space, physical mouse activation",
+      "Empty and PDF-open windows; select, cancel button, Escape, reopen and returned keyboard control",
+      "Two windows; picker belongs to initiating window and control returns there"
+    ],
+    "interpretation": "Operator reported that the presented checklist worked on the launched production candidate.",
+    "recordingSupplied": false,
+    "limitation": "This is manual attestation, not an uploaded cursor-inclusive recording or an automated measurement of every physical input."
+  },
+  "causalComparison": {
+    "kind": "same-executable-injected-input-diagnostic",
+    "executableSha256": "d5d826bb3e0542106c547b233b7b7827ebced836fc73cfd827124b0a3a0240df",
+    "onlyChangedVariable": "Process-scoped --disable-features=HideCursorWhileTyping",
+    "baselineCursorFlags": {"beforeEnter": 1, "nativePicker": 0, "afterMovement": 0, "afterCancel": 1},
+    "featureDisabledCursorFlags": {"beforeEnter": 1, "nativePicker": 1, "afterMovement": 1, "afterCancel": 1},
+    "pickerOwnershipVerified": true,
+    "limitation": "GetCursorInfo flags and SendInput are not physical displayed-cursor proof."
+  },
+  "packagedFixtureQa": {
+    "kind": "native-desktop-fixture-verification",
+    "executableSha256": "fe7287e1d9d513db20712ffab9c96c6a1f0d2e028f24020fd8dc9cd702e819f9",
+    "sourceHead": "1c2857e8cf61311f5b92e257df3ef9e68757e263",
+    "configurationDelta": {"identifier": "com.dsargus.modeleaf.issue71qa20260914"},
+    "isolationReason": "Separate native config/state and single-instance namespace; do not overwrite or prune user recents during automated fixture verification.",
+    "buildCommand": "CI=true CARGO_BUILD_JOBS=1 npm run tauri -- build --debug --no-bundle --config .internal/evidence/issue-71-cursor-20260914/qa-config.json",
+    "fixture": "fixtures/pdf/text-3-page.pdf",
+    "sourceBefore": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+    "sourceAfter": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+    "observed": [
+      "Fixture loaded through native argv and visibly rendered its page-one and page-two text sentinels",
+      "Enter opened an HWND-owned native picker on the owner's UI thread",
+      "GetCursorInfo succeeded with flags 1 before, during and after the picker, including movement",
+      "GetGUIThreadInfo succeeded; the verified run had no mouse capture",
+      "One Escape dismissed the picker and restored the original owner HWND and WebView focus handle",
+      "Probe-owned application closed without a remaining-process event",
+      "QA-only native state contained exactly the known fixture recent"
+    ],
+    "screenshot": "docs/evidence/issue71-cursor-fixture.png",
+    "screenshotLimitation": "This native app screenshot proves fixture rendering after dismissal, not hardware/remote cursor visibility.",
+    "rawTranscript": ".internal/evidence/issue-71-cursor-20260914/qa-fixture-enter-verified.json"
+  },
+  "cursorVideoQa": {
+    "kind": "native-desktop-cursor-recording",
+    "executableSha256": "fe7287e1d9d513db20712ffab9c96c6a1f0d2e028f24020fd8dc9cd702e819f9",
+    "inputsExercised": ["filter Enter", "focused Browse Space"],
+    "observed": "Verified owned picker stayed active during recording; flags remained 1, a visible arrow appears in the recording, and one Escape returned native focus to the owner. Both runs closed their owned app normally.",
+    "video": "docs/evidence/issue71-cursor-during-picker.mp4",
+    "frame": "docs/evidence/issue71-cursor-during-picker.png",
+    "transcripts": "docs/evidence/issue71-cursor-native.json",
+    "capture": "FFmpeg gdigrab draw_mouse=1, exact owner HWND, top 320x100 pixels, 10fps, two seconds; no folder-list capture.",
+    "limitation": "Synthetic keyboard/pointer input and OS-composited cursor recording on the state-isolated QA build. This supplements, rather than replaces, operator acceptance of the production candidate and is not remote-client hardware capture."
+  },
+  "verification": {
+    "frontend": {"command": "npm test -- --maxWorkers=1 --minWorkers=1", "filesPassed": 81, "testsPassed": 876},
+    "passedCommands": [
+      "npm run build",
+      "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
+      "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -j 1 -- -D warnings",
+      "CARGO_INCREMENTAL=0 cargo test --manifest-path src-tauri/Cargo.toml -j 1",
+      "git diff --check",
+      "CARGO_BUILD_JOBS=1 npm run tauri:build-debug"
+    ],
+    "recovery": "Bounded concurrency resolved Windows paging-file exhaustion and a fixture timeout without weakening assertions, test timeouts or warnings. Relocated generated target metadata was cleaned. A later native archive hit disk exhaustion; removing only this worktree's generated incremental cache and disabling incremental compilation for the successful rerun resolved it.",
+    "warningsRetained": ["Vite chunk size", "Node/PDF.js notices", "native linker informational output"]
+  },
+  "retainedFailures": [
+    "An early probe used a stale process MainWindowHandle for picker ownership; its failed record remains retained.",
+    "Some injected-input trials stopped when the app did not acquire or retain foreground ownership; they are not passing native cases.",
+    "An initial fixture probe observed native mouse capture: first Escape released capture but left the picker open. That intermediate result is not treated as successful dismissal; its process was subsequently closed. A later verified run had no capture and dismissed with one Escape.",
+    "An initial screenshot included a native folder list. The generated full frame was discarded and only an app-header crop retained privately; the published fixture screenshot is the verified post-dismissal frame."
+  ],
+  "releaseBoundary": "No broader parity, release or merge approval is asserted by this evidence record."
+}
