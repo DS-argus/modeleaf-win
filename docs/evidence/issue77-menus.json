@@ -72,7 +72,12 @@
     "beforeAndAfterSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
     "goldenFixtureContracts": "passed"
   },
-  "remainingNativeAcceptance": ["Narrator/UIA full audit", "Actual Windows 100/125/150/200 percent DPI and 200 percent text settings", "Inactive-window first-click pointer audit", "Native picker cancellation/selection automation and titlebar/snap/system-key audit"],
+  "mergeApproval": {
+    "authority": "Owner explicitly approved completing PR #81 and merging into main after functional verification",
+    "narrator": "Not required for Issue #77 by owner direction; accessibility semantics are retained",
+    "deferred": ["UIA full audit", "Complete actual Windows DPI/text matrix", "Inactive-window first-click pointer audit", "Native picker/caption/snap/system-key audit beyond the recorded scenarios"],
+    "boundary": "Deferred checks are not claimed as passed and do not block this owner-approved issue merge. This is not release or publication approval."
+  },
   "warningsNotSuppressed": ["Installed Node/npm differ from pinned engine", "Vite chunk exceeds 500kB", "Rust linker stdout warning", "Existing fixture/PDF.js and Git line-ending warnings"],
   "limitations": "The capacity leak and reporting defects are proven and repaired. This does not establish that every possible PDF-open failure or the exact stacked-pixel screenshot has the same cause. Native smoke evidence does not replace the remaining manual acceptance."
 }
