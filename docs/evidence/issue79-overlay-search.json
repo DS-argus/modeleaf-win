@@ -64,7 +64,7 @@
   },
   "verification": {
     "focused": "5 files / 41 tests pass",
-    "frontend": "npm test -- --maxWorkers=1: 81 files / 880 tests pass; existing 15000ms limits unchanged",
+    "frontend": "npm test -- --maxWorkers=1: 82 files / 900 tests pass; existing 15000ms limits unchanged",
     "build": "npm run build: pass; >500 kB chunk warning retained",
     "fmt": "cargo fmt --check --manifest-path src-tauri/Cargo.toml: pass",
     "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings: pass",
@@ -77,13 +77,26 @@
     "fixtures/pdf/text-3-page.pdf": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
     "fixtures/pdf/fixture-L-text-300.pdf": "91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab"
   },
-  "nativeSmoke": {
+  "preIntegrationNativeSmoke": {
     "build": "npm run tauri:build-debug with CARGO_BUILD_JOBS=1: pass",
     "executableSha256": "1a42f69875584cb85fc81ead1f1d105d81b1a20fb262ad8aacf0f68a5cf67c68",
     "observed": "Launched the worktree executable with text-3-page.pdf; native Modeleaf window responding. Screenshot confirms rendered fixture pages. Sent / only to the verified foreground Modeleaf HWND; screenshot confirms aligned, readable search placeholder and hint with visible focus.",
     "windowDpiReportedByWin32": 96,
     "captures": [".internal/evidence/issue-79/native-transparency-preview.png", ".internal/evidence/issue-79/native-transparency-search.png", ".internal/evidence/issue-79/native-transparency-search-detail.png"],
     "limitation": "One window at its existing workstation settings, not the required four-scale/monitor-move/text-scale matrix. Owner acceptance of the new colors is still pending."
+  },
+  "integration": {
+    "upstream": "0687b89d4b5e56cfc13becd99ea86d3bf97839c9",
+    "verifiedSourceCommit": "e97b2d5",
+    "method": "Merged origin/main into the existing shared branch without force-pushing. Preserved both upstream status and overlay forced-color rules in the single adjacent-rule conflict. Full frontend/build/fmt/clippy/Rust gates rerun after integration."
+  },
+  "nativeSmoke": {
+    "build": "npm run tauri:build-debug with CARGO_BUILD_JOBS=1, serialized after all cargo verification: pass",
+    "executableSha256": "ed8b4cc491b82a1dbf789d72e40567e9240758ce08a2dc93794a07b987dbe395",
+    "observed": "Integrated worktree executable opened text-3-page.pdf and rendered the reader with the retained FIT WIDTH status badge. Search shortcut sent only to its verified foreground HWND; native capture confirms readable translucent search, aligned hint, focus outline and upstream SEARCH badge.",
+    "captures": [".internal/evidence/issue-79/native-bundled-preview.png", ".internal/evidence/issue-79/native-bundled-search.png", ".internal/evidence/issue-79/native-bundled-search-detail.png"],
+    "recovery": "The first integrated launch displayed localhost connection refused after cargo test and Tauri build overlapped on the same target directory. Rebuilt the packaged-debug executable serially after cargo completed, then relaunched and visually verified it. The failed launch is not counted as a successful packaged smoke. Native builds and tests must not overlap on this target directory.",
+    "limitation": "Single workstation window smoke only; owner acceptance of corrected overlay colors and the full physical-scale matrix remain pending."
   },
   "notVerified": ["New alpha .85 native owner preview", "Packaged 100/125/150/200 percent display-scale matrix", "Physical monitor movement", "Native 200 percent text-scale matrix", "Packaged PDF pixel/viewport equality"],
   "nativeLimitation": "Browser DPR is not substituted for physical display-scale, monitor-move or text-scale evidence."
