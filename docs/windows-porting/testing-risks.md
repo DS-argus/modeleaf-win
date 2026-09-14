@@ -327,7 +327,7 @@ markdown-links-and-diff-check
 
 ### Files
 
-- Browse valid/invalid/locked/empty; Issue #71 select/cancel/Escape/reopen, pointer visibility, focus return, and two-window HWND ownership (packaged corporate-cloud evidence pending)
+- Browse valid/invalid/locked/empty; Issue #71 select/cancel/Escape/reopen, pointer visibility, focus return, and two-window HWND ownership (scoped operator/native evidence and remaining regression contract: §13)
 - drag/drop
 - Explorer double-click and Open With, app closed/open
 - Unicode/long/UNC path

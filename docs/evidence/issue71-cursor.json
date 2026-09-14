@@ -6,9 +6,14 @@
   "productionExecutableSha256": "1a6d5b30904ee00ab1246c41755387ae3fe1714004601502f81822e3925b1217",
   "runtimeVersionObserved": "152.0.4191.66",
   "correction": {
+    "comparisonBaseline": "The cursor feature-policy correction relative to the already committed posted dispatcher; not a claim that the cumulative Issue71 native lifecycle diff is empty.",
     "featureDisabled": "HideCursorWhileTyping",
     "scope": ["initial WebView", "additional WebViews"],
     "unchanged": ["Windows pointer settings", "keyboard dispatch", "focus restoration", "native dialog lifecycle", "PDF authority"]
+  },
+  "nativeTranscriptFieldDefinitions": {
+    "disableTypingHide": "Whether the probe added an extra process-scoped feature override. False does not negate the feature policy embedded in the candidate executable.",
+    "after-enter": "Historical activation-stage label in the probe. inputMode identifies the actual activation, including ButtonSpace."
   },
   "operatorAcceptance": {
     "kind": "user-reported-physical-acceptance",
