@@ -1,6 +1,6 @@
 [package]
 name = "modeleaf"
-version = "0.1.1"
+version = "0.1.2"
 description = "Keyboard-first read-only PDF viewer for Windows"
 authors = ["DS-argus"]
 license = "MIT"

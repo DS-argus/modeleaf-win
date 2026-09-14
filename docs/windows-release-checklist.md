@@ -87,7 +87,7 @@ No visibility conversion, tag, or public release follows merely from committing 
 
 ## Known initial limitations
 
-Basic app use was accepted by the owner. Full native input/multiwindow scenarios, native DPI/text scaling, Narrator, clean-machine installation, and executable-signature validation remain unverified. Live configuration application, full-document printing, and update retrieval are incomplete; the reported Browse-pointer issue remains unresolved. TOC, keyboard link hints, and link-destination indicators are not included. The current build does not implement automatic updates.
+Basic app use was accepted by the owner. Full native input/multiwindow scenarios, native DPI/text scaling, Narrator, clean-machine installation, and executable-signature validation remain unverified beyond the specific recorded checks. Live configuration application, full-document printing, and update retrieval are incomplete. The keyboard-triggered Browse-pointer issue is addressed by the app-scoped HideCursorWhileTyping policy (PR #72); print Issue #83 is excluded from this release. TOC, keyboard link hints, and link-destination indicators are not included. The current build does not implement automatic updates.
 
 ## Further native and production acceptance — HUMAN-ONLY
 
