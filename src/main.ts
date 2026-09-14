@@ -166,7 +166,7 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
   }
 }
 const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu,
-  canOpen: () => overlayOwner.active === undefined && !nativeOpenPending,
+  canOpen: () => overlayOwner.active === undefined && !nativePickerOpen,
   onOpen: () => cancelPendingShellInput(),
   onCommand: (actionId) => dispatchActionId(actionId as ActionId),
 });
@@ -361,6 +361,7 @@ function ownsPagePrompt(transaction: PagePromptTransaction): boolean {
 }
 let configExists = false;
 let nativeOpenPending = false;
+let nativePickerOpen = false;
 const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = {
   DOCUMENT_TOO_LARGE: "This PDF exceeds reader resource limits.",
   MISSING_FILE: "This PDF no longer exists.",
@@ -372,12 +373,12 @@ const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = 
 };
 function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !("tag" in value)) return undefined;
-  const tag = value.tag;
+  const tag = value.tag === "SELECTION_REJECTED" && "reason" in value ? value.reason : value.tag;
   return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "REMOTE_PATH" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
-function reportOpenInvokeFailure(error?: unknown): void {
+function reportOpenInvokeFailure(error?: unknown, fallbackStatus = "The PDF could not be opened."): void {
   const tag = openFailureTag(error);
-  active().session.reader.setStatus(tag === undefined ? "The PDF could not be opened." : OPEN_FAILURE_STATUS[tag]);
+  active().session.reader.setStatus(tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
   const openError = tag === undefined ? undefined : nativeOpenError(tag);
   const accessibleError = openError === "unsupportedLocation" ? "document-locality-denied"
     : openError === "malformedDocument" || openError === "unreadableFile" || openError === "missingFile" ? "document-invalid"
@@ -453,6 +454,8 @@ function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): voi
       summary.setAttribute("aria-haspopup", "menu");
       const commands = document.createElement("div");
       commands.className = "windows-menu-commands";
+      commands.hidden = true;
+      commands.inert = true;
       commands.setAttribute("role", "menu");
       group.append(summary, commands);
     }
@@ -472,10 +475,20 @@ function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): voi
         button.type = "button";
         button.setAttribute("role", "menuitem");
         button.dataset.menuCommand = command.id;
+        const label = document.createElement("span");
+        label.className = "windows-menu-label";
+        const shortcut = document.createElement("span");
+        shortcut.className = "windows-menu-shortcut";
+        button.append(label, shortcut);
       }
       button.disabled = !command.enabled;
-      const label = command.shortcuts.length === 0 ? command.title : `${command.title}  ${command.shortcuts.join(", ")}`;
-      if (button.textContent !== label) button.textContent = label;
+      const label = button.querySelector<HTMLElement>(".windows-menu-label")!;
+      const shortcut = button.querySelector<HTMLElement>(".windows-menu-shortcut")!;
+      if (label.textContent !== command.title) label.textContent = command.title;
+      const shortcutText = command.shortcuts.join(", ");
+      if (shortcut.textContent !== shortcutText) shortcut.textContent = shortcutText;
+      shortcut.hidden = shortcutText.length === 0;
+      button.setAttribute("aria-label", shortcutText.length === 0 ? command.title : `${command.title}, ${shortcutText}`);
       button.title = command.disabledReason ?? "";
       if (!command.enabled && command.disabledReason !== undefined) button.setAttribute("aria-description", command.disabledReason);
       else button.removeAttribute("aria-description");
@@ -936,7 +949,14 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
 }
 const shellOpen = createShellOpenCoordinator({
   listen,
-  invoke: (command, args) => invoke(command, args),
+  invoke: async (command, args) => {
+    if (command !== "open_pdf_dialog") return invoke(command, args);
+    nativePickerOpen = true;
+    applicationMenuOwner.close();
+    cancelPendingShellInput();
+    try { return await invoke(command, args); }
+    finally { nativePickerOpen = false; }
+  },
   dialog: {
     setPending: (pending) => { nativeOpenPending = pending; render(); },
     reportFailure: reportOpenInvokeFailure,
@@ -949,26 +969,42 @@ const shellOpen = createShellOpenCoordinator({
 emptyReaderOpen.addEventListener("click", () => dispatchActionId("document.open"));
 void invoke<{ readonly tag?: string }>("read_config").then((outcome) => { configExists = outcome.tag === "LOADED"; render(); }, () => undefined);
 const RECENT_STATE_UNAVAILABLE = "Recent documents are unavailable because application state could not be read.";
+let recentStateHealth: "LOADING" | "READY" | "UNAVAILABLE" = "LOADING";
+function reportRecentStateUnavailable(): void {
+  const hasValidSnapshot = recentStateHealth !== "LOADING" && fileOpenerModel.prepared.tag === "READY";
+  recentStateHealth = "UNAVAILABLE";
+  fileOpenerModel = hasValidSnapshot
+    ? retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE)
+    : createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: RECENT_STATE_UNAVAILABLE }, fileOpenerModel.generation);
+  if (overlayOwner.active?.id === "recent") renderFileOpener();
+  accessibility.flush();
+  politeAnnouncements.textContent = RECENT_STATE_UNAVAILABLE;
+}
 let recentSnapshotUnlisten: (() => void) | undefined;
 const recentListenerReady = listen("recent-state-changed", (event) => {
   try {
     const outcome = decodeRecentStateChanged(event.payload);
+    recentStateHealth = "READY";
     fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries });
     if (overlayOwner.active?.id === "recent") renderFileOpener();
-  } catch (error) {
-    reportOpenInvokeFailure(error);
+  } catch {
+    reportRecentStateUnavailable();
   }
-}).then((unlisten) => { recentSnapshotUnlisten = unlisten; }, (error) => { reportOpenInvokeFailure(error); });
+}).then((unlisten) => {
+  recentSnapshotUnlisten = unlisten;
+}, () => {
+  reportRecentStateUnavailable();
+});
 const initialRecentsReady = recentListenerReady.then(() => listRecentDocuments(invoke)).then((outcome) => {
   if (outcome.tag === "READY") {
-    fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries });
-  } else if (fileOpenerModel.prepared.tag === "READY" && fileOpenerModel.prepared.snapshot.revision === "0") {
-    fileOpenerModel = createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: RECENT_STATE_UNAVAILABLE }, fileOpenerModel.generation);
+    const diagnostic = recentStateHealth === "UNAVAILABLE" ? RECENT_STATE_UNAVAILABLE : undefined;
+    fileOpenerModel = adoptChooserSnapshot(fileOpenerModel, fileOpenerModel.generation, { revision: outcome.revision, entries: outcome.entries }, diagnostic);
+    if (diagnostic === undefined) recentStateHealth = "READY";
+  } else {
+    reportRecentStateUnavailable();
   }
 }, () => {
-  if (fileOpenerModel.prepared.tag === "READY" && fileOpenerModel.prepared.snapshot.revision === "0") {
-    fileOpenerModel = createOpenChooser({ tag: "STATE_UNAVAILABLE", reason: RECENT_STATE_UNAVAILABLE }, fileOpenerModel.generation);
-  }
+  reportRecentStateUnavailable();
 });
 function paletteEntries(): readonly CommandPaletteCommandEntry[] {
   return buildCommandPaletteEntries(commandAvailabilityContext(), [], paletteInput.value, shellConfig, overlayOwner.active?.id === "commandPalette" ? { modalOwner: "palette" } : {})
@@ -1210,10 +1246,8 @@ function dispatchFileOpenerEntry(): void {
     nativeOpenPending = false;
     const diagnostic = "The recent PDF could not be opened.";
     fileOpenerModel = retainChooserFailure(fileOpenerModel, generation, diagnostic);
-    active().session.reader.setStatus(diagnostic);
     renderFileOpener();
-    render();
-    reportOpenInvokeFailure(error);
+    reportOpenInvokeFailure(error, diagnostic);
   });
 }
 async function openFileOpener(): Promise<void> {
@@ -1221,6 +1255,9 @@ async function openFileOpener(): Promise<void> {
   await initialRecentsReady;
   if (nativeOpenPending || overlayOwner.active !== undefined) return;
   fileOpenerModel = createOpenChooser(fileOpenerModel.prepared, fileOpenerModel.generation + 1);
+  if (recentStateHealth === "UNAVAILABLE" && fileOpenerModel.prepared.tag === "READY") {
+    fileOpenerModel = retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE);
+  }
   fileOpenerInput.value = "";
   claimOverlay("recent");
   renderFileOpener();

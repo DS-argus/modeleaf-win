@@ -1,76 +1,64 @@
 {
   "issue": 77,
-  "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
   "appVersion": "0.1.1",
-  "scope": "Windows menu projection, disclosure/input ownership and stable publication only",
-  "browserEvidence": {
-    "engine": "Microsoft Edge 153.0.4234.32, headless on Windows",
-    "kind": "production-component harness, not packaged/native acceptance",
-    "source": ["src/ui/shell/ApplicationMenuOwner.ts", "src/application/commands/WindowsMenuModel.ts", "src/main.ts renderWindowsMenu function", "src/styles/app.css"],
-    "driver": "Isolated local Playwright driver; no product dependency change",
+  "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+  "scopeAmendments": [
+    "Pointer-open menus close outside their title/flyout; closed lists are explicitly hidden and inert",
+    "Command labels and shortcuts use distinct left/right columns; disabled rows are visibly subdued",
+    "Picker ownership is separate from pending PDF adoption and command availability",
+    "Correct two confirmed recents error-reporting misclassifications",
+    "Correct native cancellation DTO serialization preventing session release"
+  ],
+  "diagnosedDefects": {
+    "nativeCapacity": {
+      "cause": "CancelBarrier emitted barrier_id but the renderer consumed barrierId, preventing close_pdf_session from receiving its required barrier",
+      "before": "Fresh packaged process opened and closed the small fixture eight times; the ninth open failed with This PDF exceeds reader resource limits",
+      "redTest": "Serialized JSON was {barrier_id: 1}, not the required {barrierId: 1}",
+      "fix": "Producer uses serde camelCase; capacity limits and ownership rules are unchanged",
+      "after": "Twelve consecutive packaged CLI open/close cycles passed; final packaged build also passed twenty mixed CLI/Recent open/close operations in one process",
+      "regression": "src-tauri/tests/cp4_open_request.rs::serialized_cancel_barrier_releases_capacity_across_repeated_renderer_closes crosses JSON serialization and checks empty native sessions plus zero workspace sessions after each of twelve cycles"
+    },
+    "menuDuringAdoption": "nativeOpenPending spans the entire admission/adoption/ack epoch. The menu now blocks only the actual open_pdf_dialog invocation; per-command availability still uses pending state",
+    "recentsReporting": "Recent subscription/decode faults no longer overwrite active PDF status with a PDF-open error; recent invocation rejection retains its specific fallback",
+    "pickerRejections": "Known SELECTION_REJECTED reasons such as SESSION_CAPACITY and MISSING_FILE now retain their specific message instead of becoming a generic PDF-open error",
+    "stackedFlyouts": "The user's stacked-menu screenshot was not reproduced in the short original-build native baseline pass. Corrected ownership explicitly synchronizes hidden/inert/display state and repeated actual native pointer cycles verify all closed lists are absent",
+    "wrappedTransit": "Flyouts attach directly below the selected title. With wrapped titles, covering lower-row titles is resolved by pointer-out close or keyboard section switching rather than requiring transit across another title"
+  },
+  "localGates": {
+    "frontend": "npm test -- --maxWorkers=2: 83 suites, 904 tests passed",
+    "build": "npm run build: passed",
+    "format": "cargo fmt --check --manifest-path src-tauri/Cargo.toml: passed",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -j 1 -- -D warnings: passed",
+    "rustTests": "cargo test --manifest-path src-tauri/Cargo.toml -j 1: passed",
+    "hygiene": "git diff --check: passed"
+  },
+  "browser": {
+    "runtime": "Microsoft Edge 153.0.4234.32",
     "command": "node .internal/evidence/issue77/browser-check.mjs",
     "casesPassed": 224,
-    "screenshot": "docs/evidence/issue77-menu-480-text200.png",
-    "dimensions": {
-      "viewports": [[480, 360], [1040, 760]],
-      "deviceScaleFactors": [1, 1.25, 1.5, 2],
-      "rootTextPercent": [100, 200],
-      "forcedColors": ["none", "active"],
-      "themes": ["tokyo-night", "gruvbox-dark", "solarized-dark", "dracula", "everforest", "nord", "catppuccin-latte"]
-    },
-    "checks": [
-      "Real pointer hover opens without stealing focus; hover-click stays open and repeat click closes",
-      "Keyboard activation dispatches once after close; normal publication retains focused node identity",
-      "Tab closes and leaves a connected non-body focus target",
-      "Opening is blocked while the injected modal owner is active",
-      "All six flyouts stay inside the viewport; wrapped summaries remain reachable",
-      "End reveals focused commands inside overflowing flyouts",
-      "Menu command text measures 13px at 100% and 26px at 200%"
-    ],
-    "regressionsFoundAndFixed": [
-      "Replacing unchanged summary text triggered stationary-pointer hover reopening after command close",
-      "Wrapped-row flyouts covered later summaries; flyouts now start below the entire menu bar",
-      "Keyboard focus needed nearest scroll reveal inside height-clamped flyouts"
-    ]
+    "matrix": "480x360 and 1040x760 CSS viewports; DPR 1/1.25/1.5/2; 100/200 percent root text; seven themes; forced colors off/on",
+    "checks": ["Closed-list layout and accessibility absence", "Continuous pointer transit and outside close", "Keyboard focus visibility and routing", "Left/right label and shortcut geometry", "Stable publication identity", "One visible flyout"],
+    "screenshot": "docs/evidence/issue77-menu-480-text200.png"
   },
-  "localGateResults": {
-    "frontend": "82 suites, 886 tests passed",
-    "build": "passed",
-    "rustFormat": "passed",
-    "rustClippy": "passed with -D warnings",
-    "rustTests": "all passed with -j 1",
-    "diffCheck": "passed"
+  "packagedWindows": {
+    "runtime": "WebView2 152.0.4191.66",
+    "url": "http://tauri.localhost/",
+    "isolation": "Separate QA bundle identifier, application state and explicit WebView2 data directory; no user PDFs or state edited",
+    "build": "CI=true CARGO_BUILD_JOBS=1 node node_modules/@tauri-apps/cli/tauri.js build --debug --no-bundle --config .internal/evidence/issue77/native-qa.json",
+    "commands": ["node .internal/evidence/issue77/native-check.mjs", "node .internal/evidence/issue77/native-capacity.mjs"],
+    "menuCyclesPassed": 120,
+    "mixedOpenCloseOperationsPassed": 20,
+    "checks": ["Actual title-to-flyout and outside pointer movement", "Hidden/inert closed lists", "Help/Theme/Open chooser close-before-overlay", "Summary Enter, section arrows and Escape", "Disabled Print and right-aligned shortcuts", "Real PDF canvases on CLI and Recent opens", "Last-document close returns to empty state"],
+    "windowSizing": "Native client resize requests 624x468 and 480x360; observed WebView2 devicePixelRatio approximately 1.3. These are not claims of a complete OS DPI matrix",
+    "consoleOrPageErrorsInFinalScenarios": [],
+    "screenshot": "docs/evidence/issue77-menu-native.png"
   },
-  "localGateCommands": [
-    "npm test -- --maxWorkers=2",
-    "npm run build",
-    "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
-    "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -j 1 -- -D warnings",
-    "cargo test --manifest-path src-tauri/Cargo.toml -j 1",
-    "git diff --check",
-    "CARGO_BUILD_JOBS=1 npm run tauri:build-debug"
-  ],
-  "warnings": [
-    "npm ci reports the pinned Node/npm engine differs from installed Node 24.20.0 / npm 11.19.0",
-    "Vite reports a production chunk larger than 500kB",
-    "Rust test/debug linking emits a linker stdout warning; no warning was suppressed",
-    "Initial unconstrained Rust tests exhausted the Windows paging file; rerun uses one build job"
-  ],
   "sourcePdfInvariant": {
-    "method": "SHA-256 compared against git show of the baseline; menu browser harness does not open or write PDF bytes",
-    "fixtures/pdf/text-3-page.pdf": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
-    "fixtures/pdf/links.pdf": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4"
+    "fixture": "fixtures/pdf/text-3-page.pdf",
+    "beforeAndAfterSha256": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+    "goldenFixtureContracts": "passed"
   },
-  "nativeAcceptance": {
-    "status": "pending",
-    "packagedDebugBuild": "passed; no-bundle executable built",
-    "reason": "Another worktree's Modeleaf process is active. It was not stopped or reused for single-instance testing.",
-    "remaining": [
-      "Packaged empty/last-close/open-failure and committed-session availability scenarios",
-      "Native picker and Help/Theme overlay transitions in the packaged shell",
-      "Narrator/UIA, actual Windows DPI/text-scale/high-contrast settings",
-      "Two independent windows and inactive-window first click",
-      "Native titlebar, snap, Alt+Space and Alt+F4 boundaries"
-    ]
-  }
+  "remainingNativeAcceptance": ["Narrator/UIA full audit", "Actual Windows 100/125/150/200 percent DPI and 200 percent text settings", "Two-window independence and inactive-window first click", "Native picker cancellation/selection automation and titlebar/snap/system-key audit"],
+  "warningsNotSuppressed": ["Installed Node/npm differ from pinned engine", "Vite chunk exceeds 500kB", "Rust linker stdout warning", "Existing fixture/PDF.js and Git line-ending warnings"],
+  "limitations": "The capacity leak and reporting defects are proven and repaired. This does not establish that every possible PDF-open failure or the exact stacked-pixel screenshot has the same cause. Native smoke evidence does not replace the remaining manual acceptance."
 }

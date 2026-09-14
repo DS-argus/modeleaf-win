@@ -43,6 +43,71 @@ function key(target: Element, key: string) { target.dispatchEvent(new KeyboardEv
 function hover(target: Element) { target.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); }
 
 describe("application menu production-render/router integration", () => {
+  it.each(["resolved", "rejected"])("blocks only the actual native picker, not pending adoption (%s)", async (outcome) => {
+    const menu = document.createElement("nav");
+    menu.innerHTML = '<details><summary>Document</summary><div class="windows-menu-commands"><button data-menu-command="document.close">Close PDF</button></div></details>';
+    document.body.append(menu);
+    let settle!: () => void;
+    const invoke = vi.fn(() => new Promise((resolve, reject) => { settle = () => outcome === "resolved" ? resolve({ tag: "CANCELLED" }) : reject(new Error("picker failed")); }));
+    const binding = source.slice(source.indexOf("const applicationMenuOwner ="), source.indexOf("function claimOverlay("));
+    const coordinator = source.slice(source.indexOf("const shellOpen = createShellOpenCoordinator("), source.indexOf('emptyReaderOpen.addEventListener("click"'));
+    const fragment = `let nativeOpenPending = false; let nativePickerOpen = false; const overlayOwner = {}; ${binding} ${coordinator}; return { applicationMenuOwner, shellOpen };`;
+    const dependencies = {
+      windowsMenu: menu, bindApplicationMenuOwner, invoke,
+      createShellOpenCoordinator: (options: unknown) => options,
+      dispatchActionId: vi.fn(), cancelPendingShellInput: vi.fn(), listen: vi.fn(), render: vi.fn(),
+      reportOpenInvokeFailure: vi.fn(), restoreOpenFocus: vi.fn(), adoptRequest: vi.fn(), handleOpenTerminal: vi.fn(),
+    };
+    const api = new Function(...Object.keys(dependencies), ts.transpile(fragment, { target: ts.ScriptTarget.ES2022 }))(...Object.values(dependencies)) as {
+      applicationMenuOwner: ReturnType<typeof bindApplicationMenuOwner>;
+      shellOpen: { invoke(command: string, args: object): Promise<unknown>; dialog: { setPending(pending: boolean): void } };
+    };
+    cleanups.push(() => api.applicationMenuOwner.dispose());
+    const summary = menu.querySelector("summary")!;
+    api.shellOpen.dialog.setPending(true);
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(true);
+    const pending = api.shellOpen.invoke("open_pdf_dialog", {});
+    const completion = outcome === "resolved" ? expect(pending).resolves.toEqual({ tag: "CANCELLED" }) : expect(pending).rejects.toThrow("picker failed");
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(false);
+    settle();
+    await completion;
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(true);
+  });
+  it("renders separate stable command and shortcut columns with accessible names", () => {
+    const { menu, publish } = setup();
+    const button = menu.querySelector<HTMLButtonElement>('[data-menu-command="document.open"]')!;
+    const label = button.querySelector(".windows-menu-label")!;
+    const shortcut = button.querySelector<HTMLElement>(".windows-menu-shortcut")!;
+    expect(label.textContent).toBe("Open PDF…");
+    expect(shortcut.textContent).toBe("Ctrl+Shift+O");
+    expect(button.getAttribute("aria-label")).toBe("Open PDF…, Ctrl+Shift+O");
+    expect(shortcut.hidden).toBe(false);
+    publish();
+    expect(button.querySelector(".windows-menu-label")).toBe(label);
+    expect(button.querySelector(".windows-menu-shortcut")).toBe(shortcut);
+    const noShortcut = menu.querySelector<HTMLElement>('[data-menu-command="view.zoomReset"] .windows-menu-shortcut')!;
+    expect(noShortcut.hidden).toBe(true);
+  });
+  it("keeps every closed section hidden and inert through repeated publication", () => {
+    const { menu, publish, owner } = setup();
+    for (let pass = 0; pass < 5; pass++) {
+      for (const summary of menu.querySelectorAll("summary")) {
+        hover(summary);
+        publish();
+        expect(menu.querySelectorAll("details[open]")).toHaveLength(1);
+        for (const commands of menu.querySelectorAll<HTMLElement>(".windows-menu-commands")) {
+          const open = commands.closest("details")!.open;
+          expect(commands.hidden).toBe(!open);
+          expect(commands.inert).toBe(!open);
+        }
+      }
+      owner.close();
+      expect([...menu.querySelectorAll<HTMLElement>(".windows-menu-commands")].every((commands) => commands.hidden && commands.inert)).toBe(true);
+    }
+  });
   it("preserves open section, button identity and focus across status publication", () => {
     const { menu, publish } = setup();
     const summary = menu.querySelector('details[data-menu-section="document"] summary')!;

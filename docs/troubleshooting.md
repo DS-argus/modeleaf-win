@@ -33,6 +33,20 @@ Modeleaf registers as a PDF viewer but deliberately does not take over the syste
 
 Nothing is written back to the file in any of these cases.
 
+### Repeated opens report resource limits despite an empty window
+
+Issue #77 corrected a native cancellation-response field mismatch that prevented closed PDF sessions from releasing capacity. A known-valid small fixture reproduced the failure on its ninth open; the corrected build passes repeated open/close cycles beyond the eight-session limit without increasing that limit. This was a cleanup defect, not source-PDF corruption. Resource-limit messages can still legitimately apply to oversized documents or concurrent workloads.
+
+### A locally built preview shows a localhost connection error
+
+A plain Cargo test/build can replace `target/debug/modeleaf.exe` with a development-protocol executable. For a server-free preview, run `npm run tauri:build-debug` after local gates and launch that resulting executable; do not treat a responding window as proof that the embedded reader loaded.
+
+### A recent-document message appears
+
+`Recent documents are unavailable because application state could not be read.` concerns recent-history state or updates, not the PDF already open in the reader. Modeleaf keeps the active document and the last validated recent list when one is available; **Browse…** remains available.
+
+`The recent PDF could not be opened.` means the recent-open request failed without a more specific native reason. The recent list is retained so the request can be retried or the file can be selected through **Browse…**.
+
 ## Configuration
 
 Your configuration lives at `%APPDATA%\com.dsargus.modeleaf\config.toml`.

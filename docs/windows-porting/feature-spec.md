@@ -201,7 +201,8 @@ Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action
 - shared registry projection에서 Windows menu만 `File`, `Document`, `Tabs`, `Search`, `View`, `Settings` 순서로 구성한다. `Navigate` section은 만들지 않고 `Settings`에는 `theme.picker`만 둔다.
 - `scroll.*`, `page.*`, `history.*`, `config.reload`, `config.writeDefault`, `config.resetDefault`, `update.show`의 제외는 menu presentation에만 적용한다. action ID, registry category, binding, shortcut, dispatch와 palette/help projection은 그대로 유지하며 다른 menu group으로 재배치하지 않는다.
 - no-document menu에서도 `document.open`, `app.new`, `app.quit`, `help.show`, `theme.picker`는 enabled다. 남아 있는 document-dependent row는 숨기지 않고 runtime availability의 정확한 disabled reason을 표시하며, document가 생기면 같은 row identity에서 즉시 availability를 갱신한다.
-- application menu는 window마다 owner 하나만 두고 hover, click, native keyboard activation, `Esc`와 modal/input ownership을 함께 조정한다. hover는 닫힌 direct summary도 열고 section을 전환하되 focus를 옮기지 않으며, reconcile은 기존 menu/summary/command DOM identity와 open/focus 상태를 보존한다.
+- application menu는 window마다 owner 하나만 두고 hover/click/keyboard와 modal/input ownership을 조정한다. hover는 focus를 빼앗지 않으며, 마우스로 연 menu는 summary와 해당 flyout 영역을 벗어나면 닫힌다. keyboard 입력은 enabled row로 focus를 이동하고 reader 입력과 분리한다. 닫힌 flyout은 화면/input/accessibility에서 명시적으로 제외한다. reconcile은 기존 menu/summary/command DOM identity와 open/focus 상태를 보존한다.
+- menu row는 명령명 왼쪽/단축키 오른쪽의 독립 열로 투영한다. shortcut은 작은 보조 색상, disabled row는 분명한 비활성 표현과 이유를 제공한다. 이 표현 차이는 registry와 action 의미를 변경하지 않는다.
 
 ### 구현 순서
 
