@@ -15,7 +15,7 @@ html, body { overflow: hidden; }
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr) 28px;
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(28px, auto);
   width: 100%;
   height: 100%;
   background: var(--theme-background);
@@ -27,11 +27,32 @@ html, body { overflow: hidden; }
 
 .statusbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  padding: 0 14px;
-  color: var(--theme-muted-text);
+  gap: 3px 8px;
+  min-height: 28px;
+  padding: 3px 14px;
+  color: var(--theme-foreground);
   font-size: 12px;
-  background: var(--theme-active-tab);
+  line-height: 1.4;
+  background: var(--theme-statusline);
+}
+.status-message { min-width: 0; overflow-wrap: anywhere; }
+.status-pending { overflow-wrap: anywhere; }
+.status-badge {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--theme-accent);
+  border-radius: 4px;
+  color: var(--theme-foreground);
+  background: color-mix(in srgb, var(--theme-accent) 12%, var(--theme-statusline));
+  font-size: 1em;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.status-badge-search {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--theme-accent) 6%, var(--theme-statusline));
 }
 
 .reader-surface {
@@ -453,6 +474,8 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-footer { overflow-wrap: anywhere; }
 }
 @media (forced-colors: active) {
+  .statusbar, .status-badge { color: CanvasText; background: Canvas; }
+  .status-badge { border-color: CanvasText; }
   .pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }
   .pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }
   .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
