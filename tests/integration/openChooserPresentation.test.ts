@@ -58,7 +58,7 @@ describe("Open chooser presentation", () => {
     expect(mainSource).toContain('placeholder="Filter recent PDFs"');
     expect(mainSource).toContain('button.setAttribute("aria-selected", String(selected))');
     expect(mainSource).toContain('button.setAttribute("aria-current", selected ? "true" : "false")');
-    expect(mainSource).toContain("Ctrl+j/k</kbd> move · <kbd>Ctrl+Shift+C</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close");
+    expect(mainSource).toContain("Ctrl+j/k</kbd> move · <kbd>Ctrl+Shift+c</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close");
     expect(mainSource).toContain('diagnostic[0].setAttribute("role", "status")');
     expect(mainSource).toContain('diagnostic[0].setAttribute("aria-live", "polite")');
   });

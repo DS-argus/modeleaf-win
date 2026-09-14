@@ -15,9 +15,9 @@ const state = (overrides: Partial<ActionRuntimeContext> = {}): ActionRuntimeCont
 
 const navigationIds = [
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
-  "page.next", "page.previous", "page.first", "page.last", "page.prompt", "history.back", "history.forward",
+  "page.next", "page.previous", "page.first", "page.last", "page.prompt",
 ];
-const settingsIds = ["config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "update.show"];
+const settingsIds = ["theme.picker"];
 
 describe("WindowsMenuModel", () => {
   it("applies the menu-only exclusions without changing the retained groups", () => {
@@ -38,7 +38,7 @@ describe("WindowsMenuModel", () => {
     expect(ids).not.toContain("prompt.commit");
   });
 
-  it("leaves navigation and settings commands on the shared projections", () => {
+  it("keeps page navigation and theme entries on the shared projections", () => {
     for (const commands of [
       projectMenuCommands(state(), config),
       projectPaletteCommands(state(), config),

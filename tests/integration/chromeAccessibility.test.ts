@@ -248,7 +248,7 @@ describe("search prompt production binding", () => {
       expect(styles).toContain(`${selector} kbd { padding: 0; color: var(--overlay-text);`);
     }
     expect(mainSource).toContain("Ctrl+j/k</kbd> move");
-    expect(mainSource).toContain("Ctrl+Shift+C</kbd> clear history");
+    expect(mainSource).toContain("Ctrl+Shift+c</kbd> clear history");
   });
   it("gives help descriptions and palette shortcuts distinct themed roles without fading disabled rows", () => {
     expect(styles).toContain(".help-group dt { color: var(--overlay-secondary-accent); }");
@@ -261,11 +261,10 @@ describe("search prompt production binding", () => {
     expect(styles).toContain("#command-palette-dialog form { display: flex; flex-direction: column; min-height: 0; }");
     expect(styles).toContain("#command-palette-dialog input { flex-shrink: 0; }");
     expect(styles).toContain(".command-palette-list { min-height: 0;");
-    for (const selector of [".help-group h2", ".command-palette-section-title"]) {
-      const rule = styles.slice(styles.indexOf(`${selector} {`)).split("}")[0];
-      expect(rule).toContain("border-bottom: 1px solid");
-      expect(rule).toContain("font-weight: 650;");
-    }
+    expect(styles).not.toContain("command-palette-section-title");
+    const heading = styles.slice(styles.indexOf(".help-group h2 {")).split("}")[0];
+    expect(heading).toContain("border-bottom: 1px solid");
+    expect(heading).toContain("font-weight: 650;");
   });
   it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
     const weight = (name: string): number => {

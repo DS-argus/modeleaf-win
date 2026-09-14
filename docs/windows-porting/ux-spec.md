@@ -52,7 +52,7 @@ CSS root는 `grid-template-rows: auto minmax(0, 1fr) 26px`를 기준으로 한�
 ## 3. Empty state
 
 - PDF가 하나도 없을 때 content 중앙에 `Open PDF` action pill 하나를 보인다.
-- shortcut badge는 Windows active keymap에서 파생하며 기본값은 `Ctrl+Shift+O`다 (Issue #53 owner amendment).
+- shortcut badge는 Windows active keymap에서 파생하며 기본값은 `Ctrl+Shift+o`다 (Issue #53 owner amendment).
 - Tab으로 focus 가능하고 Enter/Space/click이 모두 `document.open`을 dispatch한다.
 - 별도 recent cards, onboarding carousel, 광고성 문구를 추가하지 않는다.
 - config/update diagnostic이 있으면 status bar에서만 표시한다.
@@ -67,7 +67,7 @@ Acceptance:
 ### Windows application menu
 
 - top-level 순서는 `File`, `Document`, `Tabs`, `Search`, `View`, `Settings`다. `Navigate`는 없고 `Settings`에는 `Theme picker`만 둔다.
-- 이 제외는 Windows menu projection에만 적용한다. action registry, category, active keymap/shortcut, palette/help projection은 바꾸지 않고 command를 다른 menu group으로 옮기지 않는다.
+- `Navigate` 전체 제외는 Windows menu projection에만 적용한다. Issue #79 후속 결정에 따라 `config.*`, `history.*`, `update.*`는 공통 메뉴·팔레트·도움말 목록에서도 숨긴다. action registry와 실제 keymap은 유지하고 command를 다른 menu group으로 옮기지 않는다.
 - window별 application-menu owner 하나가 모든 direct `<details>/<summary>`를 관리한다. direct summary hover는 해당 menu를 열고 다른 summary hover는 이전 목록을 완전히 숨긴 뒤 전환하며 focus를 빼앗지 않는다. hover 직후 첫 click은 열린 상태를 유지하고 같은 summary의 재클릭은 닫는다.
 - 마우스로 연 menu는 summary와 해당 flyout을 합친 영역에서 나가면 자동으로 닫힌다. summary↔flyout 이동이나 둘 사이 연결 영역에서는 닫히지 않는다. keyboard 입력으로 ownership을 넘긴 뒤에는 원래 바깥에 정지한 포인터 때문에 닫지 않는다. 이 계약은 Issue #77 초기 no-hover-close 규칙을 대체한다.
 - summary `Enter`/`Space`는 열고 첫 enabled row로 focus를 옮긴다. section `Left`/`Right`, enabled row `Up`/`Down`/`Home`/`End`, command `Enter`/`Space`와 `Esc`는 같은 owner를 거친다. enabled row가 없으면 summary에 머문다. 열린 menu는 reader shortcut/pending prefix 입력을 차단하지만 command availability나 modal owner를 대체하지 않는다. `Esc`는 닫고 해당 summary에 focus를 복원하며, `Tab`은 닫은 뒤 native focus traversal을 유지한다.
@@ -98,7 +98,7 @@ Windows 차이:
 
 - plus button은 accessible name `Open PDF in New Tab`을 갖는다.
 - macOS first-mouse 개념은 없지만 inactive window/pane click에서 click target을 잃지 않도록 event order를 테스트한다.
-- `Ctrl+1..9`, `Ctrl+W` 표기를 쓴다.
+- `Ctrl+1..9`, `Ctrl+w` 표기를 쓴다.
 
 ## 5. Panes와 divider
 
@@ -198,6 +198,7 @@ Issue #79 owner-approved delta: `.prompt`/search는 inactive-tab, `.mac-overlay`
 초기 후보는 기존 글자색으로 대비 기준을 통과하지 못했으나, owner가 오버레이 내부 foreground 보정을 승인했다. 로컬 `--overlay-*` 색은 dark theme에서 white, Catppuccin Latte에서 black 방향으로 혼합한다. primary text는 foreground 40%, secondary/placeholder는 foreground 70%, accent text는 accent 25%, focus는 focus-indicator 40%를 유지하고 나머지를 해당 끝색으로 채운다. 모든 글자는 불투명하며 placeholder opacity는 1이다. 선택/hover/focus한 palette shortcut은 보정된 accent 색을 사용한다. 선택행 marker와 keyboard focus는 보정된 focus color를 사용한다. 공통 palette/config/state schema는 변경하지 않는다.
 
 하단 안내가 있는 search/theme/recent의 키(`kbd`)는 primary foreground, 동작 설명과 구분점은 accent 60%를 위 끝색과 혼합한 로컬 `--overlay-secondary-accent`을 사용한다. 밝기 차이뿐 아니라 theme의 강조색으로 키와 설명을 구분한다. Forced colors에서는 둘 다 CanvasText를 사용한다. `Ctrl`, `Shift`, `Enter`, `Esc`는 Windows 문자 표기를 유지하고 macOS modifier 기호를 도입하지 않는다. Recent 이동 안내는 소문자 입력을 명확히 드러내는 `Ctrl+j/k move`다. Theme의 `j/k move`, 검색 동작, 실제 keymap/parser는 바꾸지 않는다. 안내가 없는 goto/palette/help에 footer를 새로 추가하지 않는다.
+단축키 표시는 공통 formatter에서 영문 키의 대소문자를 구분한다. 대문자 literal `G`/`N`은 `Shift+g`/`Shift+n`, `<C-p>`는 `Ctrl+p`, `<C-S-o>`는 `Ctrl+Shift+o`로 표시한다. 실제 Shift가 없는 chord에 Shift를 추가하지 않는다. `F4`, `Enter`, `Tab`, 방향키 등의 named key와 Unicode literal은 유지한다. 메뉴·팔레트·도움말·empty-state가 같은 표시 규칙을 사용한다. 설정 파일의 canonical binding, registry/default/collision snapshots와 키 입력 동작은 표시 수정 대상이 아니므로 변경하지 않는다.
 7개 theme와 6개 표면의 브라우저 computed-color 합성 비교에서 0.90/0.85/0.80 최소 작은 글자 대비는 각각 4.80/4.58/4.31:1이다. 따라서 0.85를 채택하고 0.80은 거부한다. 0.85의 focus 비교 최소값은 4.35:1이다. Forced colors는 불투명 Canvas/CanvasText, 선택행은 Highlight/HighlightText, focus는 Highlight를 사용하며 panel blur/shadow를 제거한다. 이 수치는 native DPI/text-scale 인증이 아니며 새 투명도 preview는 owner 검토 대상이다.
 구현은 DOM focus 호출 모음이 아니라 다음 state를 갖는 reducer로 한다.
 
@@ -217,14 +218,14 @@ TOC, keyboard link hint와 destination indicator는 current overlay-owner graph�
 - width 360px
 - 최대 12 visible rows
 - query input + result list
-- `Ctrl+J/K`, Up/Down, Enter, Esc
+- `Ctrl+j/k`, Up/Down, Enter, Esc
 - enabled result가 먼저, disabled result도 이유와 함께 유지
 - action availability가 tab/pane/document 변화에 따라 즉시 갱신
 - row label, active binding, disabled reason을 Narrator가 읽을 수 있어야 함
 
 Issue #79 owner-approved 2안: 명령 이름은 primary foreground, 단축키는 보정된 secondary accent다. 선택/hover/focus한 행의 단축키는 선택 배경 대비를 위해 더 밝거나 어둡게 보정된 accent를 사용한다. 비활성 행 전체 opacity는 적용하지 않고, 정확한 비활성 이유를 명령 이름 아래 별도 줄에 불투명하게 표시한다.
 
-검색어가 비었거나 공백뿐이면 기존 filter의 최대 12개 후보를 먼저 확정하고, 그 후보 안에서 기존 CommandCatalog category별로 묶는다. enabled/disabled 구간은 합치지 않으므로 enabled-first가 유지된다. category와 구간의 첫 등장 순서 및 각 그룹 내부 순서를 유지하며, 비활성 구간 제목에는 `— Unavailable`을 붙인다. 검색 중에는 category grouping/heading 없이 기존 fuzzy ranking 순서 그대로 표시한다. 제목은 non-focusable heading이며 클릭/키보드 명령 index와 12-command cap에 포함하지 않는다. 첫 명령 선택 시 scroll을 처음으로 돌려 첫 제목이 함께 보이게 한다.
+Issue #79 최종 사용자 결정으로 palette의 category grouping과 섹션 제목은 제거한다. 검색어 유무와 관계없이 기존 filter의 enabled-first/fuzzy ranking 순서를 그대로 사용하는 평면 목록이며 최대 12개 명령 제한을 유지한다. 첫 명령 선택 시 scroll을 처음으로 돌린다. Config 3개, history Back/Forward 2개, update.show 1개는 목록에서 숨긴다. 기능/키 바인딩 자체를 삭제하지 않으며, 최근 파일 목록 비우기 기능은 유지한다.
 
 최소 창에서도 검색 입력은 유지하고 결과 목록만 남은 높이 안에서 스크롤한다. 고정 px 위치 보정 대신 dialog/form의 column flex와 list의 min-height 0을 사용한다. 작은 창 및 200% 브라우저 글자 확대에서 마지막 명령과 검색 입력이 잘리지 않아야 한다.
 Palette 자체가 독자 action list를 가지면 안 된다. action registry descriptor, live keymap, current availability를 projection한다.
@@ -237,7 +238,7 @@ Palette 자체가 독자 action list를 가지면 안 된다. action registry de
 - 정상 창에서는 15개가 모두 보이되 작은 창에서는 내부 scroll한다.
 - Issue #53 owner amendment: renderer는 opaque `recentId`, `displayName`, 표시 전용 전체 `displayPath`를 받는다. 경로가 넘치면 디렉터리 가운데를 줄이고 파일명은 항상 전부 표시한다. 필요하면 행 글꼴을 축소한다. 전체 경로는 accessible name/title로도 유지하며 열기 권한은 경로가 아니라 `recentId`로만 전달한다.
 - query는 Unicode NFC filename fuzzy search이며 입력 자체가 refresh trigger가 아니다.
-- `Ctrl+Shift+C` clear history, arrows/`Ctrl+J/K`, Enter, Esc를 지원한다.
+- `Ctrl+Shift+c` clear history, arrows/`Ctrl+j/k`, Enter, Esc를 지원한다.
 - Browse는 app chooser overlay를 먼저 닫은 뒤 HWND-owned Windows dialog를 연다. native dialog는 app overlay owner에 포함하지 않는다.
 - missing entry는 durable prune 성공 후에만 row를 제거한다. stale selection은 최신 snapshot으로 갱신하고 chooser/focus를 유지한다.
 - permission/locked/network/state/persistence error는 typed inline error로 남기며 prune하거나 `Could not read this PDF`로 오진하지 않는다.
@@ -292,7 +293,7 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 - tab selection row는 `Ctrl+1..9`로 collapse 가능
 - `?`는 navigation context에서 열고 Esc로 닫는다.
 
-Issue #79 owner-approved 2안: 도움말의 동작 설명(`dt`)은 보정된 secondary accent, 단축키(`dd`)는 primary foreground를 사용한다. 섹션 제목은 굵은 accent와 얇은 구분선으로 본문보다 명확히 구분한다. 기존 category/행 내용/live keymap은 유지하며 새 footer나 keycap 배경을 추가하지 않는다.
+Issue #79 최종 계약: 도움말의 동작 설명(`dt`)은 보정된 secondary accent, 단축키(`dd`)는 primary foreground를 사용한다. 도움말 섹션 제목은 굵은 accent와 얇은 구분선으로 구분한다. Palette에는 섹션을 만들지 않는다. 공통 command projection에서 `config.*`, `history.*`, `update.*` 여섯 항목을 숨기며, action registry와 실제 키 바인딩은 유지한다. 새 footer나 keycap 배경은 추가하지 않는다.
 ## 15. Ordinary links; retired hints and destination indicator
 
 > Issue #53: ordinary PDF annotation clicks와 native authorization은 유지한다. `f` link hints와 destination indicator는 current Windows UI가 아니며 `f`/`I`를 routing하지 않는다.

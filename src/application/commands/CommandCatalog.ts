@@ -51,6 +51,7 @@ export const projectHelpCommands = (state: ActionRuntimeContext, config: Product
 
 function visibleOnSurface(descriptor: ActionDescriptor, surface: CommandSurface): boolean {
   if (descriptor.bindingConfiguration === "fixed") return false;
+  if (/^(config|history|update)\./u.test(descriptor.id)) return false;
   if (surface === "menu") return descriptor.id !== "palette.open";
   return true;
 }
@@ -78,12 +79,12 @@ function formatShortcut(sequence: string): string {
 }
 function formatToken(token: CanonicalKeyToken): string {
   if (token.modifiers.length === 0) {
-    if (/^[A-Z]$/u.test(token.key)) return `Shift+${token.key}`;
+    if (/^[A-Z]$/u.test(token.key)) return `Shift+${token.key.toLowerCase()}`;
     return displayKey(token.key);
   }
   const modifiers = token.modifiers.map((modifier) => ({ C: "Ctrl", A: "Alt", S: "Shift" })[modifier]);
-  return [...modifiers, displayKey(token.key, true)].join("+");
+  return [...modifiers, displayKey(token.key)].join("+");
 }
-function displayKey(key: string, uppercaseLiteral = false): string {
-  return ({ Esc: "Esc", Enter: "Enter", BS: "Backspace", Del: "Delete", Left: "Left", Right: "Right", Up: "Up", Down: "Down", Space: "Space", Minus: "-", LT: "<", GT: ">" } as Readonly<Record<string, string>>)[key] ?? (key.length === 1 && uppercaseLiteral ? key.toLocaleUpperCase() : key);
+function displayKey(key: string): string {
+  return ({ Esc: "Esc", Enter: "Enter", BS: "Backspace", Del: "Delete", Left: "Left", Right: "Right", Up: "Up", Down: "Down", Space: "Space", Minus: "-", LT: "<", GT: ">" } as Readonly<Record<string, string>>)[key] ?? key;
 }

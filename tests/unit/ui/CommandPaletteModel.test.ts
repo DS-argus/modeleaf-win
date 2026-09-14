@@ -33,32 +33,21 @@ describe("CommandPaletteModel", () => {
     expect(enabled.slice(firstDisabled)).not.toContain(true);
     expect(new Set(entries.map((entry) => entry.kind === "command" ? `action:${entry.id}` : `recent:${entry.recentId}`)).size).toBe(entries.length);
   });
-  it("groups the capped empty-query commands by category without crossing availability", () => {
-    for (const context of [baseContext, unavailableContext]) {
-      const entries = buildCommandPaletteEntries(context).filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
-      const runs = entries.map((entry) => `${entry.enabled}:${entry.category}`).filter((key, index, keys) => key !== keys[index - 1]);
-      expect(new Set(runs).size).toBe(runs.length);
-      expect(entries.every((entry) => typeof entry.category === "string")).toBe(true);
-      expect(buildCommandPaletteEntries(context, [], " \t")).toEqual(entries);
-    }
-  });
-  it("keeps search ranking and the candidate cap independent of category headings", () => {
+  it("keeps authoritative flat ordering and the candidate cap for every query", () => {
     const config = validateProductConfig({});
     if (!config.ok) throw new Error("Invalid test config");
     const commands = projectPaletteCommands(baseContext, config.value);
-    for (const query of ["", "page", "view", "open"]) {
+    for (const query of ["", " \t", "page", "view", "open"]) {
       const ranked = filterCommandPalette(commands.map((entry) => ({ id: entry.id, title: entry.title, enabled: entry.enabled, kind: "action" as const })), query);
       const actual = buildCommandPaletteEntries(baseContext, [], query).filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
-      if (query.length === 0) expect(actual.map((entry) => entry.id).sort()).toEqual(ranked.map((entry) => entry.id).sort());
-      else expect(actual.map((entry) => entry.id)).toEqual(ranked.map((entry) => entry.id));
-      for (const entry of actual) expect(entry.category).toBe(commands.find((command) => command.id === entry.id)?.category);
+      expect(actual.map((entry) => entry.id)).toEqual(ranked.map((entry) => entry.id));
     }
   });
   it("projects every retained configurable action and no retired reader command", () => {
-    const configurable = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
+    const configurable = ACTION_DESCRIPTORS.filter(({ bindingConfiguration, id }) => bindingConfiguration === "configurable" && !/^(config|history|update)\./u.test(id));
 
     expect(ACTION_DESCRIPTORS).toHaveLength(49);
-    expect(configurable).toHaveLength(45);
+    expect(configurable).toHaveLength(39);
     for (const descriptor of configurable) {
       expect(buildCommandPaletteEntries(baseContext, [], descriptor.displayName)).toContainEqual(expect.objectContaining({
         kind: "command",
