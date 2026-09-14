@@ -71,8 +71,47 @@
     "capture": "FFmpeg gdigrab draw_mouse=1, exact owner HWND, top 320x100 pixels, 10fps, two seconds; no folder-list capture.",
     "limitation": "Synthetic keyboard/pointer input and OS-composited cursor recording on the state-isolated QA build. This supplements, rather than replaces, operator acceptance of the production candidate and is not remote-client hardware capture."
   },
+  "reviewRepairs": {
+    "sourceHead": "0eb4715",
+    "productionExecutableSha256": "bc97fa806abc17bf0d735dc96562f164ecf6c2d4046f117349de8af0ced2143c",
+    "qaExecutableSha256": "bb561a43a0ed13f90dd1544ffecbd71f08c094649a11036c344973b6ce2e6bd7",
+    "qaConfigurationDelta": "Unique identifier only; nested lifecycle testing additionally enables a temporary loopback debugger and owned browser profile.",
+    "composition": {
+      "before": "Four real-DOM cases reproduced unintended Browse invocation for legacy keyCode 229 and AltGraph Enter at filter/button targets.",
+      "fix": "Reuse isNativeCompositionEvent at the existing Browse capture-keydown boundary; no keyup latch or timing change.",
+      "test": "tests/integration/openChooserInput.test.ts",
+      "passedCases": 17
+    },
+    "windowCloseOwnership": {
+      "before": "Closing owner A while B's picker was active left native IPC responsive but disposed B's frontend coordinator, preventing a fresh Browse. The production-registration test reproduced teardown in both windows.",
+      "cause": "Tauri Any listeners receive targeted events too; the global window-close-requested subscription crossed window ownership.",
+      "fix": "Use getCurrentWindow().listen only for window-close-requested. Intentionally global state/quit events remain global.",
+      "test": "tests/integration/windowCloseOwnership.test.ts",
+      "passedCases": 2,
+      "nativeScenario": "docs/evidence/issue71-nested-lifecycle.json",
+      "nativeScreenshot": "docs/evidence/issue71-nested-lifecycle.png",
+      "driver": "tools/windows/verify-browse-lifecycle.mjs",
+      "observer": "tools/windows/observe-browse-lifecycle.ps1",
+      "observed": "Both HWND-owned native pickers ran on the same UI thread. A was destroyed while inner B remained live; unrelated native IPC completed during nested Show and after inner dismissal. B regained native and DOM focus, admitted no tab/recent, reopened a fresh picker through its production keyboard route, cancelled it, and exited normally."
+    },
+    "currentFixture": {
+      "transcript": "docs/evidence/issue71-repaired-fixture.json",
+      "screenshot": "docs/evidence/issue71-repaired-fixture.png",
+      "sourceBeforeAndAfter": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+      "screenshotScope": "Approved fixture region cropped to exclude an unrelated desktop taskbar preview; the generated full frame was discarded."
+    },
+    "currentCursor": {
+      "transcript": "docs/evidence/issue71-repaired-cursor.json",
+      "video": "docs/evidence/issue71-repaired-cursor.mp4",
+      "frame": "docs/evidence/issue71-repaired-cursor.png",
+      "observed": "Cursor flags remained 1 and the inspected recording frame contains the visible arrow while the Enter-opened native picker is active.",
+      "observerDelta": "Only the diagnostic thread uses per-monitor-aware physical coordinates for matching the capture region; no app or OS preference is changed.",
+      "limitation": "Injected input and OS cursor composition, not remote-client hardware capture. An earlier crop omitted the pointer due to observer coordinates and is not used as visible-cursor proof."
+    }
+  },
   "verification": {
-    "frontend": {"command": "npm test -- --maxWorkers=1 --minWorkers=1", "filesPassed": 81, "testsPassed": 876},
+    "sourceHead": "0eb47150caf76aa13230565aeffb6e52d214f39f",
+    "frontend": {"command": "npm test -- --maxWorkers=1 --minWorkers=1", "filesPassed": 84, "testsPassed": 915},
     "passedCommands": [
       "npm run build",
       "cargo fmt --check --manifest-path src-tauri/Cargo.toml",

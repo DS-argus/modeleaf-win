@@ -434,3 +434,21 @@ Focused Rust contract scope:
 Do not substitute unit/source assertions for this native observation, and do not use `ShowCursor`, `SetCursor`, or process-global cursor-state changes as remediation.
 
 Nested native modal dialogs can delay an outer request's completion until the inner `Show` unwinds. Owner destruction invalidates the request token and prevents late selection admission, but does not promise immediate completion of an already-running outer picker. Native verification must close/cancel window A while window B's picker is open, then dismiss B and verify the surviving window can open a new picker; distinguish delayed completion from framework event starvation.
+
+The review regression suite also found two concrete edge defects: Browse did not apply the existing legacy-IME/AltGraph guard, and an unscoped Tauri `Any` close-event listener disposed another window's frontend. `openChooserInput.test.ts` executes the production DOM handlers and real coordinator; `windowCloseOwnership.test.ts` executes the production subscription through the real Tauri JS API. The listener is now window-scoped, while global state/quit broadcasts remain global. The repaired [nested native transcript](../evidence/issue71-nested-lifecycle.json) proves that A can be destroyed during B's inner picker, unrelated native IPC remains responsive, and B restores native/DOM focus and opens/cancels a fresh picker. This is explicitly synthetic native lifecycle evidence, not physical cursor input.
+
+Reproduce the bounded native lifecycle scenario from the worktree root using a separate QA identity (Node, PowerShell 7, and the normal Windows build toolchain are required):
+
+```powershell
+New-Item -ItemType Directory -Force .internal/evidence/issue71-replay | Out-Null
+'{"identifier":"com.dsargus.modeleaf.issue71replay"}' | Set-Content .internal/evidence/issue71-replay/config.json
+$env:CI = "true"
+$env:CARGO_BUILD_JOBS = "1"
+$env:CARGO_INCREMENTAL = "0"
+npm run tauri -- build --debug --no-bundle --config .internal/evidence/issue71-replay/config.json
+$hash = (Get-FileHash src-tauri/target/debug/modeleaf.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+node tools/windows/verify-browse-lifecycle.mjs src-tauri/target/debug/modeleaf.exe .internal/evidence/issue71-replay/result.json $hash
+npm run tauri:build-debug
+```
+
+The driver refuses an existing result file, pins the selected executable, uses only its own HWNDs for synthetic close messages, and confines debugger connections to its reserved loopback port. The final build restores the ordinary application identity; do not distribute the QA-identity executable. Failed runs remain failed artifacts rather than being counted as native passes.
