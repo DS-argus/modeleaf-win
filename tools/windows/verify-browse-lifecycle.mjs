@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { createInterface } from 'node:readline';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { dirname, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -30,8 +31,9 @@ await new Promise(r=>reserve.close(r));
 const profile=mkdtempSync(join(tmpdir(),'modeleaf71-nested-'));
 const app=spawn(exe,[],{env:{...process.env,WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS:`--remote-debugging-port=${port}`,WEBVIEW2_USER_DATA_FOLDER:profile},stdio:'ignore'});
 let appExited=false;
-app.once('exit',(code,signal)=>{appExited=true;event('qa-process-exit',code===0?'passed':'nonzero',{code,signal});});
-app.once('error',error=>event('qa-process-error','failed',{reason:error.message}));
+let appExit;
+app.once('exit',(code,signal)=>{appExit={code,signal};appExited=true;event('qa-process-exit',code===0&&signal===null?'passed':'nonzero',{code,signal});});
+app.once('error',error=>{if(app.pid===undefined)appExited=true;event('qa-process-error','failed',{reason:error.message});});
 event('launch-isolated-qa','started',{pid:app.pid,exeSha256:hash,configDelta:'unique identifier; loopback debugging and fresh browser profile for synthetic lifecycle test'});
 const observer=spawn('pwsh.exe',['-NoProfile','-File',resolve('tools/windows/observe-browse-lifecycle.ps1'),'-OwnerProcess',String(app.pid)],{stdio:['pipe','pipe','inherit']});
 let observerReady=false, serial=0;
@@ -63,7 +65,7 @@ async function targets(){
 const sockets=[];
 async function connect(target){
   const address=new URL(target.webSocketDebuggerUrl);
-  assert(address.protocol==='ws:' && ['127.0.0.1','localhost'].includes(address.hostname) && address.port===String(port),'Debugger endpoint must stay on the reserved loopback port');
+  assert(address.protocol==='ws:' && ['127.0.0.1','localhost'].includes(address.hostname) && address.port===String(port),'Debugger endpoint must stay on the selected loopback port');
   const ws=new WebSocket(target.webSocketDebuggerUrl);sockets.push(ws);
   await new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>{ws.close();reject(new Error('CDP connection timed out'));},5000);
@@ -143,6 +145,7 @@ try {
   event('survivor-native-WebView-screenshot','captured');
   await native('close',{hwnd:bRoot.hwnd});
   await waitFor('normal QA process exit',()=>appExited,12000);
+  assert.deepEqual(appExit,{code:0,signal:null},'QA application must exit normally before the replay can pass');
   status='passed';
 } catch(error) {
   event('scenario-failure','failed',{reason:error.message});
@@ -161,6 +164,14 @@ try {
   }
   for(const ws of sockets)ws.close();
   observer.stdin.end(JSON.stringify({id:++serial,op:'exit'})+'\n');
+  try {
+    await waitFor('owned process exit before profile cleanup',()=>appExited,5000);
+    await rm(profile,{recursive:true,force:true,maxRetries:6,retryDelay:200});
+    event('owned-profile-cleanup','passed');
+  } catch(error) {
+    event('owned-profile-cleanup','failed',{reason:error.message});
+    status='failed';
+  }
   writeFileSync(output,JSON.stringify({schemaVersion:1,kind:'native-desktop-automation-transcript',status,exeSha256:hash,inputProvenance:'Synthetic DOM activation and owned WM_CLOSE; never physical-input proof',configuration:'unique QA identifier; loopback debugging; fresh owned profile',events},null,2)+'\n');
 }
 console.log(JSON.stringify({status,output,eventCount:events.length}));

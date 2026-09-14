@@ -1,9 +1,12 @@
 {
   "schemaVersion": 1,
   "issue": 71,
-  "sourceHead": "1c2857e8cf61311f5b92e257df3ef9e68757e263",
-  "integrationBase": "d0f6246868ba14b6333f1257a3de062ee75adec1",
-  "productionExecutableSha256": "1a6d5b30904ee00ab1246c41755387ae3fe1714004601502f81822e3925b1217",
+  "historicalOperatorCandidate": {
+    "sourceHead": "1c2857e8cf61311f5b92e257df3ef9e68757e263",
+    "integrationBase": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+    "productionExecutableSha256": "1a6d5b30904ee00ab1246c41755387ae3fe1714004601502f81822e3925b1217",
+    "scope": "Generation-1 candidate physically tested by the operator; not the identity of later review repairs."
+  },
   "runtimeVersionObserved": "152.0.4191.66",
   "correction": {
     "comparisonBaseline": "The cursor feature-policy correction relative to the already committed posted dispatcher; not a claim that the cumulative Issue71 native lifecycle diff is empty.",
@@ -72,7 +75,8 @@
     "limitation": "Synthetic keyboard/pointer input and OS-composited cursor recording on the state-isolated QA build. This supplements, rather than replaces, operator acceptance of the production candidate and is not remote-client hardware capture."
   },
   "reviewRepairs": {
-    "sourceHead": "0eb4715",
+    "sourceHead": "0eb47150caf76aa13230565aeffb6e52d214f39f",
+    "integrationBase": "0687b89d4b5e56cfc13becd99ea86d3bf97839c9",
     "productionExecutableSha256": "bc97fa806abc17bf0d735dc96562f164ecf6c2d4046f117349de8af0ced2143c",
     "qaExecutableSha256": "bb561a43a0ed13f90dd1544ffecbd71f08c094649a11036c344973b6ce2e6bd7",
     "qaConfigurationDelta": "Unique identifier only; nested lifecycle testing additionally enables a temporary loopback debugger and owned browser profile.",
@@ -101,6 +105,11 @@
       "screenshotScope": "Approved fixture region cropped to exclude an unrelated desktop taskbar preview; the generated full frame was discarded."
     },
     "currentCursor": {
+      "trialId": "repaired-cursor-physical-coordinates",
+      "association": "Leader-retained outputs from that actual probe invocation. Digests below were computed after capture; they are an association receipt, not an embedded recording watermark. The unchanged fixed crop can deterministically match earlier media bytes.",
+      "transcriptSha256": "ebf818e9485b3773aa3950afac03e34ff68b968734a1a8c41b898fb6db4d2476",
+      "videoSha256": "0c47779718270edaa1662ef53288c13916738608feb51101f10e3231a29f10e3",
+      "frameSha256": "e626fa875d87339ae9af1eda800d9531923eb3ecc9113c9f600f317f0d770d0d",
       "transcript": "docs/evidence/issue71-repaired-cursor.json",
       "video": "docs/evidence/issue71-repaired-cursor.mp4",
       "frame": "docs/evidence/issue71-repaired-cursor.png",
@@ -109,9 +118,17 @@
       "limitation": "Injected input and OS cursor composition, not remote-client hardware capture. An earlier crop omitted the pointer due to observer coordinates and is not used as visible-cursor proof."
     }
   },
+  "verifierIntegrity": {
+    "test": "tests/contract/browseLifecycleExit.test.ts",
+    "passedCases": 4,
+    "behavior": "The actual terminal block passes only a recorded code-0/null-signal exit; nonzero, signaled and missing receipts remain failed.",
+    "ownedProfileCleanup": "Fresh temporary profiles are removed after the owned process exits; failed cleanup keeps the overall replay failed.",
+    "nativeProof": "docs/evidence/issue71-nested-lifecycle.json"
+  },
   "verification": {
-    "sourceHead": "0eb47150caf76aa13230565aeffb6e52d214f39f",
-    "frontend": {"command": "npm test -- --maxWorkers=1 --minWorkers=1", "filesPassed": 84, "testsPassed": 915},
+    "productionSourceHead": "0eb47150caf76aa13230565aeffb6e52d214f39f",
+    "scope": "Production source is unchanged from this commit; final replay-verifier tests and evidence are included in the reviewed delta.",
+    "frontend": {"command": "npm test -- --maxWorkers=1 --minWorkers=1", "filesPassed": 85, "testsPassed": 919},
     "passedCommands": [
       "npm run build",
       "cargo fmt --check --manifest-path src-tauri/Cargo.toml",

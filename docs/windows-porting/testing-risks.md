@@ -451,4 +451,4 @@ node tools/windows/verify-browse-lifecycle.mjs src-tauri/target/debug/modeleaf.e
 npm run tauri:build-debug
 ```
 
-The driver refuses an existing result file, pins the selected executable, uses only its own HWNDs for synthetic close messages, and confines debugger connections to its reserved loopback port. The final build restores the ordinary application identity; do not distribute the QA-identity executable. Failed runs remain failed artifacts rather than being counted as native passes.
+The driver refuses an existing result file, pins the selected executable, uses only its own HWNDs for synthetic close messages, and confines debugger connections to its selected loopback port (selection does not reserve the port across process startup). It requires application exit code 0 with no signal, removes its own temporary browser profile, and retains cleanup failures as failed runs. The final build restores the ordinary application identity; do not distribute the QA-identity executable.

@@ -7,57 +7,57 @@
   "configuration": "unique QA identifier; loopback debugging; fresh owned profile",
   "events": [
     {
-      "monotonicMs": 23,
+      "monotonicMs": 39,
       "action": "launch-isolated-qa",
       "outcome": "started",
-      "pid": 35008,
+      "pid": 6148,
       "exeSha256": "bb561a43a0ed13f90dd1544ffecbd71f08c094649a11036c344973b6ce2e6bd7",
       "configDelta": "unique identifier; loopback debugging and fresh browser profile for synthetic lifecycle test"
     },
     {
-      "monotonicMs": 1281,
+      "monotonicMs": 2732,
       "action": "root-A",
       "outcome": "observed",
       "window": {
-        "hwnd": 462692,
+        "hwnd": 25889616,
         "owner": 0,
-        "tid": 26460,
+        "tid": 5320,
         "class": "Tauri Window",
         "visible": true,
         "enabled": true,
         "width": 1284,
-        "height": 2061
+        "height": 1501
       }
     },
     {
-      "monotonicMs": 1498,
+      "monotonicMs": 6346,
       "action": "create-B-through-native-command",
       "outcome": "completed",
       "created": null
     },
     {
-      "monotonicMs": 1716,
+      "monotonicMs": 6619,
       "action": "root-B",
       "outcome": "observed",
       "window": {
-        "hwnd": 28377646,
+        "hwnd": 8522876,
         "owner": 0,
-        "tid": 26460,
+        "tid": 5320,
         "class": "Tauri Window",
         "visible": true,
         "enabled": true,
-        "width": 964,
-        "height": 2061
+        "width": 857,
+        "height": 1501
       }
     },
     {
-      "monotonicMs": 2507,
+      "monotonicMs": 7931,
       "action": "outer-picker-A",
       "outcome": "observed",
       "window": {
-        "hwnd": 1838694,
-        "owner": 462692,
-        "tid": 26460,
+        "hwnd": 4917938,
+        "owner": 25889616,
+        "tid": 5320,
         "class": "#32770",
         "visible": true,
         "enabled": true,
@@ -66,13 +66,13 @@
       }
     },
     {
-      "monotonicMs": 3196,
+      "monotonicMs": 9490,
       "action": "inner-picker-B",
       "outcome": "observed",
       "window": {
-        "hwnd": 6162642,
-        "owner": 28377646,
-        "tid": 26460,
+        "hwnd": 19008316,
+        "owner": 8522876,
+        "tid": 5320,
         "class": "#32770",
         "visible": true,
         "enabled": true,
@@ -81,27 +81,27 @@
       }
     },
     {
-      "monotonicMs": 3275,
+      "monotonicMs": 9823,
       "action": "unrelated-native-IPC-during-nested-Show",
       "outcome": "completed",
-      "elapsedMs": 79,
+      "elapsedMs": 333,
       "count": 0
     },
     {
-      "monotonicMs": 3290,
+      "monotonicMs": 9849,
       "action": "synthetic-owner-A-WM_CLOSE",
       "outcome": "posted"
     },
     {
-      "monotonicMs": 3714,
+      "monotonicMs": 10688,
       "action": "owner-A-destroyed-inner-B-still-live",
       "outcome": "observed",
-      "elapsedMs": 439,
+      "elapsedMs": 865,
       "windows": [
         {
-          "hwnd": 6162642,
-          "owner": 28377646,
-          "tid": 26460,
+          "hwnd": 19008316,
+          "owner": 8522876,
+          "tid": 5320,
           "class": "#32770",
           "visible": true,
           "enabled": true,
@@ -109,62 +109,42 @@
           "height": 900
         },
         {
-          "hwnd": 28377646,
+          "hwnd": 8522876,
           "owner": 0,
-          "tid": 26460,
+          "tid": 5320,
           "class": "Tauri Window",
           "visible": true,
           "enabled": false,
           "width": 1284,
-          "height": 2061
+          "height": 1501
         }
       ]
     },
     {
-      "monotonicMs": 3746,
+      "monotonicMs": 10707,
       "action": "synthetic-inner-picker-B-WM_CLOSE",
       "outcome": "posted"
     },
     {
-      "monotonicMs": 3955,
+      "monotonicMs": 10922,
       "action": "post-inner-native-and-DOM-state",
       "outcome": "observed",
       "snapshot": {
         "threads": [
           {
-            "tid": 26460,
+            "tid": 5320,
             "success": true,
             "error": 0,
-            "focus": 3082906,
-            "focusRoot": 28377646,
+            "focus": 29492776,
+            "focusRoot": 8522876,
             "capture": 0
           }
         ],
         "windows": [
           {
-            "hwnd": 986998,
-            "owner": 0,
-            "tid": 26460,
-            "class": "CtrlNotifySink",
-            "visible": false,
-            "enabled": true,
-            "width": 0,
-            "height": 0
-          },
-          {
-            "hwnd": 10683270,
-            "owner": 0,
-            "tid": 26460,
-            "class": "CtrlNotifySink",
-            "visible": false,
-            "enabled": true,
-            "width": 154,
-            "height": 668
-          },
-          {
-            "hwnd": 6162642,
-            "owner": 28377646,
-            "tid": 26460,
+            "hwnd": 19008316,
+            "owner": 8522876,
+            "tid": 5320,
             "class": "#32770",
             "visible": false,
             "enabled": true,
@@ -172,19 +152,29 @@
             "height": 900
           },
           {
-            "hwnd": 28377646,
+            "hwnd": 8522876,
             "owner": 0,
-            "tid": 26460,
+            "tid": 5320,
             "class": "Tauri Window",
             "visible": true,
             "enabled": true,
             "width": 1284,
-            "height": 2061
+            "height": 1501
           },
           {
-            "hwnd": 790312,
+            "hwnd": 921332,
             "owner": 0,
-            "tid": 26460,
+            "tid": 5320,
+            "class": "ComboLBox",
+            "visible": false,
+            "enabled": true,
+            "width": 843,
+            "height": 228
+          },
+          {
+            "hwnd": 1248908,
+            "owner": 0,
+            "tid": 5320,
             "class": "ComboLBox",
             "visible": false,
             "enabled": true,
@@ -192,9 +182,9 @@
             "height": 23
           },
           {
-            "hwnd": 528812,
+            "hwnd": 10290708,
             "owner": 0,
-            "tid": 26460,
+            "tid": 5320,
             "class": "ComboLBox",
             "visible": false,
             "enabled": true,
@@ -202,9 +192,9 @@
             "height": 372
           },
           {
-            "hwnd": 528510,
+            "hwnd": 13765102,
             "owner": 0,
-            "tid": 26460,
+            "tid": 5320,
             "class": "WorkerW",
             "visible": false,
             "enabled": true,
@@ -212,9 +202,9 @@
             "height": 39
           },
           {
-            "hwnd": 659118,
+            "hwnd": 5574154,
             "owner": 0,
-            "tid": 26460,
+            "tid": 5320,
             "class": "com.dsargus.modeleaf.issue71qa20260914-sic",
             "visible": true,
             "enabled": true,
@@ -222,9 +212,9 @@
             "height": 16
           },
           {
-            "hwnd": 2428926,
+            "hwnd": 8979974,
             "owner": 0,
-            "tid": 26460,
+            "tid": 5320,
             "class": "Tao Thread Event Target",
             "visible": true,
             "enabled": true,
@@ -232,9 +222,9 @@
             "height": 16
           },
           {
-            "hwnd": 986730,
-            "owner": 528350,
-            "tid": 26460,
+            "hwnd": 5573834,
+            "owner": 11207886,
+            "tid": 5320,
             "class": "MSCTFIME UI",
             "visible": false,
             "enabled": false,
@@ -242,9 +232,9 @@
             "height": 0
           },
           {
-            "hwnd": 528350,
-            "owner": 28377646,
-            "tid": 26460,
+            "hwnd": 11207886,
+            "owner": 8522876,
+            "tid": 5320,
             "class": "IME",
             "visible": false,
             "enabled": false,
@@ -262,40 +252,40 @@
       }
     },
     {
-      "monotonicMs": 4025,
+      "monotonicMs": 11785,
       "action": "native-IPC-after-inner-close",
       "outcome": "completed",
       "count": 0,
-      "elapsedMs": 69
+      "elapsedMs": 863
     },
     {
-      "monotonicMs": 4026,
+      "monotonicMs": 11788,
       "action": "B-post-unwind-focus",
       "outcome": "passed",
       "threads": [
         {
-          "tid": 26460,
+          "tid": 5320,
           "success": true,
           "error": 0,
-          "focus": 3082906,
-          "focusRoot": 28377646,
+          "focus": 29492776,
+          "focusRoot": 8522876,
           "capture": 0
         }
       ]
     },
     {
-      "monotonicMs": 4032,
+      "monotonicMs": 11803,
       "action": "no-tab-or-recent-admission",
       "outcome": "passed"
     },
     {
-      "monotonicMs": 4640,
+      "monotonicMs": 12789,
       "action": "survivor-B-reopen",
       "outcome": "passed",
       "window": {
-        "hwnd": 6228178,
-        "owner": 28377646,
-        "tid": 26460,
+        "hwnd": 13830638,
+        "owner": 8522876,
+        "tid": 5320,
         "class": "#32770",
         "visible": true,
         "enabled": true,
@@ -304,16 +294,21 @@
       }
     },
     {
-      "monotonicMs": 5266,
+      "monotonicMs": 13815,
       "action": "survivor-native-WebView-screenshot",
       "outcome": "captured"
     },
     {
-      "monotonicMs": 5423,
+      "monotonicMs": 14185,
       "action": "qa-process-exit",
       "outcome": "passed",
       "code": 0,
       "signal": null
+    },
+    {
+      "monotonicMs": 19150,
+      "action": "owned-profile-cleanup",
+      "outcome": "passed"
     }
   ]
 }
