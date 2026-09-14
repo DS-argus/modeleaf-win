@@ -412,7 +412,9 @@ Before restoring parity for the revised reader, separately authorize and retain 
 
 ## 13. Issue #71 native Browse pointer gate
 
-Issue #71 moves `IFileOpenDialog.Show` from a blocking worker onto the owner UI thread through a posted native HWND message. The Tauri main-thread callback only registers and posts work; it returns before the subclass enters the modal picker, avoiding retention of Tao's event callback. Cross-thread modal dispatch remains a hypothesis until the reported corporate-cloud symptom is reproduced against a packaged candidate; the code change alone is not cursor-visibility evidence.
+The earlier owner-UI-thread/posted-message change did not resolve the reported symptom. It preserves the native lifecycle below but is not an established cursor fix. The current candidate disables Chromium's `HideCursorWhileTyping` feature in both initial and newly created Modeleaf WebViews, preserving accessibility arguments. It prevents runtime-owned keyboard cursor hiding instead of adjusting ShowCursor counts, forcing focus, delaying Enter, or changing Windows pointer settings. This is an app-scoped policy: Modeleaf keeps the pointer visible while typing; other applications and OS settings are unchanged.
+
+WebView2 Runtime 152 introduced a related hidden-cursor regression: [upstream #5687](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5687) and [#5708](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5708). Microsoft confirmed reproduction and reported investigation, not a released fix. On the reference workstation, running WebView2 was `152.0.4191.66`. A same-executable injected-input comparison observed `GetCursorInfo` success with flags `1 → 0 → 1` across Enter/native Show/cancel; movement while the owned picker was active did not restore visibility. With only process-scoped `--disable-features=HideCursorWhileTyping`, sampled flags remained `1`. This supports the runtime-feature diagnosis but does not replace the physical-input, cursor-inclusive gate. Retain failed probes and distinguish an actually displayed cursor from its reported global flags.
 
 Focused Rust contract scope:
 
@@ -424,7 +426,7 @@ Focused Rust contract scope:
 
 **Native status: pending.** Retain packaged Windows evidence from the affected corporate-cloud environment for all of the following before advancing parity:
 
-1. Open `Ctrl+Shift+O` → `Browse…` and confirm the pointer remains visible over both Modeleaf and the native picker.
+1. Release the Open shortcut fully, then repeat filter-focus Enter, Tab-to-Browse Enter, focused-Browse Space, and a physical mouse click. Confirm the pointer remains visible over both Modeleaf and the native picker in empty and PDF-open windows. Synthetic input is a diagnostic comparison, not physical-input acceptance.
 2. Select a committed PDF, then repeat with Cancel, Escape, and reopen; verify focus returns and the native open epoch is released exactly once after each terminal.
 3. With two Modeleaf windows, launch Browse from each window and verify the picker is modal to the initiating live HWND without disabling or admitting into the other window.
 4. Record the packaged build identity, Windows/WebView2 versions, observations or capture, and source PDF SHA-256 before/after.

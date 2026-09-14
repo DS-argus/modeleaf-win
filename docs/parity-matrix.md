@@ -2,7 +2,7 @@
 
 **Baseline:** Modeleaf v0.10.0, immutable commit [`0f7ff0b54c3674c48f6b555261f939397cfbfb88`](https://github.com/DS-argus/modeleaf/tree/0f7ff0b54c3674c48f6b555261f939397cfbfb88). Golden source links are indexed in [`windows-porting/source-index.md`](./windows-porting/source-index.md). This matrix reports observable Windows implementation evidence, not planned work.
 
-**Last audited:** 2026-09-11 for Issue #71 owner-UI-thread Browse dispatch and pending native/cloud reproduction; older Issue #53 and phase evidence remains historical and does not certify current packaged behavior.
+**Last audited:** 2026-09-14 for Issue #71 runtime cursor-hiding diagnosis and pending physical packaged acceptance; older Issue #53 and phase evidence remains historical and does not certify current packaged behavior.
 
 **Issue #53 reader-stability revalidation:** reported interactive defects supersede historical parity claims for open/recents, rendering, navigation, and search. These surfaces remain `partial` until the revised reader passes packaged Windows checks. Document geometry is independent of raster residency; measured page sizes are retained; repeated page input is coalesced; verified resident-page landings publish active-page state; destruction uses the PDF.js loading task; recent clearing uses an atomic native transaction. TOC and keyboard hints are retired under the explicit owner-approved delta.
 
@@ -16,7 +16,7 @@ Issue #53 retirement implementation `fda61e08b322fcf93230522131687394d80bb42d` p
 
 Issue #53 centered-link/indicator-retirement implementation `c939f9e3754c7da0c3a93a624f8d724e9b0e22b2` supersedes that indicator behavior under owner comment5611619154. The complete local gate passed75 frontend files/777 tests and146 top-level Rust tests (plus two nested helper invocations), build/fmt/clippy/diff. [`issue53-link-landing.json`](./evidence/issue53-link-landing.json) records actual-click centering within0.459px, immediately visible next-page raster/text, boundaries/history, raw-scroll and mixed-height ownership regressions, indicator absence, fixture hashes and CLEAR rereviews. Browser DPR simulation is not native certification; the prior application was not replaced and packaged acceptance remains pending.
 
-**Issue #71 Browse pointer revalidation (pending):** the native picker is dispatched to the Tauri main thread and validates that its HWND is live and owned by the calling UI thread before `Show`. The change retains cancellation, typed native-open terminals, and read-only path admission. Cross-thread modal presentation is still a hypothesis, focused tests have not been promoted to native evidence, and the affected corporate-cloud packaged pointer/focus/two-window scenario remains required; this matrix therefore stays `partial`.
+**Issue #71 Browse pointer revalidation (pending):** the earlier owner-thread/posted dispatcher did not fix the user symptom. The current minimal candidate disables WebView2's `HideCursorWhileTyping` feature for initial and additional windows without modifying OS pointer settings or Enter/focus dispatch. Runtime `152.0.4191.66` and same-executable injected-input A/B evidence support an upstream Runtime 152 cursor-hiding regression; this is not physical-input acceptance. Existing owner/latch/native admission contracts remain intact. The affected-environment physical four-input, select/cancel/reopen, cursor-inclusive and two-window matrix remains required; status stays `partial`.
 
 ## Status vocabulary
 

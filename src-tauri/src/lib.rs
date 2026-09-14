@@ -448,7 +448,10 @@ async fn create_app_window(
         .map_err(|_| CreateAppWindowError::Capacity)?;
     let window = match WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
         .title("Modeleaf")
-        .additional_browser_args("--force-renderer-accessibility")
+        // Keep keyboard-to-native transitions from inheriting WebView2's hidden cursor (#71).
+        .additional_browser_args(
+            "--force-renderer-accessibility --disable-features=HideCursorWhileTyping",
+        )
         .visible(false)
         .decorations(true)
         .resizable(true)

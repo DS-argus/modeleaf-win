@@ -31,7 +31,7 @@ describe("CP5 shell integration", () => {
     expect(styles).toContain("@media (min-resolution: 2dppx), (min-width: 1600px)");
     expect(styles).toContain("var(--theme-background)");
     expect(styles).toContain(".theme-option[aria-checked=\"true\"]");
-    expect(tauriConfig.app.windows[0]?.additionalBrowserArgs).toBe("--force-renderer-accessibility");
+    expect(tauriConfig.app.windows[0]?.additionalBrowserArgs).toBe("--force-renderer-accessibility --disable-features=HideCursorWhileTyping");
   });
   it("ships release builds without a console and keeps internal chrome out of the renderer", () => {
     expect(nativeMainSource).toContain('#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]');

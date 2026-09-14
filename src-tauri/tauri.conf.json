@@ -22,7 +22,7 @@
         "decorations": true,
         "visible": false,
         "dragDropEnabled": true,
-        "additionalBrowserArgs": "--force-renderer-accessibility"
+        "additionalBrowserArgs": "--force-renderer-accessibility --disable-features=HideCursorWhileTyping"
       }
     ],
     "security": {
