@@ -240,6 +240,7 @@ Palette 자체가 독자 action list를 가지면 안 된다. action registry de
 - query는 Unicode NFC filename fuzzy search이며 입력 자체가 refresh trigger가 아니다.
 - `Ctrl+Shift+c` clear history, arrows/`Ctrl+j/k`, Enter, Esc를 지원한다.
 - Browse는 app chooser overlay를 먼저 닫은 뒤 HWND-owned Windows dialog를 연다. native dialog는 app overlay owner에 포함하지 않는다.
+- Issue #71: initial and additional WebViews disable Chromium `HideCursorWhileTyping` so typing does not hide Modeleaf's pointer before a native-dialog transition. This does not change Windows pointer settings or force cursor/focus state. Operator-reported physical acceptance and separate packaged fixture/cursor evidence are recorded in testing-risks §13.
 - missing entry는 durable prune 성공 후에만 row를 제거한다. stale selection은 최신 snapshot으로 갱신하고 chooser/focus를 유지한다.
 - permission/locked/network/state/persistence error는 typed inline error로 남기며 prune하거나 `Could not read this PDF`로 오진하지 않는다.
 기준 이미지: [`ui/02-open-recent-cmd-o.png`](./ui/02-open-recent-cmd-o.png).

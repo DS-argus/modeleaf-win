@@ -1,0 +1,138 @@
+{
+  "kind": "injected-input-diagnostic-not-physical-acceptance",
+  "exeSha256": "0e2ed455d6bd6b27d427235a6bafa4234d23ba8e85b35b227428ad66b357abc6",
+  "disableTypingHide": false,
+  "inputMode": "FilterEnter",
+  "secondWindow": false,
+  "sourceBefore": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+  "sourceAfter": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+  "status": "probe-executed-not-physical-acceptance",
+  "events": [
+    {
+      "stage": "launched-gui-thread",
+      "tid": 35972,
+      "success": true,
+      "error": 0,
+      "focus": 5112062,
+      "capture": 0
+    },
+    {
+      "stage": "launched",
+      "elapsedMs": 1397,
+      "cursorSuccess": true,
+      "error": 0,
+      "flags": 1,
+      "hCursor": 65539,
+      "foregroundHwnd": 986738,
+      "foregroundTid": 35972,
+      "isAppForeground": true
+    },
+    {
+      "stage": "open-shortcut-released-gui-thread",
+      "tid": 35972,
+      "success": true,
+      "error": 0,
+      "focus": 5112062,
+      "capture": 0
+    },
+    {
+      "stage": "open-shortcut-released",
+      "elapsedMs": 3586,
+      "cursorSuccess": true,
+      "error": 0,
+      "flags": 1,
+      "hCursor": 65539,
+      "foregroundHwnd": 986738,
+      "foregroundTid": 35972,
+      "isAppForeground": true
+    },
+    {
+      "stage": "after-enter-gui-thread",
+      "tid": 35972,
+      "success": true,
+      "error": 0,
+      "focus": 1183074,
+      "capture": 0
+    },
+    {
+      "stage": "after-enter",
+      "elapsedMs": 4534,
+      "cursorSuccess": true,
+      "error": 0,
+      "flags": 1,
+      "hCursor": 65539,
+      "foregroundHwnd": 1839280,
+      "foregroundTid": 35972,
+      "isAppForeground": true
+    },
+    {
+      "stage": "picker-ownership",
+      "root": 986738,
+      "picker": 1839280,
+      "owner": 986738
+    },
+    {
+      "stage": "cursor-inclusive-gdigrab-recording",
+      "exitCode": 0,
+      "scope": "owned app top 320x100 pixels while picker is active",
+      "limitation": "OS cursor composition, not remote-client hardware capture"
+    },
+    {
+      "stage": "after-injected-mouse-move-gui-thread",
+      "tid": 35972,
+      "success": true,
+      "error": 0,
+      "focus": 1183074,
+      "capture": 0
+    },
+    {
+      "stage": "after-injected-mouse-move",
+      "elapsedMs": 7167,
+      "cursorSuccess": true,
+      "error": 0,
+      "flags": 1,
+      "hCursor": 65539,
+      "foregroundHwnd": 1839280,
+      "foregroundTid": 35972,
+      "isAppForeground": true
+    },
+    {
+      "stage": "after-first-escape-gui-thread",
+      "tid": 35972,
+      "success": true,
+      "error": 0,
+      "focus": 5112062,
+      "capture": 0
+    },
+    {
+      "stage": "after-first-escape",
+      "elapsedMs": 7818,
+      "cursorSuccess": true,
+      "error": 0,
+      "flags": 1,
+      "hCursor": 65539,
+      "foregroundHwnd": 986738,
+      "foregroundTid": 35972,
+      "isAppForeground": true
+    },
+    {
+      "stage": "after-dialog-cancel-gui-thread",
+      "tid": 35972,
+      "success": true,
+      "error": 0,
+      "focus": 5112062,
+      "capture": 0
+    },
+    {
+      "stage": "after-dialog-cancel",
+      "elapsedMs": 7821,
+      "cursorSuccess": true,
+      "error": 0,
+      "flags": 1,
+      "hCursor": 65539,
+      "foregroundHwnd": 986738,
+      "foregroundTid": 35972,
+      "isAppForeground": true
+    }
+  ]
+}

@@ -65,9 +65,9 @@ public static class ModeleafNativeWindow {
     if (control) result &= PostMessageW(target, 0x0100, (IntPtr)0x11, IntPtr.Zero);
     if (shift) result &= PostMessageW(target, 0x0100, (IntPtr)0x10, IntPtr.Zero);
     result &= PostMessageW(target, 0x0100, (IntPtr)virtualKey, IntPtr.Zero);
-    result &= PostMessageW(target, 0x0101, (IntPtr)virtualKey, (IntPtr)0xC0000001);
-    if (shift) result &= PostMessageW(target, 0x0101, (IntPtr)0x10, (IntPtr)0xC0000001);
-    if (control) result &= PostMessageW(target, 0x0101, (IntPtr)0x11, (IntPtr)0xC0000001);
+    result &= PostMessageW(target, 0x0101, (IntPtr)virtualKey, new IntPtr(unchecked((int)0xC0000001)));
+    if (shift) result &= PostMessageW(target, 0x0101, (IntPtr)0x10, new IntPtr(unchecked((int)0xC0000001)));
+    if (control) result &= PostMessageW(target, 0x0101, (IntPtr)0x11, new IntPtr(unchecked((int)0xC0000001)));
     return result;
   }
 
@@ -226,11 +226,17 @@ try {
   $process = Start-Process -FilePath $exe -PassThru
   Add-Event "launch" "started"
   $deadline = [DateTime]::UtcNow.AddSeconds(20)
+  $windowReady = $false
   do {
     Start-Sleep -Milliseconds 200
     $process.Refresh()
-  } while ($process.MainWindowHandle -eq [IntPtr]::Zero -and -not $process.HasExited -and [DateTime]::UtcNow -lt $deadline)
+    $rect = New-Object ModeleafNativeWindow+RECT
+    $windowReady = $process.MainWindowHandle -ne [IntPtr]::Zero -and
+      [ModeleafNativeWindow]::GetWindowRect($process.MainWindowHandle, [ref]$rect) -and
+      ($rect.Right - $rect.Left) -ge 320 -and ($rect.Bottom - $rect.Top) -ge 240
+  } while (-not $windowReady -and -not $process.HasExited -and [DateTime]::UtcNow -lt $deadline)
   if ($process.HasExited) { throw "Modeleaf exited before opening a window" }
+  if (-not $windowReady) { throw "Modeleaf window bounds did not become valid within 20 seconds" }
   Focus-App
   Capture-Window "cp1-empty"
 

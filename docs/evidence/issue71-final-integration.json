@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "sourceHead": "1a4c88ab26f1682488080ce8e8b39c6eff498a3a",
+  "integrationBase": "62eb86d410e8f2ac9e789f59a87f5df1e112daba",
+  "qaExecutableSha256": "0e2ed455d6bd6b27d427235a6bafa4234d23ba8e85b35b227428ad66b357abc6",
+  "productionExecutableSha256": "45290b745a2f0f5154f0cd9a041c36829302e0e99822aac1e7fba1489ad5564e",
+  "disposition": "Accepted upstream menu/picker wrapper, recents health, identical window-close scoping and CancelBarrier serialization changes. Preserved cursor policy and native composition guard. Only test harness injected state fields were adapted.",
+  "verification": {
+    "frontendFiles": 88,
+    "frontendTests": 951,
+    "fullLocalGate": "passed; bounded workers, unchanged assertions/warnings",
+    "native": "Nested owner destruction, survivor focus/reopen, zero exit and profile cleanup passed on integrated QA build",
+    "fixtureShaBeforeAndAfter": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd"
+  },
+  "artifacts": [
+    "docs/evidence/issue71-integrated-native.json",
+    "docs/evidence/issue71-integrated-native.png",
+    "docs/evidence/issue71-integrated-fixture.json",
+    "docs/evidence/issue71-integrated-cursor.png"
+  ],
+  "limitations": "Synthetic/native QA uses unique app identity; earlier physical operator acceptance remains historical and is not relabeled as testing this build. No merge, release or broad parity claim."
+}

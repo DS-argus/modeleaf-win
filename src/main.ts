@@ -1299,6 +1299,7 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
   })();
   return quitRequest;
 }
+// Global Any listeners also receive other windows' targeted close events.
 void getCurrentWindow().listen<{ readonly requestId?: number }>("window-close-requested", (event) => {
   if (typeof event.payload.requestId === "number" && Number.isSafeInteger(event.payload.requestId)) void requestApplicationQuit(false, true, event.payload.requestId);
 }).then(
@@ -1573,6 +1574,7 @@ fileOpenerDialog.addEventListener("close", () => {
   render();
 });
 fileOpenerDialog.addEventListener("keydown", (event) => {
+  if (isNativeCompositionEvent(event)) return;
   if (isPaletteClearShortcut(event)) {
     event.preventDefault();
     event.stopPropagation();

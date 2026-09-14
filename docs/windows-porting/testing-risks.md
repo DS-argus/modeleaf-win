@@ -327,7 +327,7 @@ markdown-links-and-diff-check
 
 ### Files
 
-- Browse valid/invalid/locked/empty
+- Browse valid/invalid/locked/empty; Issue #71 select/cancel/Escape/reopen, pointer visibility, focus return, and two-window HWND ownership (scoped operator/native evidence and remaining regression contract: §13)
 - drag/drop
 - Explorer double-click and Open With, app closed/open
 - Unicode/long/UNC path
@@ -409,3 +409,46 @@ Follow-up scenarios additionally cover the previously missed shell transition:
 Fixture SHA-256: `91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab`. Keep source bytes unchanged. The harness is not a packaged transport benchmark or a substitute for the Windows matrix above.
 
 Before restoring parity for the revised reader, separately authorize and retain packaged Windows evidence for: initial top/fit and mixed keyboard input, wheel/d/u at both edges, F then repeated +/- at supported DPI/rotation, cross-page search and query cancellation, and Ctrl+Shift+O → Ctrl+Shift+C with recent-state broadcast/restart behavior. Use disposable state for recent clearing; it must not erase PDFs, theme, indicator settings, or unknown state siblings. Rust fault tests additionally cover malformed state and pre-replace failure with durable/cache/revision rollback. Do not launch/stop an existing application or claim these native checks passed from Chromium/JSDOM results.
+
+## 13. Issue #71 native Browse pointer gate
+
+The earlier owner-UI-thread/posted-message change did not resolve the reported symptom. It preserves the native lifecycle below but is not an established cursor fix. The current candidate disables Chromium's `HideCursorWhileTyping` feature in both initial and newly created Modeleaf WebViews, preserving accessibility arguments. It prevents runtime-owned keyboard cursor hiding instead of adjusting ShowCursor counts, forcing focus, delaying Enter, or changing Windows pointer settings. This is an app-scoped policy: Modeleaf keeps the pointer visible while typing; other applications and OS settings are unchanged.
+
+WebView2 Runtime 152 introduced a related hidden-cursor regression: [upstream #5687](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5687) and [#5708](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5708). Microsoft confirmed reproduction and reported investigation, not a released fix. On the reference workstation, running WebView2 was `152.0.4191.66`. A same-executable injected-input comparison observed `GetCursorInfo` success with flags `1 → 0 → 1` across Enter/native Show/cancel; movement while the owned picker was active did not restore visibility. With only process-scoped `--disable-features=HideCursorWhileTyping`, sampled flags remained `1`. This supports the runtime-feature diagnosis but does not replace the physical-input, cursor-inclusive gate. Retain failed probes and distinguish an actually displayed cursor from its reported global flags.
+
+Focused Rust contract scope:
+
+- reject null, stale, and wrong-thread owner HWNDs before COM dialog creation;
+- run the picker operation only inside the dispatched callback;
+- preserve cancel and picker-failure terminals;
+- return terminal failures when main-thread dispatch is rejected or its callback is dropped;
+- balance every successful `CoInitializeEx`, including `S_FALSE`, with `CoUninitialize`.
+
+**Issue #71 verification evidence:** the operator reported that the following manual checklist worked on the hash-verified production candidate. [`issue71-cursor.json`](../evidence/issue71-cursor.json) records the exact attestation and its limits. Supplemental state-isolated packaged tests visibly rendered `text-3-page.pdf`, retained its SHA-256 before/after, verified owned picker/one-Escape focus return, and captured the cursor during Enter/Space-opened native dialogs. OS-composited recording and injected input are explicitly distinct from the operator's physical verification; no remote-client recording was supplied. The checklist remains the regression contract, and broader parity/release gates are unchanged:
+
+1. Release the Open shortcut fully, then repeat filter-focus Enter, Tab-to-Browse Enter, focused-Browse Space, and a physical mouse click. Confirm the pointer remains visible over both Modeleaf and the native picker in empty and PDF-open windows. Synthetic input is a diagnostic comparison, not physical-input acceptance.
+2. Select a committed PDF, then repeat with Cancel, Escape, and reopen; verify focus returns and the native open epoch is released exactly once after each terminal.
+3. With two Modeleaf windows, launch Browse from each window and verify the picker is modal to the initiating live HWND without disabling or admitting into the other window.
+4. Record the packaged build identity, Windows/WebView2 versions, observations or capture, and source PDF SHA-256 before/after.
+
+Do not substitute unit/source assertions for this native observation, and do not use `ShowCursor`, `SetCursor`, or process-global cursor-state changes as remediation.
+
+Nested native modal dialogs can delay an outer request's completion until the inner `Show` unwinds. Owner destruction invalidates the request token and prevents late selection admission, but does not promise immediate completion of an already-running outer picker. Native verification must close/cancel window A while window B's picker is open, then dismiss B and verify the surviving window can open a new picker; distinguish delayed completion from framework event starvation.
+
+The review regression suite also found two concrete edge defects: Browse did not apply the existing legacy-IME/AltGraph guard, and an unscoped Tauri `Any` close-event listener disposed another window's frontend. `openChooserInput.test.ts` executes the production DOM handlers and real coordinator; `windowCloseOwnership.test.ts` executes the production subscription through the real Tauri JS API. The listener is now window-scoped, while global state/quit broadcasts remain global. The repaired [nested native transcript](../evidence/issue71-nested-lifecycle.json) proves that A can be destroyed during B's inner picker, unrelated native IPC remains responsive, and B restores native/DOM focus and opens/cancels a fresh picker. This is explicitly synthetic native lifecycle evidence, not physical cursor input.
+
+Reproduce the bounded native lifecycle scenario from the worktree root using a separate QA identity (Node, PowerShell 7, and the normal Windows build toolchain are required):
+
+```powershell
+New-Item -ItemType Directory -Force .internal/evidence/issue71-replay | Out-Null
+'{"identifier":"com.dsargus.modeleaf.issue71replay"}' | Set-Content .internal/evidence/issue71-replay/config.json
+$env:CI = "true"
+$env:CARGO_BUILD_JOBS = "1"
+$env:CARGO_INCREMENTAL = "0"
+npm run tauri -- build --debug --no-bundle --config .internal/evidence/issue71-replay/config.json
+$hash = (Get-FileHash src-tauri/target/debug/modeleaf.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+node tools/windows/verify-browse-lifecycle.mjs src-tauri/target/debug/modeleaf.exe .internal/evidence/issue71-replay/result.json $hash
+npm run tauri:build-debug
+```
+
+The driver refuses an existing result file, pins the selected executable, uses only its own HWNDs for synthetic close messages, and confines debugger connections to its selected loopback port (selection does not reserve the port across process startup). It requires application exit code 0 with no signal, removes its own temporary browser profile, and retains cleanup failures as failed runs. The final build restores the ordinary application identity; do not distribute the QA-identity executable.
