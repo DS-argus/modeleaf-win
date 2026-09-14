@@ -84,6 +84,17 @@ const EXPECTED_SENTINELS: Record<string, unknown> = {
   },
   "unicode-text.pdf": { nfc: "café", nfd: "café", rtl: "مرحبا" },
   "한글 공백 😀.pdf": { unicode_filename: true },
+  "print-mixed-rotation-4.pdf": {
+    identity: "print-mixed-rotation-4-v1",
+    corner_markers:
+      "tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall",
+    orientation_markers: [
+      "print-mixed-page-1-r0-source-top-arrow",
+      "print-mixed-page-2-r90-source-top-arrow",
+      "print-mixed-page-3-r180-source-top-arrow",
+      "print-mixed-page-4-r270-source-top-arrow",
+    ],
+  },
 };
 const digest = (value: Uint8Array) =>
   createHash("sha256").update(value).digest("hex");
@@ -111,9 +122,11 @@ async function inspectPdf(pdf: Uint8Array, password?: string) {
   const annotations: AnnotationRecord[] = [];
   const pageAnnotations: AnnotationRecord[][] = [];
   const pageViews: number[][] = [];
+  const pageRotations: number[] = [];
   for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
     const page = await document.getPage(pageNumber);
     pageViews.push([...page.view]);
+    pageRotations.push(page.rotate);
     const content = await page.getTextContent();
     text.push(
       content.items.map((item) => ("str" in item ? item.str : "")).join(""),
@@ -137,6 +150,7 @@ async function inspectPdf(pdf: Uint8Array, password?: string) {
     pageAnnotations,
     outline,
     pageViews,
+    pageRotations,
   };
 }
 
@@ -398,6 +412,61 @@ describe("golden PDF fixtures", () => {
       const linkLandingRaw = linkLandingBytes.toString("latin1");
       expect(linkLandingRaw).toContain("% link-landing-page-3-raster-v1");
       expect(linkLandingRaw).toContain("48 650 192 48 re f");
+
+      const printMixedBytes = await readFile(
+        join(first, "pdf", "print-mixed-rotation-4.pdf"),
+      );
+      const printMixed = await inspectPdf(new Uint8Array(printMixedBytes));
+      const printMixedPageViews = [
+        [0, 0, 612, 792],
+        [0, 0, 792, 612],
+        [0, 0, 400, 600],
+        [0, 0, 600, 400],
+      ];
+      const printMixedRotations = [0, 90, 180, 270];
+      const printMixedText = [
+        "Print mixed rotation page 1 612x792 rotate 0",
+        "Print mixed rotation page 2 792x612 rotate 90",
+        "Print mixed rotation page 3 400x600 rotate 180",
+        "Print mixed rotation page 4 600x400 rotate 270",
+      ];
+      const printMixedOrientationMarkers = [
+        "print-mixed-page-1-r0-source-top-arrow",
+        "print-mixed-page-2-r90-source-top-arrow",
+        "print-mixed-page-3-r180-source-top-arrow",
+        "print-mixed-page-4-r270-source-top-arrow",
+      ];
+      expect(printMixed.pageViews).toEqual(printMixedPageViews);
+      expect(printMixed.pageRotations).toEqual(printMixedRotations);
+      expect(printMixed.pageText).toEqual(printMixedText);
+      const printMixedMetadata = one.files.find(
+        ({ name }) => name === "print-mixed-rotation-4.pdf",
+      );
+      if (printMixedMetadata === undefined || !("page_sizes" in printMixedMetadata) || !("rotations" in printMixedMetadata)) {
+        throw new Error("Mixed print fixture metadata is incomplete");
+      }
+      expect(printMixedMetadata?.page_sizes).toEqual(
+        printMixedPageViews.map(([, , width, height]) => [width, height]),
+      );
+      expect(printMixedMetadata?.rotations).toEqual(printMixedRotations);
+      const printMixedRaw = printMixedBytes.toString("latin1");
+      expect(
+        printMixedRaw.match(/% print-mixed-rotation-4-v1/g) ?? [],
+      ).toHaveLength(4);
+      expect(
+        Array.from(
+          printMixedRaw.matchAll(
+            /% (print-mixed-page-\d-r\d+-source-top-arrow)/g,
+          ),
+          (match) => match[1],
+        ),
+      ).toEqual(printMixedOrientationMarkers);
+      expect(
+        printMixedRaw.match(
+          /% tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall/g,
+        ) ?? [],
+      ).toHaveLength(4);
+
       const duplicates = await inspectPdf(
         new Uint8Array(
           await readFile(join(first, "pdf", "link-duplicates.pdf")),

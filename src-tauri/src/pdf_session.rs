@@ -9,6 +9,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -170,6 +171,10 @@ enum TeardownOwner {
     LifecycleDeferred,
 }
 
+struct ActivePrintLease {
+    id: u64,
+    cancellation_flag: Arc<AtomicBool>,
+}
 struct Session {
     owner: PdfOwner,
     generation: u64,
@@ -179,6 +184,8 @@ struct Session {
     queued: usize,
     in_flight: usize,
     external_link_in_flight: usize,
+    print_lease: Option<ActivePrintLease>,
+    print_invalidated: bool,
     activation_operations: HashMap<u64, Arc<ActivationOperation>>,
     retained_activation_operations: VecDeque<u64>,
     highest_operation_sequence: u64,
@@ -209,6 +216,7 @@ struct Sessions {
     closed_tombstones: VecDeque<ClosedSession>,
     next_generation: u64,
     next_barrier: u64,
+    next_print_lease: u64,
     process_queued: usize,
     process_in_flight: usize,
     external_link_process_in_flight: usize,
@@ -217,6 +225,46 @@ struct Sessions {
 pub struct PdfSessionManager {
     sessions: Arc<Mutex<Sessions>>,
     drained: Arc<Condvar>,
+}
+pub struct PdfPrintLease {
+    sessions: Arc<Mutex<Sessions>>,
+    drained: Arc<Condvar>,
+    id: SessionId,
+    lease_id: u64,
+    cancellation_flag: Arc<AtomicBool>,
+}
+
+impl PdfPrintLease {
+    pub fn cancellation_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancellation_flag)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation_flag.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for PdfPrintLease {
+    fn drop(&mut self) {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        let released = if let Some(session) = sessions.entries.get_mut(&self.id) {
+            if session.print_lease.as_ref().is_some_and(|lease| {
+                lease.id == self.lease_id
+                    && Arc::ptr_eq(&lease.cancellation_flag, &self.cancellation_flag)
+            }) {
+                session.print_lease = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if released {
+            PdfSessionManager::remove_deferred_drained_session(&mut sessions, &self.id);
+        }
+        self.drained.notify_all();
+    }
 }
 
 struct ExternalLinkAdmission {
@@ -301,6 +349,7 @@ impl PdfSessionManager {
                 closed_tombstones: VecDeque::new(),
                 next_generation: 1,
                 next_barrier: 1,
+                next_print_lease: 1,
                 process_queued: 0,
                 process_in_flight: 0,
                 external_link_process_in_flight: 0,
@@ -459,6 +508,8 @@ impl PdfSessionManager {
                 file: Arc::new(Mutex::new(file)),
                 queued: 0,
                 in_flight: 0,
+                print_lease: None,
+                print_invalidated: false,
                 barrier: None,
                 external_links: HashMap::new(),
                 external_link_in_flight: 0,
@@ -546,6 +597,60 @@ impl PdfSessionManager {
             return Err(PdfSessionError::SessionClosing);
         }
         Ok(session.length)
+    }
+    /// Invalidates only print admission for sessions belonging to a replaced or
+    /// closing renderer. Existing read/close authority is left intact.
+    pub fn invalidate_print_owner(&self, window_label: &str) {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        for session in sessions
+            .entries
+            .values_mut()
+            .filter(|session| session.owner.window_label == window_label)
+        {
+            session.print_invalidated = true;
+            if let Some(lease) = &session.print_lease {
+                lease.cancellation_flag.store(true, Ordering::Release);
+            }
+        }
+        self.drained.notify_all();
+    }
+    pub fn acquire_print_lease(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<PdfPrintLease, PdfSessionError> {
+        let mut sessions = self.sessions.lock().expect("session state poisoned");
+        {
+            let session = Self::checked_session(&mut sessions, owner, id, generation)?;
+            if session.teardown != TeardownOwner::Active
+                || session.print_invalidated
+                || session.print_lease.is_some()
+            {
+                return Err(PdfSessionError::SessionClosing);
+            }
+        }
+        let lease_id = sessions.next_print_lease;
+        sessions.next_print_lease = sessions
+            .next_print_lease
+            .checked_add(1)
+            .ok_or(PdfSessionError::SessionCapacity)?;
+        let cancellation_flag = Arc::new(AtomicBool::new(false));
+        sessions
+            .entries
+            .get_mut(id)
+            .expect("validated print session missing")
+            .print_lease = Some(ActivePrintLease {
+            id: lease_id,
+            cancellation_flag: Arc::clone(&cancellation_flag),
+        });
+        Ok(PdfPrintLease {
+            sessions: Arc::clone(&self.sessions),
+            drained: Arc::clone(&self.drained),
+            id: id.clone(),
+            lease_id,
+            cancellation_flag,
+        })
     }
 
     pub fn read_range(
@@ -1068,6 +1173,9 @@ impl PdfSessionManager {
             TeardownOwner::CommandCancelling => {}
             TeardownOwner::LifecycleDeferred => return Err(PdfSessionError::SessionClosing),
         }
+        if let Some(lease) = &session.print_lease {
+            lease.cancellation_flag.store(true, Ordering::Release);
+        }
         self.drained.notify_all();
         if let Some(barrier_id) = session.barrier {
             return Ok(CancelBarrier { barrier_id });
@@ -1084,6 +1192,12 @@ impl PdfSessionManager {
                 .ok_or(PdfSessionError::SessionNotFound)?
                 .queued
                 != 0
+            || sessions
+                .entries
+                .get(id)
+                .ok_or(PdfSessionError::SessionNotFound)?
+                .print_lease
+                .is_some()
         {
             sessions = self.drained.wait(sessions).expect("session state poisoned");
         }
@@ -1162,6 +1276,7 @@ impl PdfSessionManager {
         if session.teardown != TeardownOwner::CommandCancelling
             || session.in_flight != 0
             || session.queued != 0
+            || session.print_lease.is_some()
             || session.external_link_in_flight != 0
         {
             return Err(PdfSessionError::SessionClosing);
@@ -1220,7 +1335,11 @@ impl PdfSessionManager {
         if session.teardown != TeardownOwner::LifecycleDeferred {
             return Err(PdfSessionError::SessionClosing);
         }
-        if session.in_flight != 0 || session.queued != 0 || session.external_link_in_flight != 0 {
+        if session.in_flight != 0
+            || session.queued != 0
+            || session.external_link_in_flight != 0
+            || session.print_lease.is_some()
+        {
             return Ok(false);
         }
         sessions.entries.remove(id);
@@ -1253,12 +1372,16 @@ impl PdfSessionManager {
         let deadline = Instant::now() + timeout;
         let mut sessions = self.sessions.lock().expect("session state poisoned");
         for session in sessions.entries.values_mut() {
-            if matches(&session.owner)
-                && matches!(
-                    session.teardown,
-                    TeardownOwner::Active | TeardownOwner::CommandCancelling
-                )
-            {
+            if !matches(&session.owner) {
+                continue;
+            }
+            if let Some(lease) = &session.print_lease {
+                lease.cancellation_flag.store(true, Ordering::Release);
+            }
+            if matches!(
+                session.teardown,
+                TeardownOwner::Active | TeardownOwner::CommandCancelling
+            ) {
                 session.teardown = TeardownOwner::LifecycleDeferred;
             }
         }
@@ -1267,7 +1390,8 @@ impl PdfSessionManager {
                 && matches(&session.owner)
                 && (session.in_flight != 0
                     || session.queued != 0
-                    || session.external_link_in_flight != 0)
+                    || session.external_link_in_flight != 0
+                    || session.print_lease.is_some())
         }) {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return;
@@ -1283,7 +1407,8 @@ impl PdfSessionManager {
                         && matches(&session.owner)
                         && (session.in_flight != 0
                             || session.queued != 0
-                            || session.external_link_in_flight != 0)
+                            || session.external_link_in_flight != 0
+                            || session.print_lease.is_some())
                 })
             {
                 return;
@@ -1300,6 +1425,7 @@ impl PdfSessionManager {
                 && session.in_flight == 0
                 && session.queued == 0
                 && session.external_link_in_flight == 0
+                && session.print_lease.is_none()
         }) {
             sessions.entries.remove(id);
         }
@@ -1308,7 +1434,11 @@ impl PdfSessionManager {
     #[cfg(debug_assertions)]
     pub fn assert_empty(&self) -> bool {
         let sessions = self.sessions.lock().expect("session state poisoned");
-        sessions.entries.is_empty()
+        sessions
+            .entries
+            .values()
+            .all(|session| session.print_lease.is_none())
+            && sessions.entries.is_empty()
             && sessions.process_queued == 0
             && sessions.process_in_flight == 0
             && sessions.external_link_process_in_flight == 0
@@ -1409,6 +1539,24 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
+    #[test]
+    fn renderer_invalidation_rejects_old_prints_and_preserves_read_close_authority() {
+        let (manager, id, path) = session();
+        let lease = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+        manager.invalidate_print_owner("another-window");
+        assert!(!lease.is_cancelled());
+        manager.invalidate_print_owner(&owner().window_label);
+        assert!(lease.is_cancelled());
+        drop(lease);
+        assert!(matches!(
+            manager.acquire_print_lease(&owner(), &id, 7),
+            Err(PdfSessionError::SessionClosing)
+        ));
+        assert_eq!(manager.session_length(&owner(), &id, 7), Ok(9));
+        manager.drain_owned(&owner());
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
     fn owner() -> PdfOwner {
         PdfOwner {
             window_label: "reader".into(),
@@ -1435,6 +1583,8 @@ mod tests {
                 file: Arc::new(Mutex::new(File::open(&path).unwrap())),
                 queued: 0,
                 in_flight: 0,
+                print_lease: None,
+                print_invalidated: false,
                 barrier: None,
                 external_links: HashMap::new(),
                 external_link_in_flight: 0,
@@ -1814,6 +1964,8 @@ mod tests {
                         teardown,
                         queued: 0,
                         in_flight: 0,
+                        print_lease: None,
+                        print_invalidated: false,
                         external_link_in_flight: 0,
                         activation_operations: HashMap::new(),
                         retained_activation_operations: VecDeque::new(),
@@ -1902,6 +2054,135 @@ mod tests {
             .close(&owner(), &command_id, 7, barrier.barrier_id)
             .unwrap();
         manager.drain_all();
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn print_lease_validates_owner_and_generations_atomically() {
+        fn assert_send_static<T: Send + 'static>() {}
+        assert_send_static::<PdfPrintLease>();
+
+        let (manager, id, path) = session();
+        let wrong_window = PdfOwner {
+            window_label: "other".into(),
+            generation: owner().generation,
+        };
+        assert!(matches!(
+            manager.acquire_print_lease(&wrong_window, &id, 7),
+            Err(PdfSessionError::OwnerMismatch)
+        ));
+        let wrong_owner_generation = PdfOwner {
+            window_label: owner().window_label,
+            generation: owner().generation + 1,
+        };
+        assert!(matches!(
+            manager.acquire_print_lease(&wrong_owner_generation, &id, 7),
+            Err(PdfSessionError::GenerationMismatch)
+        ));
+        assert!(matches!(
+            manager.acquire_print_lease(&owner(), &id, 8),
+            Err(PdfSessionError::GenerationMismatch)
+        ));
+
+        let lease = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+        assert!(!lease.is_cancelled());
+        drop(lease);
+        manager.drain_owned(&owner());
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn session_cancel_propagates_to_print_lease() {
+        let (manager, id, path) = session();
+        let lease = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+        let cancellation_flag = lease.cancellation_flag();
+        let cancelling_manager = manager.clone();
+        let cancelling_id = id.clone();
+        let cancelling =
+            std::thread::spawn(move || cancelling_manager.cancel(&owner(), &cancelling_id, 7));
+
+        wait_for_teardown(&manager, &id, TeardownOwner::CommandCancelling);
+        assert!(lease.is_cancelled());
+        assert!(cancellation_flag.load(Ordering::Acquire));
+        drop(lease);
+
+        let barrier = cancelling.join().unwrap().unwrap();
+        manager.close(&owner(), &id, 7, barrier.barrier_id).unwrap();
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn close_barrier_retains_session_until_print_lease_drops() {
+        let (manager, id, path) = session();
+        let lease = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+        let cancelling_manager = manager.clone();
+        let cancelling_id = id.clone();
+        let cancelling =
+            std::thread::spawn(move || cancelling_manager.cancel(&owner(), &cancelling_id, 7));
+
+        wait_for_teardown(&manager, &id, TeardownOwner::CommandCancelling);
+        assert_eq!(
+            manager.close(&owner(), &id, 7, 1),
+            Err(PdfSessionError::SessionClosing)
+        );
+        assert!(manager.sessions.lock().unwrap().entries.contains_key(&id));
+        drop(lease);
+
+        let barrier = cancelling.join().unwrap().unwrap();
+        assert!(matches!(
+            manager.acquire_print_lease(&owner(), &id, 7),
+            Err(PdfSessionError::SessionClosing)
+        ));
+        manager.close(&owner(), &id, 7, barrier.barrier_id).unwrap();
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_drain_retains_print_lease_then_reaps_on_drop() {
+        let (manager, id, path) = session();
+        let lease = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+
+        manager.drain_owner_with_timeout_for_test(&owner().window_label, Duration::ZERO);
+        assert!(lease.is_cancelled());
+        {
+            let sessions = manager.sessions.lock().unwrap();
+            let retained = sessions.entries.get(&id).unwrap();
+            assert_eq!(retained.teardown, TeardownOwner::LifecycleDeferred);
+            assert!(retained.print_lease.is_some());
+        }
+        assert!(!manager.assert_empty());
+
+        drop(lease);
+        assert!(manager.assert_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn print_lease_reacquire_uses_a_fresh_flag_without_resetting_the_old_one() {
+        let (manager, id, path) = session();
+        let first = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+        let old_flag = first.cancellation_flag();
+        old_flag.store(true, Ordering::Release);
+        assert!(first.is_cancelled());
+        drop(first);
+
+        let second = manager.acquire_print_lease(&owner(), &id, 7).unwrap();
+        let new_flag = second.cancellation_flag();
+        assert!(!Arc::ptr_eq(&old_flag, &new_flag));
+        assert!(old_flag.load(Ordering::Acquire));
+        assert!(!second.is_cancelled());
+        assert!(matches!(
+            manager.acquire_print_lease(&owner(), &id, 7),
+            Err(PdfSessionError::SessionClosing)
+        ));
+
+        drop(second);
+        assert!(old_flag.load(Ordering::Acquire));
+        manager.drain_owned(&owner());
         assert!(manager.assert_empty());
         std::fs::remove_file(path).unwrap();
     }

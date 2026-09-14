@@ -504,6 +504,27 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-list { max-height: min(42vh, 260px); }
   .file-opener-footer { overflow-wrap: anywhere; }
 }
+.print-progress {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-inline-start: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.print-progress[hidden] { display: none; }
+.print-progress progress { width: 80px; max-width: 25vw; accent-color: var(--theme-accent); }
+.print-progress button {
+  color: inherit;
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font: inherit;
+}
+.print-progress button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
+.print-progress button:disabled { opacity: 0.65; }
 @media (forced-colors: active) {
   .help-group h2 { border-color: CanvasText; }
   .command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }
@@ -515,6 +536,8 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .windows-menu-commands { border-color: CanvasText; box-shadow: none; }
   .windows-menu-commands button:disabled { color: GrayText; opacity: 1; }
   .windows-menu-shortcut { color: inherit; }
+  .print-progress { color: CanvasText; forced-color-adjust: auto; }
+  .print-progress button:focus-visible { outline-color: Highlight; }
   .statusbar, .status-badge { color: CanvasText; background: Canvas; }
   .status-badge { border-color: CanvasText; }
   .pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }
@@ -548,26 +571,6 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-footer { overflow-wrap: anywhere; }
 }
 
-.pdf-print-surface {
-  position: fixed;
-  top: 0;
-  left: -100000px;
-  background: white;
-  color: black;
-}
-
-.pdf-print-page {
-  display: block;
-  max-width: none;
-}
-
-@media print {
-  body > :not(.pdf-print-surface) { display: none !important; }
-  .pdf-print-surface { position: static; }
-  .pdf-print-page { break-after: page; page-break-after: always; }
-  .pdf-print-page:last-child { break-after: auto; page-break-after: auto; }
-
-}
 #reader-main {
   display: grid;
   grid-template-areas: "reader";

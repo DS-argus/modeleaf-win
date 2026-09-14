@@ -21,6 +21,7 @@ import {
   type ReaderNativeBoundary,
 } from "./PdfReaderController";
 import { ResourceReservationManager } from "./ResourceBudget";
+import type { PdfPrintProgress } from "./PdfPrintService";
 
 export interface PdfTabSnapshot {
   readonly title: string;
@@ -32,6 +33,8 @@ export interface PdfTabSnapshot {
 }
 
 export interface PdfTabSessionOptions {
+  readonly printNative?: PdfReaderControllerOptions["printNative"];
+  readonly onPrintProgress?: (progress: PdfPrintProgress | undefined) => void;
   readonly native: ReaderNativeBoundary;
   readonly pdf: PdfBoundary;
   readonly resources: ResourceReservationManager;
@@ -133,6 +136,8 @@ export class PdfTabSession {
   public constructor(private readonly options: PdfTabSessionOptions) {
     this.pdfReader = new PdfReaderController({
       native: options.native,
+      ...(options.printNative === undefined ? {} : { printNative: options.printNative }),
+      ...(options.onPrintProgress === undefined ? {} : { onPrintProgress: options.onPrintProgress }),
       pdf: options.pdf,
       resources: options.resources,
       canvasHost: options.canvasHost,
@@ -200,6 +205,8 @@ export class PdfTabSession {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
   }
+  public get printProgress(): PdfPrintProgress | undefined { return this.pdfReader.printProgress; }
+  public cancelPrint(): void { this.pdfReader.cancelPrint(); }
   public async printCurrent(): Promise<boolean> {
     return this.closed || !this.isForegroundActive() ? false : this.pdfReader.printCurrent();
   }

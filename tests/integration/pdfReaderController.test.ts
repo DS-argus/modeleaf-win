@@ -1564,16 +1564,37 @@ describe("PdfReaderController", () => {
     rejectedGeometry.mockRestore();
     await controller.dispose();
   });
-  it("admits one print job and releases its hidden surface after completion", async () => {
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
-    vi.spyOn(HTMLCanvasElement.prototype, "toBlob").mockImplementation((callback) => callback(new Blob(["png"])));
-    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:print-test") });
-    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+  it("admits one native print job and releases it after submitted acknowledgement", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+      getImageData: (_x: number, _y: number, width: number, height: number) => ({
+        data: new Uint8ClampedArray(width * height * 4),
+      }),
+    } as CanvasRenderingContext2D);
     const resources = new ResourceReservationManager();
     const host = document.createElement("div");
     document.body.append(host);
+    const jobId = "a".repeat(64);
+    const ranges = [{ from: 1, to: 1 }] as const;
+    const finishGate = deferred<void>();
+    const printNative = {
+      start: vi.fn(async () => ({ jobId, phase: "dialog" as const, pageCount: 1, pageRanges: [], submittedPages: 0, error: null })),
+      poll: vi.fn(async () => ({ jobId, phase: "ready" as const, pageCount: 1, pageRanges: ranges, submittedPages: 0, error: null })),
+      submit: vi.fn(async (_job: string, payload: Uint8Array) => {
+        expect(new DataView(payload.buffer, payload.byteOffset, 32).getUint32(4, true)).toBe(1);
+        return { jobId, phase: "printing" as const, pageCount: 1, pageRanges: ranges, submittedPages: 1, error: null };
+      }),
+      finish: vi.fn(async () => {
+        await finishGate.promise;
+        return { jobId, phase: "submitted" as const, pageCount: 1, pageRanges: ranges, submittedPages: 1, error: null };
+      }),
+      cancel: vi.fn(async () => ({ jobId, phase: "cancelled" as const, pageCount: 1, pageRanges: ranges, submittedPages: 1, error: null })),
+      release: vi.fn(async () => undefined),
+    };
+    const printProgress = vi.fn();
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("single-print", 1))),
+      printNative: () => printNative,
+      onPrintProgress: printProgress,
       resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(1))), annotationMode: 0 },
       canvasHost: host,
@@ -1582,24 +1603,22 @@ describe("PdfReaderController", () => {
       onStatus: vi.fn(),
     });
     await controller.open(1);
-    const printGate = deferred<void>();
-    const first = controller.printCurrent(() => printGate.promise);
-    await vi.waitFor(() => expect(document.querySelectorAll(".pdf-print-page")).toHaveLength(1));
+    const first = controller.printCurrent();
+    await vi.waitFor(() => expect(printNative.finish).toHaveBeenCalledOnce());
 
-    expect(await controller.printCurrent(vi.fn())).toBe(false);
-    printGate.resolve();
+    expect(await controller.printCurrent()).toBe(false);
+    finishGate.resolve();
     expect(await first).toBe(true);
-    expect(document.querySelector(".pdf-print-surface")).toBeNull();
+    expect(printNative.release).toHaveBeenCalledWith(jobId);
+    expect(printProgress).toHaveBeenCalledWith(expect.objectContaining({ phase: "submitted" }));
 
     await controller.dispose();
     resources.assertEmpty();
     host.remove();
   });
 
-  it("aborts and releases an in-flight print before disposing the document", async () => {
+  it("aborts and releases an in-flight native print before disposing the document", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
-    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:print-test") });
-    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
     const printRender = deferred<void>();
     const cancelPrint = vi.fn(() => printRender.reject(Object.assign(new Error("cancelled"), { name: "RenderingCancelledException" })));
     let renderCount = 0;
@@ -1615,11 +1634,22 @@ describe("PdfReaderController", () => {
         return { promise: printRender.promise, cancel: cancelPrint };
       },
     };
+    const jobId = "b".repeat(64);
+    const ranges = [{ from: 1, to: 1 }] as const;
+    const printNative = {
+      start: vi.fn(async () => ({ jobId, phase: "dialog" as const, pageCount: 1, pageRanges: [], submittedPages: 0, error: null })),
+      poll: vi.fn(async () => ({ jobId, phase: "ready" as const, pageCount: 1, pageRanges: ranges, submittedPages: 0, error: null })),
+      submit: vi.fn(async () => ({ jobId, phase: "printing" as const, pageCount: 1, pageRanges: ranges, submittedPages: 1, error: null })),
+      finish: vi.fn(async () => ({ jobId, phase: "submitted" as const, pageCount: 1, pageRanges: ranges, submittedPages: 1, error: null })),
+      cancel: vi.fn(async () => ({ jobId, phase: "cancelled" as const, pageCount: 1, pageRanges: ranges, submittedPages: 0, error: null })),
+      release: vi.fn(async () => undefined),
+    };
     const documentBoundary = documentWith(1, vi.fn(async () => printablePage));
     const resources = new ResourceReservationManager();
     const host = document.createElement("div");
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("cancel-print", 1))),
+      printNative: () => printNative,
       resources,
       pdf: { getDocument: vi.fn(() => task(documentBoundary)), annotationMode: 0 },
       canvasHost: host,
@@ -1628,14 +1658,15 @@ describe("PdfReaderController", () => {
       onStatus: vi.fn(),
     });
     await controller.open(1);
-    const printing = controller.printCurrent(vi.fn());
+    const printing = controller.printCurrent();
     await vi.waitFor(() => expect(printCanvas).toBeDefined());
 
     await controller.suspend();
     expect(await printing).toBe(false);
     expect(cancelPrint).toHaveBeenCalled();
+    expect(printNative.cancel).toHaveBeenCalledWith(jobId);
+    expect(printNative.release).toHaveBeenCalledWith(jobId);
     expect(printCanvas).toMatchObject({ width: 0, height: 0 });
-    expect(document.querySelector(".pdf-print-surface")).toBeNull();
 
     await controller.dispose();
     resources.assertEmpty();
