@@ -165,7 +165,11 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
     else if (effect.type === "focus") restoreOwnedFocus(effect.target);
   }
 }
-const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu, onCommand: (actionId) => dispatchActionId(actionId as ActionId) });
+const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu,
+  canOpen: () => overlayOwner.active === undefined && !nativeOpenPending,
+  onOpen: () => cancelPendingShellInput(),
+  onCommand: (actionId) => dispatchActionId(actionId as ActionId),
+});
 function claimOverlay(id: OverlayId): void {
   applicationMenuOwner.close();
   if (overlayOwner.active === undefined) overlayOwner = createOverlayOwner(SHELL_WINDOW_ID, currentFocusFallback());
@@ -436,19 +440,49 @@ function commandAvailabilityContext(): ActionRuntimeContext {
   };
 }
 function renderWindowsMenu(model: ReturnType<typeof buildWindowsMenuModel>): void {
-  windowsMenu.replaceChildren(...model.map((section) => {
-    const group = document.createElement("details");
-    const summary = document.createElement("summary"); summary.textContent = section.label;
-    const commands = document.createElement("div"); commands.className = "windows-menu-commands"; commands.setAttribute("role", "menu");
-    commands.replaceChildren(...section.commands.map((command) => {
-      const button = document.createElement("button"); button.type = "button"; button.setAttribute("role", "menuitem"); button.disabled = !command.enabled;
-      button.textContent = command.shortcuts.length === 0 ? command.title : `${command.title}  ${command.shortcuts.join(", ")}`;
-      if (!command.enabled && command.disabledReason !== undefined) { button.title = command.disabledReason; button.setAttribute("aria-description", command.disabledReason); }
-      button.dataset.menuCommand = command.id;
-      return button;
-    }));
-    group.append(summary, commands); return group;
-  }));
+  const retainedSections = new Set(model.map(({ id }) => id as string));
+  for (const group of Array.from(windowsMenu.children)) {
+    if (!retainedSections.has((group as HTMLElement).dataset.menuSection ?? "")) group.remove();
+  }
+  for (const [index, section] of model.entries()) {
+    let group = windowsMenu.querySelector<HTMLDetailsElement>(`details[data-menu-section="${section.id}"]`);
+    if (group === null) {
+      group = document.createElement("details");
+      group.dataset.menuSection = section.id;
+      const summary = document.createElement("summary");
+      summary.setAttribute("aria-haspopup", "menu");
+      const commands = document.createElement("div");
+      commands.className = "windows-menu-commands";
+      commands.setAttribute("role", "menu");
+      group.append(summary, commands);
+    }
+    if (windowsMenu.children[index] !== group) windowsMenu.insertBefore(group, windowsMenu.children[index] ?? null);
+    const summary = group.querySelector("summary")!;
+    if (summary.textContent !== section.label) summary.textContent = section.label;
+    const commands = group.querySelector<HTMLElement>(".windows-menu-commands")!;
+    commands.setAttribute("aria-label", section.label);
+    const retainedCommands = new Set(section.commands.map(({ id }) => id as string));
+    for (const button of Array.from(commands.children)) {
+      if (!retainedCommands.has((button as HTMLElement).dataset.menuCommand ?? "")) button.remove();
+    }
+    for (const [commandIndex, command] of section.commands.entries()) {
+      let button = commands.querySelector<HTMLButtonElement>(`button[data-menu-command="${command.id}"]`);
+      if (button === null) {
+        button = document.createElement("button");
+        button.type = "button";
+        button.setAttribute("role", "menuitem");
+        button.dataset.menuCommand = command.id;
+      }
+      button.disabled = !command.enabled;
+      const label = command.shortcuts.length === 0 ? command.title : `${command.title}  ${command.shortcuts.join(", ")}`;
+      if (button.textContent !== label) button.textContent = label;
+      button.title = command.disabledReason ?? "";
+      if (!command.enabled && command.disabledReason !== undefined) button.setAttribute("aria-description", command.disabledReason);
+      else button.removeAttribute("aria-description");
+      if (commands.children[commandIndex] !== button) commands.insertBefore(button, commands.children[commandIndex] ?? null);
+    }
+  }
+  applicationMenuOwner.reconcile();
 }
 function renderHelpRows(): void {
   const groups = new Map<string, ReturnType<typeof buildHelpRows>>();
@@ -691,7 +725,6 @@ function render(): void {
   emptyReader.hidden = shell.emptyState === undefined;
   emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
   if (snapshot.reader.helpVisible && overlayOwner.active?.id !== "help") claimOverlay("help");
-  windowsMenu.inert = shell.emptyState !== undefined;
   tabStrip.inert = shell.emptyState !== undefined;
   if (!snapshot.reader.helpVisible && overlayOwner.active?.id === "help") releaseOverlay("help");
   renderHelpRows();

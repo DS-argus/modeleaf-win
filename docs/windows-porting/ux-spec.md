@@ -61,8 +61,18 @@ CSS root는 `grid-template-rows: auto minmax(0, 1fr) 26px`를 기준으로 한�
 
 Acceptance:
 
-- no-document 상태에서도 Open, New Window, Close Window(`app.quit`), Write/Reset Config 같은 global action은 palette/menu에서 규칙대로 보인다.
+- no-document 상태에서도 Windows menu의 `Open PDF…`, `New Window`, `Close Window`, `Keyboard Help`, `Theme picker`는 enabled 상태를 유지한다. document-dependent row는 숨기지 않고 정확한 `No document open` reason과 함께 disabled로 남긴다.
 - Tab focus가 Open PDF에 도달하고 Narrator가 이름과 shortcut을 읽는다.
+
+### Windows application menu
+
+- top-level 순서는 `File`, `Document`, `Tabs`, `Search`, `View`, `Settings`다. `Navigate`는 없고 `Settings`에는 `Theme picker`만 둔다.
+- 이 제외는 Windows menu projection에만 적용한다. action registry, category, active keymap/shortcut, palette/help projection은 바꾸지 않고 command를 다른 menu group으로 옮기지 않는다.
+- window별 application-menu owner 하나가 모든 direct `<details>/<summary>`를 관리한다. direct summary hover는 닫힌 상태에서도 해당 menu를 열고, 다른 summary hover는 open section을 전환하며, hover 자체는 focus를 옮기거나 menu를 닫지 않는다. hover 직후 첫 click/keyboard activation은 double-toggle 없이 열린 상태를 유지하고 반복 activation만 닫는다.
+- summary `Enter`/`Space`, section `Left`/`Right`, enabled row `Up`/`Down`/`Home`/`End`, command `Enter`/`Space`와 `Esc`는 같은 owner를 거친다. 열린 menu는 reader shortcut/pending prefix 입력을 차단하지만 command availability나 modal owner를 대체하지 않는다. `Esc`는 닫고 해당 summary에 focus를 복원하며, `Tab`은 닫은 뒤 native focus traversal을 유지한다.
+- outside pointer, window blur, command 실행과 overlay 전환은 menu를 닫는다. modal/native picker 중 배경 hover로 다시 열지 않으며, command는 menu를 닫은 뒤 한 번만 dispatch한다. `Alt+Space`/`Alt+F4`는 native window 경계를 유지한다.
+- 최소 창과 200% text에서는 summary row가 wrap될 수 있다. flyout은 전체 menu bar 아래에서 viewport에 맞춰 배치하고 내부 scroll을 제공하며, keyboard로 고른 row는 보이도록 최소한만 scroll한다.
+- availability/status reconciliation은 기존 `<details>`, `<summary>`, command button identity를 유지한 채 속성과 text만 갱신한다. async render가 open section이나 keyboard focus를 초기화하면 안 된다.
 
 ## 4. Tab bar
 

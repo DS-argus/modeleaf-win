@@ -1,0 +1,76 @@
+{
+  "issue": 77,
+  "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+  "appVersion": "0.1.1",
+  "scope": "Windows menu projection, disclosure/input ownership and stable publication only",
+  "browserEvidence": {
+    "engine": "Microsoft Edge 153.0.4234.32, headless on Windows",
+    "kind": "production-component harness, not packaged/native acceptance",
+    "source": ["src/ui/shell/ApplicationMenuOwner.ts", "src/application/commands/WindowsMenuModel.ts", "src/main.ts renderWindowsMenu function", "src/styles/app.css"],
+    "driver": "Isolated local Playwright driver; no product dependency change",
+    "command": "node .internal/evidence/issue77/browser-check.mjs",
+    "casesPassed": 224,
+    "screenshot": "docs/evidence/issue77-menu-480-text200.png",
+    "dimensions": {
+      "viewports": [[480, 360], [1040, 760]],
+      "deviceScaleFactors": [1, 1.25, 1.5, 2],
+      "rootTextPercent": [100, 200],
+      "forcedColors": ["none", "active"],
+      "themes": ["tokyo-night", "gruvbox-dark", "solarized-dark", "dracula", "everforest", "nord", "catppuccin-latte"]
+    },
+    "checks": [
+      "Real pointer hover opens without stealing focus; hover-click stays open and repeat click closes",
+      "Keyboard activation dispatches once after close; normal publication retains focused node identity",
+      "Tab closes and leaves a connected non-body focus target",
+      "Opening is blocked while the injected modal owner is active",
+      "All six flyouts stay inside the viewport; wrapped summaries remain reachable",
+      "End reveals focused commands inside overflowing flyouts",
+      "Menu command text measures 13px at 100% and 26px at 200%"
+    ],
+    "regressionsFoundAndFixed": [
+      "Replacing unchanged summary text triggered stationary-pointer hover reopening after command close",
+      "Wrapped-row flyouts covered later summaries; flyouts now start below the entire menu bar",
+      "Keyboard focus needed nearest scroll reveal inside height-clamped flyouts"
+    ]
+  },
+  "localGateResults": {
+    "frontend": "82 suites, 886 tests passed",
+    "build": "passed",
+    "rustFormat": "passed",
+    "rustClippy": "passed with -D warnings",
+    "rustTests": "all passed with -j 1",
+    "diffCheck": "passed"
+  },
+  "localGateCommands": [
+    "npm test -- --maxWorkers=2",
+    "npm run build",
+    "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
+    "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -j 1 -- -D warnings",
+    "cargo test --manifest-path src-tauri/Cargo.toml -j 1",
+    "git diff --check",
+    "CARGO_BUILD_JOBS=1 npm run tauri:build-debug"
+  ],
+  "warnings": [
+    "npm ci reports the pinned Node/npm engine differs from installed Node 24.20.0 / npm 11.19.0",
+    "Vite reports a production chunk larger than 500kB",
+    "Rust test/debug linking emits a linker stdout warning; no warning was suppressed",
+    "Initial unconstrained Rust tests exhausted the Windows paging file; rerun uses one build job"
+  ],
+  "sourcePdfInvariant": {
+    "method": "SHA-256 compared against git show of the baseline; menu browser harness does not open or write PDF bytes",
+    "fixtures/pdf/text-3-page.pdf": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+    "fixtures/pdf/links.pdf": "dd5e2d598fa9e0bcae25e488541a898220d38b791991bc95796d7ba5f30044d4"
+  },
+  "nativeAcceptance": {
+    "status": "pending",
+    "packagedDebugBuild": "passed; no-bundle executable built",
+    "reason": "Another worktree's Modeleaf process is active. It was not stopped or reused for single-instance testing.",
+    "remaining": [
+      "Packaged empty/last-close/open-failure and committed-session availability scenarios",
+      "Native picker and Help/Theme overlay transitions in the packaged shell",
+      "Narrator/UIA, actual Windows DPI/text-scale/high-contrast settings",
+      "Two independent windows and inactive-window first click",
+      "Native titlebar, snap, Alt+Space and Alt+F4 boundaries"
+    ]
+  }
+}

@@ -196,6 +196,13 @@ Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action
 
 `app.quit`라는 stable ID는 macOS baseline에서 현재 49-action Windows registry로 유지되지만 표시명과 동작은 `Close Window`다. 호출한 top-level window만 닫고 마지막 창에서 process가 끝난다. 같은 Tauri process의 모든 창을 닫는 `Exit All`은 v1 범위에 추가하지 않는다.
 
+### Windows application menu projection
+
+- shared registry projection에서 Windows menu만 `File`, `Document`, `Tabs`, `Search`, `View`, `Settings` 순서로 구성한다. `Navigate` section은 만들지 않고 `Settings`에는 `theme.picker`만 둔다.
+- `scroll.*`, `page.*`, `history.*`, `config.reload`, `config.writeDefault`, `config.resetDefault`, `update.show`의 제외는 menu presentation에만 적용한다. action ID, registry category, binding, shortcut, dispatch와 palette/help projection은 그대로 유지하며 다른 menu group으로 재배치하지 않는다.
+- no-document menu에서도 `document.open`, `app.new`, `app.quit`, `help.show`, `theme.picker`는 enabled다. 남아 있는 document-dependent row는 숨기지 않고 runtime availability의 정확한 disabled reason을 표시하며, document가 생기면 같은 row identity에서 즉시 availability를 갱신한다.
+- application menu는 window마다 owner 하나만 두고 hover, click, native keyboard activation, `Esc`와 modal/input ownership을 함께 조정한다. hover는 닫힌 direct summary도 열고 section을 전환하되 focus를 옮기지 않으며, reconcile은 기존 menu/summary/command DOM identity와 open/focus 상태를 보존한다.
+
 ### 구현 순서
 
 1. Action ID/descriptor snapshot test를 먼저 포팅한다.
