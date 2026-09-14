@@ -241,14 +241,31 @@ describe("search prompt production binding", () => {
     expect(styles).toContain("backdrop-filter: blur(18px) saturate(120%);");
   });
   it("separates themed footer descriptions from readable Windows key labels", () => {
-    expect(styles).toContain("--overlay-footer-description: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));");
+    expect(styles).toContain("--overlay-secondary-accent: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));");
     for (const selector of [".search-footer", ".overlay-footer"]) {
       const rule = styles.slice(styles.indexOf(`${selector} {`)).split("}")[0];
-      expect(rule).toContain("color: var(--overlay-footer-description);");
+      expect(rule).toContain("color: var(--overlay-secondary-accent);");
       expect(styles).toContain(`${selector} kbd { padding: 0; color: var(--overlay-text);`);
     }
     expect(mainSource).toContain("Ctrl+j/k</kbd> move");
     expect(mainSource).toContain("Ctrl+Shift+C</kbd> clear history");
+  });
+  it("gives help descriptions and palette shortcuts distinct themed roles without fading disabled rows", () => {
+    expect(styles).toContain(".help-group dt { color: var(--overlay-secondary-accent); }");
+    expect(styles).toContain(".help-group dd { margin: 0; color: var(--overlay-text);");
+    expect(styles).toContain(".command-palette-entry-shortcut { color: var(--overlay-secondary-accent);");
+    expect(styles).toContain('.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-accent); }');
+    expect(styles).toContain(".command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text);");
+    expect(styles).not.toContain('.command-palette-entry[aria-disabled="true"] { opacity:');
+    expect(styles).toContain("#command-palette-dialog[open] { display: flex; flex-direction: column; }");
+    expect(styles).toContain("#command-palette-dialog form { display: flex; flex-direction: column; min-height: 0; }");
+    expect(styles).toContain("#command-palette-dialog input { flex-shrink: 0; }");
+    expect(styles).toContain(".command-palette-list { min-height: 0;");
+    for (const selector of [".help-group h2", ".command-palette-section-title"]) {
+      const rule = styles.slice(styles.indexOf(`${selector} {`)).split("}")[0];
+      expect(rule).toContain("border-bottom: 1px solid");
+      expect(rule).toContain("font-weight: 650;");
+    }
   });
   it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
     const weight = (name: string): number => {
@@ -274,7 +291,7 @@ describe("search prompt production binding", () => {
       const muted = mix(rgb(palette.foreground), end, weight("muted"));
       const accent = mix(rgb(palette.accent), end, weight("accent"));
       const focus = mix(rgb(palette["focus-indicator"]), end, weight("focus"));
-      const footer = mix(rgb(palette.accent), end, weight("footer-description"));
+      const footer = mix(rgb(palette.accent), end, weight("secondary-accent"));
       for (const back of [[0, 0, 0], [255, 255, 255]]) {
         const prompt = mix(rgb(palette["inactive-tab"]), back, weight("panel-alpha"));
         const panel = mix(rgb(palette["active-tab"]), mix([7, 8, 14], back, 0.44), weight("panel-alpha"));
@@ -289,6 +306,8 @@ describe("search prompt production binding", () => {
         for (const bg of [prompt, panel]) {
           expect(contrast(footer, bg), `${theme.id} footer description`).toBeGreaterThanOrEqual(4.5);
         }
+        expect(contrast(footer, help), `${theme.id} help description`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, mix(rgb(palette.accent), panel, 0.19)), `${theme.id} selected palette shortcut`).toBeGreaterThanOrEqual(4.5);
         expect(contrast(text, selected), `${theme.id} selected row/shortcut`).toBeGreaterThanOrEqual(4.5);
         expect(contrast(accent, themeSelected), `${theme.id} selected theme`).toBeGreaterThanOrEqual(4.5);
         expect(contrast(accent, help), `${theme.id} help heading`).toBeGreaterThanOrEqual(4.5);
@@ -302,8 +321,9 @@ describe("search prompt production binding", () => {
     expect(forcedRules).toContain(".mac-overlay { color: CanvasText; background: Canvas;");
     expect(forcedRules).toContain('.mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }');
     expect(forcedRules).toContain("--overlay-muted: CanvasText;");
-    expect(forcedRules).toContain("--overlay-footer-description: CanvasText;");
+    expect(forcedRules).toContain("--overlay-secondary-accent: CanvasText;");
     expect(forcedRules).toContain("--overlay-focus: Highlight;");
+    expect(forcedRules).toContain('.command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }');
     expect(forcedRules).toContain("#search-dialog input:focus-visible { outline: 2px solid Highlight;");
   });
   it("cancels the prompt on Escape without clearing active search or moving the reader", () => {

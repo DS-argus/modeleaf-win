@@ -182,9 +182,9 @@ Transient overlay 종류:
 
 Issue #79 owner-approved delta: `.prompt`/search는 inactive-tab, `.mac-overlay`는 active-tab의 **85% background alpha**를 사용한다. 부모 opacity나 전역 theme token을 바꾸지 않는다. 기존 base color, backdrop(일반 44% dimming/search transparent), normal-color blur/shadow, 위치와 크기는 유지한다. 내부 help card와 chooser input 배경도 유지한다.
 
-초기 후보는 기존 글자색으로 대비 기준을 통과하지 못했으나, owner가 오버레이 내부 foreground 보정을 승인했다. 로컬 `--overlay-*` 색은 dark theme에서 white, Catppuccin Latte에서 black 방향으로 혼합한다. primary text는 foreground 40%, secondary/placeholder는 foreground 70%, accent text는 accent 25%, focus는 focus-indicator 40%를 유지하고 나머지를 해당 끝색으로 채운다. 모든 글자는 불투명하며 placeholder opacity는 1이다. 선택/hover/focus한 palette shortcut은 row의 보정된 글자색을 따른다. 선택행 marker와 keyboard focus는 보정된 focus color를 사용한다. 공통 palette/config/state schema는 변경하지 않는다.
+초기 후보는 기존 글자색으로 대비 기준을 통과하지 못했으나, owner가 오버레이 내부 foreground 보정을 승인했다. 로컬 `--overlay-*` 색은 dark theme에서 white, Catppuccin Latte에서 black 방향으로 혼합한다. primary text는 foreground 40%, secondary/placeholder는 foreground 70%, accent text는 accent 25%, focus는 focus-indicator 40%를 유지하고 나머지를 해당 끝색으로 채운다. 모든 글자는 불투명하며 placeholder opacity는 1이다. 선택/hover/focus한 palette shortcut은 보정된 accent 색을 사용한다. 선택행 marker와 keyboard focus는 보정된 focus color를 사용한다. 공통 palette/config/state schema는 변경하지 않는다.
 
-하단 안내가 있는 search/theme/recent의 키(`kbd`)는 primary foreground, 동작 설명과 구분점은 accent 60%를 위 끝색과 혼합한 로컬 `--overlay-footer-description`을 사용한다. 밝기 차이뿐 아니라 theme의 강조색으로 키와 설명을 구분한다. Forced colors에서는 둘 다 CanvasText를 사용한다. `Ctrl`, `Shift`, `Enter`, `Esc`는 Windows 문자 표기를 유지하고 macOS modifier 기호를 도입하지 않는다. Recent 이동 안내는 소문자 입력을 명확히 드러내는 `Ctrl+j/k move`다. Theme의 `j/k move`, 검색 동작, 실제 keymap/parser는 바꾸지 않는다. 안내가 없는 goto/palette/help에 footer를 새로 추가하지 않는다.
+하단 안내가 있는 search/theme/recent의 키(`kbd`)는 primary foreground, 동작 설명과 구분점은 accent 60%를 위 끝색과 혼합한 로컬 `--overlay-secondary-accent`을 사용한다. 밝기 차이뿐 아니라 theme의 강조색으로 키와 설명을 구분한다. Forced colors에서는 둘 다 CanvasText를 사용한다. `Ctrl`, `Shift`, `Enter`, `Esc`는 Windows 문자 표기를 유지하고 macOS modifier 기호를 도입하지 않는다. Recent 이동 안내는 소문자 입력을 명확히 드러내는 `Ctrl+j/k move`다. Theme의 `j/k move`, 검색 동작, 실제 keymap/parser는 바꾸지 않는다. 안내가 없는 goto/palette/help에 footer를 새로 추가하지 않는다.
 7개 theme와 6개 표면의 브라우저 computed-color 합성 비교에서 0.90/0.85/0.80 최소 작은 글자 대비는 각각 4.80/4.58/4.31:1이다. 따라서 0.85를 채택하고 0.80은 거부한다. 0.85의 focus 비교 최소값은 4.35:1이다. Forced colors는 불투명 Canvas/CanvasText, 선택행은 Highlight/HighlightText, focus는 Highlight를 사용하며 panel blur/shadow를 제거한다. 이 수치는 native DPI/text-scale 인증이 아니며 새 투명도 preview는 owner 검토 대상이다.
 구현은 DOM focus 호출 모음이 아니라 다음 state를 갖는 reducer로 한다.
 
@@ -209,6 +209,11 @@ TOC, keyboard link hint와 destination indicator는 current overlay-owner graph�
 - action availability가 tab/pane/document 변화에 따라 즉시 갱신
 - row label, active binding, disabled reason을 Narrator가 읽을 수 있어야 함
 
+Issue #79 owner-approved 2안: 명령 이름은 primary foreground, 단축키는 보정된 secondary accent다. 선택/hover/focus한 행의 단축키는 선택 배경 대비를 위해 더 밝거나 어둡게 보정된 accent를 사용한다. 비활성 행 전체 opacity는 적용하지 않고, 정확한 비활성 이유를 명령 이름 아래 별도 줄에 불투명하게 표시한다.
+
+검색어가 비었거나 공백뿐이면 기존 filter의 최대 12개 후보를 먼저 확정하고, 그 후보 안에서 기존 CommandCatalog category별로 묶는다. enabled/disabled 구간은 합치지 않으므로 enabled-first가 유지된다. category와 구간의 첫 등장 순서 및 각 그룹 내부 순서를 유지하며, 비활성 구간 제목에는 `— Unavailable`을 붙인다. 검색 중에는 category grouping/heading 없이 기존 fuzzy ranking 순서 그대로 표시한다. 제목은 non-focusable heading이며 클릭/키보드 명령 index와 12-command cap에 포함하지 않는다. 첫 명령 선택 시 scroll을 처음으로 돌려 첫 제목이 함께 보이게 한다.
+
+최소 창에서도 검색 입력은 유지하고 결과 목록만 남은 높이 안에서 스크롤한다. 고정 px 위치 보정 대신 dialog/form의 column flex와 list의 min-height 0을 사용한다. 작은 창 및 200% 브라우저 글자 확대에서 마지막 명령과 검색 입력이 잘리지 않아야 한다.
 Palette 자체가 독자 action list를 가지면 안 된다. action registry descriptor, live keymap, current availability를 projection한다.
 
 ## 10. Recent/Open picker
@@ -274,6 +279,7 @@ UI font는 `Segoe UI Variable`, fallback `Segoe UI`, key/status token은 `Cascad
 - tab selection row는 `Ctrl+1..9`로 collapse 가능
 - `?`는 navigation context에서 열고 Esc로 닫는다.
 
+Issue #79 owner-approved 2안: 도움말의 동작 설명(`dt`)은 보정된 secondary accent, 단축키(`dd`)는 primary foreground를 사용한다. 섹션 제목은 굵은 accent와 얇은 구분선으로 본문보다 명확히 구분한다. 기존 category/행 내용/live keymap은 유지하며 새 footer나 keycap 배경을 추가하지 않는다.
 ## 15. Ordinary links; retired hints and destination indicator
 
 > Issue #53: ordinary PDF annotation clicks와 native authorization은 유지한다. `f` link hints와 destination indicator는 current Windows UI가 아니며 `f`/`I`를 routing하지 않는다.

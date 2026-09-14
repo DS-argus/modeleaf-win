@@ -1,4 +1,4 @@
-import { projectPaletteCommands, type CommandProjectionOptions } from "../application/commands/CommandCatalog";
+import { projectPaletteCommands, type CommandCategory, type CommandProjectionOptions } from "../application/commands/CommandCatalog";
 import { filterCommandPalette, type PaletteEntry } from "../domain/actions/CommandPalette";
 import { type ActionId, type ActionRuntimeContext } from "../domain/actions/ActionRegistry";
 import { validateProductConfig, type ProductConfig } from "../domain/config/ConfigValidator";
@@ -10,13 +10,13 @@ const MAX_RECENT_ENTRIES = 15;
 const MAX_QUERY_CODE_POINTS = 256;
 const MAX_RAW_QUERY_CODE_UNITS = MAX_QUERY_CODE_POINTS * 2;
 export interface RecentPaletteRecord { readonly recentId: string; readonly displayName: string }
-export interface CommandPaletteCommandEntry { readonly kind: "command"; readonly id: ActionId; readonly shortcut: string; readonly label: string; readonly enabled: boolean; readonly disabledReason?: string }
+export interface CommandPaletteCommandEntry { readonly kind: "command"; readonly id: ActionId; readonly category: CommandCategory; readonly shortcut: string; readonly label: string; readonly enabled: boolean; readonly disabledReason?: string }
 export interface CommandPaletteRecentEntry extends RecentPaletteRecord { readonly kind: "recent" }
 export type CommandPaletteEntry = CommandPaletteCommandEntry | CommandPaletteRecentEntry;
 function exceedsCodePointCount(value: string, maximum: number): boolean { let count = 0; for (const _ of value) { count += 1; if (count > maximum) return true; } return false; }
 export function buildCommandPaletteEntries(context: ActionRuntimeContext = DEFAULT_RUNTIME_CONTEXT, recents: readonly RecentPaletteRecord[] = [], query = "", config: ProductConfig = DEFAULT_CONFIG, projectionOptions: CommandProjectionOptions = {}): readonly CommandPaletteEntry[] {
   if (query.length > MAX_RAW_QUERY_CODE_UNITS || exceedsCodePointCount(query, MAX_QUERY_CODE_POINTS)) return [];
-  const commands: readonly CommandPaletteCommandEntry[] = projectPaletteCommands(context, config, projectionOptions).map((command) => ({ kind: "command", id: command.id, shortcut: command.shortcuts.join(", "), label: command.title, enabled: command.enabled, ...(command.disabledReason === undefined ? {} : { disabledReason: command.disabledReason }) }));
+  const commands: readonly CommandPaletteCommandEntry[] = projectPaletteCommands(context, config, projectionOptions).map((command) => ({ kind: "command", id: command.id, category: command.category, shortcut: command.shortcuts.join(", "), label: command.title, enabled: command.enabled, ...(command.disabledReason === undefined ? {} : { disabledReason: command.disabledReason }) }));
   const recentEntries: readonly CommandPaletteRecentEntry[] = recents.slice(0, MAX_RECENT_ENTRIES).map((recent) => ({ kind: "recent", recentId: recent.recentId, displayName: recent.displayName }));
   const source: PaletteEntry[] = [
     ...commands.map((entry) => ({ id: entry.id, title: entry.label, enabled: entry.enabled, ...(entry.disabledReason === undefined ? {} : { disabledReason: entry.disabledReason }), kind: "action" as const })),
@@ -24,7 +24,17 @@ export function buildCommandPaletteEntries(context: ActionRuntimeContext = DEFAU
   ];
   const commandById = new Map<string, CommandPaletteCommandEntry>(commands.map((entry) => [entry.id, entry]));
   const recentById = new Map<string, CommandPaletteRecentEntry>(recentEntries.map((entry) => [entry.recentId, entry]));
-  return filterCommandPalette(source, query).map((match) => match.kind === "action" ? commandById.get(match.id)! : recentById.get(match.id)!);
+  const entries = filterCommandPalette(source, query).map((match) => match.kind === "action" ? commandById.get(match.id)! : recentById.get(match.id)!);
+  if (query.trim().length > 0) return entries;
+  // Group only the already-capped candidates, keeping enabled and unavailable sections separate.
+  const groups = new Map<string, CommandPaletteEntry[]>();
+  for (const entry of entries) {
+    const key = entry.kind === "recent" ? "recent" : `${entry.enabled}:${entry.category}`;
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [entry]);
+    else group.push(entry);
+  }
+  return [...groups.values()].flat();
 }
 type PaletteKeyboardEvent = Pick<KeyboardEvent, "key" | "code" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "isComposing">;
 function matchesLetter(event: PaletteKeyboardEvent, letter: string): boolean { return event.code === `Key${letter.toUpperCase()}` || event.key.toLowerCase() === letter.toLowerCase(); }

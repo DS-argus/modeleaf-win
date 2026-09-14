@@ -13,6 +13,7 @@ import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelectio
 import { fitRecentPath } from "./ui/RecentPathPresentation";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
+import { renderCommandPalette } from "./ui/CommandPaletteRenderer";
 import { bindSearchPrompt } from "./ui/SearchPromptController";
 import { buildHelpRows } from "./ui/HelpModel";
 import { buildWindowsMenuModel } from "./application/commands/WindowsMenuModel";
@@ -985,30 +986,10 @@ function dispatchPaletteEntry(index = paletteActiveIndex): void {
 function renderPalette(): void {
   const entries = paletteEntries();
   paletteActiveIndex = Math.min(paletteActiveIndex, Math.max(0, entries.length - 1));
-  paletteList.replaceChildren(...entries.map((entry, index) => {
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "overlay-list-entry command-palette-entry";
-    button.setAttribute("aria-selected", String(index === paletteActiveIndex));
-    button.setAttribute("aria-disabled", String(!entry.enabled));
-    const label = document.createElement("span");
-    label.textContent = entry.label;
-    const shortcut = document.createElement("span");
-    shortcut.className = "command-palette-entry-shortcut";
-    shortcut.textContent = entry.shortcut;
-    if (!entry.enabled && entry.disabledReason !== undefined) {
-      const reason = document.createElement("span");
-      reason.className = "command-palette-entry-reason";
-      reason.textContent = entry.disabledReason;
-      button.setAttribute("aria-description", entry.disabledReason);
-      button.append(reason);
-    }
-    button.append(label, shortcut);
-    button.addEventListener("click", () => { paletteActiveIndex = index; dispatchPaletteEntry(); });
-    item.append(button);
-    return item;
-  }));
+  renderCommandPalette(paletteList, entries, paletteActiveIndex, paletteInput.value, (index) => {
+    paletteActiveIndex = index;
+    dispatchPaletteEntry(index);
+  });
   paletteList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
 }
 function renderFileOpener(): void {

@@ -215,7 +215,7 @@ kbd {
   --overlay-contrast: white;
   --overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));
   --overlay-muted: color-mix(in srgb, var(--theme-foreground) 70%, var(--overlay-contrast));
-  --overlay-footer-description: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));
+  --overlay-secondary-accent: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));
   --overlay-accent: color-mix(in srgb, var(--theme-accent) 25%, var(--overlay-contrast));
   --overlay-focus: color-mix(in srgb, var(--theme-focus-indicator) 40%, var(--overlay-contrast));
   color: var(--overlay-text);
@@ -294,7 +294,7 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .search-footer {
   grid-column: auto;
   margin: 0;
-  color: var(--overlay-footer-description);
+  color: var(--overlay-secondary-accent);
   font-size: 12px;
   line-height: 1.25;
   white-space: nowrap;
@@ -372,8 +372,13 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
   outline: none;
 }
 .overlay-list-entry:disabled { color: var(--overlay-muted); cursor: not-allowed; }
-.command-palette-entry-shortcut { color: var(--overlay-muted); font-family: "Cascadia Mono", monospace; white-space: nowrap; }
-.overlay-list-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: inherit; }
+.command-palette-entry { row-gap: 3px; }
+.command-palette-entry-label { min-width: 0; overflow-wrap: anywhere; }
+.command-palette-entry-shortcut { color: var(--overlay-secondary-accent); font-family: "Cascadia Mono", monospace; white-space: nowrap; }
+.command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text); font-size: 0.8em; }
+.command-palette-section-title { margin: 8px 10px 4px; padding-bottom: 5px; color: var(--overlay-accent); border-bottom: 1px solid color-mix(in srgb, var(--overlay-accent) 30%, transparent); font-size: 12px; font-weight: 650; }
+.command-palette-list > li:first-child .command-palette-section-title { margin-top: 0; }
+.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-accent); }
 .file-opener-overlay { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 14px 16px; overflow: hidden; }
 .file-opener-overlay form { display: grid; min-height: 0; max-height: calc(100vh - 60px); gap: 7px; }
 .file-opener-overlay input { min-height: 36px; padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-inactive-tab); }
@@ -385,9 +390,12 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .file-opener-recent-directory, .file-opener-recent-filename { flex: 0 0 auto; }
 .file-opener-entry[aria-selected="true"] { background: color-mix(in srgb, var(--theme-accent) 28%, transparent); }
 .file-opener-footer { margin: 2px 1px 0; font-size: 11px; line-height: 1.35; white-space: normal; }
-.command-palette-list { scrollbar-width: none; }
+#command-palette-dialog[open] { display: flex; flex-direction: column; }
+#command-palette-dialog form { display: flex; flex-direction: column; min-height: 0; }
+#command-palette-dialog input { flex-shrink: 0; }
+.command-palette-list { min-height: 0; scrollbar-width: none; }
 .command-palette-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
-.overlay-footer { margin: 5px 8px 0; color: var(--overlay-footer-description); font-size: 12px; }
+.overlay-footer { margin: 5px 8px 0; color: var(--overlay-secondary-accent); font-size: 12px; }
 .overlay-footer kbd { padding: 0; color: var(--overlay-text); background: transparent; border: 0; }
 
 .help-overlay {
@@ -404,12 +412,12 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
   background: color-mix(in srgb, var(--theme-inactive-tab) 62%, transparent);
   border-radius: 8px;
 }
-.help-group h2 { margin: 0 0 6px; color: var(--overlay-accent); font-size: 14px; }
+.help-group h2 { margin: 0 0 6px; padding-bottom: 5px; color: var(--overlay-accent); border-bottom: 1px solid color-mix(in srgb, var(--overlay-accent) 30%, transparent); font-size: 14px; font-weight: 650; }
 .help-group dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; margin: 0; }
 .help-overlay { font-size: 13px; }
 .help-group dd { font-size: 12px; }
-.help-group dt { color: var(--overlay-text); }
-.help-group dd { margin: 0; color: var(--overlay-muted); font-family: "Cascadia Mono", monospace; text-align: right; }
+.help-group dt { color: var(--overlay-secondary-accent); }
+.help-group dd { margin: 0; color: var(--overlay-text); font-family: "Cascadia Mono", monospace; text-align: right; }
 .mac-overlay :is(input, .theme-option, .overlay-list-entry):focus-visible {
   outline: 2px solid var(--overlay-focus);
   outline-offset: -2px;
@@ -493,7 +501,9 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-footer { overflow-wrap: anywhere; }
 }
 @media (forced-colors: active) {
-  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-footer-description: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
+  .help-group h2, .command-palette-section-title { border-color: CanvasText; }
+  .command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }
+  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-secondary-accent: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
   .mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }
   .statusbar, .status-badge { color: CanvasText; background: Canvas; }
   .status-badge { border-color: CanvasText; }
@@ -569,8 +579,6 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
 .empty-reader h1 { margin: 0; color: var(--theme-foreground); font-size: 1.25rem; }
 .empty-reader p { margin: 0; }
 .empty-reader button { min-width: 8rem; }
-.command-palette-entry-reason { color: var(--theme-error); font-size: 0.8em; }
-.command-palette-entry[aria-disabled="true"] { opacity: 0.7; }
 
 /* The empty-state hint is the click target, so it must read as text while
    behaving as a button for pointer and assistive-technology users. */

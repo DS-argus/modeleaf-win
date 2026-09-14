@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { projectPaletteCommands } from "../../../src/application/commands/CommandCatalog";
+import { filterCommandPalette } from "../../../src/domain/actions/CommandPalette";
+import { validateProductConfig } from "../../../src/domain/config/ConfigValidator";
 import { ACTION_DESCRIPTORS, type ActionRuntimeContext } from "../../../src/domain/actions/ActionRegistry";
 import {
   buildCommandPaletteEntries,
@@ -29,6 +32,27 @@ describe("CommandPaletteModel", () => {
     expect(firstDisabled).toBeGreaterThanOrEqual(0);
     expect(enabled.slice(firstDisabled)).not.toContain(true);
     expect(new Set(entries.map((entry) => entry.kind === "command" ? `action:${entry.id}` : `recent:${entry.recentId}`)).size).toBe(entries.length);
+  });
+  it("groups the capped empty-query commands by category without crossing availability", () => {
+    for (const context of [baseContext, unavailableContext]) {
+      const entries = buildCommandPaletteEntries(context).filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
+      const runs = entries.map((entry) => `${entry.enabled}:${entry.category}`).filter((key, index, keys) => key !== keys[index - 1]);
+      expect(new Set(runs).size).toBe(runs.length);
+      expect(entries.every((entry) => typeof entry.category === "string")).toBe(true);
+      expect(buildCommandPaletteEntries(context, [], " \t")).toEqual(entries);
+    }
+  });
+  it("keeps search ranking and the candidate cap independent of category headings", () => {
+    const config = validateProductConfig({});
+    if (!config.ok) throw new Error("Invalid test config");
+    const commands = projectPaletteCommands(baseContext, config.value);
+    for (const query of ["", "page", "view", "open"]) {
+      const ranked = filterCommandPalette(commands.map((entry) => ({ id: entry.id, title: entry.title, enabled: entry.enabled, kind: "action" as const })), query);
+      const actual = buildCommandPaletteEntries(baseContext, [], query).filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
+      if (query.length === 0) expect(actual.map((entry) => entry.id).sort()).toEqual(ranked.map((entry) => entry.id).sort());
+      else expect(actual.map((entry) => entry.id)).toEqual(ranked.map((entry) => entry.id));
+      for (const entry of actual) expect(entry.category).toBe(commands.find((command) => command.id === entry.id)?.category);
+    }
   });
   it("projects every retained configurable action and no retired reader command", () => {
     const configurable = ACTION_DESCRIPTORS.filter(({ bindingConfiguration }) => bindingConfiguration === "configurable");
