@@ -613,32 +613,34 @@ macOS baseline `state.json`은 theme, recents와 `link_destination_indicator`를
 - print는 reader registry를 거치며 PDF view의 임의 native print action은 막는다.
 - source file을 변경하지 않는다.
 
-현재 [`PDFViewController.swift`](../../PDFReaderApp/Reader/PDFViewController.swift) 307–319행은 같은 in-memory `PDFDocument`로 `pageScaleToFit`, `autoRotate` print operation을 만든다. 회전된 page object가 출력에 반영되는지는 코드상 가능성이 높지만 문서화된 명시 계약은 아니므로, Windows 구현 전에 macOS reference 출력으로 확정한다. 인쇄는 PR이 아니라 commit [`425e4c4`](https://github.com/DS-argus/modeleaf/commit/425e4c4ecf2a7834cfa3ab44f1bead0bae3317e3)에서 도입됐다.
+[`PDFViewController.swift`](../../PDFReaderApp/Reader/PDFViewController.swift) 307–319행은 같은 in-memory `PDFDocument`로 `pageScaleToFit`, `autoRotate` print operation을 만든다. 인쇄는 PR이 아니라 commit [`425e4c4`](https://github.com/DS-argus/modeleaf/commit/425e4c4ecf2a7834cfa3ab44f1bead0bae3317e3)에서 도입됐다. 아래 Windows BASIC 계약은 source page의 aspect와 intrinsic PDF rotation을 printer-selected paper에 맞추는 것으로 이 의도를 명시하며, source의 원래 physical paper size 보존을 약속하지 않는다.
 
-### Windows 구현
+### Windows BASIC 구현 — Issue #83
 
-1. W02에서 PDF.js print feasibility를 먼저 검증한다.
-2. visible virtualized DOM을 그대로 `window.print()`하지 않는다. 그러면 보이는 페이지만 출력될 수 있다.
-3. adapter 뒤의 hidden print container/iframe에 전체 page를 순차 준비한다.
-4. application overlays, search highlights와 theme chrome은 print surface에 넣지 않는다.
-5. system dialog가 닫히면 print canvases와 iframe을 전부 해제하고 reader focus/state를 복원한다.
-6. cancel과 error를 normal outcome으로 처리한다.
+[Issue #83](https://github.com/DS-argus/modeleaf-win/issues/83)의 owner-approved 경로는 PDF.js를 300-DPI page raster producer로 유지하고 system `PrintDlgW`와 GDI를 최종 consumer로 사용한다.
 
-### 실패 모드
+- `window.print()`, hidden DOM/iframe, PNG/blob/image URL staging과 image/URL/arbitrary DOM printing은 제거한다. external viewer 또는 다른 print consumer로의 runtime fallback도 없다.
+- Rust가 active window/document owner를 확인하고 opaque PDF-session lease와 opaque print job을 소유한다. process 전체에서 job 하나와 raw page command 하나만 admit한다.
+- HWND-owned classic `PrintDlgW`를 page load/render보다 먼저 연다. `PD_ENABLEPRINTHOOK`은 `WM_INITDIALOG`에서 실제 owned dialog HWND를 capture하고 파괴 시 지워 cancellation에만 사용한다. custom control이나 Windows default message 처리 변경은 없다.
+- dialog 기본값은 all pages다. classic dialog의 단일 contiguous page range와 printer-managed copies/collation만 지원하며, page count가 `65,535`를 넘으면 잘라서 표시하지 않고 거부한다.
+- dialog가 확정한 page들을 intrinsic PDF rotation과 opaque white background로 한 장씩 render한다. producer는 32-byte header를 붙인 opaque BGRA32 payload를 순서대로 보내고, GDI는 이전 page 완료를 acknowledge한 뒤 다음 page 하나만 받는다.
+- GDI는 source page aspect를 printer-selected paper의 printable bounds에 맞춰 중앙 aspect-fit한다. 한 job의 output media box는 선택된 paper를 따르므로 mixed-size source도 원래 physical paper size를 보존하지 않는다.
 
-- 300페이지를 동시에 고해상도 canvas로 만들어 OOM
-- print preview가 닫힌 뒤 keyboard focus 유실
-- source page 순서/크기/rotation 차이
-- blank/raster page 누락
-- WebView2 버전에 따른 print dialog 차이
+### Resource, cancellation, UI 계약
 
-### Acceptance
+- producer가 동시에 제어하는 page-sized buffer는 최대 둘이다. canvas가 존재할 때 `getImageData()` copy를 얻고, canvas backing을 `0 × 0`으로 만든 뒤 binary payload를 할당하므로 canvas + ImageData 또는 ImageData + payload만 공존한다.
+- 각 page는 기존 `256 MiB` renderer budget에서 `2 × RGBA bytes + 32`를 reserve하고 native page input은 `64 MiB`로 제한한다. 이 구조 counter는 controlled producer buffer만 제한하며 printer driver, WebView2 또는 process RSS 상한을 증명하지 않는다.
+- cancel, document close와 reload는 이미 시작한 PDF.js/native raw operation을 실제 settlement까지 소유한다. native release는 worker join과 session lease drop 뒤에만 허용하며, cleanup의 `AbortDoc`는 positive result만 성공으로 인정한다.
+- 기존 status/diagnostics와 별도로 retained inline progress와 cancel control을 표시한다. `Escape`는 그 control 안에 focus가 있고 modifier와 IME/composition이 없을 때만 cancel하며, modified key나 IME input을 가로채지 않는다.
+- terminal UI는 `Submitted to printer`, cancelled 또는 failed를 구분한다. `submitted`는 native submission 완료이지 physical printer의 출력 성공이 아니다.
+- print 전후 active tab/window/page/zoom/reader rotation/search/history와 focus를 보존하고, source PDF를 쓰거나 user PDF를 evidence로 복사하지 않는다.
 
-- Microsoft Print to PDF로 1/12/300-page fixtures의 page count와 순서를 확인한다.
-- print 전후 active tab/pane/page/zoom/search/history가 같다.
-- cancel 후 print artifact와 worker task가 남지 않는다.
-- source hash가 같다.
-- spike가 안정적이지 않으면 OS default viewer로 조용히 위임하지 말고 release blocker로 남긴다.
+### 현재 evidence와 남은 acceptance
+
+- reference workstation에서 실제 Microsoft Print to PDF output을 blank-1과 raster-12에 대해 생성하고 별도 pixel-template verifier로 확인했다. text-300 output은 `49,609,522` bytes, SHA-256 `2de9e27e1b65690196023479e6d896aa1f93feb870dbc56cc6f829f1ea16341a`이며 browser가 300개 모두의 고유 page-digit pixel template과 순서를 확인했다. 이는 native output 생성과 browser output 검증을 구분한 evidence다.
+- raster-12와 text-300에서 nondefault page/zoom/90° reader rotation 상태가 보존됐다. current build의 native Save As cancel과 같은 document cancel/reopen도 통과했다. 기존 fixture SHA는 바뀌지 않았고 기존 source fixture는 수정하지 않은 채 `print-mixed-rotation-4.pdf`만 추가했다.
+- mixed-rotation-4 actual output의 네 page와 intrinsic rotation도 pixel-template 비교를 통과했다. OS foreground keyboard/focus, native DPI, Narrator와 clean-VM/installer acceptance는 여전히 수동 release gate이며 physical printer는 시험하지 않았다. 따라서 W12 전체나 release readiness를 완료로 표시하지 않는다.
+- 최종 evidence summary는 [`docs/evidence/issue83-print.json`](../evidence/issue83-print.json)에 기록한다. raw output PDF와 machine path는 Git 밖의 `.internal/evidence/issue-83/`에만 둔다.
 
 ## 14. Windows, single instance, file association
 

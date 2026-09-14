@@ -30,6 +30,7 @@ export const FIXTURE_NAMES = [
   "interactive.pdf",
   "unicode-text.pdf",
   "한글 공백 😀.pdf",
+  "print-mixed-rotation-4.pdf",
 ];
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const OUT = "fixtures/pdf";
@@ -97,7 +98,7 @@ function document(
       }) ?? [];
     const resources = spec.resources ?? "<< >>";
     objects[page - 1] =
-      `<< /Type /Page /Parent 2 0 R /MediaBox ${spec.mediaBox ?? A4} /Resources ${resources} /Contents ${content} 0 R${annotations.length ? ` /Annots [${annotations.map((id) => `${id} 0 R`).join(" ")}]` : ""} >>`;
+      `<< /Type /Page /Parent 2 0 R /MediaBox ${spec.mediaBox ?? A4}${spec.rotate === undefined ? "" : ` /Rotate ${spec.rotate}`} /Resources ${resources} /Contents ${content} 0 R${annotations.length ? ` /Annots [${annotations.map((id) => `${id} 0 R`).join(" ")}]` : ""} >>`;
     pages.push(page);
   }
   objects[1] = `<< /Type /Pages /Count ${pages.length} /Kids [${pages.map((id) => `${id} 0 R`).join(" ")}] >>`;
@@ -106,6 +107,39 @@ function document(
 }
 const font =
   "<< /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >>";
+const PRINT_MIXED_ROTATION_SENTINEL = "print-mixed-rotation-4-v1";
+const PRINT_MIXED_CORNER_MARKERS =
+  "tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall";
+const PRINT_MIXED_ROTATION_PAGES = [
+  {
+    width: 612,
+    height: 792,
+    rotate: 0,
+    text: "Print mixed rotation page 1 612x792 rotate 0",
+    orientationMarker: "print-mixed-page-1-r0-source-top-arrow",
+  },
+  {
+    width: 792,
+    height: 612,
+    rotate: 90,
+    text: "Print mixed rotation page 2 792x612 rotate 90",
+    orientationMarker: "print-mixed-page-2-r90-source-top-arrow",
+  },
+  {
+    width: 400,
+    height: 600,
+    rotate: 180,
+    text: "Print mixed rotation page 3 400x600 rotate 180",
+    orientationMarker: "print-mixed-page-3-r180-source-top-arrow",
+  },
+  {
+    width: 600,
+    height: 400,
+    rotate: 270,
+    text: "Print mixed rotation page 4 600x400 rotate 270",
+    orientationMarker: "print-mixed-page-4-r270-source-top-arrow",
+  },
+];
 const SENTINEL_COLORS = {
   "s-magenta-lime-diagonal-v1": [
     "1 0 1",
@@ -159,6 +193,34 @@ function textPages(count, prefix, sentinel = "") {
       resources: font,
       content: `BT /F1 14 Tf 48 720 Td (${literal(`${prefix} page ${index + 1} copyable needle`)}) Tj ET\n${index === 0 ? sentinelCommands(sentinel) : ""}`,
     })),
+  );
+}
+function printMixedRotationPdf() {
+  return document(
+    PRINT_MIXED_ROTATION_PAGES.map(
+      ({ width, height, rotate, text, orientationMarker }) => ({
+        mediaBox: `[0 0 ${width} ${height}]`,
+        rotate,
+        resources: font,
+        content: [
+          `% ${PRINT_MIXED_ROTATION_SENTINEL}`,
+          `% ${orientationMarker}`,
+          `% ${PRINT_MIXED_CORNER_MARKERS}`,
+          "1 0 0 rg",
+          `12 ${height - 60} 48 48 re f`,
+          "0 1 0 rg",
+          `${width - 36} ${height - 72} 24 60 re f`,
+          "0 0 1 rg",
+          `${width - 72} 12 60 24 re f`,
+          "1 0.5 0 rg",
+          "12 12 24 48 re f",
+          "0 0 0 rg",
+          `${width / 2 - 10} ${height / 2 - 36} 20 54 re f`,
+          `${width / 2 - 32} ${height / 2 + 18} m ${width / 2} ${height / 2 + 50} l ${width / 2 + 32} ${height / 2 + 18} l h f`,
+          `BT /F1 14 Tf 60 ${height - 96} Td (${literal(text)}) Tj ET`,
+        ].join("\n"),
+      }),
+    ),
   );
 }
 function imageBytes(page) {
@@ -436,6 +498,7 @@ export function createGoldenFixtures() {
     ["interactive.pdf", { bytes: interactivePdf() }],
     ["unicode-text.pdf", { bytes: unicodePdf() }],
     ["한글 공백 😀.pdf", { bytes: textPages(1, "Unicode filename") }],
+    ["print-mixed-rotation-4.pdf", { bytes: printMixedRotationPdf() }],
   ]);
 }
 function expected(name) {
@@ -451,6 +514,24 @@ function expected(name) {
     return { ...base, pages: 1, sentinel: { class: "locked" } };
   if (name === "empty.pdf")
     return { ...base, pages: 0, sentinel: { class: "zero-pages" } };
+  if (name === "print-mixed-rotation-4.pdf")
+    return {
+      ...base,
+      pages: PRINT_MIXED_ROTATION_PAGES.length,
+      expected_text: PRINT_MIXED_ROTATION_PAGES.map(({ text }) => text),
+      page_sizes: PRINT_MIXED_ROTATION_PAGES.map(({ width, height }) => [
+        width,
+        height,
+      ]),
+      rotations: PRINT_MIXED_ROTATION_PAGES.map(({ rotate }) => rotate),
+      sentinel: {
+        identity: PRINT_MIXED_ROTATION_SENTINEL,
+        corner_markers: PRINT_MIXED_CORNER_MARKERS,
+        orientation_markers: PRINT_MIXED_ROTATION_PAGES.map(
+          ({ orientationMarker }) => orientationMarker,
+        ),
+      },
+    };
   const pages = name.includes("300")
     ? 300
     : name.includes("10")

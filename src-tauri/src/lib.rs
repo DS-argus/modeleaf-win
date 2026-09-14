@@ -7,11 +7,18 @@ pub mod open_request;
 pub mod pdf_protocol;
 pub mod pdf_session;
 pub mod persistence;
+pub mod print_job;
+#[cfg(windows)]
+mod print_windows;
 pub mod recent;
 pub mod theme_state;
 pub mod workspace;
 use crate::commands::config::{
     ConfigReadOutcome, ConfigResetOutcome, ConfigStore, ConfigWriteOutcome,
+};
+use crate::commands::print::{
+    cancel_pdf_print, finish_pdf_print, poll_pdf_print, release_pdf_print, start_pdf_print,
+    submit_pdf_print_page,
 };
 use crate::commands::state::StateFileStore;
 use crate::local_path::SystemLocalPathPolicy;
@@ -121,6 +128,9 @@ fn drain_app_owners<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     let workspace = app.state::<WorkspaceManager>();
     let sessions = app.state::<PdfSessionManager>();
     for label in app.webview_windows().keys() {
+        sessions.invalidate_print_owner(label);
+        app.state::<print_job::PrintJobManager>()
+            .cancel_owner(label);
         if let Some(owner) = workspace.active_owner(label) {
             drain_owner_for_lifecycle(&coordinator, &workspace, &sessions, &owner);
         }
@@ -323,12 +333,34 @@ enum CreateAppWindowError {
     ShuttingDown,
 }
 
+#[derive(Default)]
+struct PageLoadRegistry {
+    loaded: HashSet<String>,
+}
+
+impl PageLoadRegistry {
+    fn page_started(&mut self, label: &str) -> bool {
+        !self.loaded.insert(label.to_owned())
+    }
+    fn remove(&mut self, label: &str) {
+        self.loaded.remove(label);
+    }
+}
 #[derive(Clone, Default)]
 struct AppWindowRegistry {
+    loaded_pages: Arc<Mutex<PageLoadRegistry>>,
     windows: Arc<Mutex<HashMap<String, tauri::WebviewWindow>>>,
 }
 
 impl AppWindowRegistry {
+    /// Returns true only for replacement loads; initial argv-admitted sessions
+    /// belong to the first renderer and must remain printable.
+    fn page_started(&self, label: &str) -> bool {
+        self.loaded_pages
+            .lock()
+            .expect("page lifecycle registry poisoned")
+            .page_started(label)
+    }
     fn retain(&self, window: tauri::WebviewWindow) {
         self.windows
             .lock()
@@ -337,6 +369,10 @@ impl AppWindowRegistry {
     }
 
     fn remove(&self, label: &str) {
+        self.loaded_pages
+            .lock()
+            .expect("page lifecycle registry poisoned")
+            .remove(label);
         self.windows
             .lock()
             .expect("app window registry poisoned")
@@ -1314,6 +1350,7 @@ pub fn run() {
                 );
             }
         }))
+        .manage(print_job::PrintJobManager::default())
         .manage(sessions)
         .manage(workspace)
         .manage(coordinator)
@@ -1361,6 +1398,22 @@ pub fn run() {
             );
             Ok(())
         })
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started)
+                && webview
+                    .state::<AppWindowRegistry>()
+                    .page_started(webview.label())
+            {
+                // A reloaded renderer no longer knows the old opaque job ID.
+                // Keep raw native ownership until settlement, then reap it.
+                if let Some(sessions) = webview.try_state::<PdfSessionManager>() {
+                    sessions.invalidate_print_owner(webview.label());
+                }
+                if let Some(jobs) = webview.try_state::<print_job::PrintJobManager>() {
+                    jobs.abandon_owner(webview.label());
+                }
+            }
+        })
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 if window.state::<QuitCoordinator>().is_shutting_down() {
@@ -1376,6 +1429,12 @@ pub fn run() {
                 );
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
+                window
+                    .state::<PdfSessionManager>()
+                    .invalidate_print_owner(window.label());
+                window
+                    .state::<print_job::PrintJobManager>()
+                    .cancel_owner(window.label());
                 api.prevent_close();
                 let label = window.label().to_owned();
                 let coordinator = window.state::<WindowCloseCoordinator>();
@@ -1417,6 +1476,12 @@ pub fn run() {
                 });
             }
             tauri::WindowEvent::Destroyed => {
+                window
+                    .state::<PdfSessionManager>()
+                    .invalidate_print_owner(window.label());
+                window
+                    .state::<print_job::PrintJobManager>()
+                    .abandon_owner(window.label());
                 let label = window.label().to_owned();
                 window.state::<WindowCloseCoordinator>().remove(&label);
                 window.state::<AppWindowRegistry>().remove(&label);
@@ -1466,7 +1531,13 @@ pub fn run() {
             abort_external_links,
             open_external_link,
             cancel_pdf_session,
-            close_pdf_session
+            close_pdf_session,
+            start_pdf_print,
+            poll_pdf_print,
+            submit_pdf_print_page,
+            finish_pdf_print,
+            cancel_pdf_print,
+            release_pdf_print
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Modeleaf")
@@ -1481,6 +1552,15 @@ pub fn run() {
 }
 #[cfg(test)]
 mod window_lifecycle_tests {
+    #[test]
+    fn print_invalidation_distinguishes_initial_load_from_replacement() {
+        let mut registry = super::PageLoadRegistry::default();
+        assert!(!registry.page_started("first"));
+        assert!(registry.page_started("first"));
+        assert!(!registry.page_started("second"));
+        registry.remove("first");
+        assert!(!registry.page_started("first"));
+    }
     use super::{select_shell_open_label, WindowCloseCoordinator};
 
     #[test]

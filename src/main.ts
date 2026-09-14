@@ -36,6 +36,8 @@ import { AccessibilityController, readerAccessibilityName, tabAccessibilitySeman
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
+import { TauriPdfPrintBoundary } from "./pdf/TauriPdfPrintBoundary";
+import { createPrintProgress } from "./ui/PrintProgress";
 import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
@@ -114,6 +116,8 @@ const shellStatus = createShellStatusRenderer(status, () => {
     status: reader.status,
   };
 });
+const printProgressControl = createPrintProgress(status, () => active().session.cancelPrint());
+let printFocusOwner: { readonly session: PdfTabSession; readonly element?: HTMLElement } | undefined;
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
 const helpRows = required<HTMLElement>("#help-rows");
@@ -579,6 +583,16 @@ function createTab(): TabPayload {
   let viewportSyncDocumentGeneration = -1;
   session = new PdfTabSession({
     native,
+    printNative: (opened, generation) => new TauriPdfPrintBoundary(opened, generation),
+    onPrintProgress: (progress) => {
+      if (shellDisposing || workspace === undefined || active().session !== session) return;
+      if (progress === undefined && printProgressControl.containsFocus()) {
+        const target = printFocusOwner?.session === session ? printFocusOwner.element : undefined;
+        if (target?.isConnected) target.focus({ preventScroll: true });
+        else host.focus({ preventScroll: true });
+      }
+      render();
+    },
     pdf: { getDocument: (options) => getDocument(options as never) as unknown as PdfLoadingTask, annotationMode: AnnotationMode.DISABLE },
     resources,
     canvasHost: host,
@@ -751,6 +765,7 @@ function render(): void {
     emptyReaderOpen.title = openCommand.disabledReason ?? "";
   }
   shellStatus.render();
+  printProgressControl.update(current.session.printProgress);
   emptyReader.hidden = shell.emptyState === undefined;
   emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
   if (snapshot.reader.helpVisible && overlayOwner.active?.id !== "help") claimOverlay("help");
@@ -1418,7 +1433,26 @@ function dispatchActionId(id: ActionId): void {
 function dispatch(action: Action): void {
   const type = action.type;
   if (type === "document.open") { if (nativeOpenPending) return; if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } void openFileOpener(); return; }
-  if (type === "document.print") { void active().session.printCurrent().then(() => render()); return; }
+  if (type === "document.print") {
+    const session = active().session;
+    if (session.printProgress !== undefined) return;
+    const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    printFocusOwner = { session, ...(focused === undefined ? {} : { element: focused }) };
+    void session.printCurrent().finally(() => {
+      if (shellDisposing) return;
+      if (printFocusOwner?.session === session) {
+        if (active().session === session && overlayOwner.active === undefined
+          && (document.activeElement === document.body || printProgressControl.containsFocus())) {
+          const target = printFocusOwner.element;
+          if (target?.isConnected) target.focus({ preventScroll: true });
+          else active().host.focus({ preventScroll: true });
+        }
+        printFocusOwner = undefined;
+      }
+      render();
+    });
+    return;
+  }
   if (type === "tab.activate") { const tab = action.index === -1 ? workspace.snapshot.tabs[workspace.snapshot.tabs.length - 1] : workspace.snapshot.tabs[action.index]; if (tab) void switchTab(tab.id); return; }
   if (type === "tab.close") { closeTab(workspace.activeTabId); return; }
   if (type === "application.new") { void invoke<void>("create_app_window").catch(() => { active().session.reader.setStatus("WINDOW_CREATE_FAILED"); render(); }); return; }
@@ -1508,6 +1542,12 @@ cancelPendingShellInput = rootKeyboard.cancelPending;
 syncPendingShellInput = rootKeyboard.syncContext;
 window.addEventListener("keydown", (event) => {
   const target = event.target instanceof Element ? event.target : null;
+  if (printProgressControl.containsFocus() && !event.isComposing && event.keyCode !== 229
+    && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+    && (event.key === "Escape" || event.key === "Enter" || event.key === " ")) {
+    if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); printProgressControl.cancel(); }
+    return;
+  }
   const claimed = rootKeyboard.handleKeyDown({
     key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
     repeat: event.repeat, isComposing: event.isComposing, keyCode: event.keyCode,
@@ -1606,6 +1646,7 @@ paletteDialog.addEventListener("keydown", (event) => {
 }, { capture: true });
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
 window.addEventListener("beforeunload", () => {
+  printProgressControl.dispose();
   stopFileOpenerPathFitting();
   disposeSearchPrompt();
   themeUnlisten?.();

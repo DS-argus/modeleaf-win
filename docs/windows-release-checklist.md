@@ -87,7 +87,7 @@ No visibility conversion, tag, or public release follows merely from committing 
 
 ## Known initial limitations
 
-Basic app use was accepted by the owner. Full native input/multiwindow scenarios, native DPI/text scaling, Narrator, clean-machine installation, and executable-signature validation remain unverified beyond the specific recorded checks. Live configuration application, full-document printing, and update retrieval are incomplete. The keyboard-triggered Browse-pointer issue is addressed by the app-scoped HideCursorWhileTyping policy (PR #72); print Issue #83 is excluded from this release. TOC, keyboard link hints, and link-destination indicators are not included. The current build does not implement automatic updates.
+Basic app use was accepted by the owner. Full native input/multiwindow scenarios, native DPI/text scaling, Narrator, clean-machine installation, and executable-signature validation remain unverified beyond the specific recorded checks. Live configuration application and update retrieval are incomplete. Basic native full-document printing has Issue #83 reference-workstation fixture evidence, but remains excluded from the recorded 0.1.2 release and its release qualification is incomplete. The keyboard-triggered Browse-pointer issue is addressed by the app-scoped HideCursorWhileTyping policy (PR #72). TOC, keyboard link hints, and link-destination indicators are not included. The current build does not implement automatic updates.
 
 ## Further native and production acceptance — HUMAN-ONLY
 
@@ -110,7 +110,7 @@ These remain open work, not claimed prerequisites that the owner somehow perform
 
 - [ ] Navigate reader, tabs, palette, help, and dialogs with Narrator and record announcements
 - [ ] Verify forced colors, native DPI combinations, and 150%/200% text scaling
-- [ ] Test 1-, 12-, and 300-page printing through Microsoft Print to PDF; verify counts/order and unchanged reader state after the printing defect is fixed
+- [ ] On the packaged release candidate in clean Windows, deliver Ctrl+P through the OS foreground keyboard path and test owned-dialog focus/cancel plus 1-, 12-, 300-page and mixed-rotation Microsoft Print to PDF output; verify count/order, selected-paper fit and intrinsic rotation, unchanged reader state/source SHA, and record `submitted` separately from physical success. [Issue #83](https://github.com/DS-argus/modeleaf-win/issues/83) reference-workstation CDP/debug evidence does not satisfy this gate.
 - [ ] Verify independent windows and exactly-once second-instance file ingress
 - [ ] Confirm source PDF SHA-256 values remain unchanged after each scenario
 
