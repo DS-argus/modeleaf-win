@@ -168,6 +168,7 @@ Transient overlay 종류:
 5. overlay가 close된 tab/pane을 return target으로 기억했다면 active PDF 또는 empty-state로 fallback한다.
 6. overlay는 content bounds 안에 있고 최소 창에서도 핵심 controls가 scroll/focus 가능하다.
 
+Issue #79 transparency candidate gate: normal-color `.prompt`/search의 불투명 inactive-tab과 `.mac-overlay`의 기존 91% active-tab을 유지한다. 공통 palette와 backdrop을 유지한 0.90/0.85/0.80 후보는 흰 배경의 Solarized Dark search foreground가 각각 4.09/3.45/2.90:1로 4.5:1 미달이며, 0.85 focus도 2.97:1로 3:1 미달이다. 따라서 후보를 채택하지 않는다. 일부 muted text는 기존 불투명 상태부터 목표 미달이므로 theme별 예외나 text 색 변경을 암묵적으로 추가하지 않는다. 투명도 확대는 대비 해결에 대한 owner 결정과 preview가 필요하다. Forced colors의 실제 mac-overlay panel은 불투명 Canvas/CanvasText, system border를 사용하고 blur/shadow를 제거한다.
 구현은 DOM focus 호출 모음이 아니라 다음 state를 갖는 reducer로 한다.
 
 ```ts
@@ -216,6 +217,7 @@ Palette 자체가 독자 action list를 가지면 안 된다. action registry de
 - validation/error line은 layout jump가 최소가 되게 reserve하거나 안정적으로 expand
 - IME composition 중 Enter가 후보 확정인지 prompt commit인지 구분한다. composing이면 action commit을 실행하지 않는다.
 
+Issue #79 Windows search presentation: form은 `align-items: center`로 `/`, input content box와 footer text를 중앙 정렬한다. 480px 이하에서는 기존 footer 다음 행 배치를 유지한다. 폰트, line-height, input appearance, markup, IME/Enter/Escape/focus lifecycle은 변경하지 않는다. Forced colors에서는 search footer의 `kbd`도 직접 `CanvasText`를 사용한다.
 기준 이미지: [`ui/06-search-prompt.png`](./ui/06-search-prompt.png), [`ui/07-goto-page-prompt.png`](./ui/07-goto-page-prompt.png).
 
 ## 12. Theme picker

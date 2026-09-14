@@ -213,6 +213,23 @@ describe("search prompt production binding", () => {
     expect(styles).toContain("#search-dialog { color: CanvasText");
     expect(styles).toContain("white-space: normal;");
   });
+  it("centers search line boxes without offsets and preserves the narrow footer row", () => {
+    const formRule = styles.match(/#search-dialog form \{([^}]+)\}/)?.[1];
+    expect(formRule).toContain("align-items: center;");
+    expect(formRule).toContain("grid-template-columns: auto minmax(0, 1fr) auto;");
+    const narrowRules = styles.slice(styles.indexOf("@media (max-width: 480px)"), styles.indexOf("@media (forced-colors: active)"));
+    expect(narrowRules).toContain("grid-template-columns: auto minmax(0, 1fr);");
+    expect(narrowRules).toContain(".search-footer { grid-column: 1 / -1;");
+    const searchRules = styles.slice(styles.indexOf("#search-dialog {"), styles.indexOf(".mac-overlay {"));
+    expect(searchRules).not.toMatch(/translateY|\btop:|margin-top:|appearance:/);
+    expect(mainSource).not.toContain('class="search-prompt mac-overlay"');
+  });
+  it("uses system colors for search key labels and opaque overlay panels in forced colors", () => {
+    const forcedRules = styles.slice(styles.indexOf("@media (forced-colors: active)"), styles.indexOf("@media (min-resolution:"));
+    expect(forcedRules).toContain(".search-footer, .search-footer kbd { color: CanvasText; }");
+    expect(forcedRules).toContain(".mac-overlay { color: CanvasText; background: Canvas;");
+    expect(forcedRules).toContain("#search-dialog input:focus-visible { outline: 2px solid Highlight;");
+  });
   it("cancels the prompt on Escape without clearing active search or moving the reader", () => {
     const dialog = document.createElement("dialog");
     const form = document.createElement("form");

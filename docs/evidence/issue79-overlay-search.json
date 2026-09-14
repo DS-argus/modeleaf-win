@@ -1,0 +1,60 @@
+{
+  "issue": 79,
+  "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
+  "status": "partial",
+  "implementation": ["Search grid align-items: center", "Search footer kbd uses CanvasText in forced colors", "mac-overlay uses opaque system panel colors without blur/shadow in forced colors"],
+  "unchanged": ["Normal-color panel alpha", "Theme palettes", "Backdrop", "Search markup, fonts, line heights and UA appearance", "Search controller, IME and focus routing", "PDF rendering and navigation code"],
+  "geometry": {
+    "method": "Hidden Chromium on Windows; production app.css and exact search dialog markup extracted from main.ts, opened with showModal. Range text rectangles for prefix/footer/kbd; symmetric input padding and content-box center, not a fabricated input glyph Range. Actual captures reviewed for Korean/Latin glyphs, caret, clear button and selection.",
+    "viewports": [[1040,760],[479,360],[480,360],[481,360],[1600,900]],
+    "queries": ["empty placeholder", "inference", "한글 검색", "long query repeated 50 times"],
+    "casesPassed": 20,
+    "horizontalOverflow": false,
+    "narrowFooterNextRow": true,
+    "beforeAt1040": {"prefixTextCenter":686.5,"inputContentCenter":692.5,"footerTextCenter":685},
+    "afterAt1040": {"prefixTextCenter":692,"inputContentCenter":692.5,"footerTextCenter":692,"keyTextCenter":692.5},
+    "maxPrefixOrWideFooterDifferenceFromInputContentCenterCssPx": 0.5,
+    "localCaptures": [".internal/evidence/issue-79/search-normal.png", ".internal/evidence/issue-79/search-narrow.png", ".internal/evidence/issue-79/search-forced-light.png", ".internal/evidence/issue-79/search-forced-dark.png"]
+  },
+  "forcedColors": {
+    "method": "Chromium CDP forced-colors active plus light/dark preferred color scheme; not native Windows high-contrast certification",
+    "light": {"panel":"rgb(255, 255, 255)","textAndKeys":"rgb(0, 0, 0)","focus":"rgb(55, 0, 110) solid 2px"},
+    "dark": {"panel":"rgb(0, 0, 0)","textAndKeys":"rgb(255, 255, 255)","focus":"rgb(26, 235, 255) solid 2px"},
+    "selectedQueryRange": [0,15]
+  },
+  "alphaDecision": {
+    "result": "rejected; no candidate adopted",
+    "method": "Exact seven Theme.ts palettes; sRGB channel composition alpha * inactive-tab + (1-alpha) * white, followed by WCAG relative-luminance contrast. Search backdrop is transparent. Failure on this valid backing is sufficient to reject each shared alpha before broader background/overlay previews.",
+    "alphas": [0.9,0.85,0.8],
+    "foregroundContrastByTheme": {
+      "tokyo-night": [8.4282,7.1028,5.9312],
+      "gruvbox-dark": [8.8346,7.4434,6.2444],
+      "solarized-dark": [4.0852,3.4548,2.8983],
+      "dracula": [10.8978,9.1905,7.7276],
+      "everforest": [6.3007,5.3290,4.5036],
+      "nord": [7.5701,6.4140,5.4345],
+      "catppuccin-latte": [6.7003,6.7680,6.8362]
+    },
+    "solarizedOpaqueForegroundContrast": 5.4203,
+    "solarizedFocusContrastAt085": 2.9683,
+    "existingMutedTextFailuresAtOpaque": ["solarized-dark", "dracula", "everforest", "catppuccin-latte"],
+    "requiredDecision": "Resolve the conflict between increased shared transparency and retained text palette/contrast before adopting a candidate. No theme-specific exceptions or palette changes added."
+  },
+  "verification": {
+    "focused": "5 files / 39 tests pass",
+    "frontend": "npm test -- --maxWorkers=1: 81 files / 878 tests pass, unchanged 15000ms timeouts",
+    "build": "npm run build: pass; existing >500 kB chunk warning retained",
+    "fmt": "cargo fmt --check --manifest-path src-tauri/Cargo.toml: pass",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings: pass",
+    "rust": "cargo test --manifest-path src-tauri/Cargo.toml -j 1: 146 top-level tests plus 2 nested process-helper invocations pass; MSVC linker stdout warning retained",
+    "earlierFailures": ["Initial worktree-local pdfjs-dist absent; npm ci fixed asset build", "Default frontend concurrency: 6 timeouts; 2 workers: 3 timeouts; final serial run passed without changing timeouts/assertions", "Initial Rust static gate exceeded 300s; retry passed", "Default Rust test compilation failed in windows crate with STATUS_STACK_BUFFER_OVERRUN; single compilation job passed"],
+    "environmentWarning": "Installed Node 24.20.0/npm 11.19.0 differ from pinned 24.19.0/11.17.0; npm ci reported EBADENGINE and an esbuild install-script approval warning. No dependency/lockfile changes."
+  },
+  "fixtureSha256": {
+    "method": "Current bytes compared against git show HEAD:<path>; no packaged PDF rendering performed",
+    "fixtures/pdf/text-3-page.pdf": "2d7cb2cb8d7ae1eb5f6377af387cdc4aff0e1d94010b257ebc4ecefe46fcf1bd",
+    "fixtures/pdf/fixture-L-text-300.pdf": "91abe1474b5d974b9b1b4a9adb26327ca83075bf07bb86113a2e8f2491cb84ab"
+  },
+  "notVerified": ["Packaged 100/125/150/200 percent display scales", "Physical monitor movement", "Native 200 percent text scale", "Native IME, high contrast and focus restoration", "PDF pixel/viewport equality in packaged app", "Full white/black/dense-text/color background alpha preview matrix after contrast rejection", "Owner preview approval"],
+  "nativeLimitation": "Available browser automation cannot exercise physical display changes or certify native Windows accessibility. These remain acceptance blockers; browser DPR is not substituted."
+}

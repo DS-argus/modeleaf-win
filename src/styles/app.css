@@ -239,6 +239,7 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 #search-dialog::backdrop { background: transparent; }
 #search-dialog form {
   display: grid;
+  align-items: center;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px;
   margin: 0;
@@ -457,9 +458,10 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }
   .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
   .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+  .mac-overlay { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; backdrop-filter: none; }
   #search-dialog { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
   #search-dialog input { color: CanvasText; }
-  #search-dialog input::placeholder, .search-prefix, .search-footer { color: CanvasText; }
+  #search-dialog input::placeholder, .search-prefix, .search-footer, .search-footer kbd { color: CanvasText; }
   #search-dialog input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
   .textLayer .pdf-search-hit,
   ::highlight(modeleaf-pdf-search-hits),
