@@ -233,6 +233,8 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
     nativeOpenPending: false,
     initialRecentsReady: Promise.resolve(),
     fileOpenerDialog: dialog,
+    nativePickerOpen: false,
+    recentStateHealth: "READY",
     fileOpenerForm: form,
     fileOpenerInput: input,
     fileOpenerList: list,
