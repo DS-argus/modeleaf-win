@@ -18,7 +18,7 @@ describe("ReaderState", () => {
       zoomMode: "fit-width",
       customScale: 1.25,
       rotationQuarterTurns: 0,
-      status: "Page 1 of 3 · Fit width · 0°",
+      status: "Page 1 of 3 · 0°",
     });
 
     reader.apply({ type: "view.fitPage" });
@@ -45,7 +45,7 @@ describe("ReaderState", () => {
     reader.apply({ type: "page.next" });
     expect(reader.snapshot).toMatchObject({
       page: 3,
-      status: "Page 3 of 3 · Fit width · 0°",
+      status: "Page 3 of 3 · 0°",
     });
   });
 
@@ -68,7 +68,7 @@ describe("ReaderState", () => {
     reader.apply({ type: "prompt.cancel" });
     expect(reader.snapshot).toMatchObject({
       helpVisible: false,
-      status: "Page 7 of 10 · Fit width · 0°",
+      status: "Page 7 of 10 · 0°",
     });
   });
 
@@ -132,7 +132,7 @@ describe("ReaderState", () => {
       zoomMode: "fit-page",
       customScale: 1.375,
       rotationQuarterTurns: 0,
-      status: "Page 1 of 10 · Fit page · 0°",
+      status: "Page 1 of 10 · 0°",
     });
     reader.apply({ type: "view.zoom", factor: 1 / 1.1 });
     reader.apply({ type: "view.rotate", quarterTurns: -1 });
@@ -162,7 +162,7 @@ describe("ReaderState", () => {
       zoomMode: "fit-width",
       customScale: 1.25,
       rotationQuarterTurns: 3,
-      status: "Page 1 of 2 · Fit width · 270°",
+      status: "Page 1 of 2 · 270°",
     });
   });
 

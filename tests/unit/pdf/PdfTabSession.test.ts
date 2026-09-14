@@ -76,6 +76,7 @@ const SEARCH_RESULT: PdfSearchResult = { pageNumber: 1, index: 0, length: 1 };
 function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
   const content = {
     snapshot,
+    get searchQuery() { return snapshot.query; },
     nextMatch: vi.fn(),
     search: vi.fn(async () => undefined),
     suspend: vi.fn(),
@@ -97,6 +98,40 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
 }
 
 describe("PdfTabSession CP4 pressure and search ownership", () => {
+  it("forwards search ownership and clears only the latest search-owned message", async () => {
+    const notify = vi.fn();
+    const session = new PdfTabSession({
+      native: {} as never, pdf: {} as never,
+      resources: new ResourceReservationManager(),
+      canvasHost: new EventTarget() as unknown as HTMLElement,
+      createContentOptions: () => ({ onSearchResults: vi.fn() }) as never,
+      onStatus: notify,
+    });
+    session.reader.mountDocument(3);
+    const content = (session as unknown as { createContent: (identity: { sessionId: string; documentGeneration: number }, generation: number) => import("../../../src/pdf/PdfContentController").PdfContentController }).createContent({ sessionId: "status", documentGeneration: 1 }, 1);
+    await content.search("needle");
+    (session as unknown as { content: typeof content }).content = content;
+    const snapshotRead = vi.spyOn(content, "snapshot", "get");
+    expect(session.query).toBe("needle");
+    expect(snapshotRead).not.toHaveBeenCalled();
+    snapshotRead.mockRestore();
+    expect(session.snapshot.status).toBe("Search is unavailable.");
+    content.invalidateSearch();
+    expect(session.snapshot.status).toContain("Page 1 of 3");
+    expect(notify).toHaveBeenLastCalledWith(session.snapshot.status);
+    await content.search("needle");
+    // Even identical text published by an unrelated owner must survive clear.
+    session.reader.setStatus("Search is unavailable.");
+    content.invalidateSearch();
+    expect(session.snapshot.status).toBe("Search is unavailable.");
+    await content.search("needle");
+    session.reader.setStatus("PDF cleanup pending");
+    content.invalidateSearch();
+    expect(session.snapshot.status).toBe("PDF cleanup pending");
+    await content.search("needle");
+    await content.search("  ");
+    expect(session.snapshot.status).toContain("Page 1 of 3");
+  });
   it("derives page jumps from the target viewport visual top", async () => {
     const session = createSession();
     session.reader.mountDocument(2);
