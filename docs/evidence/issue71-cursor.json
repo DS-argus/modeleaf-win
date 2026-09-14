@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "issue": 71,
+  "finalIntegration": "docs/evidence/issue71-final-integration.json",
   "historicalOperatorCandidate": {
     "sourceHead": "1c2857e8cf61311f5b92e257df3ef9e68757e263",
     "integrationBase": "d0f6246868ba14b6333f1257a3de062ee75adec1",
