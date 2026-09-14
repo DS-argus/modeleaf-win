@@ -168,7 +168,11 @@ Transient overlay 종류:
 5. overlay가 close된 tab/pane을 return target으로 기억했다면 active PDF 또는 empty-state로 fallback한다.
 6. overlay는 content bounds 안에 있고 최소 창에서도 핵심 controls가 scroll/focus 가능하다.
 
-Issue #79 transparency candidate gate: normal-color `.prompt`/search의 불투명 inactive-tab과 `.mac-overlay`의 기존 91% active-tab을 유지한다. 공통 palette와 backdrop을 유지한 0.90/0.85/0.80 후보는 흰 배경의 Solarized Dark search foreground가 각각 4.09/3.45/2.90:1로 4.5:1 미달이며, 0.85 focus도 2.97:1로 3:1 미달이다. 따라서 후보를 채택하지 않는다. 일부 muted text는 기존 불투명 상태부터 목표 미달이므로 theme별 예외나 text 색 변경을 암묵적으로 추가하지 않는다. 투명도 확대는 대비 해결에 대한 owner 결정과 preview가 필요하다. Forced colors의 실제 mac-overlay panel은 불투명 Canvas/CanvasText, system border를 사용하고 blur/shadow를 제거한다.
+Issue #79 owner-approved delta: `.prompt`/search는 inactive-tab, `.mac-overlay`는 active-tab의 **85% background alpha**를 사용한다. 부모 opacity나 전역 theme token을 바꾸지 않는다. 기존 base color, backdrop(일반 44% dimming/search transparent), normal-color blur/shadow, 위치와 크기는 유지한다. 내부 help card와 chooser input 배경도 유지한다.
+
+초기 후보는 기존 글자색으로 대비 기준을 통과하지 못했으나, owner가 오버레이 내부 foreground 보정을 승인했다. 로컬 `--overlay-*` 색은 dark theme에서 white, Catppuccin Latte에서 black 방향으로 혼합한다. primary text는 foreground 40%, secondary/placeholder는 foreground 70%, accent text는 accent 25%, focus는 focus-indicator 40%를 유지하고 나머지를 해당 끝색으로 채운다. 모든 글자는 불투명하며 placeholder opacity는 1이다. 선택/hover/focus한 palette shortcut은 row의 보정된 글자색을 따른다. 선택행 marker와 keyboard focus는 보정된 focus color를 사용한다. 공통 palette/config/state schema는 변경하지 않는다.
+
+7개 theme와 6개 표면의 브라우저 computed-color 합성 비교에서 0.90/0.85/0.80 최소 작은 글자 대비는 각각 4.80/4.58/4.31:1이다. 따라서 0.85를 채택하고 0.80은 거부한다. 0.85의 focus 비교 최소값은 4.35:1이다. Forced colors는 불투명 Canvas/CanvasText, 선택행은 Highlight/HighlightText, focus는 Highlight를 사용하며 panel blur/shadow를 제거한다. 이 수치는 native DPI/text-scale 인증이 아니며 새 투명도 preview는 owner 검토 대상이다.
 구현은 DOM focus 호출 모음이 아니라 다음 state를 갖는 reducer로 한다.
 
 ```ts

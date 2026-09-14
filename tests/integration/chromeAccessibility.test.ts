@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { THEMES } from "../../src/domain/theme/Theme";
 import {
   AccessibilityController, focusRestoreTarget,
   readerAccessibilityName,
@@ -224,10 +225,70 @@ describe("search prompt production binding", () => {
     expect(searchRules).not.toMatch(/translateY|\btop:|margin-top:|appearance:/);
     expect(mainSource).not.toContain('class="search-prompt mac-overlay"');
   });
+  it("limits transparency and contrast corrections to real overlay panels", () => {
+    const panelRule = styles.match(/\.prompt, #search-dialog, \.mac-overlay \{([^}]+)\}/)?.[1];
+    expect(panelRule).toContain("--overlay-panel-alpha: 85%;");
+    expect(panelRule).toContain("--overlay-contrast: white;");
+    expect(panelRule).toContain("--overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));");
+    expect(panelRule).toContain("--overlay-muted: color-mix(in srgb, var(--theme-foreground) 70%, var(--overlay-contrast));");
+    expect(panelRule).not.toMatch(/\bopacity:|\bfilter:/);
+    expect(styles).toContain('[data-theme="catppuccin-latte"] :is(.prompt, #search-dialog, .mac-overlay) { --overlay-contrast: black; }');
+    expect(styles).toContain("background: color-mix(in srgb, var(--theme-inactive-tab) var(--overlay-panel-alpha), transparent);");
+    expect(styles).toContain("background: color-mix(in srgb, var(--theme-active-tab) var(--overlay-panel-alpha), transparent);");
+    expect(styles).toContain("#search-dialog input::placeholder { color: var(--overlay-muted); opacity: 1; }");
+    expect(styles).toContain(".list-overlay input::placeholder { color: var(--overlay-muted); opacity: 1; }");
+    expect(styles).toContain("dialog::backdrop { background: rgb(7 8 14 / 44%); }");
+    expect(styles).toContain("backdrop-filter: blur(18px) saturate(120%);");
+  });
+  it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
+    const weight = (name: string): number => {
+      const declaration = styles.match(new RegExp(`--overlay-${name}: ([^;]+);`))?.[1];
+      const value = Number(declaration?.match(/(\d+)%/)?.[1]) / 100;
+      expect(Number.isFinite(value)).toBe(true);
+      return value;
+    };
+    const rgb = (hex: string): number[] => hex.slice(1).match(/../g)!.map((channel) => parseInt(channel, 16));
+    const mix = (front: number[], back: number[], alpha: number): number[] => front.map((v, i) => v * alpha + back[i]! * (1 - alpha));
+    const luminance = (color: number[]): number => color.reduce((sum, channel, i) => {
+      const value = channel / 255;
+      return sum + (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4) * [0.2126, 0.7152, 0.0722][i]!;
+    }, 0);
+    const contrast = (a: number[], b: number[]): number => {
+      const values = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (values[0]! + 0.05) / (values[1]! + 0.05);
+    };
+    for (const theme of THEMES) {
+      const palette = theme.palette;
+      const end = theme.id === "catppuccin-latte" ? [0, 0, 0] : [255, 255, 255];
+      const text = mix(rgb(palette.foreground), end, weight("text"));
+      const muted = mix(rgb(palette.foreground), end, weight("muted"));
+      const accent = mix(rgb(palette.accent), end, weight("accent"));
+      const focus = mix(rgb(palette["focus-indicator"]), end, weight("focus"));
+      for (const back of [[0, 0, 0], [255, 255, 255]]) {
+        const prompt = mix(rgb(palette["inactive-tab"]), back, weight("panel-alpha"));
+        const panel = mix(rgb(palette["active-tab"]), mix([7, 8, 14], back, 0.44), weight("panel-alpha"));
+        const selected = mix(rgb(palette.accent), panel, 0.28);
+        const themeSelected = mix(rgb(palette.accent), panel, 0.18);
+        const help = mix(rgb(palette["inactive-tab"]), panel, 0.62);
+        for (const bg of [prompt, panel, help, rgb(palette["inactive-tab"])]) {
+          expect(contrast(text, bg), `${theme.id} text`).toBeGreaterThanOrEqual(4.5);
+          expect(contrast(muted, bg), `${theme.id} muted/placeholder`).toBeGreaterThanOrEqual(4.5);
+          expect(contrast(focus, bg), `${theme.id} focus`).toBeGreaterThanOrEqual(3);
+        }
+        expect(contrast(text, selected), `${theme.id} selected row/shortcut`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, themeSelected), `${theme.id} selected theme`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(accent, help), `${theme.id} help heading`).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(focus, selected), `${theme.id} selected focus`).toBeGreaterThanOrEqual(3);
+      }
+    }
+  });
   it("uses system colors for search key labels and opaque overlay panels in forced colors", () => {
     const forcedRules = styles.slice(styles.indexOf("@media (forced-colors: active)"), styles.indexOf("@media (min-resolution:"));
     expect(forcedRules).toContain(".search-footer, .search-footer kbd { color: CanvasText; }");
     expect(forcedRules).toContain(".mac-overlay { color: CanvasText; background: Canvas;");
+    expect(forcedRules).toContain('.mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }');
+    expect(forcedRules).toContain("--overlay-muted: CanvasText;");
+    expect(forcedRules).toContain("--overlay-focus: Highlight;");
     expect(forcedRules).toContain("#search-dialog input:focus-visible { outline: 2px solid Highlight;");
   });
   it("cancels the prompt on Escape without clearing active search or moving the reader", () => {
