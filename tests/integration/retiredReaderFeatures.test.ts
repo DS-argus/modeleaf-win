@@ -111,11 +111,34 @@ describe("Retired reader features", () => {
 
     expect(content).toContain("pdf-link-overlay");
     expect(main).toContain('invoke<number>("open_external_link"');
-    expect(styles).toContain(".pdf-link-overlay:hover,\n.pdf-link-overlay:focus-visible");
+    expect(styles).toContain(".pdf-link-overlay:focus-visible {");
     expect(styles).toContain("--theme-active-search-highlight");
     expect(styles).toContain("--theme-focus-indicator");
   });
 
+  it("keeps ordinary PDF link overlays neutral until keyboard focus, including forced colors", () => {
+    const styles = source("src/styles/app.css");
+    const idleStart = styles.indexOf(".pdf-link-overlay {");
+    const focusStart = styles.indexOf(".pdf-link-overlay:focus-visible {");
+    const forcedStart = styles.indexOf("@media (forced-colors: active)");
+    const forcedEnd = styles.indexOf("@media (min-resolution", forcedStart);
+    expect([idleStart, focusStart, forcedStart, forcedEnd].every((offset) => offset >= 0)).toBe(true);
+
+    const idleRule = styles.slice(idleStart, focusStart);
+    expect(idleRule).toContain("--pdf-link-border-color: transparent;");
+    expect(idleRule).toContain("appearance: none;");
+    expect(idleRule).toContain("border: 0 solid var(--pdf-link-border-color);");
+    expect(idleRule).toContain("background: transparent;");
+    expect(idleRule).toContain("box-shadow: none;");
+    expect(idleRule).toContain("cursor: pointer;");
+    expect(idleRule).not.toContain("color-mix");
+    expect(styles).not.toContain(".pdf-link-overlay:hover");
+    expect(styles.slice(focusStart, forcedStart)).toContain("outline: 2px solid var(--theme-focus-indicator);");
+
+    const forcedRules = styles.slice(forcedStart, forcedEnd);
+    expect(forcedRules).toContain(".pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }");
+    expect(forcedRules).toContain(".pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }");
+  });
   it.each([
     { label: "plain Escape", key: "Escape" },
     { label: "retired f hint", key: "f" },
