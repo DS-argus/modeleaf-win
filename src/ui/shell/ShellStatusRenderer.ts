@@ -13,10 +13,11 @@ export function createShellStatusRenderer(
   };
   const message = span("status-message");
   const fitPage = span("status-badge status-badge-fit-page", "FIT PAGE");
+  const fitWidth = span("status-badge status-badge-fit-width", "FIT WIDTH");
   const search = span("status-badge status-badge-search", "SEARCH");
   const pending = span("status-pending");
-  fitPage.hidden = search.hidden = pending.hidden = true;
-  footer.replaceChildren(message, " ", fitPage, " ", search, " ", pending);
+  fitPage.hidden = fitWidth.hidden = search.hidden = pending.hidden = true;
+  footer.replaceChildren(message, " ", fitPage, " ", fitWidth, " ", search, " ", pending);
   let pendingSequence = "";
   const render = (): void => {
     const state = projectShellStatus({ ...readActiveStatus(), pendingSequence });
@@ -24,6 +25,7 @@ export function createShellStatusRenderer(
     if (message.textContent !== state.message) message.textContent = state.message;
     if (pending.textContent !== state.pending) pending.textContent = state.pending;
     if (fitPage.hidden === state.fitPage) fitPage.hidden = !state.fitPage;
+    if (fitWidth.hidden === state.fitWidth) fitWidth.hidden = !state.fitWidth;
     if (search.hidden === state.search) search.hidden = !state.search;
     const pendingHidden = state.pending.length === 0;
     if (pending.hidden !== pendingHidden) pending.hidden = pendingHidden;

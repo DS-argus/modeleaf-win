@@ -1,4 +1,5 @@
 {
+  "supersededBy": "issue78-fit-width.json",
   "issue": 78,
   "baseline": "d0f6246868ba14b6333f1257a3de062ee75adec1",
   "acceptance": "partial-native-matrix-pending",

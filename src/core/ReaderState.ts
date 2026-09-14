@@ -285,10 +285,8 @@ export class ReaderState {
     customScale: number,
     rotationQuarterTurns: number,
   ): string {
-    const zoom = zoomMode === "custom"
-      ? `Custom ${this.formatScale(customScale)}`
-      : zoomMode === "fit-width" ? "Fit width" : "Fit page";
-    return `Page ${page} of ${pageCount} · ${zoom} · ${rotationQuarterTurns * 90}°`;
+    const zoom = zoomMode === "custom" ? ` · Custom ${this.formatScale(customScale)}` : "";
+    return `Page ${page} of ${pageCount}${zoom} · ${rotationQuarterTurns * 90}°`;
   }
 
   private formatScale(scale: number): string {

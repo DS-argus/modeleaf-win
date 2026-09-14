@@ -21,6 +21,7 @@ export interface ShellStatusProjection {
   readonly message: string;
   readonly pending: string;
   readonly fitPage: boolean;
+  readonly fitWidth: boolean;
   readonly search: boolean;
 }
 
@@ -49,6 +50,7 @@ export function projectShellStatus(input: ShellStatusInput): ShellStatusProjecti
     message: input.status,
     pending: input.pendingSequence ? `Pending: ${input.pendingSequence}` : "",
     fitPage: input.hasDocument && input.zoomMode === "fit-page",
+    fitWidth: input.hasDocument && input.zoomMode === "fit-width",
     search: input.hasDocument && (input.searchPromptOpen || input.query.length > 0),
   };
 }

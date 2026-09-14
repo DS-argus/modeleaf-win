@@ -24,10 +24,10 @@ function setup() {
 afterEach(() => { vi.useRealTimers(); document.body.replaceChildren(); });
 
 describe("shared shell status renderer", () => {
-  it("preserves both badges and current diagnostics through render → pending → asynchronous status → idle", async () => {
+  it.each([["view.fitPage", "FIT PAGE"], ["view.fitWidth", "FIT WIDTH"]] as const)("preserves %s and search through render → pending → asynchronous status → idle", async (action, label) => {
     vi.useFakeTimers();
     const subject = setup();
-    subject.reader.apply({ type: "view.fitPage" });
+    subject.reader.apply({ type: action });
     subject.active.query = "needle";
     subject.renderer.render();
     const nodes = Array.from(subject.footer.children);
@@ -45,7 +45,7 @@ describe("shared shell status renderer", () => {
     subject.renderer.render();
     expect(subject.footer.textContent).toContain("Pending: g");
     await Promise.resolve().then(() => { subject.reader.setStatus("PDF registry cleanup failed: current diagnostic"); subject.renderer.render(); });
-    expect(subject.modes()).toEqual(["FIT PAGE", "SEARCH"]);
+    expect(subject.modes()).toEqual([label, "SEARCH"]);
     expect(subject.footer.textContent).toContain("PDF registry cleanup failed: current diagnostic");
     expect(subject.footer.textContent).toContain("Pending: g");
     await vi.advanceTimersByTimeAsync(399);
@@ -53,7 +53,7 @@ describe("shared shell status renderer", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(subject.footer.textContent).not.toContain("Pending:");
     expect(subject.footer.textContent).toContain("PDF registry cleanup failed: current diagnostic");
-    expect(subject.modes()).toEqual(["FIT PAGE", "SEARCH"]);
+    expect(subject.modes()).toEqual([label, "SEARCH"]);
     expect(Array.from(subject.footer.children)).toEqual(nodes);
     expect(subject.footer.querySelectorAll("[aria-live], [role], button, [tabindex]")).toHaveLength(0);
     expect(subject.footer.getAttribute("aria-live")).toBe("polite");
@@ -77,7 +77,7 @@ describe("shared shell status renderer", () => {
     subject.activate(b);
     a.reader.setStatus("Late search result from A", "search");
     subject.renderer.render();
-    expect(subject.modes()).toEqual([]);
+    expect(subject.modes()).toEqual(["FIT WIDTH"]);
     expect(subject.footer.textContent).toContain("B error");
     expect(subject.footer.textContent).not.toContain("Late");
     subject.activate(a);
@@ -94,7 +94,8 @@ describe("shared shell status renderer", () => {
     expect(subject.modes()).toEqual(["FIT PAGE"]);
     for (const action of [{ type: "view.fitWidth" }, { type: "view.zoom", factor: 1.1 }, { type: "view.actualSize" }] as const) {
       subject.reader.apply(action); subject.renderer.render();
-      expect(subject.modes()).toEqual([]);
+      expect(subject.modes()).toEqual(action.type === "view.fitWidth" ? ["FIT WIDTH"] : []);
+      expect(subject.footer.querySelector(".status-message")?.textContent).not.toMatch(/Fit page|Fit width/u);
       subject.reader.restoreView(fit); subject.renderer.render();
       expect(subject.modes()).toEqual(["FIT PAGE"]);
     }
@@ -112,15 +113,15 @@ describe("shared shell status renderer", () => {
     const unbind = bindSearchPrompt({ dialog, form, input }, () => ({ startSearch }), () => { subject.active.prompt = false; }, subject.renderer.render);
     const key = (key: string, isComposing = false) => input.dispatchEvent(new KeyboardEvent("keydown", { key, isComposing, bubbles: true, cancelable: true }));
     subject.active.prompt = true; subject.renderer.render();
-    expect(subject.modes()).toEqual(["SEARCH"]);
-    key("Enter"); expect(subject.modes()).toEqual(["SEARCH"]);
+    expect(subject.modes()).toEqual(["FIT WIDTH", "SEARCH"]);
+    key("Enter"); expect(subject.modes()).toEqual(["FIT WIDTH", "SEARCH"]);
     input.value = "needle"; key("Enter", true);
     expect(startSearch).toHaveBeenCalledTimes(1);
-    key("Escape"); expect(subject.modes()).toEqual([]);
+    key("Escape"); expect(subject.modes()).toEqual(["FIT WIDTH"]);
     subject.active.prompt = true; key("Enter");
-    expect(subject.active.prompt).toBe(false); expect(subject.modes()).toEqual(["SEARCH"]);
-    subject.active.prompt = true; key("Escape"); expect(subject.modes()).toEqual(["SEARCH"]);
-    subject.active.query = ""; subject.renderer.render(); expect(subject.modes()).toEqual([]);
+    expect(subject.active.prompt).toBe(false); expect(subject.modes()).toEqual(["FIT WIDTH", "SEARCH"]);
+    subject.active.prompt = true; key("Escape"); expect(subject.modes()).toEqual(["FIT WIDTH", "SEARCH"]);
+    subject.active.query = ""; subject.renderer.render(); expect(subject.modes()).toEqual(["FIT WIDTH"]);
     unbind();
   });
 
