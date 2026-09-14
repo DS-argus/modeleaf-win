@@ -215,6 +215,7 @@ kbd {
   --overlay-contrast: white;
   --overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));
   --overlay-muted: color-mix(in srgb, var(--theme-foreground) 70%, var(--overlay-contrast));
+  --overlay-footer-description: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));
   --overlay-accent: color-mix(in srgb, var(--theme-accent) 25%, var(--overlay-contrast));
   --overlay-focus: color-mix(in srgb, var(--theme-focus-indicator) 40%, var(--overlay-contrast));
   color: var(--overlay-text);
@@ -293,7 +294,7 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .search-footer {
   grid-column: auto;
   margin: 0;
-  color: var(--overlay-muted);
+  color: var(--overlay-footer-description);
   font-size: 12px;
   line-height: 1.25;
   white-space: nowrap;
@@ -386,7 +387,7 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .file-opener-footer { margin: 2px 1px 0; font-size: 11px; line-height: 1.35; white-space: normal; }
 .command-palette-list { scrollbar-width: none; }
 .command-palette-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
-.overlay-footer { margin: 5px 8px 0; color: var(--overlay-muted); font-size: 12px; }
+.overlay-footer { margin: 5px 8px 0; color: var(--overlay-footer-description); font-size: 12px; }
 .overlay-footer kbd { padding: 0; color: var(--overlay-text); background: transparent; border: 0; }
 
 .help-overlay {
@@ -492,7 +493,7 @@ body, .app-shell, .reader-surface { color: var(--theme-foreground); background: 
   .file-opener-footer { overflow-wrap: anywhere; }
 }
 @media (forced-colors: active) {
-  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
+  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-footer-description: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
   .mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }
   .statusbar, .status-badge { color: CanvasText; background: Canvas; }
   .status-badge { border-color: CanvasText; }

@@ -63,8 +63,8 @@
     "captureScope": "Production CSS and dialog markup with representative row content over synthetic dense text, not a packaged PDF screenshot."
   },
   "verification": {
-    "focused": "5 files / 41 tests pass",
-    "frontend": "npm test -- --maxWorkers=1: 82 files / 900 tests pass; existing 15000ms limits unchanged",
+    "focused": "5 files / 42 tests pass",
+    "frontend": "npm test -- --maxWorkers=1: 82 files / 901 tests pass; existing 15000ms limits unchanged",
     "build": "npm run build: pass; >500 kB chunk warning retained",
     "fmt": "cargo fmt --check --manifest-path src-tauri/Cargo.toml: pass",
     "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings: pass",
@@ -97,6 +97,26 @@
     "captures": [".internal/evidence/issue-79/native-bundled-preview.png", ".internal/evidence/issue-79/native-bundled-search.png", ".internal/evidence/issue-79/native-bundled-search-detail.png"],
     "recovery": "The first integrated launch displayed localhost connection refused after cargo test and Tauri build overlapped on the same target directory. Rebuilt the packaged-debug executable serially after cargo completed, then relaunched and visually verified it. The failed launch is not counted as a successful packaged smoke. Native builds and tests must not overlap on this target directory.",
     "limitation": "Single workstation window smoke only; owner acceptance of corrected overlay colors and the full physical-scale matrix remain pending."
+  },
+  "footerFollowUp": {
+    "scope": "Owner approved retaining Windows Ctrl/Shift/Enter/Esc text labels and separating key/description colors. Recent movement label is Ctrl+j/k; actual key bindings are unchanged.",
+    "colorRoles": "Keys retain overlay-text; descriptions and separators use accent 60% mixed toward the existing overlay contrast endpoint. Only search/theme/recent footers change. Forced colors use CanvasText for both roles.",
+    "computedComparisons": 126,
+    "themes": 7,
+    "surfaces": 3,
+    "backingColors": 6,
+    "minDescriptionContrast": 4.626235558674762,
+    "minKeyContrast": 7.04689198608473,
+    "layoutCases": 15,
+    "viewports": [[1040,760],[479,360],[480,360],[481,360],[1600,900]],
+    "horizontalOverflow": false,
+    "forcedColors": "Light/dark browser emulation: all three footer descriptions and keys resolve to matching black/white CanvasText.",
+    "capturesReviewed": ["footer-tokyo-night-search-dialog.png", "footer-tokyo-night-theme-dialog.png", "footer-tokyo-night-file-opener-dialog.png", "footer-catppuccin-latte-file-opener-dialog.png"],
+    "localEvidenceDirectory": ".internal/evidence/issue-79",
+    "measurements": ["footer-color-comparison.json", "footer-layout-forced.json"],
+    "nativeBuild": "Full gate and npm run tauri:build-debug passed serially with CARGO_BUILD_JOBS=1.",
+    "executableSha256": "13c81156e2d3d95a42202bc5da56b6cea0853926b1fb6c9c805bd7e03ffa172e",
+    "nativePreviewLimitation": "Process launched, but foreground verification did not complete; process was no longer present before a native footer capture. No current native footer visual acceptance is claimed. Earlier native smoke predates this footer-only change."
   },
   "notVerified": ["New alpha .85 native owner preview", "Packaged 100/125/150/200 percent display-scale matrix", "Physical monitor movement", "Native 200 percent text-scale matrix", "Packaged PDF pixel/viewport equality"],
   "nativeLimitation": "Browser DPR is not substituted for physical display-scale, monitor-move or text-scale evidence."

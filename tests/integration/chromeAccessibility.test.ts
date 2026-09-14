@@ -240,6 +240,16 @@ describe("search prompt production binding", () => {
     expect(styles).toContain("dialog::backdrop { background: rgb(7 8 14 / 44%); }");
     expect(styles).toContain("backdrop-filter: blur(18px) saturate(120%);");
   });
+  it("separates themed footer descriptions from readable Windows key labels", () => {
+    expect(styles).toContain("--overlay-footer-description: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));");
+    for (const selector of [".search-footer", ".overlay-footer"]) {
+      const rule = styles.slice(styles.indexOf(`${selector} {`)).split("}")[0];
+      expect(rule).toContain("color: var(--overlay-footer-description);");
+      expect(styles).toContain(`${selector} kbd { padding: 0; color: var(--overlay-text);`);
+    }
+    expect(mainSource).toContain("Ctrl+j/k</kbd> move");
+    expect(mainSource).toContain("Ctrl+Shift+C</kbd> clear history");
+  });
   it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
     const weight = (name: string): number => {
       const declaration = styles.match(new RegExp(`--overlay-${name}: ([^;]+);`))?.[1];
@@ -264,6 +274,7 @@ describe("search prompt production binding", () => {
       const muted = mix(rgb(palette.foreground), end, weight("muted"));
       const accent = mix(rgb(palette.accent), end, weight("accent"));
       const focus = mix(rgb(palette["focus-indicator"]), end, weight("focus"));
+      const footer = mix(rgb(palette.accent), end, weight("footer-description"));
       for (const back of [[0, 0, 0], [255, 255, 255]]) {
         const prompt = mix(rgb(palette["inactive-tab"]), back, weight("panel-alpha"));
         const panel = mix(rgb(palette["active-tab"]), mix([7, 8, 14], back, 0.44), weight("panel-alpha"));
@@ -274,6 +285,9 @@ describe("search prompt production binding", () => {
           expect(contrast(text, bg), `${theme.id} text`).toBeGreaterThanOrEqual(4.5);
           expect(contrast(muted, bg), `${theme.id} muted/placeholder`).toBeGreaterThanOrEqual(4.5);
           expect(contrast(focus, bg), `${theme.id} focus`).toBeGreaterThanOrEqual(3);
+        }
+        for (const bg of [prompt, panel]) {
+          expect(contrast(footer, bg), `${theme.id} footer description`).toBeGreaterThanOrEqual(4.5);
         }
         expect(contrast(text, selected), `${theme.id} selected row/shortcut`).toBeGreaterThanOrEqual(4.5);
         expect(contrast(accent, themeSelected), `${theme.id} selected theme`).toBeGreaterThanOrEqual(4.5);
@@ -288,6 +302,7 @@ describe("search prompt production binding", () => {
     expect(forcedRules).toContain(".mac-overlay { color: CanvasText; background: Canvas;");
     expect(forcedRules).toContain('.mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }');
     expect(forcedRules).toContain("--overlay-muted: CanvasText;");
+    expect(forcedRules).toContain("--overlay-footer-description: CanvasText;");
     expect(forcedRules).toContain("--overlay-focus: Highlight;");
     expect(forcedRules).toContain("#search-dialog input:focus-visible { outline: 2px solid Highlight;");
   });
