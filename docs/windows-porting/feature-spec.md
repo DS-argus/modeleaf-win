@@ -117,7 +117,7 @@ Issue #53 owner amendment (2026-09-09): Recent 행은 native-owned 전체 `displ
 
 - 처음은 1페이지, vertical single-page continuous, Fit Width다.
 - page break margin과 shadow가 있다.
-- `w`: Fit Width, `F`: Fit Page, Actual Size는 menu/palette에 있지만 기본키는 없다.
+- `w`: Fit Width, `F`: Fit Page, `0`: Actual Size.
 - zoom 범위는 `0.1...8`, 한 단계 factor 기본값은 `1.10`이다.
 - Fit Page에서 `j/k/d/u`는 페이지 단위로 이동한다.
 - Fit Page에서 `=`/`+`는 anchor를 유지하며 continuous manual zoom으로, `-`는 Zoom Out, `w`는 continuous Fit Width로 바뀐다.

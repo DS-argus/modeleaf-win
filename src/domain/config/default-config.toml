@@ -37,7 +37,7 @@
 "search.cancel" = ["<Esc>"]
 "view.zoomIn" = ["=", "+"]
 "view.zoomOut" = ["-"]
-"view.zoomReset" = []
+"view.zoomReset" = ["0"]
 "view.fitWidth" = ["w"]
 "view.fitPage" = ["F"]
 "view.rotateLeft" = ["["]
