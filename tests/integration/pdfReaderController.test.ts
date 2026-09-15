@@ -1617,7 +1617,7 @@ describe("PdfReaderController", () => {
     host.remove();
   });
 
-  it("aborts and releases an in-flight native print before disposing the document", async () => {
+  it("keeps an in-flight native print alive while its presentation is suspended", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const printRender = deferred<void>();
     const cancelPrint = vi.fn(() => printRender.reject(Object.assign(new Error("cancelled"), { name: "RenderingCancelledException" })));
@@ -1662,6 +1662,12 @@ describe("PdfReaderController", () => {
     await vi.waitFor(() => expect(printCanvas).toBeDefined());
 
     await controller.suspend();
+    expect(cancelPrint).not.toHaveBeenCalled();
+    expect(printNative.cancel).not.toHaveBeenCalled();
+    expect(printCanvas!.width).toBeGreaterThan(0);
+    expect(printCanvas!.height).toBeGreaterThan(0);
+
+    controller.cancelPrint();
     expect(await printing).toBe(false);
     expect(cancelPrint).toHaveBeenCalled();
     expect(printNative.cancel).toHaveBeenCalledWith(jobId);
