@@ -79,6 +79,9 @@ describe("Scoop preparation workflow", () => {
     }
     expect(step("Build standalone candidate").run).toBe("npm run tauri -- build --no-bundle");
     expect(step("Reject modified build inputs").run).toContain("git diff --exit-code");
+    for (const name of ["Build standalone candidate", "Reject modified build inputs", "Prepare ZIP and Scoop metadata"]) {
+      expect(step(name).if).toBe("${{ github.ref == 'refs/heads/main' }}");
+    }
     expect(index("Build standalone candidate")).toBeLessThan(index("Reject modified build inputs"));
     expect(index("Reject modified build inputs")).toBeLessThan(index("Prepare ZIP and Scoop metadata"));
     expect(index("Prepare ZIP and Scoop metadata")).toBeLessThan(index("Retain review artifacts without publishing"));
@@ -98,7 +101,7 @@ describe("Scoop preparation workflow", () => {
     expect(setup.run).toContain("$env:GITHUB_ENV");
     expect(index("Set isolated output directories")).toBeLessThan(index("Test Rust"));
   });
-  it("isolates test/build state and retains private or main-only short-lived review output", () => {
+  it("keeps candidate preparation and short-lived review output main-only", () => {
     expect(job["runs-on"]).toBe("windows-latest");
     expect(job["timeout-minutes"]).toBeLessThanOrEqual(45);
     expect(job.env.CARGO_BUILD_JOBS).toBe("2");
@@ -108,7 +111,7 @@ describe("Scoop preparation workflow", () => {
     expect(directories.MODELEAF_RELEASE_TARGET).not.toBe(directories.CARGO_TARGET_DIR);
     expect(step("Prepare ZIP and Scoop metadata").run).toContain("-OutputDirectory $env:MODELEAF_PACKAGE_OUTPUT");
     const upload = step("Retain review artifacts without publishing");
-    expect(upload.if).toBe("${{ github.event.repository.private == true || github.ref == 'refs/heads/main' }}");
+    expect(upload.if).toBe("${{ github.ref == 'refs/heads/main' }}");
     expect(upload.with).toMatchObject({
       path: "${{ env.MODELEAF_PACKAGE_OUTPUT }}",
       "if-no-files-found": "error",

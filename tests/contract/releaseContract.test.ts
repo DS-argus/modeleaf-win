@@ -134,6 +134,12 @@ describe("release checklist", () => {
     // Basic owner use does not certify these specific native scenarios.
     expect(checklist).not.toMatch(/verified on a clean VM|SmartScreen passed|Narrator verified/iu);
   });
+
+  it("documents PR verification separately from main candidate preparation", () => {
+    expect(checklist).toContain("uses a fast PR tier");
+    expect(checklist).toContain("PR runs never build a standalone Tauri candidate, ZIP it, generate Scoop metadata, or upload artifacts.");
+    expect(checklist).toContain("Main retains the full checks plus exact-source standalone candidate, ZIP, Scoop-metadata, and receipt preparation");
+  });
   it("documents the dedicated bucket without claiming unpublished installation", () => {
     const readme = readFileSync(join(root, "README.md"), "utf8");
     for (const text of [readme, checklist]) {
