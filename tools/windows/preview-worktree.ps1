@@ -23,6 +23,12 @@ function Sha256Text([string]$Value) {
     try { return ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '' }
     finally { $sha.Dispose() }
 }
+function FileSha256([string]$Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $stream = [IO.File]::OpenRead($Path)
+    try { return ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) -join '' }
+    finally { $stream.Dispose(); $sha.Dispose() }
+}
 function SourceIdentity {
     $head = (& git -C $root rev-parse HEAD).Trim()
     $status = (& git -C $root status --porcelain=v1) -join "`n"
@@ -55,7 +61,7 @@ if (-not $SkipBuild) {
         kind = 'standalone-tauri-debug-no-bundle'
         branch = $branch
         source = $identity
-        executableSha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+        executableSha256 = FileSha256 $executable
     } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $receiptPath -Encoding utf8
 } else {
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'No standalone preview receipt exists. Run without -SkipBuild.' }
@@ -64,7 +70,7 @@ if (-not $SkipBuild) {
     if ($receipt.kind -ne 'standalone-tauri-debug-no-bundle' -or $receipt.branch -ne $branch -or $receipt.source.head -ne $identity.head -or $receipt.source.statusSha256 -ne $identity.statusSha256 -or $receipt.source.diffSha256 -ne $identity.diffSha256) {
         throw 'Preview receipt is stale for this worktree. Rebuild without -SkipBuild.'
     }
-    $actual = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = FileSha256 $executable
     if ($receipt.executableSha256 -ne $actual) { throw 'Preview executable does not match its receipt. Rebuild without -SkipBuild.' }
 }
 
@@ -73,8 +79,11 @@ New-Item -ItemType Directory -Force -Path $profile | Out-Null
 $previousProfile = $env:WEBVIEW2_USER_DATA_FOLDER
 try {
     $env:WEBVIEW2_USER_DATA_FOLDER = $profile
-    $arguments = if ($Pdf) { @((Resolve-Path -LiteralPath $Pdf).Path) } else { @() }
-    $process = Start-Process -FilePath $executable -ArgumentList $arguments -WorkingDirectory $root -PassThru
+    if ($Pdf) {
+        $process = Start-Process -FilePath $executable -ArgumentList (Resolve-Path -LiteralPath $Pdf).Path -WorkingDirectory $root -PassThru
+    } else {
+        $process = Start-Process -FilePath $executable -WorkingDirectory $root -PassThru
+    }
 } finally {
     $env:WEBVIEW2_USER_DATA_FOLDER = $previousProfile
 }
@@ -82,7 +91,7 @@ try {
 [pscustomobject]@{
     Branch = $branch
     Executable = $executable
-    ExecutableSha256 = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+    ExecutableSha256 = FileSha256 $executable
     ProcessId = $process.Id
     WebViewProfile = $profile
     Receipt = $receiptPath

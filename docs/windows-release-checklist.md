@@ -11,9 +11,9 @@ Issue #68 removes unused personal reference captures and obsolete planning files
 A history rewrite invalidates every previous source-bound release candidate. Use a newly verified main build, not an old ZIP receipt. Do not merge old local branches back into rewritten main: they can restore removed objects. Private backups and local user work are not public release inputs. Deleting main history or remote branches does not erase GitHub's hidden PR refs or caches; confirm server-side removal separately before claiming complete erasure or approving public visibility.
 ## Automated preparation
 
-[Windows Scoop preparation](../.github/workflows/windows-scoop.yml) runs frontend tests/build, copied-asset/license checks, the dependency audit, Rust formatting/lint/tests, and a separate standalone build on Windows. Its token is read-only; it never tags, publishes a release, or changes visibility.
+[Windows Scoop preparation](../.github/workflows/windows-scoop.yml) uses a fast PR tier for copied-asset/license checks, dependency audit, frontend tests/build, and Rust formatting/lint/tests. Main retains those full checks and separately builds the standalone candidate. Its token is read-only; it never tags, publishes a release, or changes visibility.
 
-Review artifacts are retained for seven days. While the repository is private, its PR and main artifacts remain private. After the separately approved public conversion, only main builds upload preparation artifacts; those CI downloads are then public, but are not signed or accepted releases. Public PR builds do not upload candidates. Rebuild and review again when an artifact expires; do not silently substitute another source or hash.
+Main preparation artifacts are retained for seven days. PR runs never build a standalone Tauri candidate, ZIP it, generate Scoop metadata, or upload artifacts. Main retains the full checks plus exact-source standalone candidate, ZIP, Scoop-metadata, and receipt preparation; its downloads are preparation artifacts, not signed or accepted releases. Rebuild and review again when an artifact expires; do not silently substitute another source or hash.
 
 The packager can also run after a successful standalone build:
 
