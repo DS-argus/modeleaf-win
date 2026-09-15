@@ -4,8 +4,8 @@ const MIN_ZOOM_PERCENT = 10;
 const MAX_ZOOM_PERCENT = 1_000;
 
 export type ThemeAnnouncementId = ThemeId;
-
 export type SafeStatus = "ready" | "document-closed" | "render-complete" | "search-cleared";
+
 export type SafeError =
   | "document-unavailable"
   | "document-invalid"
@@ -13,7 +13,13 @@ export type SafeError =
   | "document-password-rejected"
   | "document-locality-denied"
   | "render-failed"
-  | "theme-save-failed";
+  | "theme-save-failed"
+  | "open-picker-service"
+  | "open-request-admission"
+  | "open-adoption"
+  | "open-presentation"
+  | "open-ownership-capacity"
+  | "open-unknown";
 
 export type AccessibilityAnnouncement =
   | { readonly kind: "page"; readonly generation: number; readonly page: number; readonly pageCount: number }
@@ -58,7 +64,6 @@ interface PageZoomState {
   readonly pageCount?: number;
   readonly zoomPercent?: number;
 }
-
 const STATUS_TEXT: Readonly<Record<SafeStatus, string>> = {
   ready: "Ready.",
   "document-closed": "Document closed.",
@@ -74,6 +79,12 @@ const ERROR_TEXT: Readonly<Record<SafeError, string>> = {
   "document-locality-denied": "This document location is not supported.",
   "render-failed": "The page could not be rendered.",
   "theme-save-failed": "The theme could not be saved.",
+  "open-picker-service": "Could not open PDF. [OPEN_PICKER_SERVICE]",
+  "open-request-admission": "Could not open PDF. [OPEN_REQUEST_ADMISSION]",
+  "open-adoption": "Could not open PDF. [OPEN_ADOPTION]",
+  "open-presentation": "Could not open PDF. [OPEN_PRESENTATION]",
+  "open-ownership-capacity": "Could not open PDF. [OPEN_OWNERSHIP_CAPACITY]",
+  "open-unknown": "Could not open PDF. [OPEN_UNKNOWN]",
 };
 
 const THEME_TEXT: Readonly<Record<ThemeAnnouncementId, string>> = {

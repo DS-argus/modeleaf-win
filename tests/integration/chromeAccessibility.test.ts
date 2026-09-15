@@ -181,19 +181,27 @@ describe("chrome accessibility contract", () => {
       mainSource.indexOf("tabStrip.replaceChildren"),
       mainSource.indexOf("function cancelPagePromptOwnership"),
     );
+    expect(projection).toContain('item.dataset.selected = String(selected)');
     expect(projection).toContain('button.setAttribute("aria-label", semantics.ariaLabel)');
     expect(projection).toContain("button.title = tab.payload.session.snapshot.title");
     expect(projection).toContain('close.setAttribute("aria-label", "Close tab")');
+    expect(projection).toContain("event.stopPropagation(); closeTab(tab.id)");
     expect(styles).toContain(".tab-strip { display: flex; flex-wrap: nowrap; min-width: 0; min-height: 34px;");
     expect(styles).toContain("overflow-x: auto; overflow-y: hidden;");
-    expect(styles).toContain(".workspace-tab-item { display: flex; flex: 0 0 184px; width: 184px; min-width: 184px; height: 26px; }");
-    expect(styles).toContain(".workspace-tab { flex: 1 1 auto; min-width: 0;");
+    expect(styles).toContain(".workspace-tab-item { display: flex; align-items: center; box-sizing: border-box; flex: 0 0 184px; width: 184px; min-width: 184px; height: 26px; color: var(--theme-muted-text); background: var(--theme-active-tab); border: 1px solid transparent; }");
+    expect(styles).toContain(".workspace-tab-item:hover { color: var(--theme-foreground); background: var(--theme-border); }");
+    expect(styles).toContain('.workspace-tab-item[data-selected="true"] { color: var(--theme-foreground); border-color: color-mix(in srgb, var(--theme-accent) 72%, var(--theme-border)); font-weight: 650; }');
+    expect(styles).toContain(".workspace-tab, .workspace-tab-close { border: 0; color: inherit; background: transparent; }");
+    expect(styles).toContain(".workspace-tab { display: flex; align-items: center; align-self: stretch; flex: 1 1 auto; min-width: 0;");
     expect(styles).toContain("overflow: hidden; text-overflow: ellipsis; white-space: nowrap;");
-    expect(styles).toContain(".workspace-tab-close { flex: 0 0 auto;");
+    expect(styles).toContain(".workspace-tab-close { display: grid; place-items: center; align-self: stretch; flex: 0 0 auto;");
+    expect(styles).toContain(".workspace-tab-item:hover .workspace-tab-close, .workspace-tab-close:focus-visible { opacity: 1; }");
+    expect(styles).toContain("line-height: 1; opacity: 0.75;");
     expect(styles).not.toContain(".workspace-tab { max-width: 220px");
     expect(styles).toContain(".workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }");
     expect(styles).toContain(".workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline-color: var(--theme-focus-indicator); }");
     expect(styles).toContain("@media (forced-colors: active)");
+    expect(styles).toContain('.workspace-tab-item:hover, .workspace-tab-item[data-selected="true"] { color: HighlightText; background: Highlight; }');
     expect(styles).toContain(".theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }");
     expect(styles).toContain(".workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }");
   });
