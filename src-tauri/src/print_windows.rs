@@ -55,7 +55,10 @@ const PRINT_WORKER_DISCONNECTED: &str = "PRINT_WORKER_DISCONNECTED";
 const PRINT_WORKER_STATE: &str = "PRINT_WORKER_STATE";
 const PRINT_OUTPUT_SELECTION_FAILED: &str = "PRINT_OUTPUT_SELECTION_FAILED";
 const PRINT_OUTPUT_FINALIZE_FAILED: &str = "PRINT_OUTPUT_FINALIZE_FAILED";
+const PRINT_OUTPUT_CLEANUP_FAILED: &str = "PRINT_OUTPUT_CLEANUP_FAILED";
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const OUTPUT_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const OUTPUT_CLEANUP_ATTEMPTS: u32 = 20;
 const POINTS_PER_INCH: f64 = 72.0;
 const NATIVE_DIALOG_CLASS: &[u16] = &[35, 51, 50, 55, 55, 48];
 
@@ -261,13 +264,28 @@ impl PrintOutput {
         self.finalized = true;
         Ok(())
     }
+
+    fn discard(&mut self) -> Result<(), &'static str> {
+        if self.finalized || !self.staging_path.exists() {
+            return Ok(());
+        }
+        for attempt in 0..OUTPUT_CLEANUP_ATTEMPTS {
+            match fs::remove_file(&self.staging_path) {
+                Ok(()) => return Ok(()),
+                Err(_) if !self.staging_path.exists() => return Ok(()),
+                Err(_) if attempt + 1 < OUTPUT_CLEANUP_ATTEMPTS => {
+                    std::thread::sleep(OUTPUT_CLEANUP_RETRY_INTERVAL);
+                }
+                Err(_) => return Err(PRINT_OUTPUT_CLEANUP_FAILED),
+            }
+        }
+        Err(PRINT_OUTPUT_CLEANUP_FAILED)
+    }
 }
 
 impl Drop for PrintOutput {
     fn drop(&mut self) {
-        if !self.finalized {
-            let _ = fs::remove_file(&self.staging_path);
-        }
+        let _ = self.discard();
     }
 }
 
@@ -750,6 +768,10 @@ impl GdiDocument {
         self.resources.close()
     }
 
+    fn discard_output(&mut self) -> Result<(), &'static str> {
+        self.output.discard()
+    }
+
     fn finish(&mut self) -> Result<(), &'static str> {
         if self.cancellation.is_cancelled() {
             return Err(PRINT_CANCELLED);
@@ -958,7 +980,8 @@ pub(crate) fn run_print_worker(
     };
     let abort_error = document.abort().err();
     let resource_error = document.close_resources().err();
-    if let Some(error) = abort_error.or(resource_error) {
+    let output_error = document.discard_output().err();
+    if let Some(error) = abort_error.or(resource_error).or(output_error) {
         if result.is_submitted() {
             result.with_failure(PRINT_SUBMITTED_CLEANUP_FAILED)
         } else {
@@ -989,6 +1012,25 @@ mod tests {
         });
         assert_eq!(fs::read(&final_path).unwrap(), b"existing");
         assert!(!staging_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_staging_cleanup_reports_a_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "modeleaf-print-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let final_path = root.join("output.pdf");
+        let staging_path = root.join("staging-directory.pdf");
+        fs::create_dir(&staging_path).unwrap();
+        let mut output = PrintOutput {
+            final_path,
+            staging_path,
+            finalized: false,
+        };
+        assert_eq!(output.discard(), Err(PRINT_OUTPUT_CLEANUP_FAILED));
         fs::remove_dir_all(root).unwrap();
     }
 
