@@ -4,7 +4,7 @@
   "scope": {
     "in": [
       "Nonselected tab group hover surface without activation",
-      "Selected title and close shared surface",
+      "Selected neutral-surface border and heavier title/close weight",
       "Close emphasis on hover and keyboard focus",
       "Focused component/accessibility coverage"
     ],
@@ -26,6 +26,7 @@
       "result": "15 tests passed",
       "coverage": [
         "Selected group-state projection",
+        "Neutral selected border/weight and vertical title/close alignment",
         "Close click propagation stop and close transaction call",
         "Fixed tab geometry and overflow",
         "Hover and selected group surfaces",
@@ -35,7 +36,7 @@
     },
     "fullFrontend": {
       "command": "npm test",
-      "result": "91 files, 1004 tests passed"
+      "result": "91 files, 1004 tests passed before the selected-tab refinement; rerun required"
     },
     "build": {
       "command": "npm run build",

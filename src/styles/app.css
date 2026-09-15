@@ -441,12 +441,12 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .windows-menu-commands button:disabled .windows-menu-shortcut { color: inherit; }
 .tab-strip { display: flex; flex-wrap: nowrap; min-width: 0; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; overflow-y: hidden; background: var(--theme-inactive-tab); border-bottom: 1px solid var(--theme-border); }
 .tab-strip[hidden] { display: none; }
-.workspace-tab-item { display: flex; flex: 0 0 184px; width: 184px; min-width: 184px; height: 26px; color: var(--theme-muted-text); background: var(--theme-active-tab); }
+.workspace-tab-item { display: flex; align-items: center; box-sizing: border-box; flex: 0 0 184px; width: 184px; min-width: 184px; height: 26px; color: var(--theme-muted-text); background: var(--theme-active-tab); border: 1px solid transparent; }
 .workspace-tab-item:hover { color: var(--theme-foreground); background: var(--theme-border); }
-.workspace-tab-item[data-selected="true"] { color: var(--theme-foreground); background: color-mix(in srgb, var(--theme-border) 82%, var(--theme-foreground)); }
+.workspace-tab-item[data-selected="true"] { color: var(--theme-foreground); border-color: color-mix(in srgb, var(--theme-accent) 72%, var(--theme-border)); font-weight: 650; }
 .workspace-tab, .workspace-tab-close { border: 0; color: inherit; background: transparent; }
-.workspace-tab { flex: 1 1 auto; min-width: 0; padding: 6px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-tab-close { flex: 0 0 auto; padding: 4px 8px; font-size: 17px; opacity: 0.75; }
+.workspace-tab { display: flex; align-items: center; align-self: stretch; flex: 1 1 auto; min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-tab-close { display: grid; place-items: center; align-self: stretch; flex: 0 0 auto; padding: 0 8px; font-size: 17px; line-height: 1; opacity: 0.75; }
 .workspace-tab-item[data-selected="true"] .workspace-tab-close { opacity: 0.85; }
 .workspace-tab-item:hover .workspace-tab-close, .workspace-tab-close:focus-visible { opacity: 1; }
 .workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }
