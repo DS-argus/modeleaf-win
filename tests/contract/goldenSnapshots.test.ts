@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "ea7b922dd96632e1a4a35df4e148f55f9b1ddc224dd7d61549242b60ef0f5344";
+  "45c3d9c5342014310818406ef2903d01759d3a44ee985088dc2d47f168dbea25";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -136,6 +136,8 @@ describe("v0.10.0 golden snapshots", () => {
       prefixTimeoutMilliseconds: 400,
       prefix: "<C-b>",
     });
+    expect(defaults.configurableKeyTemplates["view.zoomReset"]).toEqual(["0"]);
+    expect(defaults.configurableKeyTemplates["view.zoomReset"]).not.toContain("<C-1>");
     expect(defaults.keyGrammar.modifiers).toEqual({
       C: "Ctrl",
       A: "Alt",
