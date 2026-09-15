@@ -1269,7 +1269,7 @@ function dispatchFileOpenerEntry(): void {
 }
 async function openFileOpener(): Promise<void> {
   if (nativeOpenPending || overlayOwner.active !== undefined) return;
-  await initialRecentsReady;
+  await Promise.all([initialRecentsReady, shellOpen.ready]);
   if (nativeOpenPending || overlayOwner.active !== undefined) return;
   fileOpenerModel = createOpenChooser(fileOpenerModel.prepared, fileOpenerModel.generation + 1);
   if (recentStateHealth === "UNAVAILABLE" && fileOpenerModel.prepared.tag === "READY") {
