@@ -1,6 +1,6 @@
 # 기능별 포팅 계약
 
-> 현재 Windows owner-approved 계약: macOS 61-action baseline에서 pane 7개, TOC 3개, keyboard hint 1개와 indicator picker 1개를 제외한 **49 actions(45 configurable + 4 fixed)**다. `t`/`J`/`K`/`f`/`I`는 미할당이고 ordinary PDF link clicks와 native authorization은 유지한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙에 배치하며, destination transaction은 결과 viewport와 교차하는 page들을 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. 아래 immutable macOS 설명보다 ADR 0001의 이 명시적 Windows delta가 우선한다.
+> 현재 Windows owner-approved 계약: macOS 61-action baseline에서 pane 7개, TOC 3개, keyboard hint 1개와 indicator picker 1개를 제외한 **51 actions(47 configurable + 4 fixed)**다. `t`/`J`/`K`/`f`/`I`는 미할당이고 ordinary PDF link clicks와 native authorization은 유지한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙에 배치하며, destination transaction은 결과 viewport와 교차하는 page들을 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. 아래 immutable macOS 설명보다 ADR 0001의 이 명시적 Windows delta가 우선한다.
 
 각 기능은 `v0.10.0 계약 → Windows 구현 → 알려진 실패 모드 → acceptance` 순서로 구현한다. “비슷하게 보인다”가 아니라 observable behavior와 테스트가 같아야 한다.
 
@@ -41,7 +41,7 @@
 ### Acceptance
 
 - interactive fixture에서 input/editor/media가 focusable하지 않다.
-- macOS baseline action snapshot은 61개로 보존하고, current Windows registry는 정확히 49개(45 configurable + 4 fixed)이며 forbidden vocabulary test가 이를 구분한다.
+- macOS baseline action snapshot은 61개로 보존하고, current Windows registry는 정확히 51개(47 configurable + 4 fixed)이며 forbidden vocabulary test가 이를 구분한다.
 - Copy 외 context menu가 없다.
 - 모든 reader action 후 원본 PDF SHA-256이 동일하다.
 
@@ -194,7 +194,7 @@ Issue #53 owner amendment (2026-09-09): Recent 행은 native-owned 전체 `displ
 Windows grammar는 `C=Ctrl`, `A=Alt`, `S=Shift`다. `D`는 macOS config migration error를 내고, Windows key는 OS가 소유하므로 `Win` modifier를 노출하지 않는다.
 Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action에 binding하며, `-`는 `view.zoomOut`이다.
 
-`app.quit`라는 stable ID는 macOS baseline에서 현재 49-action Windows registry로 유지되지만 표시명과 동작은 `Close Window`다. 호출한 top-level window만 닫고 마지막 창에서 process가 끝난다. 같은 Tauri process의 모든 창을 닫는 `Exit All`은 v1 범위에 추가하지 않는다.
+`app.quit`라는 stable ID는 macOS baseline에서 현재 51-action Windows registry로 유지되지만 표시명과 동작은 `Close Window`다. 호출한 top-level window만 닫고 마지막 창에서 process가 끝난다. 같은 Tauri process의 모든 창을 닫는 `Exit All`은 v1 범위에 추가하지 않는다.
 
 ### Windows application menu projection
 
@@ -227,7 +227,7 @@ Windows delta에서 canonical `=`와 physical `+`는 같은 `view.zoomIn` action
 
 ### Acceptance
 
-- 현재 Windows 49개 action/4개 fixed binding snapshot이 고정된다. macOS baseline 61개 snapshot은 immutable reference로 유지한다.
+- 현재 Windows 51개 action/4개 fixed binding snapshot이 고정된다. macOS baseline 61개 snapshot은 immutable reference로 유지한다.
 - default keymap은 동일 context 안에서 충돌이 없다.
 - 한글 IME, dead key, AltGraph 입력 동안 reader action이 실행되지 않는다.
 - `Alt+Left/Right`는 WebView navigation이 아니라 app history만 실행한다.

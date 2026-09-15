@@ -1,6 +1,6 @@
 # 단계별 구현 계획
 
-> 현재 Windows snapshot은 owner-approved exclusions를 적용한 **49 actions(45 configurable + 4 fixed)**다. macOS 61-action 기준은 immutable 원본 reference이고 Windows gate의 action count가 아니다. TOC, `f` keyboard hints와 destination indicator/settings는 retired이며 `t`/`J`/`K`/`f`/`I`가 미할당이다. Ordinary PDF clicks/native authorization은 유지하고 finite `XYZ` points는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하며, destination transaction은 bounded visible-page materialization 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. ADR 0001과 [deferred reference](./deferred-toc-link-hints.md)가 scope와 archives를 고정한다.
+> 현재 Windows snapshot은 owner-approved exclusions를 적용한 **51 actions(47 configurable + 4 fixed)**다. macOS 61-action 기준은 immutable 원본 reference이고 Windows gate의 action count가 아니다. TOC, `f` keyboard hints와 destination indicator/settings는 retired이며 `t`/`J`/`K`/`f`/`I`가 미할당이다. Ordinary PDF clicks/native authorization은 유지하고 finite `XYZ` points는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하며, destination transaction은 bounded visible-page materialization 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. ADR 0001과 [deferred reference](./deferred-toc-link-hints.md)가 scope와 archives를 고정한다.
 
 이 순서는 dependency와 가장 위험한 가정을 먼저 검증하도록 설계했다. 각 `Wxx`는 새 Windows 저장소의 독립 Issue이자 기본적으로 하나의 reviewable PR이다. 한 PR이 너무 커지면 테스트 가능한 세로 slice로 나누되 gate를 건너뛰지 않는다.
 
@@ -60,7 +60,7 @@ tests/contract/*
 
 - manifest의 모든 SHA/page count가 검증된다.
 - expected sentinel이 실제 PDF와 일치한다.
-- macOS baseline Action ID count는 61이고 current Windows snapshot은 49(45 configurable + 4 fixed)다.
+- macOS baseline Action ID count는 61이고 current Windows snapshot은 51(47 configurable + 4 fixed)다.
 - fixture generator를 다시 실행하면 동일 manifest 또는 의도된 차이를 낸다.
 
 ### Exit gate

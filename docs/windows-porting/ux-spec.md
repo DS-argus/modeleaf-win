@@ -1,6 +1,6 @@
 # Windows UX 명세
 
-> Issue #53 owner-approved Windows UX는 ordinary internal/external PDF clicks와 native authorization을 유지하고 embedded TOC, `f` keyboard hints와 destination indicator/settings를 제외한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하며, visible landing pages를 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. Current registry는 49 actions(45 configurable + 4 fixed)이며 `t`/`J`/`K`/`f`/`I`는 미할당이다.
+> Issue #53 owner-approved Windows UX는 ordinary internal/external PDF clicks와 native authorization을 유지하고 embedded TOC, `f` keyboard hints와 destination indicator/settings를 제외한다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하며, visible landing pages를 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. Current registry는 51 actions(47 configurable + 4 fixed)이며 `t`/`J`/`K`/`f`/`I`는 미할당이다.
 
 ## 1. 디자인 방향
 
