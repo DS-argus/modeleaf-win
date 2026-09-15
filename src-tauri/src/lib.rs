@@ -1,10 +1,10 @@
 pub mod commands;
-pub mod path_shortcuts;
 pub mod diagnostics;
 pub mod external_link;
 pub mod local_path;
 pub mod open_dialog;
 pub mod open_request;
+pub mod path_shortcuts;
 pub mod pdf_protocol;
 pub mod pdf_session;
 pub mod persistence;
