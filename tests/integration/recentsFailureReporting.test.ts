@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
+import { openFailureAccessibilityError, openFailurePhase, openFailureStatus } from "../../src/domain/navigation/OpenFailureIdentifier";
 import { nativeOpenError } from "../../src/domain/navigation/OpenError";
 import { decodeRecentStateChanged, listRecentDocuments, openRecentDocument } from "../../src/platform/tauri-commands";
 import {
@@ -116,6 +117,9 @@ function createOpenFailureHarness(rejection: unknown) {
     active: () => ({ session: { reader: { setStatus } } }),
     accessibility,
     render,
+    openFailureAccessibilityError,
+    openFailurePhase,
+    openFailureStatus,
     nativeOpenPending: false,
     fileOpenerModel: model,
     chooserRows,
@@ -240,7 +244,7 @@ describe("recent failure reporting", () => {
     expect(chooserRows(harness.getModel())).toHaveLength(2);
     expect(harness.getActiveStatus()).toBe(RECENT_OPEN_FAILED);
     expect(harness.setStatus).not.toHaveBeenCalledWith("The PDF could not be opened.");
-    expect(harness.accessibility.announce).toHaveBeenCalledWith({ kind: "error", error: "document-unavailable" });
+    expect(harness.accessibility.announce).toHaveBeenCalledWith({ kind: "error", error: "open-unknown" });
     expect(harness.renderFileOpener).toHaveBeenCalledOnce();
   });
 
@@ -248,7 +252,7 @@ describe("recent failure reporting", () => {
     ["SESSION_CAPACITY", "This PDF exceeds reader resource limits."],
     ["MISSING_FILE", "This PDF no longer exists."],
     ["PDF_INVALID", "Could not read this PDF."],
-    ["untrusted error text", "The PDF could not be opened."],
+    ["untrusted error text", "Could not open PDF. [OPEN_UNKNOWN]"],
   ])("preserves the known picker rejection reason %s without exposing unknown text", (reason, expected) => {
     const harness = createOpenFailureHarness(new Error("unused"));
     harness.reportOpenInvokeFailure({ tag: "SELECTION_REJECTED", reason });
@@ -264,7 +268,7 @@ describe("recent failure reporting", () => {
     expect(harness.accessibility.announce).toHaveBeenLastCalledWith({ kind: "error", error: "document-invalid" });
 
     harness.reportOpenInvokeFailure(new Error("unclassified"));
-    expect(harness.getActiveStatus()).toBe("The PDF could not be opened.");
-    expect(harness.setStatus).toHaveBeenLastCalledWith("The PDF could not be opened.");
+    expect(harness.getActiveStatus()).toBe("Could not open PDF. [OPEN_UNKNOWN]");
+    expect(harness.setStatus).toHaveBeenLastCalledWith("Could not open PDF. [OPEN_UNKNOWN]");
   });
 });

@@ -1,4 +1,5 @@
 import { PDFDataRangeTransport } from "pdfjs-dist";
+import { openFailureStatus } from "../domain/navigation/OpenFailureIdentifier";
 import type { OpaquePdfSessionMetadata } from "./PdfDataRangeAdapter";
 import type {
   PdfContentDocument,
@@ -309,7 +310,7 @@ const safeMessage = (error: unknown): string => {
   if (/DOCUMENT_TOO_LARGE|_LIMIT|_CAPACITY|large|resource|canvas|memory/i.test(tag)) return "This PDF exceeds reader resource limits.";
   if (/EMPTY_DOCUMENT|PDF_EMPTY/i.test(tag)) return "PDF contains no pages.";
   if (/FILE_UNREADABLE|PDF_INVALID|PDF_EMPTY|RANGE|read|malformed|invalid|corrupt/i.test(tag)) return "Could not read this PDF.";
-  return "The PDF could not be opened.";
+  return openFailureStatus("presentation");
 };
 
 /** Owns opaque sessions and PDFs. A candidate is invisible until its first page has rendered. */
