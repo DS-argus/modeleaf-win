@@ -53,6 +53,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
+  "path.showParent", "path.copy",
   "config.writeDefault", "config.resetDefault", "theme.picker",
   "config.reload", "update.show",
   "history.back", "history.forward",
@@ -443,6 +444,36 @@ function queueWorkspaceActivation(work: () => Promise<void> | void): Promise<voi
 function disposeWorkspaceTab(value: TabPayload): void { removedTabTeardown.remove(value); }
 
 function active(): TabPayload { const value = workspace.getPayload(workspace.activeTabId); if (!value) throw new Error("ACTIVE_TAB_MISSING"); return value; }
+type PathShortcutOutcome = { readonly tag: "SHOWN" | "COPIED"; readonly text: string } | { readonly tag: "REJECTED"; readonly reason: string };
+let pathNoticeTimer: number | undefined;
+let pathNoticeOwnerTabId: number | undefined;
+let pathNoticeRequest = 0;
+function publishPathNotice(tabId: number, text: string, copied: boolean): void {
+  pathNoticeOwnerTabId = tabId;
+  if (pathNoticeTimer !== undefined) window.clearTimeout(pathNoticeTimer);
+  shellStatus.setPathNotice({ text, copied });
+  pathNoticeTimer = window.setTimeout(() => {
+    if (pathNoticeOwnerTabId !== tabId || workspace.activeTabId !== tabId) return;
+    pathNoticeOwnerTabId = undefined;
+    pathNoticeTimer = undefined;
+    shellStatus.setPathNotice(undefined);
+  }, 3_000);
+}
+function runPathShortcut(action: "y" | "yy"): void {
+  const tabId = workspace.activeTabId;
+  const payload = active();
+  const identity = payload.session.activeSessionIdentity;
+  const request = ++pathNoticeRequest;
+  if (identity === undefined) { publishPathNotice(tabId, "No document open", false); return; }
+  void invoke<unknown>("path_shortcut", { action, sessionId: identity.sessionId, documentGeneration: identity.documentGeneration, ownerGeneration: identity.ownerGeneration }).then((raw) => {
+    const current = workspace.getPayload(tabId)?.session.activeSessionIdentity;
+    if (request !== pathNoticeRequest || workspace.activeTabId !== tabId || current?.sessionId !== identity.sessionId || current.documentGeneration !== identity.documentGeneration || current.ownerGeneration !== identity.ownerGeneration) return;
+    const outcome = raw as Partial<PathShortcutOutcome>;
+    if ((outcome.tag === "SHOWN" || outcome.tag === "COPIED") && typeof outcome.text === "string") publishPathNotice(tabId, outcome.text, outcome.tag === "COPIED");
+    else if (outcome.tag === "REJECTED") publishPathNotice(tabId, "Path action failed: " + (outcome.reason ?? "Unknown error"), false);
+    else publishPathNotice(tabId, "Path action failed: Invalid native response", false);
+  }, () => { if (request === pathNoticeRequest && workspace.activeTabId === tabId) publishPathNotice(tabId, "Path action failed", false); });
+}
 function commandAvailabilityContext(): ActionRuntimeContext {
   const hasDocument = active().session.snapshot.reader.hasDocument;
   const canCreateSession = workspace.snapshot.tabs.length < 8;
@@ -751,6 +782,11 @@ async function showUpdateNotice(): Promise<void> {
 function render(): void {
   syncPendingShellInput();
   const current = active();
+  if (pathNoticeOwnerTabId !== undefined && pathNoticeOwnerTabId !== workspace.activeTabId) {
+    pathNoticeOwnerTabId = undefined;
+    if (pathNoticeTimer !== undefined) { window.clearTimeout(pathNoticeTimer); pathNoticeTimer = undefined; }
+    shellStatus.setPathNotice(undefined);
+  }
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
     windowId: SHELL_WINDOW_ID,
@@ -1339,6 +1375,7 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
 );
 function dispatchActionId(id: ActionId): void {
   if (id === "history.back") { void active().session.navigateHistoryBack().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
+  if (id === "path.showParent" || id === "path.copy") { runPathShortcut(id === "path.showParent" ? "y" : "yy"); return; }
   if (id === "history.forward") { void active().session.navigateHistoryForward().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   const tabSelection = /^tab\.select\.(\d)$/u.exec(id);
   if (tabSelection !== null) { dispatch({ type: "tab.activate", index: Number(tabSelection[1]) - 1 }); return; }
@@ -1544,7 +1581,10 @@ const rootKeyboard = createRootKeyboardRouter({
     return true;
   },
   onDisabled: (_id, reason) => { active().session.reader.setStatus(reason); render(); },
-  onState: (state) => { shellStatus.setPendingSequence(state.kind === "pending" ? state.sequence : ""); },
+  onState: (state) => {
+    if (state.kind === "pending" && state.sequence === "y") { shellStatus.setPendingSequence(""); runPathShortcut("y"); }
+    else shellStatus.setPendingSequence(state.kind === "pending" ? state.sequence : "");
+  },
 });
 cancelPendingShellInput = rootKeyboard.cancelPending;
 syncPendingShellInput = rootKeyboard.syncContext;

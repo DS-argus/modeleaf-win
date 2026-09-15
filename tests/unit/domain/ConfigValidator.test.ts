@@ -58,6 +58,10 @@ describe("ConfigValidator", () => {
     expect(codes({ keymap: { "history.back": ["q"], "history.forward": ["qq"] } })).toContain("CONFIG_KEY_PREFIX_UNSAFE");
     expect(codes({ keymap: { "document.open": ["o"] } })).toContain("CONFIG_PROMPT_UNSAFE");
   });
+  it("allows only the default y → yy path prefix pair", () => {
+    expect(codes({})).not.toContain("CONFIG_KEY_PREFIX_UNSAFE");
+    expect(codes({ keymap: { "path.showParent": ["x"], "path.copy": ["xx"] } })).toContain("CONFIG_KEY_PREFIX_UNSAFE");
+  });
   it("is all-or-nothing and returns all diagnostics", () => {
     const result = validateProductConfig({ bad: {}, navigation: { smallScrollPoints: 0, nope: 1 }, input: "bad" });
     expect(result.ok).toBe(false);

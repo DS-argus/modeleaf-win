@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod path_shortcuts;
 pub mod diagnostics;
 pub mod external_link;
 pub mod local_path;
@@ -1537,7 +1538,8 @@ pub fn run() {
             submit_pdf_print_page,
             finish_pdf_print,
             cancel_pdf_print,
-            release_pdf_print
+            release_pdf_print,
+            path_shortcuts::path_shortcut
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Modeleaf")

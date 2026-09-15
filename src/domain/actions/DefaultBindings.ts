@@ -11,6 +11,7 @@ const raw: Record<ActionId, readonly string[]> = {
   "search.prompt":["/"], "search.next":["<Enter>"], "search.previous":["<S-Enter>"], "search.cancel":["<Esc>"],
   "view.zoomIn":["=","+"], "view.zoomOut":["-"], "view.zoomReset":["0"], "view.fitWidth":["w"], "view.fitPage":["F"], "view.rotateLeft":["["], "view.rotateRight":["]"],
   "config.reload":["<prefix>r"], "config.writeDefault":[], "config.resetDefault":[], "theme.picker":["T"], "update.show":["U"],
+  "path.showParent":["y"], "path.copy":["yy"],
 };
 
 export const DEFAULT_BINDINGS: Readonly<Record<ActionId, readonly string[]>> = Object.freeze(

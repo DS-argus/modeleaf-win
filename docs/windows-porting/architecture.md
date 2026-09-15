@@ -1,6 +1,6 @@
 # 대상 아키텍처
 
-> Issue #53 owner delta: ordinary internal/external PDF link clicks, native authorization, canonical destination/history와 text/search ownership은 유지한다. Embedded TOC, `f` keyboard hints와 destination indicator/settings/runtime/API는 제거하며 현재 Windows registry는 **49 actions(45 configurable + 4 fixed)**다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하고, destination transaction은 결과 viewport와 교차하는 page들을 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. 아래 retired architecture는 [deferred reference](./deferred-toc-link-hints.md)의 immutable source/tests(TOC/hints `7e00424d30c5ffeab5a846d087236371644af53a`, indicator `dedcff8513e034efb904ef7d50fd59cc11444798`)로만 읽는다.
+> Issue #53 owner delta: ordinary internal/external PDF link clicks, native authorization, canonical destination/history와 text/search ownership은 유지한다. Embedded TOC, `f` keyboard hints와 destination indicator/settings/runtime/API는 제거하며 현재 Windows registry는 **51 actions(47 configurable + 4 fixed)**다. finite `XYZ` point는 document edge가 허용하는 범위에서 viewport 중앙을 목표로 하고, destination transaction은 결과 viewport와 교차하는 page들을 bounded materialization한 뒤에만 canonical actual landing을 성공/history로 commit한다. `Fit`/`FitB` page-fit과 `FitR` rectangle-fit은 유지한다. 아래 retired architecture는 [deferred reference](./deferred-toc-link-hints.md)의 immutable source/tests(TOC/hints `7e00424d30c5ffeab5a846d087236371644af53a`, indicator `dedcff8513e034efb904ef7d50fd59cc11444798`)로만 읽는다.
 
 ## 1. 결론
 
@@ -207,7 +207,7 @@ POSIX `flock`, mode `0600`, `renameatx_np`, directory `fsync`를 문자 그대�
 
 다음은 DOM/Tauri/PDF.js import가 없는 pure modules로 만든다.
 
-- Windows 49개 action registry와 availability (macOS baseline 61개에서 pane 7개, TOC 3개, keyboard hint 1개, indicator picker 1개 제외)
+- Windows 51개 action registry와 availability (macOS baseline 61개에서 pane 7개, TOC 3개, keyboard hint 1개, indicator picker 1개 제외)
 - 네 입력 context: `navigation`, `pagePrompt`, `searchPrompt`, `searchResults`
 - key token/parser/sequence trie/prefix timer
 - prompt lifecycle 및 IME/dead-key bypass 판단

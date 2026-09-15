@@ -173,9 +173,9 @@ function detectUnsafePrefixes(
   for (const shorter of bindings) for (const longer of bindings) {
     if (shorter === longer || shorter.sequence === longer.sequence || !longer.sequence.startsWith(shorter.sequence)) continue;
     if (!shorter.contexts.some((context) => longer.contexts.includes(context))) continue;
-    if (shorter.id !== "page.prompt") diagnostics.push({
-      code: "CONFIG_KEY_PREFIX_UNSAFE",
+    if (shorter.id !== "page.prompt" && !(shorter.id === "path.showParent" && longer.id === "path.copy" && shorter.sequence === "y" && longer.sequence === "yy")) diagnostics.push({
       path: `keymap.${shorter.id}`,
+      code: "CONFIG_KEY_PREFIX_UNSAFE",
       detail: `${shorter.sequence}:${longer.id}`,
     });
   }

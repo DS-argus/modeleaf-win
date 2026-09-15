@@ -156,7 +156,7 @@ describe("shared shell status renderer", () => {
     const source = readFileSync("src/main.ts", "utf8");
     expect(source).toContain("const shellStatus = createShellStatusRenderer(status,");
     expect(source).toContain("shellStatus.render();");
-    expect(source).toContain("function render(): void {\n  syncPendingShellInput();");
+    expect(source).toMatch(/function render\(\): void \{\r?\n  syncPendingShellInput\(\);/u);
     expect(source).toContain("syncPendingShellInput = rootKeyboard.syncContext;");
     expect(source).toContain('shellStatus.setPendingSequence(state.kind === "pending" ? state.sequence : "")');
     expect(source).toContain("query: session.query");

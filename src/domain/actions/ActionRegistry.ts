@@ -15,6 +15,7 @@ export const ACTION_IDS = Object.freeze([
   "prompt.commit", "prompt.cancel", "search.prompt", "search.next", "search.previous", "search.cancel",
   "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "update.show",
+  "path.showParent", "path.copy",
 ] as const);
 
 export type ActionId = (typeof ACTION_IDS)[number];
@@ -108,6 +109,8 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("config.resetDefault", "Reset Config", GLOBAL),
   descriptor("theme.picker", "Theme picker", contexts(READER_CONTEXTS)),
   descriptor("update.show", "View Available Update", contexts(READER_CONTEXTS)),
+  descriptor("path.showParent", "Show PDF Path", contexts(NAVIGATION_CONTEXT)),
+  descriptor("path.copy", "Copy PDF Path", contexts(NAVIGATION_CONTEXT)),
 
 ]);
 
@@ -158,7 +161,7 @@ const DOCUMENT_ACTIONS = new Set<ActionId>([
   ...ACTION_IDS.filter((id) => id.startsWith("tab.select.")),
   ...ACTION_IDS.filter((id) => id.startsWith("scroll.")),
   ...ACTION_IDS.filter((id) => id.startsWith("page.")),
-  "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel",
+  "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel", "path.showParent", "path.copy",
   ...ACTION_IDS.filter((id) => id.startsWith("view.")),
 ]);
 

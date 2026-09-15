@@ -54,6 +54,8 @@ html, body { overflow: hidden; }
   border-style: dashed;
   background: color-mix(in srgb, var(--theme-accent) 6%, var(--theme-statusline));
 }
+.status-path-notice { min-width: 0; overflow-wrap: anywhere; }
+.status-path-notice-copied { color: var(--theme-accent); font-weight: 600; }
 
 .reader-surface {
   display: block;

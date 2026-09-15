@@ -701,6 +701,11 @@ export class PdfReaderController {
     return this.renderPage(page, normalized, requestCommitGuard, topology);
   }
   public get presentationTopology(): PdfPresentationTopology { return this.current?.topology ?? "continuous"; }
+  public get activeSessionIdentity(): { readonly sessionId: string; readonly documentGeneration: number; readonly ownerGeneration: number } | undefined {
+    const current = this.current;
+    if (current === undefined || current.closed || this.disposed) return undefined;
+    return { sessionId: current.session.sessionId, documentGeneration: current.session.documentGeneration, ownerGeneration: current.ownerGeneration };
+  }
   public async setPresentationTopology(topology: PdfPresentationTopology, page: number, transform: PdfViewTransform, guard?: PdfRequestCommitGuard): Promise<boolean> {
     return this.renderPageWithTransform(page, transform, guard, topology);
   }

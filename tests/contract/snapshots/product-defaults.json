@@ -12,10 +12,22 @@
   },
   "config": {
     "bounds": {
-      "smallScrollPoints": { "minimum": 1.0, "maximum": 512.0 },
-      "largeScrollViewportFraction": { "minimum": 0.1, "maximum": 2.0 },
-      "zoomFactor": { "minimum": 1.01, "maximum": 2.0 },
-      "prefixTimeoutMilliseconds": { "minimum": 100, "maximum": 2000 }
+      "smallScrollPoints": {
+        "minimum": 1.0,
+        "maximum": 512.0
+      },
+      "largeScrollViewportFraction": {
+        "minimum": 0.1,
+        "maximum": 2.0
+      },
+      "zoomFactor": {
+        "minimum": 1.01,
+        "maximum": 2.0
+      },
+      "prefixTimeoutMilliseconds": {
+        "minimum": 100,
+        "maximum": 2000
+      }
     },
     "defaults": {
       "navigation": {
@@ -23,13 +35,23 @@
         "largeScrollViewportFraction": 0.8,
         "zoomFactor": 1.1
       },
-      "input": { "prefixTimeoutMilliseconds": 400, "prefix": "<C-b>" }
+      "input": {
+        "prefixTimeoutMilliseconds": 400,
+        "prefix": "<C-b>"
+      }
     }
   },
   "keyGrammar": {
     "chordSyntax": "<modifier[-modifier]-key>",
-    "modifiers": { "C": "Ctrl", "A": "Alt", "S": "Shift" },
-    "unsupportedModifier": { "token": "D", "result": "migration-error" },
+    "modifiers": {
+      "C": "Ctrl",
+      "A": "Alt",
+      "S": "Shift"
+    },
+    "unsupportedModifier": {
+      "token": "D",
+      "result": "migration-error"
+    },
     "winModifier": "not-exposed",
     "barePrintableCharacters": "literal",
     "namedKeyExample": "<Enter>",
@@ -37,57 +59,163 @@
     "prefixTemplate": "<prefix>"
   },
   "configurableKeyTemplates": {
-    "document.open": ["<C-S-o>"],
-    "document.close": ["<C-w>"],
-    "document.print": ["<C-p>"],
-    "app.quit": ["<A-F4>"],
-    "app.new": ["<C-n>"],
-    "palette.open": [":", "<C-S-p>"],
-    "help.show": ["?"],
-    "tab.next": ["N"],
-    "tab.previous": ["P"],
-    "tab.select.1": ["<C-1>"],
-    "tab.select.2": ["<C-2>"],
-    "tab.select.3": ["<C-3>"],
-    "tab.select.4": ["<C-4>"],
-    "tab.select.5": ["<C-5>"],
-    "tab.select.6": ["<C-6>"],
-    "tab.select.7": ["<C-7>"],
-    "tab.select.8": ["<C-8>"],
-    "tab.select.9": ["<C-9>"],
-    "scroll.left": ["h", "<Left>"],
-    "scroll.down": ["j", "<Down>"],
-    "scroll.up": ["k", "<Up>"],
-    "scroll.right": ["l", "<Right>"],
-    "scroll.largeDown": ["d"],
-    "scroll.largeUp": ["u"],
-    "page.next": ["n"],
-    "page.previous": ["p"],
-    "page.first": ["gg"],
-    "page.last": ["G"],
-    "page.prompt": ["g"],
-    "history.back": ["<A-Left>"],
-    "history.forward": ["<A-Right>"],
-    "search.prompt": ["/"],
-    "search.cancel": ["<Esc>"],
-    "view.zoomIn": ["=", "+"],
-    "view.zoomOut": ["-"],
-    "view.zoomReset": ["0"],
-    "view.fitWidth": ["w"],
-    "view.fitPage": ["F"],
-    "view.rotateLeft": ["["],
-    "view.rotateRight": ["]"],
-    "config.reload": ["<prefix>r"],
+    "document.open": [
+      "<C-S-o>"
+    ],
+    "document.close": [
+      "<C-w>"
+    ],
+    "document.print": [
+      "<C-p>"
+    ],
+    "app.quit": [
+      "<A-F4>"
+    ],
+    "app.new": [
+      "<C-n>"
+    ],
+    "palette.open": [
+      ":",
+      "<C-S-p>"
+    ],
+    "help.show": [
+      "?"
+    ],
+    "tab.next": [
+      "N"
+    ],
+    "tab.previous": [
+      "P"
+    ],
+    "tab.select.1": [
+      "<C-1>"
+    ],
+    "tab.select.2": [
+      "<C-2>"
+    ],
+    "tab.select.3": [
+      "<C-3>"
+    ],
+    "tab.select.4": [
+      "<C-4>"
+    ],
+    "tab.select.5": [
+      "<C-5>"
+    ],
+    "tab.select.6": [
+      "<C-6>"
+    ],
+    "tab.select.7": [
+      "<C-7>"
+    ],
+    "tab.select.8": [
+      "<C-8>"
+    ],
+    "tab.select.9": [
+      "<C-9>"
+    ],
+    "scroll.left": [
+      "h",
+      "<Left>"
+    ],
+    "scroll.down": [
+      "j",
+      "<Down>"
+    ],
+    "scroll.up": [
+      "k",
+      "<Up>"
+    ],
+    "scroll.right": [
+      "l",
+      "<Right>"
+    ],
+    "scroll.largeDown": [
+      "d"
+    ],
+    "scroll.largeUp": [
+      "u"
+    ],
+    "page.next": [
+      "n"
+    ],
+    "page.previous": [
+      "p"
+    ],
+    "page.first": [
+      "gg"
+    ],
+    "page.last": [
+      "G"
+    ],
+    "page.prompt": [
+      "g"
+    ],
+    "history.back": [
+      "<A-Left>"
+    ],
+    "history.forward": [
+      "<A-Right>"
+    ],
+    "search.prompt": [
+      "/"
+    ],
+    "search.cancel": [
+      "<Esc>"
+    ],
+    "view.zoomIn": [
+      "=",
+      "+"
+    ],
+    "view.zoomOut": [
+      "-"
+    ],
+    "view.zoomReset": [
+      "0"
+    ],
+    "view.fitWidth": [
+      "w"
+    ],
+    "view.fitPage": [
+      "F"
+    ],
+    "view.rotateLeft": [
+      "["
+    ],
+    "view.rotateRight": [
+      "]"
+    ],
+    "config.reload": [
+      "<prefix>r"
+    ],
     "config.writeDefault": [],
     "config.resetDefault": [],
-    "theme.picker": ["T"],
-    "update.show": ["U"]
+    "theme.picker": [
+      "T"
+    ],
+    "update.show": [
+      "U"
+    ],
+    "path.showParent": [
+      "y"
+    ],
+    "path.copy": [
+      "yy"
+    ]
   },
   "fixedBindings": {
-    "prompt.commit": ["<Enter>"],
-    "prompt.cancel": ["<Esc>"],
-    "search.next": ["<Enter>"],
-    "search.previous": ["<S-Enter>"],
+    "prompt.commit": [
+      "<Enter>"
+    ],
+    "prompt.cancel": [
+      "<Esc>"
+    ],
+    "search.next": [
+      "<Enter>"
+    ],
+    "search.previous": [
+      "<S-Enter>"
+    ],
     "reason": "These four prompt/search bindings are not configurable."
   },
   "defaultReader": {
@@ -95,7 +223,10 @@
     "zoomMode": "fit-width",
     "initialPage": 1
   },
-  "caps": { "recentFiles": 15, "navigationHistoryPositions": 100 },
+  "caps": {
+    "recentFiles": 15,
+    "navigationHistoryPositions": 100
+  },
   "themeIds": [
     "tokyo-night",
     "gruvbox-dark",

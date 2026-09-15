@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 const BASELINE_SHA = "0f7ff0b54c3674c48f6b555261f939397cfbfb88";
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "45c3d9c5342014310818406ef2903d01759d3a44ee985088dc2d47f168dbea25";
+  "a24a3d2e7cc1ca8ff56195eec9c13390df9d693e6a0571363defcd94b112dbf0";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -55,7 +55,9 @@ const ACTION_IDS = [
   "config.writeDefault",
   "config.resetDefault",
   "theme.picker",
-  "update.show"
+  "update.show",
+  "path.showParent",
+  "path.copy"
 ] as const;
 const THEME_IDS = [
   "tokyo-night",
@@ -96,7 +98,7 @@ const fingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("v0.10.0 golden snapshots", () => {
-  it("freezes all 49 Windows action identifiers and separates fixed bindings", async () => {
+  it("freezes all 51 Windows action identifiers and separates fixed bindings", async () => {
     const actions = await json("tests/contract/snapshots/action-ids.json");
     const defaults = await json(
       "tests/contract/snapshots/product-defaults.json",
@@ -107,9 +109,9 @@ describe("v0.10.0 golden snapshots", () => {
     ).toBe(PRODUCT_DEFAULTS_FINGERPRINT);
     expect(actions.schemaVersion).toBe(1);
     expect(actions.baseline.sha).toBe(BASELINE_SHA);
-    expect(actions.count).toBe(49);
+    expect(actions.count).toBe(51);
     expect(actions.ids).toEqual(ACTION_IDS);
-    expect(new Set(actions.ids).size).toBe(49);
+    expect(new Set(actions.ids).size).toBe(51);
 
     const fixed = Object.keys(defaults.fixedBindings).filter(
       (key) => key !== "reason",
@@ -121,7 +123,7 @@ describe("v0.10.0 golden snapshots", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(configurable).toHaveLength(45);
+    expect(configurable).toHaveLength(47);
     expect(new Set([...configurable, ...fixed])).toEqual(new Set(ACTION_IDS));
     expect(defaults.configurableKeyTemplates["document.open"]).toEqual(["<C-S-o>"]);
     expect(defaults.configurableKeyTemplates["document.open"]).not.toContain("<C-o>");
