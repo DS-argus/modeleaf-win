@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "generator_version": "1",
-  "generator_sha256": "d7c64eb1c16d29baf5b1b23e5a960163d74c9c1e5d5a801fe093a3eef7a57e32",
+  "generator_sha256": "21cbee8cb6a72436690a19dadab5a39edfefd0d584fc48c3ac12f0330d8c67bb",
   "files": [
     {
       "name": "text-3-page.pdf",
@@ -413,6 +413,63 @@
         "unicode_filename": true
       },
       "pages": 1,
+      "license": "test-generated",
+      "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
+    },
+    {
+      "name": "print-mixed-rotation-4.pdf",
+      "sha256": "80f1ea56f0208d29377f07152481d42913b57d3220550b1c461fca4cee15281b",
+      "bytes": 3165,
+      "expected_text": [
+        "Print mixed rotation page 1 612x792 rotate 0",
+        "Print mixed rotation page 2 792x612 rotate 90",
+        "Print mixed rotation page 3 400x600 rotate 180",
+        "Print mixed rotation page 4 600x400 rotate 270"
+      ],
+      "expected_annotations": {
+        "links": 0,
+        "forms": 0,
+        "media": 0
+      },
+      "expected_outline": {
+        "row_count": 0,
+        "rows": []
+      },
+      "sentinel": {
+        "identity": "print-mixed-rotation-4-v1",
+        "corner_markers": "tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall",
+        "orientation_markers": [
+          "print-mixed-page-1-r0-source-top-arrow",
+          "print-mixed-page-2-r90-source-top-arrow",
+          "print-mixed-page-3-r180-source-top-arrow",
+          "print-mixed-page-4-r270-source-top-arrow"
+        ]
+      },
+      "pages": 4,
+      "page_sizes": [
+        [
+          612,
+          792
+        ],
+        [
+          792,
+          612
+        ],
+        [
+          400,
+          600
+        ],
+        [
+          600,
+          400
+        ]
+      ],
+      "rotations": [
+        0,
+        90,
+        180,
+        270
+      ],
       "license": "test-generated",
       "source": "Modeleaf v0.10.0 at 0f7ff0b54c3674c48f6b555261f939397cfbfb88: PDFReaderTestSupport/PDFFixtureFactory.swift and docs/windows-porting/testing-risks.md"
     }

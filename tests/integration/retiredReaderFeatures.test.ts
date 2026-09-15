@@ -6,6 +6,7 @@ import { ACTION_IDS, type ActionRuntimeContext } from "../../src/domain/actions/
 import { BUILT_IN_CONFIG } from "../../src/domain/config/ConfigValidator";
 import { createRootKeyboardRouter, type RootKeyboardRouter } from "../../src/platform/RootKeyboardRouter";
 import { overlayOwnsKey } from "../../src/ui/overlays/OverlayKeyOwnership";
+import { createPrintProgress, type PrintProgressControl } from "../../src/ui/PrintProgress";
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8");
 const main = source("src/main.ts");
@@ -26,15 +27,16 @@ const isOverlayOwnedKey = new Function("event", "target", "overlayOwner", "overl
 ) => boolean;
 
 const rootCapturePrefix = 'window.addEventListener("keydown", (event) => {';
-const rootCaptureStart = main.indexOf(`${rootCapturePrefix}\n  const target = event.target instanceof Element ? event.target : null;`);
+const rootCaptureStart = main.indexOf(rootCapturePrefix);
 const rootCaptureEnd = main.indexOf("}, { capture: true });", rootCaptureStart);
 if (rootCaptureStart < 0 || rootCaptureEnd < 0) throw new Error("Production root keyboard capture is missing");
 const rootCaptureBody = main.slice(rootCaptureStart + rootCapturePrefix.length, rootCaptureEnd);
-const routeRootKey = new Function("event", "rootKeyboard", "isEditableTarget", "isOverlayOwnedKey", rootCaptureBody) as (
+const routeRootKey = new Function("event", "rootKeyboard", "isEditableTarget", "isOverlayOwnedKey", "printProgressControl", rootCaptureBody) as (
   event: KeyboardEvent,
   rootKeyboard: RootKeyboardRouter,
   editableGuard: typeof isEditableTarget,
   overlayGuard: (event: KeyboardEvent, target: Element | null) => boolean,
+  printControl: PrintProgressControl,
 ) => void;
 
 const runtime: ActionRuntimeContext = {
@@ -44,6 +46,10 @@ const runtime: ActionRuntimeContext = {
 };
 
 function installRootCapture(owner: { readonly active?: { readonly id: string } } = {}) {
+  const printHost = document.createElement("footer");
+  document.body.append(printHost);
+  const onCancel = vi.fn();
+  const printProgressControl = createPrintProgress(printHost, onCancel);
   const onDispatch = vi.fn();
   const rootKeyboard = createRootKeyboardRouter({
     config: BUILT_IN_CONFIG,
@@ -55,13 +61,17 @@ function installRootCapture(owner: { readonly active?: { readonly id: string } }
     rootKeyboard,
     isEditableTarget,
     (keyEvent, target) => isOverlayOwnedKey(keyEvent, target, owner, overlayOwnsKey),
+    printProgressControl,
   );
   window.addEventListener("keydown", capture, true);
   return {
     onDispatch,
+    onCancel, printProgressControl, printHost,
     dispose: (): void => {
       window.removeEventListener("keydown", capture, true);
       rootKeyboard.dispose();
+      printProgressControl.dispose();
+      printHost.remove();
     },
   };
 }
@@ -192,6 +202,23 @@ describe("Retired reader features", () => {
     }
   });
 
+  it.each([
+    { label: "plain", ctrlKey: false, isComposing: false, cancelled: true },
+    { label: "modified", ctrlKey: true, isComposing: false, cancelled: false },
+    { label: "IME", ctrlKey: false, isComposing: true, cancelled: false },
+  ])("scopes $label print Escape to the active control", ({ ctrlKey, isComposing, cancelled }) => {
+    const root = installRootCapture();
+    try {
+      root.printProgressControl.update({ phase: "preparing", preparedPages: 1, totalPages: 4, fraction: 0.25 });
+      const button = root.printHost.querySelector<HTMLButtonElement>("button")!;
+      button.focus();
+      const event = new KeyboardEvent("keydown", { key: "Escape", ctrlKey, isComposing, bubbles: true, cancelable: true });
+      button.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(cancelled);
+      expect(root.onCancel).toHaveBeenCalledTimes(cancelled ? 1 : 0);
+      expect(root.onDispatch).not.toHaveBeenCalled();
+    } finally { root.dispose(); }
+  });
   it("has no dedicated global indicator dismissal capture", () => {
     expect(main.match(/window\.addEventListener\("keydown"/gu) ?? []).toHaveLength(1);
     expect(rootCaptureBody.toLocaleLowerCase()).not.toContain("indicator");

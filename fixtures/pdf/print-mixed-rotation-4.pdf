@@ -1,0 +1,122 @@
+%PDF-1.7
+%ÄÅÇÉ
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 4 /Kids [4 0 R 6 0 R 8 0 R 10 0 R] >>
+endobj
+3 0 obj
+<< /Title (Modeleaf deterministic golden fixtures) /Creator (Modeleaf) /Producer (Modeleaf) /CreationDate (D:20000101000000Z) /ModDate (D:20000101000000Z) >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 0 /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 374 >>
+stream
+% print-mixed-rotation-4-v1
+% print-mixed-page-1-r0-source-top-arrow
+% tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall
+1 0 0 rg
+12 732 48 48 re f
+0 1 0 rg
+576 720 24 60 re f
+0 0 1 rg
+540 12 60 24 re f
+1 0.5 0 rg
+12 12 24 48 re f
+0 0 0 rg
+296 360 20 54 re f
+274 414 m 306 446 l 338 414 l h f
+BT /F1 14 Tf 60 696 Td (Print mixed rotation page 1 612x792 rotate 0) Tj ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Rotate 90 /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 376 >>
+stream
+% print-mixed-rotation-4-v1
+% print-mixed-page-2-r90-source-top-arrow
+% tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall
+1 0 0 rg
+12 552 48 48 re f
+0 1 0 rg
+756 540 24 60 re f
+0 0 1 rg
+720 12 60 24 re f
+1 0.5 0 rg
+12 12 24 48 re f
+0 0 0 rg
+386 270 20 54 re f
+364 324 m 396 356 l 428 324 l h f
+BT /F1 14 Tf 60 516 Td (Print mixed rotation page 2 792x612 rotate 90) Tj ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 600] /Rotate 180 /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 378 >>
+stream
+% print-mixed-rotation-4-v1
+% print-mixed-page-3-r180-source-top-arrow
+% tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall
+1 0 0 rg
+12 540 48 48 re f
+0 1 0 rg
+364 528 24 60 re f
+0 0 1 rg
+328 12 60 24 re f
+1 0.5 0 rg
+12 12 24 48 re f
+0 0 0 rg
+190 264 20 54 re f
+168 318 m 200 350 l 232 318 l h f
+BT /F1 14 Tf 60 504 Td (Print mixed rotation page 3 400x600 rotate 180) Tj ET
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 400] /Rotate 270 /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 378 >>
+stream
+% print-mixed-rotation-4-v1
+% print-mixed-page-4-r270-source-top-arrow
+% tl-red-square-tr-green-tall-br-blue-wide-bl-orange-tall
+1 0 0 rg
+12 340 48 48 re f
+0 1 0 rg
+564 328 24 60 re f
+0 0 1 rg
+528 12 60 24 re f
+1 0.5 0 rg
+12 12 24 48 re f
+0 0 0 rg
+290 164 20 54 re f
+268 218 m 300 250 l 332 218 l h f
+BT /F1 14 Tf 60 304 Td (Print mixed rotation page 4 600x400 rotate 270) Tj ET
+endstream
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000140 00000 n 
+0000000313 00000 n 
+0000000498 00000 n 
+0000000923 00000 n 
+0000001109 00000 n 
+0000001536 00000 n 
+0000001723 00000 n 
+0000002152 00000 n 
+0000002341 00000 n 
+trailer
+<< /Size 12 /Root 1 0 R /Info 3 0 R /ID [<4d4f44454c454146474f4c44454e3031> <4d4f44454c454146474f4c44454e3031>] >>
+startxref
+2771
+%%EOF

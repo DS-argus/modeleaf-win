@@ -76,6 +76,7 @@ function createRecentLifecycleHarness(
     claimOverlay,
     active: () => ({ session: { reader: { setStatus } } }),
     reportOpenInvokeFailure,
+    shellOpen: { ready: Promise.resolve() },
   }, "({ initialRecentsReady, openFileOpener, getModel: () => fileOpenerModel })");
   return {
     ...api,
@@ -164,6 +165,33 @@ describe("recent failure reporting", () => {
     expect(harness.politeAnnouncements.textContent).toBe(RECENT_STATE_UNAVAILABLE);
   });
 
+  it("waits for native open-request readiness before exposing recent selections", async () => {
+    let release!: () => void;
+    const ready = new Promise<void>((resolve) => { release = resolve; });
+    const source = productionSlice("async function openFileOpener", "let quitRequest");
+    const overlayOwner: { active?: { readonly id: string } } = {};
+    const claimOverlay = vi.fn((id: string) => { overlayOwner.active = { id }; });
+    const open = evaluate<() => Promise<void>>(source, {
+      nativeOpenPending: false,
+      overlayOwner,
+      initialRecentsReady: Promise.resolve(),
+      shellOpen: { ready },
+      fileOpenerModel: createOpenChooser({ tag: "READY", snapshot: { revision: "0", entries: [entry] } }),
+      recentStateHealth: "READY",
+      RECENT_STATE_UNAVAILABLE,
+      createOpenChooser,
+      fileOpenerInput: document.createElement("input"),
+      claimOverlay,
+      renderFileOpener: vi.fn(),
+      active: () => ({ session: { reader: { setStatus: vi.fn() } } }),
+    }, "openFileOpener");
+    const opening = open();
+    await Promise.resolve();
+    expect(claimOverlay).not.toHaveBeenCalled();
+    release();
+    await opening;
+    expect(claimOverlay).toHaveBeenCalledWith("recent");
+  });
   it("keeps a readable snapshot and unavailable diagnostic when the chooser opens after listener registration fails", async () => {
     const listen = vi.fn(async () => { throw new Error("listener unavailable"); });
     const invoke = vi.fn(async () => ({ tag: "READY", revision: "0", entries: [entry] }));

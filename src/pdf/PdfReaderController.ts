@@ -14,7 +14,7 @@ import {
   type PdfViewportAnchor,
   type PdfViewportLanding,
 } from "./PdfViewportAnchor";
-import { printPdfDocument, type PdfPrintProgress } from "./PdfPrintService";
+import { printPdfDocument, type PdfPrintProgress, type PdfPrintNative } from "./PdfPrintService";
 import {
   checkedCanvasBytes,
   RESOURCE_LIMITS,
@@ -169,6 +169,8 @@ export interface PdfResidentAuthorityTransaction {
   finalize(): void;
 }
 export interface PdfReaderControllerOptions {
+  readonly printNative?: (session: OpenPdfResult, ownerGeneration: number) => PdfPrintNative;
+  readonly onPrintProgress?: (progress: PdfPrintProgress | undefined) => void;
   readonly native: ReaderNativeBoundary;
   readonly pdf: PdfBoundary;
   readonly resources: ResourceReservationManager;
@@ -316,6 +318,7 @@ export class PdfReaderController {
   private opening: Candidate | undefined;
   private activeRender: ActiveRender | undefined;
   private activePrint: ActivePrint | undefined;
+  private latestPrintProgress: PdfPrintProgress | undefined;
   private readonly releasedRasters = new WeakSet<RenderedCanvas>();
   private renderSequence = 0;
   private disposed = false;
@@ -543,50 +546,64 @@ export class PdfReaderController {
     return true;
   }
 
-  public async printCurrent(invokePrint?: () => void | Promise<void>): Promise<boolean> {
+  public get printProgress(): PdfPrintProgress | undefined { return this.latestPrintProgress; }
+
+  public async printCurrent(): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || current.closed || this.disposed
       || this.activePrint !== undefined) return false;
+    const printDocument = current.document;
+    const createNative = this.options.printNative;
+    if (createNative === undefined) {
+      this.options.onStatus("Printing is unavailable.");
+      return false;
+    }
     const activePageNumber = current.activePageNumber;
     const transform = this.viewTransform;
     const abort = new AbortController();
     const printOwnerships = new Set<Promise<void>>();
-    const operation = printPdfDocument({
-      document: current.document,
-      pageCount: current.document.numPages,
+    // Admit the controller slot before callbacks can re-enter Print/Close.
+    const operation = Promise.resolve().then(() => printPdfDocument({
+      document: printDocument,
+      native: createNative(current.session, current.ownerGeneration),
+      pageCount: printDocument.numPages,
+      currentPage: activePageNumber ?? 1,
+      title: current.session.displayName,
       annotationMode: this.options.pdf.annotationMode,
       resources: this.options.resources,
       sessionId: current.session.sessionId,
       signal: abort.signal,
-      onOwnershipSettlement: (raw) => printOwnerships.add(raw),
-      ...(invokePrint === undefined ? {} : { invokePrint }),
-    });
-    const operationSettlement = operation.then(() => undefined, () => undefined);
-    const settlement = operationSettlement
+      onProgress: (progress) => {
+        if (this.activePrint?.abort !== abort) return;
+        this.latestPrintProgress = progress;
+        this.notifyObserver(() => this.options.onPrintProgress?.(progress));
+      },
+      onOwnershipSettlement: (raw) => { printOwnerships.add(raw); },
+    }));
+    const settlement = operation.then(() => undefined, () => undefined)
       .then(() => Promise.allSettled([...printOwnerships]))
       .then(() => undefined);
     const activePrint = { owner: current, abort, settlement };
     this.activePrint = activePrint;
     current.ownedPrintSettlements.add(settlement);
     void settlement.then(() => {
-      if (this.activePrint === activePrint) this.activePrint = undefined;
+      if (this.activePrint === activePrint) {
+        this.activePrint = undefined;
+        this.latestPrintProgress = undefined;
+        this.notifyObserver(() => this.options.onPrintProgress?.(undefined));
+      }
       current.ownedPrintSettlements.delete(settlement);
       this.retryQuarantinedCandidate(current);
     });
     try {
       const outcome = await operation;
       if (outcome.kind === "failed") {
-        // A failed print must never be reported as success.
-        if (this.current === current && !this.disposed) this.options.onStatus("Printing failed.");
+        if (this.current === current && !this.disposed) this.options.onStatus(`Printing failed: ${outcome.reason}`);
         return false;
       }
-      if (outcome.kind === "cancelled") return false;
-      // State preservation is part of the contract: the reader must be exactly
-      // where it was before the print began.
-      return this.current === current
-        && !current.closed
-        && current.activePageNumber === activePageNumber
-        && this.viewTransform === transform;
+      if (outcome.kind !== "submitted") return false;
+      return this.current === current && !current.closed
+        && current.activePageNumber === activePageNumber && this.viewTransform === transform;
     } catch {
       if (!abort.signal.aborted && this.current === current && !this.disposed) this.options.onStatus("Printing failed.");
       return false;
@@ -1468,19 +1485,13 @@ export class PdfReaderController {
       if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;
     }
   }
-  /** Cancels foreground rendering without releasing the owned document session. */
+  /** Cancels foreground rendering without releasing the owned document session or print job. */
   public async suspend(): Promise<void> {
     this.presentationRequestSequence += 1;
     await this.awaitViewportIdle();
-    const print = this.activePrint;
-    print?.abort.abort();
-    if (print !== undefined) {
-      try {
-        await withDeadline(print.settlement, OWNERSHIP_DEADLINE_MS, "PRINT_OWNERSHIP_TIMEOUT");
-      } catch {
-        if (!this.disposed) this.options.onStatus("A PDF print operation could not be stopped.");
-      }
-    }
+    // A print owns its document and bounded page buffers independently of the
+    // presentation tab. Switching tabs must not turn an accepted print into a
+    // partial, unreadable output file.
     this.renderSequence += 1;
     await this.cancelActiveRender();
   }
