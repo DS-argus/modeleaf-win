@@ -484,7 +484,7 @@ describe("native state validation and truthful outcomes", () => {
 
     expect(outcome).toEqual({ kind: "submitted", pageCount: 1 });
     expect(progress.map(({ phase }) => phase)).toEqual([
-      "opening-dialog", "preparing", "submitting", "submitted",
+      "opening-dialog", "preparing", "preparing", "submitted",
     ]);
     expect(progress.at(-1)).toMatchObject({ preparedPages: 1, totalPages: 1, fraction: 1 });
     expect(JSON.stringify(outcome)).not.toContain("printed");

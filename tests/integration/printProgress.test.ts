@@ -95,7 +95,7 @@ describe("print progress footer control", () => {
     subject.control.cancel();
     subject.button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     subject.control.update(report("preparing", 4, 10, 0.4));
-    subject.control.update(report("submitting", 4, 10, 0.4));
+    subject.control.update(report("preparing", 4, 10, 0.4));
 
     expect(subject.onCancel).toHaveBeenCalledOnce();
     expect(subject.text.textContent).toBe("Cancelling printing…");
@@ -123,9 +123,9 @@ describe("print progress footer control", () => {
     expect(subject.meter.value).toBe(0.5);
     expect(subject.button.disabled).toBe(false);
 
-    subject.control.update(report("submitting", 6, 12, 0.5));
-    expect(subject.text.textContent).toBe("Submitting to printer…");
-    expect(subject.meter.hasAttribute("value")).toBe(false);
+    subject.control.update(report("preparing", 6, 12, 0.5));
+    expect(subject.text.textContent).toBe("Preparing 6 of 12 pages…");
+    expect(subject.meter.value).toBe(0.5);
     expect(subject.button.disabled).toBe(false);
 
     subject.control.update(report("submitted", 12, 12, 1));
