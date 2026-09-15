@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "modeleaf"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "fs2",
  "rand",
