@@ -1480,19 +1480,13 @@ export class PdfReaderController {
       if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;
     }
   }
-  /** Cancels foreground rendering without releasing the owned document session. */
+  /** Cancels foreground rendering without releasing the owned document session or print job. */
   public async suspend(): Promise<void> {
     this.presentationRequestSequence += 1;
     await this.awaitViewportIdle();
-    const print = this.activePrint;
-    print?.abort.abort();
-    if (print !== undefined) {
-      try {
-        await withDeadline(print.settlement, OWNERSHIP_DEADLINE_MS, "PRINT_OWNERSHIP_TIMEOUT");
-      } catch {
-        if (!this.disposed) this.options.onStatus("A PDF print operation could not be stopped.");
-      }
-    }
+    // A print owns its document and bounded page buffers independently of the
+    // presentation tab. Switching tabs must not turn an accepted print into a
+    // partial, unreadable output file.
     this.renderSequence += 1;
     await this.cancelActiveRender();
   }
