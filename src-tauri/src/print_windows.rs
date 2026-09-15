@@ -1,8 +1,11 @@
 use crate::print_job::{
     PrintPageRange, PrintWorkerCommand, PrintWorkerObserver, PrintWorkerResult, RasterPage,
 };
-use std::ffi::c_void;
+use std::ffi::{c_void, OsString};
+use std::fs;
 use std::mem;
+use std::os::windows::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicPtr, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
@@ -17,6 +20,7 @@ use windows::Win32::Graphics::Gdi::{
     BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, GDI_ERROR, HALFTONE, HDC, HORZRES, LOGPIXELSX,
     LOGPIXELSY, SP_USERABORT, SRCCOPY, VERTRES, WHITENESS,
 };
+use windows::Win32::Storage::FileSystem::MoveFileW;
 use windows::Win32::Storage::Xps::{
     AbortDoc, EndDoc, EndPage, SetAbortProc, StartDocW, StartPage, DOCINFOW,
 };
@@ -25,7 +29,8 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Controls::Dialogs::{
-    CommDlgExtendedError, PrintDlgW, PD_ENABLEPRINTHOOK, PD_HIDEPRINTTOFILE, PD_NOSELECTION,
+    CommDlgExtendedError, GetSaveFileNameW, PrintDlgW, OFN_EXPLORER, OFN_OVERWRITEPROMPT,
+    OFN_PATHMUSTEXIST, OPENFILENAMEW, PD_ENABLEPRINTHOOK, PD_HIDEPRINTTOFILE, PD_NOSELECTION,
     PD_PAGENUMS, PD_RETURNDC, PD_SELECTION, PD_USEDEVMODECOPIESANDCOLLATE, PRINTDLGW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -48,7 +53,12 @@ const PRINT_SUBMITTED_CLEANUP_FAILED: &str = "PRINT_SUBMITTED_CLEANUP_FAILED";
 const PRINT_START_PAGE_FAILED: &str = "PRINT_START_PAGE_FAILED";
 const PRINT_WORKER_DISCONNECTED: &str = "PRINT_WORKER_DISCONNECTED";
 const PRINT_WORKER_STATE: &str = "PRINT_WORKER_STATE";
+const PRINT_OUTPUT_SELECTION_FAILED: &str = "PRINT_OUTPUT_SELECTION_FAILED";
+const PRINT_OUTPUT_FINALIZE_FAILED: &str = "PRINT_OUTPUT_FINALIZE_FAILED";
+const PRINT_OUTPUT_CLEANUP_FAILED: &str = "PRINT_OUTPUT_CLEANUP_FAILED";
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const OUTPUT_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const OUTPUT_CLEANUP_ATTEMPTS: u32 = 20;
 const POINTS_PER_INCH: f64 = 72.0;
 const NATIVE_DIALOG_CLASS: &[u16] = &[35, 51, 50, 55, 55, 48];
 
@@ -166,6 +176,130 @@ fn close_then_error<T>(
 ) -> Result<T, &'static str> {
     resources.close()?;
     Err(error)
+}
+
+/// Owns only the unique staging path. Cleanup never touches the user-selected
+/// destination; it becomes visible only after EndDoc completes successfully.
+struct PrintOutput {
+    final_path: PathBuf,
+    staging_path: PathBuf,
+    finalized: bool,
+}
+
+impl PrintOutput {
+    fn select(
+        owner: HWND,
+        cancellation: &Arc<PrintCancellation>,
+    ) -> Result<Option<Self>, &'static str> {
+        let mut filename = vec![0_u16; 32_768];
+        let filter: Vec<u16> = "PDF files\0*.pdf\0\0".encode_utf16().collect();
+        let monitor = NativeDialogCancelMonitor::start(cancellation.clone(), None)?;
+        let mut dialog = OPENFILENAMEW {
+            lStructSize: mem::size_of::<OPENFILENAMEW>() as u32,
+            hwndOwner: owner,
+            lpstrFilter: PCWSTR(filter.as_ptr()),
+            lpstrFile: windows::core::PWSTR(filename.as_mut_ptr()),
+            nMaxFile: filename.len() as u32,
+            lpstrDefExt: PCWSTR(windows::core::w!("pdf").as_ptr()),
+            Flags: OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT,
+            ..Default::default()
+        };
+        let selected = unsafe { GetSaveFileNameW(&mut dialog) }.as_bool();
+        let error = if selected {
+            0
+        } else {
+            unsafe { CommDlgExtendedError() }.0
+        };
+        drop(monitor);
+        if !selected {
+            return if error == 0 {
+                Ok(None)
+            } else {
+                Err(PRINT_OUTPUT_SELECTION_FAILED)
+            };
+        }
+        if cancellation.is_cancelled() {
+            return Ok(None);
+        }
+        let end = filename
+            .iter()
+            .position(|value| *value == 0)
+            .ok_or(PRINT_OUTPUT_SELECTION_FAILED)?;
+        let final_path = PathBuf::from(OsString::from(
+            String::from_utf16(&filename[..end]).map_err(|_| PRINT_OUTPUT_SELECTION_FAILED)?,
+        ));
+        let parent = final_path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .ok_or(PRINT_OUTPUT_SELECTION_FAILED)?;
+        let staging_path = unique_staging_path(parent)?;
+        Ok(Some(Self {
+            final_path,
+            staging_path,
+            finalized: false,
+        }))
+    }
+
+    fn staging_wide(&self) -> Vec<u16> {
+        self.staging_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    fn finalize(&mut self) -> Result<(), &'static str> {
+        let staging = self.staging_wide();
+        let final_path: Vec<u16> = self
+            .final_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // MoveFileW deliberately has no replace flag: an existing destination is
+        // never changed by finalization or failure cleanup.
+        if unsafe { MoveFileW(PCWSTR(staging.as_ptr()), PCWSTR(final_path.as_ptr())) }.is_err() {
+            return Err(PRINT_OUTPUT_FINALIZE_FAILED);
+        }
+        self.finalized = true;
+        Ok(())
+    }
+
+    fn discard(&mut self) -> Result<(), &'static str> {
+        if self.finalized || !self.staging_path.exists() {
+            return Ok(());
+        }
+        for attempt in 0..OUTPUT_CLEANUP_ATTEMPTS {
+            match fs::remove_file(&self.staging_path) {
+                Ok(()) => return Ok(()),
+                Err(_) if !self.staging_path.exists() => return Ok(()),
+                Err(_) if attempt + 1 < OUTPUT_CLEANUP_ATTEMPTS => {
+                    std::thread::sleep(OUTPUT_CLEANUP_RETRY_INTERVAL);
+                }
+                Err(_) => return Err(PRINT_OUTPUT_CLEANUP_FAILED),
+            }
+        }
+        Err(PRINT_OUTPUT_CLEANUP_FAILED)
+    }
+}
+
+impl Drop for PrintOutput {
+    fn drop(&mut self) {
+        let _ = self.discard();
+    }
+}
+
+fn unique_staging_path(parent: &Path) -> Result<PathBuf, &'static str> {
+    for _ in 0..32 {
+        let candidate = parent.join(format!(
+            ".modeleaf-print-{:032x}.pdf",
+            rand::random::<u128>()
+        ));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(PRINT_OUTPUT_SELECTION_FAILED)
 }
 
 enum DialogOutcome {
@@ -468,6 +602,7 @@ struct GdiDocument {
     _abort_registration: AbortRegistration,
     _dialog_monitor: NativeDialogCancelMonitor,
     resources: DialogResources,
+    output: PrintOutput,
     cancellation: Arc<PrintCancellation>,
     started: bool,
 }
@@ -476,6 +611,7 @@ impl GdiDocument {
     fn start(
         resources: &mut DialogResources,
         title: &str,
+        output: PrintOutput,
         cancellation: Arc<PrintCancellation>,
     ) -> Result<Self, &'static str> {
         let hdc = resources.hdc()?;
@@ -487,10 +623,11 @@ impl GdiDocument {
             return Err(PRINT_CANCELLED);
         }
         let title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
+        let output_path = output.staging_wide();
         let document = DOCINFOW {
             cbSize: mem::size_of::<DOCINFOW>() as i32,
             lpszDocName: PCWSTR(title.as_ptr()),
-            lpszOutput: PCWSTR::null(),
+            lpszOutput: PCWSTR(output_path.as_ptr()),
             lpszDatatype: PCWSTR::null(),
             fwType: 0,
         };
@@ -509,6 +646,7 @@ impl GdiDocument {
             _abort_registration: abort_registration,
             _dialog_monitor: dialog_monitor,
             resources: mem::take(resources),
+            output,
             cancellation,
             started: true,
         })
@@ -630,6 +768,10 @@ impl GdiDocument {
         self.resources.close()
     }
 
+    fn discard_output(&mut self) -> Result<(), &'static str> {
+        self.output.discard()
+    }
+
     fn finish(&mut self) -> Result<(), &'static str> {
         if self.cancellation.is_cancelled() {
             return Err(PRINT_CANCELLED);
@@ -646,7 +788,7 @@ impl GdiDocument {
             ));
         }
         self.started = false;
-        Ok(())
+        self.output.finalize()
     }
 }
 
@@ -770,6 +912,11 @@ pub(crate) fn run_print_worker(
             Ok(DialogOutcome::Selected { resources, ranges }) => (resources, ranges),
             Err(error) => return terminal_for_error(error, None),
         };
+    let output = match PrintOutput::select(HWND(hwnd as *mut c_void), &cancellation) {
+        Ok(Some(output)) => output,
+        Ok(None) => return after_resource_cleanup(resources, PrintWorkerResult::cancelled(None)),
+        Err(error) => return after_resource_cleanup(resources, terminal_for_error(error, None)),
+    };
     if cancellation.is_cancelled() {
         return after_resource_cleanup(resources, PrintWorkerResult::cancelled(None));
     }
@@ -783,12 +930,13 @@ pub(crate) fn run_print_worker(
             return after_resource_cleanup(resources, terminal_for_error(error, None));
         }
     }
-    let mut document = match GdiDocument::start(&mut resources, &title, cancellation.clone()) {
-        Ok(document) => document,
-        Err(error) => {
-            return after_resource_cleanup(resources, terminal_for_error(error, None));
-        }
-    };
+    let mut document =
+        match GdiDocument::start(&mut resources, &title, output, cancellation.clone()) {
+            Ok(document) => document,
+            Err(error) => {
+                return after_resource_cleanup(resources, terminal_for_error(error, None));
+            }
+        };
 
     let result = loop {
         if cancellation.is_cancelled() {
@@ -832,7 +980,8 @@ pub(crate) fn run_print_worker(
     };
     let abort_error = document.abort().err();
     let resource_error = document.close_resources().err();
-    if let Some(error) = abort_error.or(resource_error) {
+    let output_error = document.discard_output().err();
+    if let Some(error) = abort_error.or(resource_error).or(output_error) {
         if result.is_submitted() {
             result.with_failure(PRINT_SUBMITTED_CLEANUP_FAILED)
         } else {
@@ -845,6 +994,92 @@ pub(crate) fn run_print_worker(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn staging_cleanup_preserves_existing_destination() {
+        let root = std::env::temp_dir().join(format!(
+            "modeleaf-print-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let final_path = root.join("existing.pdf");
+        let staging_path = root.join(".modeleaf-print-partial.pdf");
+        fs::write(&final_path, b"existing").unwrap();
+        fs::write(&staging_path, b"partial").unwrap();
+        drop(PrintOutput {
+            final_path: final_path.clone(),
+            staging_path: staging_path.clone(),
+            finalized: false,
+        });
+        assert_eq!(fs::read(&final_path).unwrap(), b"existing");
+        assert!(!staging_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn explicit_staging_cleanup_reports_a_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "modeleaf-print-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let final_path = root.join("output.pdf");
+        let staging_path = root.join("staging-directory.pdf");
+        fs::create_dir(&staging_path).unwrap();
+        let mut output = PrintOutput {
+            final_path,
+            staging_path,
+            finalized: false,
+        };
+        assert_eq!(output.discard(), Err(PRINT_OUTPUT_CLEANUP_FAILED));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finalization_refuses_existing_destination_and_cleans_only_staging() {
+        let root = std::env::temp_dir().join(format!(
+            "modeleaf-print-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let final_path = root.join("existing.pdf");
+        let staging_path = root.join(".modeleaf-print-complete.pdf");
+        fs::write(&final_path, b"existing").unwrap();
+        fs::write(&staging_path, b"complete").unwrap();
+        let mut output = PrintOutput {
+            final_path: final_path.clone(),
+            staging_path: staging_path.clone(),
+            finalized: false,
+        };
+        assert_eq!(output.finalize(), Err(PRINT_OUTPUT_FINALIZE_FAILED));
+        drop(output);
+        assert_eq!(fs::read(&final_path).unwrap(), b"existing");
+        assert!(!staging_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finalization_publishes_only_after_staging_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "modeleaf-print-test-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let final_path = root.join("output.pdf");
+        let staging_path = root.join(".modeleaf-print-complete.pdf");
+        fs::write(&staging_path, b"complete").unwrap();
+        let mut output = PrintOutput {
+            final_path: final_path.clone(),
+            staging_path: staging_path.clone(),
+            finalized: false,
+        };
+        assert!(!final_path.exists());
+        output.finalize().unwrap();
+        assert_eq!(fs::read(&final_path).unwrap(), b"complete");
+        assert!(!staging_path.exists());
+        drop(output);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn abort_cleanup_requires_a_positive_result() {
         assert!(checked_abort_result(1).is_ok());
