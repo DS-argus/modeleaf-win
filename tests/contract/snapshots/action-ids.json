@@ -5,7 +5,7 @@
     "sha": "0f7ff0b54c3674c48f6b555261f939397cfbfb88",
     "source": "PDFReaderCore/Actions/ActionID.swift"
   },
-  "count": 49,
+  "count": 51,
   "ids": [
     "document.open",
     "document.close",
@@ -55,6 +55,8 @@
     "config.writeDefault",
     "config.resetDefault",
     "theme.picker",
-    "update.show"
+    "update.show",
+    "path.showParent",
+    "path.copy"
   ]
 }

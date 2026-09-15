@@ -3,7 +3,7 @@ use tauri::{State, Window};
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(tag="tag", rename_all="SCREAMING_SNAKE_CASE", rename_all_fields="camelCase")]
-pub enum PathShortcutOutcome { Shown { text: String }, Copied { text: String }, Selected, Rejected { reason: String } }
+pub enum PathShortcutOutcome { Shown { text: String }, Copied { text: String }, Rejected { reason: String } }
 
 fn resolve(window: &Window, sessions: &PdfSessionManager, session_id: String, document_generation: u64, owner_generation: u64) -> Result<std::path::PathBuf, PdfSessionError> {
     let id = SessionId::from_opaque(session_id)?;
@@ -19,7 +19,6 @@ pub fn path_shortcut(window: Window, sessions: State<'_, PdfSessionManager>, act
             let text = path.to_string_lossy().into_owned();
             match copy_clipboard(&text) { Ok(()) => PathShortcutOutcome::Copied { text }, Err(reason) => PathShortcutOutcome::Rejected { reason } }
         }
-        "of" => match select_in_explorer(&path) { Ok(()) => PathShortcutOutcome::Selected, Err(reason) => PathShortcutOutcome::Rejected { reason } },
         _ => PathShortcutOutcome::Rejected { reason: "UNKNOWN_ACTION".into() },
     }
 }
@@ -42,10 +41,3 @@ fn copy_clipboard(text: &str) -> Result<(), String> {
     }
 }
 #[cfg(not(windows))] fn copy_clipboard(_: &str) -> Result<(), String> { Err("UNSUPPORTED_PLATFORM".into()) }
-
-#[cfg(windows)]
-fn select_in_explorer(path: &std::path::Path) -> Result<(), String> {
-    use std::process::Command;
-    Command::new("explorer.exe").arg(format!("/select,{}", path.display())).spawn().map(|_| ()).map_err(|_| "EXPLORER_UNAVAILABLE".into())
-}
-#[cfg(not(windows))] fn select_in_explorer(_: &std::path::Path) -> Result<(), String> { Err("UNSUPPORTED_PLATFORM".into()) }
