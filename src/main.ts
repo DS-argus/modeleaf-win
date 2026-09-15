@@ -12,6 +12,7 @@ import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
 import type { ActionId, ActionRuntimeContext } from "./domain/actions/ActionRegistry";
 import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelection, selectChooserIndex, adoptChooserSnapshot, retainChooserFailure, type OpenChooserModel } from "./ui/OpenChooserModel";
 import { fitRecentPath } from "./ui/RecentPathPresentation";
+import { openFailureAccessibilityError, openFailurePhase, openFailureStatus, type OpenFailurePhase } from "./domain/navigation/OpenFailureIdentifier";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
 import { renderCommandPalette } from "./ui/CommandPaletteRenderer";
@@ -398,12 +399,14 @@ function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   const tag = value.tag === "SELECTION_REJECTED" && "reason" in value ? value.reason : value.tag;
   return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "REMOTE_PATH" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
-function reportOpenInvokeFailure(error?: unknown, fallbackStatus = "The PDF could not be opened."): void {
+function reportOpenInvokeFailure(error?: unknown, fallbackStatus = openFailureStatus("unknown"), fallbackPhase: OpenFailurePhase = "unknown"): void {
   const tag = openFailureTag(error);
+  const phase = openFailurePhase(error) ?? fallbackPhase;
   active().session.reader.setStatus(tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
   const openError = tag === undefined ? undefined : nativeOpenError(tag);
   const accessibleError = openError === "unsupportedLocation" ? "document-locality-denied"
     : openError === "malformedDocument" || openError === "unreadableFile" || openError === "missingFile" ? "document-invalid"
+    : tag === undefined ? openFailureAccessibilityError(phase)
     : "document-unavailable";
   accessibility.announce({ kind: "error", error: accessibleError });
   render();
@@ -425,8 +428,8 @@ const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
   "The local PDF renderer could not start.",
   "The PDF operation timed out.",
 ]);
-function safeAdoptionFailureStatus(status: string): string {
-  return SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : "The PDF could not be opened.";
+function safeAdoptionFailureStatus(status: string, fallbackPhase: OpenFailurePhase = "adoption"): string {
+  return SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : openFailureStatus(fallbackPhase);
 }
 let paletteActiveIndex = 0;
 let fileOpenerModel: OpenChooserModel = createOpenChooser({ tag: "READY", snapshot: { revision: "0", entries: [] } }, 0);
@@ -838,7 +841,7 @@ function render(): void {
     button.title = tab.payload.session.snapshot.title;
     button.addEventListener("click", () => void switchTab(tab.id));
     const close = document.createElement("button"); close.type = "button"; close.className = "workspace-tab-close"; close.setAttribute("aria-label", "Close tab"); close.textContent = "×"; close.addEventListener("click", (event) => { event.stopPropagation(); closeTab(tab.id); });
-    const item = document.createElement("div"); item.className = "workspace-tab-item"; item.append(button, close); item.dataset.index = String(index); return item;
+    const item = document.createElement("div"); item.className = "workspace-tab-item"; item.dataset.selected = String(selected); item.append(button, close); item.dataset.index = String(index); return item;
   }));
   const selectedTab = tabStrip.querySelector<HTMLElement>('[aria-selected="true"]')?.parentElement;
   if (selectedTab !== null && selectedTab !== undefined) {
@@ -932,7 +935,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
           },
         );
       } catch (error) {
-        const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status);
+        const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status, error instanceof OpenAdoptionPresentationError ? "presentation" : "adoption");
         if (error instanceof OpenAdoptionPresentationError) {
           const pending = pendingOpenAdoptions.get(request.requestId);
           if (pending !== undefined) pendingOpenAdoptions.set(request.requestId, { ...pending, failureStatus: candidateStatus });
@@ -1271,7 +1274,7 @@ function dispatchFileOpenerEntry(): void {
     nativeOpenPending = false;
     const tag = outcome.tag;
     if (tag === "ADMITTED") {
-      if (!shellOpen.admitOpen(outcome)) active().session.reader.setStatus("The PDF could not be opened.");
+      if (!shellOpen.admitOpen(outcome)) reportOpenInvokeFailure(undefined, openFailureStatus("request-admission"), "request-admission");
       closeFileOpener();
       render();
       return;

@@ -23,7 +23,7 @@ interface TauriConfig {
     readonly fileAssociations?: readonly { readonly ext: readonly string[]; readonly role?: string }[];
     readonly windows?: {
       readonly webviewInstallMode?: { readonly type: string };
-      readonly nsis?: { readonly installMode?: string };
+      readonly nsis?: { readonly installMode?: string; readonly installerHooks?: string };
     };
   };
 }
@@ -53,17 +53,10 @@ describe("installer configuration", () => {
   });
 });
 
-describe("file association", () => {
-  it("registers .pdf as a viewer", () => {
-    const association = tauriConfig.bundle.fileAssociations?.find((entry) => entry.ext.includes("pdf"));
-    expect(association).toBeDefined();
-    // Viewer, not Editor: the product is read-only.
-    expect(association?.role).toBe("Viewer");
-  });
-
-  it("claims no association other than .pdf", () => {
-    const extensions = (tauriConfig.bundle.fileAssociations ?? []).flatMap((entry) => entry.ext);
-    expect(extensions).toEqual(["pdf"]);
+describe("PDF handler candidate", () => {
+  it("uses the explicit NSIS hook instead of Tauri's default association macro", () => {
+    expect(tauriConfig.bundle.fileAssociations).toBeUndefined();
+    expect(tauriConfig.bundle.windows?.nsis?.installerHooks).toBe("nsis/pdf-handler-candidate.nsh");
   });
 });
 
@@ -133,6 +126,12 @@ describe("release checklist", () => {
   it("does not certify unperformed native validation", () => {
     // Basic owner use does not certify these specific native scenarios.
     expect(checklist).not.toMatch(/verified on a clean VM|SmartScreen passed|Narrator verified/iu);
+  });
+
+  it("documents PR verification separately from main candidate preparation", () => {
+    expect(checklist).toContain("uses a fast PR tier");
+    expect(checklist).toContain("PR runs never build a standalone Tauri candidate, ZIP it, generate Scoop metadata, or upload artifacts.");
+    expect(checklist).toContain("Main retains the full checks plus exact-source standalone candidate, ZIP, Scoop-metadata, and receipt preparation");
   });
   it("documents the dedicated bucket without claiming unpublished installation", () => {
     const readme = readFileSync(join(root, "README.md"), "utf8");
