@@ -27,7 +27,7 @@ const isOverlayOwnedKey = new Function("event", "target", "overlayOwner", "overl
 ) => boolean;
 
 const rootCapturePrefix = 'window.addEventListener("keydown", (event) => {';
-const rootCaptureStart = main.indexOf(`${rootCapturePrefix}\n  const target = event.target instanceof Element ? event.target : null;`);
+const rootCaptureStart = main.indexOf(rootCapturePrefix);
 const rootCaptureEnd = main.indexOf("}, { capture: true });", rootCaptureStart);
 if (rootCaptureStart < 0 || rootCaptureEnd < 0) throw new Error("Production root keyboard capture is missing");
 const rootCaptureBody = main.slice(rootCaptureStart + rootCapturePrefix.length, rootCaptureEnd);
