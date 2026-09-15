@@ -381,6 +381,9 @@ try {
     $cargoVersion = Get-CargoPackageString -Text $cargoText -Property 'version'
     $cargoLicense = Get-CargoPackageString -Text $cargoText -Property 'license'
     $description = 'Keyboard-first read-only PDF viewer for Windows'
+    $handlerPath = Resolve-RequiredFile `
+        -Path ([System.IO.Path]::Combine($repositoryFullPath, 'tools', 'windows', 'modeleaf-pdf-handler.ps1')) `
+        -Label 'tools/windows/modeleaf-pdf-handler.ps1'
 
     if ($tauriVersion -cne $version -or $cargoVersion -cne $version) {
         throw "Version mismatch: package.json, src-tauri/tauri.conf.json, and src-tauri/Cargo.toml must be identical."
@@ -426,6 +429,7 @@ try {
     Assert-X64GuiPeHeader -Path ([System.IO.Path]::Combine($payloadDirectory, 'modeleaf.exe'))
     Copy-PackageFile -Source $licensePath -PayloadRoot $payloadDirectory -RelativeDestination 'LICENSE'
     Copy-PackageFile -Source $thirdPartyNoticesPath -PayloadRoot $payloadDirectory -RelativeDestination 'THIRD_PARTY_NOTICES.md'
+    Copy-PackageFile -Source $handlerPath -PayloadRoot $payloadDirectory -RelativeDestination 'modeleaf-pdf-handler.ps1'
     foreach ($pdfJsLicense in $pdfJsLicenseFiles) {
         Copy-PackageFile `
             -Source $pdfJsLicense.Source `

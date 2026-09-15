@@ -23,7 +23,7 @@ interface TauriConfig {
     readonly fileAssociations?: readonly { readonly ext: readonly string[]; readonly role?: string }[];
     readonly windows?: {
       readonly webviewInstallMode?: { readonly type: string };
-      readonly nsis?: { readonly installMode?: string };
+      readonly nsis?: { readonly installMode?: string; readonly installerHooks?: string };
     };
   };
 }
@@ -53,17 +53,10 @@ describe("installer configuration", () => {
   });
 });
 
-describe("file association", () => {
-  it("registers .pdf as a viewer", () => {
-    const association = tauriConfig.bundle.fileAssociations?.find((entry) => entry.ext.includes("pdf"));
-    expect(association).toBeDefined();
-    // Viewer, not Editor: the product is read-only.
-    expect(association?.role).toBe("Viewer");
-  });
-
-  it("claims no association other than .pdf", () => {
-    const extensions = (tauriConfig.bundle.fileAssociations ?? []).flatMap((entry) => entry.ext);
-    expect(extensions).toEqual(["pdf"]);
+describe("PDF handler candidate", () => {
+  it("uses the explicit NSIS hook instead of Tauri's default association macro", () => {
+    expect(tauriConfig.bundle.fileAssociations).toBeUndefined();
+    expect(tauriConfig.bundle.windows?.nsis?.installerHooks).toBe("nsis/pdf-handler-candidate.nsh");
   });
 });
 

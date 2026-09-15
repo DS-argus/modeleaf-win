@@ -655,7 +655,7 @@ macOS `app.new`는 [`ApplicationController.swift`](../../PDFReaderApp/App/Applic
 - 최근 active window routing을 명시한다.
 - window별 root store와 event channel을 둔다.
 - `app.quit`와 native `Alt+F4`는 invoking window만 닫고, 해당 window의 sessions/handles를 정리한다.
-- Tauri `bundle.fileAssociations`로 `.pdf`를 등록하고 NSIS 결과 registry를 검증한다. 기본 bundler output이 계약을 못 맞출 때만 installer hook/template을 추가한다.
+- NSIS uses an explicit install-owned Windows Capabilities/RegisteredApplications registration for `.pdf` and a matching uninstall hook. It adds only the Modeleaf ProgID to `.pdf\\OpenWithProgids`; it never writes `.pdf`'s default value or `UserChoice`.
 - 앱을 PDF 기본 프로그램으로 강제 지정하지 않는다.
 - uninstall에서 자신의 association registration만 제거한다.
 

@@ -39,17 +39,6 @@
     "category": "Productivity",
     "shortDescription": "Keyboard-first read-only PDF reader",
     "longDescription": "Modeleaf is a keyboard-first, read-only PDF reader for Windows. It never modifies source PDFs.",
-    "fileAssociations": [
-      {
-        "ext": [
-          "pdf"
-        ],
-        "name": "PDF Document",
-        "description": "Portable Document Format",
-        "mimeType": "application/pdf",
-        "role": "Viewer"
-      }
-    ],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
@@ -61,7 +50,8 @@
           "English"
         ],
         "displayLanguageSelector": false,
-        "startMenuFolder": "Modeleaf"
+        "startMenuFolder": "Modeleaf",
+        "installerHooks": "nsis/pdf-handler-candidate.nsh"
       }
     }
   }

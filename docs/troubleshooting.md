@@ -20,7 +20,7 @@ New signed applications have not yet built SmartScreen reputation. Reputation ac
 
 ### Double-clicking a PDF does not open Modeleaf
 
-Modeleaf registers as a PDF viewer but deliberately does not take over the system default. To change it, right-click the file, choose **Open with → Choose another app**, select Modeleaf, and tick **Always use this app**.
+Modeleaf registers as a PDF viewer candidate during NSIS or Scoop installation but deliberately does not take over the system default. To change it, right-click the file, choose **Open with → Choose another app**, select Modeleaf, and tick **Always use this app**.
 
 ### A file will not open
 
