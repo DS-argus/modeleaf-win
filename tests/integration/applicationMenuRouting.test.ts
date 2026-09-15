@@ -88,8 +88,9 @@ describe("application menu production-render/router integration", () => {
     publish();
     expect(button.querySelector(".windows-menu-label")).toBe(label);
     expect(button.querySelector(".windows-menu-shortcut")).toBe(shortcut);
-    const noShortcut = menu.querySelector<HTMLElement>('[data-menu-command="view.zoomReset"] .windows-menu-shortcut')!;
-    expect(noShortcut.hidden).toBe(true);
+    const actualSizeShortcut = menu.querySelector<HTMLElement>('[data-menu-command="view.zoomReset"] .windows-menu-shortcut')!;
+    expect(actualSizeShortcut.textContent).toBe("0");
+    expect(actualSizeShortcut.hidden).toBe(false);
   });
   it("keeps every closed section hidden and inert through repeated publication", () => {
     const { menu, publish, owner } = setup();
