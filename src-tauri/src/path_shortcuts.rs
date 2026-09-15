@@ -14,7 +14,7 @@ fn resolve(window: &Window, sessions: &PdfSessionManager, session_id: String, do
 pub fn path_shortcut(window: Window, sessions: State<'_, PdfSessionManager>, action: String, session_id: String, document_generation: u64, owner_generation: u64) -> PathShortcutOutcome {
     let path = match resolve(&window, &sessions, session_id, document_generation, owner_generation) { Ok(p) => p, Err(e) => return PathShortcutOutcome::Rejected { reason: format!("{e:?}") } };
     match action.as_str() {
-        "y" => PathShortcutOutcome::Shown { text: path.parent().unwrap_or(path.as_path()).to_string_lossy().into_owned() },
+        "y" => PathShortcutOutcome::Shown { text: path.to_string_lossy().into_owned() },
         "yy" => {
             let text = path.to_string_lossy().into_owned();
             match copy_clipboard(&text) { Ok(()) => PathShortcutOutcome::Copied { text }, Err(reason) => PathShortcutOutcome::Rejected { reason } }

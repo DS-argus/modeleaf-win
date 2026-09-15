@@ -439,19 +439,34 @@ function disposeWorkspaceTab(value: TabPayload): void { removedTabTeardown.remov
 
 function active(): TabPayload { const value = workspace.getPayload(workspace.activeTabId); if (!value) throw new Error("ACTIVE_TAB_MISSING"); return value; }
 type PathShortcutOutcome = { readonly tag: "SHOWN" | "COPIED"; readonly text: string } | { readonly tag: "REJECTED"; readonly reason: string };
+let pathNoticeTimer: number | undefined;
+let pathNoticeOwnerTabId: number | undefined;
+let pathNoticeRequest = 0;
+function publishPathNotice(tabId: number, text: string, copied: boolean): void {
+  pathNoticeOwnerTabId = tabId;
+  if (pathNoticeTimer !== undefined) window.clearTimeout(pathNoticeTimer);
+  shellStatus.setPathNotice({ text, copied });
+  pathNoticeTimer = window.setTimeout(() => {
+    if (pathNoticeOwnerTabId !== tabId || workspace.activeTabId !== tabId) return;
+    pathNoticeOwnerTabId = undefined;
+    pathNoticeTimer = undefined;
+    shellStatus.setPathNotice(undefined);
+  }, 3_000);
+}
 function runPathShortcut(action: "y" | "yy"): void {
   const tabId = workspace.activeTabId;
   const payload = active();
   const identity = payload.session.activeSessionIdentity;
-  if (identity === undefined) { payload.session.reader.setStatus("No PDF open"); render(); return; }
+  const request = ++pathNoticeRequest;
+  if (identity === undefined) { publishPathNotice(tabId, "No PDF open", false); return; }
   void invoke<unknown>("path_shortcut", { action, sessionId: identity.sessionId, documentGeneration: identity.documentGeneration, ownerGeneration: identity.ownerGeneration }).then((raw) => {
-    if (workspace.activeTabId !== tabId || workspace.getPayload(tabId)?.session.activeSessionIdentity?.sessionId !== identity.sessionId || workspace.getPayload(tabId)?.session.activeSessionIdentity?.documentGeneration !== identity.documentGeneration) return;
+    const current = workspace.getPayload(tabId)?.session.activeSessionIdentity;
+    if (request !== pathNoticeRequest || workspace.activeTabId !== tabId || current?.sessionId !== identity.sessionId || current.documentGeneration !== identity.documentGeneration || current.ownerGeneration !== identity.ownerGeneration) return;
     const outcome = raw as Partial<PathShortcutOutcome>;
-    if (outcome.tag === "SHOWN" || outcome.tag === "COPIED") payload.session.reader.setStatus(outcome.text ?? "");
-    else if (outcome.tag === "REJECTED") payload.session.reader.setStatus(`Path action failed: ${outcome.reason ?? "Unknown error"}`);
-    else payload.session.reader.setStatus("Path action failed: Invalid native response");
-    render();
-  }, () => { if (workspace.activeTabId === tabId) { payload.session.reader.setStatus("Path action failed"); render(); } });
+    if ((outcome.tag === "SHOWN" || outcome.tag === "COPIED") && typeof outcome.text === "string") publishPathNotice(tabId, outcome.text, outcome.tag === "COPIED");
+    else if (outcome.tag === "REJECTED") publishPathNotice(tabId, "Path action failed: " + (outcome.reason ?? "Unknown error"), false);
+    else publishPathNotice(tabId, "Path action failed: Invalid native response", false);
+  }, () => { if (request === pathNoticeRequest && workspace.activeTabId === tabId) publishPathNotice(tabId, "Path action failed", false); });
 }
 function commandAvailabilityContext(): ActionRuntimeContext {
   const hasDocument = active().session.snapshot.reader.hasDocument;
@@ -747,6 +762,11 @@ async function showUpdateNotice(): Promise<void> {
 function render(): void {
   syncPendingShellInput();
   const current = active();
+  if (pathNoticeOwnerTabId !== undefined && pathNoticeOwnerTabId !== workspace.activeTabId) {
+    pathNoticeOwnerTabId = undefined;
+    if (pathNoticeTimer !== undefined) { window.clearTimeout(pathNoticeTimer); pathNoticeTimer = undefined; }
+    shellStatus.setPathNotice(undefined);
+  }
   const snapshot = current.session.snapshot;
   const shell = projectWindowShell({
     windowId: SHELL_WINDOW_ID,
@@ -1519,7 +1539,10 @@ const rootKeyboard = createRootKeyboardRouter({
     return true;
   },
   onDisabled: (_id, reason) => { active().session.reader.setStatus(reason); render(); },
-  onState: (state) => { shellStatus.setPendingSequence(state.kind === "pending" ? state.sequence : ""); },
+  onState: (state) => {
+    if (state.kind === "pending" && state.sequence === "y") { shellStatus.setPendingSequence(""); runPathShortcut("y"); }
+    else shellStatus.setPendingSequence(state.kind === "pending" ? state.sequence : "");
+  },
 });
 cancelPendingShellInput = rootKeyboard.cancelPending;
 syncPendingShellInput = rootKeyboard.syncContext;

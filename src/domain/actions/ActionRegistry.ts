@@ -109,7 +109,7 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("config.resetDefault", "Reset Config", GLOBAL),
   descriptor("theme.picker", "Theme picker", contexts(READER_CONTEXTS)),
   descriptor("update.show", "View Available Update", contexts(READER_CONTEXTS)),
-  descriptor("path.showParent", "Show Parent Folder", contexts(NAVIGATION_CONTEXT)),
+  descriptor("path.showParent", "Show PDF Path", contexts(NAVIGATION_CONTEXT)),
   descriptor("path.copy", "Copy PDF Path", contexts(NAVIGATION_CONTEXT)),
 
 ]);
