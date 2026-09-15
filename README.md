@@ -14,9 +14,10 @@ A keyboard-first, read-only PDF viewer for Windows 11 x64, based on [Modeleaf fo
 ## Key features
 
 - Continuous reading, page navigation, and Back/Forward history
-- Text search, text selection and copying, and ordinary PDF link clicks
-- Tabs and a recent-file picker
-- Fit width/page, zoom, and rotation
+- Text search, text selection/copying, and ordinary PDF link clicks
+- Tabs, a recent-file picker, folder-path display, and PDF-path copying
+- Fit width/page, Actual Size, zoom, and rotation
+- Native system printing with progress and cancellation, preserving page coverage
 - Command palette, shortcut help, and seven interface themes
 
 ## Availability
@@ -36,7 +37,7 @@ scoop update
 scoop update modeleaf
 ```
 
-Scoop updates are user-invoked and become available after the bucket manifest is updated. The app does not update itself. Live configuration, full-document printing, and in-app update retrieval remain incomplete. See the [verification and release checklist](docs/windows-release-checklist.md) and [parity matrix](docs/parity-matrix.md) for limitations.
+Scoop updates are user-invoked and become available after the bucket manifest is updated. The app does not update itself. Live configuration and in-app update retrieval remain incomplete. Printing uses the native system dialog with bounded, complete raster-page preparation; `Submitted to printer` confirms submission, not physical output or a completed Save As file. `of` (reveal the current PDF in Explorer) is not included yet. See the [verification and release checklist](docs/windows-release-checklist.md) and [parity matrix](docs/parity-matrix.md) for limitations.
 
 ## Keys (defaults)
 
@@ -44,8 +45,10 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | --- | --- |
 | Scroll / large scroll | `h` `j` `k` `l` / `d` `u` |
 | Previous / next page | `p` / `n` |
+| Show folder / copy PDF path | `y` / `yy` |
 | First / last page | `gg` / `G` |
 | Go to page | `g`, number, `Enter` |
+| Actual Size | `0` |
 | Back / forward | `Alt+Left` / `Alt+Right` |
 | Search / next / previous result | `/` / `Enter` / `Shift+Enter` |
 | Fit width / page | `w` / `F` |
