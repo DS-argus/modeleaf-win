@@ -18,16 +18,16 @@
       "sha256Before": "26e679fd50f1b606b6b28de62db469c2a2a99ffa19864eca212ca084387e399c",
       "sha256After": "26e679fd50f1b606b6b28de62db469c2a2a99ffa19864eca212ca084387e399c"
     },
-    "packagedCandidateAttempt": "A QA-identity candidate was built and the production runner opened the actual print dialog. The runner could not select Microsoft Print to PDF on this workstation and therefore cancelled before destination selection; no output-lifetime acceptance is claimed. Local raw trace: .internal/evidence/issue-83/native/2026-09-15T06-10-15.486Z-print-fixture-B-blank.pdf/native.json."
+    "packagedCandidateAttempt": "A QA-identity candidate was built and the production runner opened the actual print dialog. The runner could not select Microsoft Print to PDF on this workstation and therefore cancelled before destination selection; no output-lifetime acceptance is claimed. Local raw trace: .internal/evidence/issue-83/native/2026-09-15T06-10-15.486Z-print-fixture-B-blank.pdf/native.json.",
+    "ownerManualPreview": "Owner validated the receipt-bound worktree preview after the bounded cleanup retry: cancelling during output no longer leaves a .modeleaf-print-*.pdf incomplete staging artifact."
   },
   "remainingRequiredEvidence": [
     "Exact-candidate Microsoft Print to PDF success at a new destination with readable output.",
-    "Cancellation after destination selection and late cancellation leave no final artifact.",
     "Existing selected destination remains byte-identical after cancellation and failed finalization.",
     "1/12/300-page scenarios preserve source SHA, reader state, focus, and resource cleanup."
   ],
   "limitations": [
-    "This record does not claim packaged Microsoft Print to PDF acceptance because printer selection did not complete.",
-    "No merge, tag, signing, release, or publication is authorized by this evidence."
+    "No merge, tag, signing, release, or publication is authorized by this evidence.",
+    "Owner manual preview confirms the cancelled staging artifact is removed; this is not a claim of a fresh full 1/12/300-page packaged fixture matrix."
   ]
 }
