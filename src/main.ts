@@ -458,7 +458,7 @@ function runPathShortcut(action: "y" | "yy"): void {
   const payload = active();
   const identity = payload.session.activeSessionIdentity;
   const request = ++pathNoticeRequest;
-  if (identity === undefined) { publishPathNotice(tabId, "No PDF open", false); return; }
+  if (identity === undefined) { publishPathNotice(tabId, "No document open", false); return; }
   void invoke<unknown>("path_shortcut", { action, sessionId: identity.sessionId, documentGeneration: identity.documentGeneration, ownerGeneration: identity.ownerGeneration }).then((raw) => {
     const current = workspace.getPayload(tabId)?.session.activeSessionIdentity;
     if (request !== pathNoticeRequest || workspace.activeTabId !== tabId || current?.sessionId !== identity.sessionId || current.documentGeneration !== identity.documentGeneration || current.ownerGeneration !== identity.ownerGeneration) return;

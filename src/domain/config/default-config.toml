@@ -48,6 +48,8 @@
 "theme.picker" = ["T"]
 "update.show" = ["U"]
 
+"path.showParent" = ["y"]
+"path.copy" = ["yy"]
 [navigation]
 small_scroll_points = 32.0
 large_scroll_viewport_fraction = 0.8

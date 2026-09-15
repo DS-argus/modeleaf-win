@@ -79,7 +79,7 @@ Phase status reports whether that phase's own gate was run and merged. It does n
 
 ## Action-count reconciliation
 
-The macOS v0.10.0 baseline freezes **61** action identifiers. The Windows contract contains **49**: seven `pane.*` actions plus `toc.toggle`, `toc.scrollDown`, `toc.scrollUp`, `link.hint` and `indicator.picker` are excluded. Of these, **45 are configurable** and four are fixed prompt/search bindings. `tests/contract/snapshots/action-ids.json` is the Windows authority; historical macOS counts are unchanged. The defaults fingerprint is `ea7b922dd96632e1a4a35df4e148f55f9b1ddc224dd7d61549242b60ef0f5344`.
+The macOS v0.10.0 baseline freezes **61** action identifiers. The Windows contract contains **51**: seven `pane.*` actions plus `toc.toggle`, `toc.scrollDown`, `toc.scrollUp`, `link.hint` and `indicator.picker` are excluded. Of these, **45 are configurable** and four are fixed prompt/search bindings. `tests/contract/snapshots/action-ids.json` is the Windows authority; historical macOS counts are unchanged. The defaults fingerprint is `ea7b922dd96632e1a4a35df4e148f55f9b1ddc224dd7d61549242b60ef0f5344`.
 
 ## Immutable supersession closure
 
