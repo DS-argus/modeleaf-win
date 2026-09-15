@@ -57,7 +57,7 @@ scoop update
 scoop update modeleaf
 ```
 
-The dedicated bucket is maintained at `DS-argus/scoop-bucket`, with its current reviewed manifest at `bucket/modeleaf.json`. `scoop update` refreshes bucket metadata; `scoop update modeleaf` applies the available version only when invoked by the user. This does not add an in-app automatic updater. Windows 11 x64 and an installed Microsoft Edge WebView2 Runtime are required. The ZIP/Scoop path does not install WebView2, change PDF associations, or provide the separate NSIS installer.
+The dedicated bucket is maintained at `DS-argus/scoop-bucket`, with its current reviewed manifest at `bucket/modeleaf.json`. `scoop update` refreshes bucket metadata; `scoop update modeleaf` applies the available version only when invoked by the user. This does not add an in-app automatic updater. Windows 11 x64 and an installed Microsoft Edge WebView2 Runtime are required. The ZIP/Scoop path does not install WebView2; its bucket manifest invokes the package-owned PDF handler helper so Modeleaf is an Open With/Default apps candidate without changing the user's default. NSIS provides the separate installer and the same candidate registration.
 
 ### Verified bucket promotion
 

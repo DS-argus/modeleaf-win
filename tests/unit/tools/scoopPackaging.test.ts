@@ -126,6 +126,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   repositoryFiles.set("public/assets/pdfjs-6.2.108/wasm/LICENSE_OPENJPEG", "OpenJPEG fixture license\n");
   repositoryFiles.set("public/assets/pdfjs-6.2.108/wasm/LICENSE_PDFJS_OPENJPEG", "PDF.js OpenJPEG fixture license\n");
   repositoryFiles.set("public/assets/pdfjs-6.2.108/wasm/LICENSE_PDFJS_QCMS", "PDF.js QCMS fixture license\n");
+  repositoryFiles.set("tools/windows/modeleaf-pdf-handler.ps1", "# fixture PDF handler helper\n");
   repositoryFiles.set("public/assets/pdfjs-6.2.108/wasm/LICENSE_QCMS", "QCMS fixture license\n");
 
   // Decoys make an accidental whole-tree package observable without using real
@@ -158,6 +159,7 @@ async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
     ["modeleaf.exe", executable],
     ["LICENSE", join(repository, "LICENSE")],
     ["THIRD_PARTY_NOTICES.md", join(repository, "THIRD_PARTY_NOTICES.md")],
+    ["modeleaf-pdf-handler.ps1", join(repository, "tools", "windows", "modeleaf-pdf-handler.ps1")],
     ["licenses/pdfjs/cmaps/LICENSE", join(repository, "public", "assets", "pdfjs-6.2.108", "cmaps", "LICENSE")],
     ["licenses/pdfjs/iccs/LICENSE", join(repository, "public", "assets", "pdfjs-6.2.108", "iccs", "LICENSE")],
     ["licenses/pdfjs/standard_fonts/LICENSE_FOXIT", join(repository, "public", "assets", "pdfjs-6.2.108", "standard_fonts", "LICENSE_FOXIT")],
