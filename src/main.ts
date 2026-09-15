@@ -589,13 +589,15 @@ function createTab(): TabPayload {
     onPrintProgress: (progress) => {
       if (shellDisposing || workspace === undefined) return;
       printProgressOwner.report(session, progress);
+      // The status footer is window-owned, so redraw it even when the
+      // printing document's presentation tab is inactive.
+      render();
       if (active().session !== session) return;
       if (progress === undefined && printProgressControl.containsFocus()) {
         const target = printFocusOwner?.session === session ? printFocusOwner.element : undefined;
         if (target?.isConnected) target.focus({ preventScroll: true });
         else host.focus({ preventScroll: true });
       }
-      render();
     },
     pdf: { getDocument: (options) => getDocument(options as never) as unknown as PdfLoadingTask, annotationMode: AnnotationMode.DISABLE },
     resources,
