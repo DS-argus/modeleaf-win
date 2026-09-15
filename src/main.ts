@@ -838,7 +838,7 @@ function render(): void {
     button.title = tab.payload.session.snapshot.title;
     button.addEventListener("click", () => void switchTab(tab.id));
     const close = document.createElement("button"); close.type = "button"; close.className = "workspace-tab-close"; close.setAttribute("aria-label", "Close tab"); close.textContent = "×"; close.addEventListener("click", (event) => { event.stopPropagation(); closeTab(tab.id); });
-    const item = document.createElement("div"); item.className = "workspace-tab-item"; item.append(button, close); item.dataset.index = String(index); return item;
+    const item = document.createElement("div"); item.className = "workspace-tab-item"; item.dataset.selected = String(selected); item.append(button, close); item.dataset.index = String(index); return item;
   }));
   const selectedTab = tabStrip.querySelector<HTMLElement>('[aria-selected="true"]')?.parentElement;
   if (selectedTab !== null && selectedTab !== undefined) {

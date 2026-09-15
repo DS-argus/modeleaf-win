@@ -84,6 +84,7 @@ Acceptance:
 - root tab bar 한 개를 보인다.
 - active tab은 title과 position을 보이고 selected state를 갖는다.
 - inactive close button은 hover/focus에서 강해지고 active tab close는 항상 발견 가능해야 한다.
+- Inactive tab hover brightens the shared title/close surface without selecting it. The selected tab uses a subtly brighter shared surface; its close control gains further emphasis only on hover or keyboard focus.
 - active tab이 overflow 밖이면 layout 후 scroll into view한다.
 - Regular tab slot은 파일명 길이와 관계없이 `184px × 26px`로 통일한다. 긴 이름은 ellipsis로 줄이고 accessible name/tooltip에는 전체 filename을 유지한다. 좁은 창은 수평 overflow를 사용하며 close button은 줄어들지 않는다.
 
