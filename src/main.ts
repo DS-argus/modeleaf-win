@@ -38,6 +38,7 @@ import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 import { TauriPdfPrintBoundary } from "./pdf/TauriPdfPrintBoundary";
 import { createPrintProgress } from "./ui/PrintProgress";
+import { PrintProgressOwner } from "./ui/PrintProgressOwner";
 import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
@@ -116,7 +117,8 @@ const shellStatus = createShellStatusRenderer(status, () => {
     status: reader.status,
   };
 });
-const printProgressControl = createPrintProgress(status, () => active().session.cancelPrint());
+const printProgressOwner = new PrintProgressOwner<PdfTabSession>();
+const printProgressControl = createPrintProgress(status, () => printProgressOwner.cancel());
 let printFocusOwner: { readonly session: PdfTabSession; readonly element?: HTMLElement } | undefined;
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
@@ -585,7 +587,9 @@ function createTab(): TabPayload {
     native,
     printNative: (opened, generation) => new TauriPdfPrintBoundary(opened, generation),
     onPrintProgress: (progress) => {
-      if (shellDisposing || workspace === undefined || active().session !== session) return;
+      if (shellDisposing || workspace === undefined) return;
+      printProgressOwner.report(session, progress);
+      if (active().session !== session) return;
       if (progress === undefined && printProgressControl.containsFocus()) {
         const target = printFocusOwner?.session === session ? printFocusOwner.element : undefined;
         if (target?.isConnected) target.focus({ preventScroll: true });
@@ -765,7 +769,7 @@ function render(): void {
     emptyReaderOpen.title = openCommand.disabledReason ?? "";
   }
   shellStatus.render();
-  printProgressControl.update(current.session.printProgress);
+  printProgressControl.update(printProgressOwner.progress);
   emptyReader.hidden = shell.emptyState === undefined;
   emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
   if (snapshot.reader.helpVisible && overlayOwner.active?.id !== "help") claimOverlay("help");
@@ -1437,8 +1441,10 @@ function dispatch(action: Action): void {
     const session = active().session;
     if (session.printProgress !== undefined) return;
     const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+    printProgressOwner.begin(session);
     printFocusOwner = { session, ...(focused === undefined ? {} : { element: focused }) };
     void session.printCurrent().finally(() => {
+      if (session.printProgress === undefined) printProgressOwner.report(session, undefined);
       if (shellDisposing) return;
       if (printFocusOwner?.session === session) {
         if (active().session === session && overlayOwner.active === undefined
