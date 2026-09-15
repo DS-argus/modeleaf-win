@@ -15,6 +15,7 @@
     "fixtures:verify-golden": "vitest run tests/contract/goldenFixtures.test.ts tests/contract/goldenSnapshots.test.ts",
     "legal:verify": "node tools/legal/verify-third-party.mjs",
     "security:verify": "npm audit --omit=dev --audit-level=high",
+    "preview:worktree": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/windows/preview-worktree.ps1",
     "tauri:build-debug": "node tools/tauri/build-debug.mjs",
     "gate:w01": "npm run legal:verify && npm run security:verify && npm run test && npm run build && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path src-tauri/Cargo.toml && npm run tauri:build-debug",
     "fixtures:verify-korean": "node tools/fixtures/verify-korean-pdfs.mjs",
