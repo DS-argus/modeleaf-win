@@ -32,7 +32,7 @@ describe("initial open flow contract", () => {
     const preload = main.indexOf("const initialRecentsReady = recentListenerReady.then");
     expect(preload).toBeGreaterThanOrEqual(0);
     expect(preload).toBeLessThan(main.indexOf("async function openFileOpener"));
-    expect(main).toContain("await initialRecentsReady");
+    expect(main).toContain("await Promise.all([initialRecentsReady, shellOpen.ready]);");
     expect(recent).toContain("RecentListOutcome");
     expect(recent).not.toContain("available_documents");
     const listener = main.indexOf("const recentListenerReady = listen(\"recent-state-changed\"");
