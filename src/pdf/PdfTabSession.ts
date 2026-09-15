@@ -200,6 +200,7 @@ export class PdfTabSession {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     return this.pdfReader.adopt(session, ownerGeneration);
   }
+  public get activeSessionIdentity(): { readonly sessionId: string; readonly documentGeneration: number; readonly ownerGeneration: number } | undefined { return this.pdfReader.activeSessionIdentity; }
   public async printCurrent(): Promise<boolean> {
     return this.closed || !this.isForegroundActive() ? false : this.pdfReader.printCurrent();
   }

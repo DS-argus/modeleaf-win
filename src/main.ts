@@ -50,6 +50,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
+  "path.showParent", "path.copy", "path.selectInExplorer",
   "config.writeDefault", "config.resetDefault", "theme.picker",
   "config.reload", "update.show",
   "history.back", "history.forward",
@@ -437,6 +438,22 @@ function queueWorkspaceActivation(work: () => Promise<void> | void): Promise<voi
 function disposeWorkspaceTab(value: TabPayload): void { removedTabTeardown.remove(value); }
 
 function active(): TabPayload { const value = workspace.getPayload(workspace.activeTabId); if (!value) throw new Error("ACTIVE_TAB_MISSING"); return value; }
+type PathShortcutOutcome = { readonly tag: "SHOWN" | "COPIED"; readonly text: string } | { readonly tag: "SELECTED" } | { readonly tag: "REJECTED"; readonly reason: string };
+function runPathShortcut(action: "y" | "yy" | "of"): void {
+  const tabId = workspace.activeTabId;
+  const payload = active();
+  const identity = payload.session.activeSessionIdentity;
+  if (identity === undefined) { payload.session.reader.setStatus("No PDF open"); render(); return; }
+  void invoke<unknown>("path_shortcut", { action, sessionId: identity.sessionId, documentGeneration: identity.documentGeneration, ownerGeneration: identity.ownerGeneration }).then((raw) => {
+    if (workspace.activeTabId !== tabId || workspace.getPayload(tabId)?.session.activeSessionIdentity?.sessionId !== identity.sessionId || workspace.getPayload(tabId)?.session.activeSessionIdentity?.documentGeneration !== identity.documentGeneration) return;
+    const outcome = raw as Partial<PathShortcutOutcome>;
+    if (outcome.tag === "SHOWN" || outcome.tag === "COPIED") payload.session.reader.setStatus(outcome.text ?? "");
+    else if (outcome.tag === "SELECTED") payload.session.reader.setStatus("Explorer selection opened");
+    else if (outcome.tag === "REJECTED") payload.session.reader.setStatus(`Path action failed: ${outcome.reason ?? "Unknown error"}`);
+    else payload.session.reader.setStatus("Path action failed: Invalid native response");
+    render();
+  }, () => { if (workspace.activeTabId === tabId) { payload.session.reader.setStatus("Path action failed"); render(); } });
+}
 function commandAvailabilityContext(): ActionRuntimeContext {
   const hasDocument = active().session.snapshot.reader.hasDocument;
   const canCreateSession = workspace.snapshot.tabs.length < 8;
@@ -1318,6 +1335,7 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
 );
 function dispatchActionId(id: ActionId): void {
   if (id === "history.back") { void active().session.navigateHistoryBack().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
+  if (id === "path.showParent" || id === "path.copy" || id === "path.selectInExplorer") { runPathShortcut(id === "path.showParent" ? "y" : id === "path.copy" ? "yy" : "of"); return; }
   if (id === "history.forward") { void active().session.navigateHistoryForward().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   const tabSelection = /^tab\.select\.(\d)$/u.exec(id);
   if (tabSelection !== null) { dispatch({ type: "tab.activate", index: Number(tabSelection[1]) - 1 }); return; }
