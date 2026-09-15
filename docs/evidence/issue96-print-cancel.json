@@ -1,0 +1,33 @@
+{
+  "issue": 96,
+  "recordedOn": "2026-09-15",
+  "baselineCommit": "b76766da056a2b15983d5cb4138f2a34e983a0ba",
+  "scope": "Native Microsoft Print to PDF output lifetime; no merge or release approval.",
+  "implementation": {
+    "staging": "The Rust-owned native save dialog selects a final destination, while GDI receives a unique sibling .modeleaf-print-*.pdf staging path through DOCINFOW.lpszOutput.",
+    "publication": "MoveFileW publishes staging only after EndDocW returns success; MoveFileW does not replace an existing destination.",
+    "cleanup": "PrintOutput Drop removes only its staging path after cancellation, error, or failed finalization; it never deletes the selected destination.",
+    "rendererAuthority": "The renderer still receives only opaque print-job/session identities and never receives an output path."
+  },
+  "verification": {
+    "nativeUnit": "cargo test --manifest-path src-tauri/Cargo.toml print_windows --no-fail-fast: passed; covers staging cleanup, successful publication, and existing-destination refusal/preservation.",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings: passed.",
+    "fullLocalGate": "npm test -- --maxWorkers=1 --minWorkers=1; npm run build; cargo fmt --check --manifest-path src-tauri/Cargo.toml; cargo test --manifest-path src-tauri/Cargo.toml; git diff --check: passed.",
+    "fixture": {
+      "name": "fixture-B-blank.pdf",
+      "sha256Before": "26e679fd50f1b606b6b28de62db469c2a2a99ffa19864eca212ca084387e399c",
+      "sha256After": "26e679fd50f1b606b6b28de62db469c2a2a99ffa19864eca212ca084387e399c"
+    },
+    "packagedCandidateAttempt": "A QA-identity candidate was built and the production runner opened the actual print dialog. The runner could not select Microsoft Print to PDF on this workstation and therefore cancelled before destination selection; no output-lifetime acceptance is claimed. Local raw trace: .internal/evidence/issue-83/native/2026-09-15T06-10-15.486Z-print-fixture-B-blank.pdf/native.json."
+  },
+  "remainingRequiredEvidence": [
+    "Exact-candidate Microsoft Print to PDF success at a new destination with readable output.",
+    "Cancellation after destination selection and late cancellation leave no final artifact.",
+    "Existing selected destination remains byte-identical after cancellation and failed finalization.",
+    "1/12/300-page scenarios preserve source SHA, reader state, focus, and resource cleanup."
+  ],
+  "limitations": [
+    "This record does not claim packaged Microsoft Print to PDF acceptance because printer selection did not complete.",
+    "No merge, tag, signing, release, or publication is authorized by this evidence."
+  ]
+}
