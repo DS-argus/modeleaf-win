@@ -70,7 +70,6 @@ export interface PdfPrintNative {
 export type PdfPrintPhase =
   | "opening-dialog"
   | "preparing"
-  | "submitting"
   | "submitted"
   | "cancelled"
   | "failed";
@@ -655,7 +654,7 @@ export async function printPdfDocument(options: PdfPrintServiceOptions): Promise
           }
           work.payload = payload;
           preparedPages += 1;
-          report("submitting");
+          report("preparing");
           throwIfAborted(options.signal);
 
           const submitWork = work;

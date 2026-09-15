@@ -117,10 +117,6 @@ export function createPrintProgress(host: HTMLElement, onCancel: () => void): Pr
           setText(`Preparing ${progress.preparedPages} of ${progress.totalPages} pages…`);
           setDeterminate(progress);
           break;
-        case "submitting":
-          setText("Submitting to printer…");
-          setIndeterminate();
-          break;
         case "submitted":
           setText("Submitted to printer");
           setDeterminate(progress);
