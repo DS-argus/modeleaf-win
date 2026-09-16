@@ -243,7 +243,7 @@ export class PdfTabSession {
     if (this.closed) return;
     if (this.active) {
       if (!this.openingFitRenderPending) return;
-      const fitted = await this.settleOpeningFit();
+      await this.settleOpeningFit();
       return;
     }
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
