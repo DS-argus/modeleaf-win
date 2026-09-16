@@ -64,7 +64,7 @@ describe("Scoop preparation workflow", () => {
 
   it("uploads only renderer screenshots and the automation transcript, never browser profiles", () => {
     const upload = step("Retain shell renderer comparison evidence");
-    expect(upload.with?.path).toBe(".internal/evidence/issue-114/**/*.png\n.internal/evidence/issue-114/**/automation.json");
+    expect(upload.with?.path).toBe(".internal/evidence/issue-114/**/*.png\n.internal/evidence/issue-114/**/automation.json\n.internal/evidence/issue-114/**/pixel-mismatch.json");
     expect(index("Verify shell renderer visual matrix")).toBeLessThan(index(upload.name));
     expect(upload.with?.["retention-days"]).toBe(7);
   });

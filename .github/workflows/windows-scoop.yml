@@ -56,7 +56,7 @@
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
             "name": "shell-renderer-evidence-${{ github.sha }}",
-            "path": ".internal/evidence/issue-114/**/*.png\n.internal/evidence/issue-114/**/automation.json",
+            "path": ".internal/evidence/issue-114/**/*.png\n.internal/evidence/issue-114/**/automation.json\n.internal/evidence/issue-114/**/pixel-mismatch.json",
             "if-no-files-found": "error",
             "include-hidden-files": true,
             "retention-days": 7

@@ -30,6 +30,7 @@ const evaluate = async (expression) => {
 };
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const settlePaint = () => evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+const paintedBounds = () => evaluate("(() => { const r=document.querySelector('canvas').getBoundingClientRect(); return {x:r.x+scrollX,y:r.y+scrollY,width:r.width,height:r.height}; })()");
 const decodePaintedHash = (data) => evaluate(`(async () => {
   const blob = await (await fetch('data:image/png;base64,${data}')).blob();
   const bitmap = await createImageBitmap(blob);
@@ -136,9 +137,9 @@ try {
   await call('Emulation.setDeviceMetricsOverride',{width:1040,height:760,deviceScaleFactor:1,mobile:false});
   await evaluate("document.documentElement.style.fontSize='16px';shellQa.setTheme('tokyo-night')");
   const initial = await evaluate("shellQa.pixelHash()");
-  const pdfBounds = await evaluate("(() => { const r=document.querySelector('canvas').getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; })()");
   await settlePaint();
-  const initialPaintData = (await call("Page.captureScreenshot", { format: "png", clip: { ...pdfBounds, scale: 1 } })).data;
+  const pdfBounds = await paintedBounds();
+  const initialPaintData = (await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { ...pdfBounds, scale: 1 } })).data;
   await writeFile(resolve(evidence, "pdf-reference-pixels.png"), Buffer.from(initialPaintData, "base64"));
   const initialPaint = await decodePaintedHash(initialPaintData);
   const fixtureHash = createHash("sha256").update(await readFile(resolve(root, "fixtures/pdf/text-3-page.pdf"))).digest("hex");
@@ -149,13 +150,16 @@ try {
     const style = await evaluate("({filter:getComputedStyle(document.querySelector('canvas')).filter,opacity:getComputedStyle(document.querySelector('canvas')).opacity})");
     assert(hash === initial && style.filter === "none" && style.opacity === "1", `PDF pixels changed in ${theme}`);
     await settlePaint();
-    const painted = (await call("Page.captureScreenshot", { format: "png", clip: { ...pdfBounds, scale: 1 } })).data;
+    const currentPdfBounds = await paintedBounds();
+    assert(currentPdfBounds.width === pdfBounds.width && currentPdfBounds.height === pdfBounds.height, `PDF geometry changed in ${theme}`);
+    const painted = (await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { ...currentPdfBounds, scale: 1 } })).data;
     const paintedPixelHash = await decodePaintedHash(painted);
     if (paintedPixelHash !== initialPaint) {
       await writeFile(resolve(evidence, `pdf-mismatch-${theme}.png`), Buffer.from(painted, "base64"));
+      await writeFile(resolve(evidence, "pixel-mismatch.json"), JSON.stringify({ theme, referenceBounds: pdfBounds, currentBounds: currentPdfBounds, referenceHash: initialPaint, paintedPixelHash, viewport: await evaluate("({width:innerWidth,height:innerHeight,scrollX,scrollY,canvas:document.querySelector('canvas').getBoundingClientRect().toJSON(),reader:document.querySelector('.reader-surface').getBoundingClientRect().toJSON()})") }, null, 2));
     }
     assert(paintedPixelHash === initialPaint, `Painted PDF changed in ${theme}`);
-    transcript.push({ action: "theme-pdf-invariance", theme, fixtureHash, pixelHash: hash, paintedHash: paintedPixelHash, style, passed: true });
+    transcript.push({ action: "theme-pdf-invariance", theme, fixtureHash, pixelHash: hash, paintedHash: paintedPixelHash, bounds: currentPdfBounds, style, passed: true });
   }
   for (const theme of themes) {
     await evaluate(`shellQa.setTheme(${JSON.stringify(theme)});shellQa.showOverlay('command-palette');document.querySelectorAll('.command-palette-entry')[1].focus()`);
