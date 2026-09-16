@@ -264,6 +264,7 @@ describe("search prompt production binding", () => {
     expect(heading).toContain("font-weight: 650;");
   });
   it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
+    expect(styles).toContain('.command-palette-entry[aria-selected="true"],\n.command-palette-entry:not(:disabled):hover,\n.command-palette-entry:not(:disabled):focus-visible { background: var(--theme-inactive-tab); }');
     const weight = (name: string): number => {
       const declaration = styles.match(new RegExp(`--overlay-${name}: ([^;]+);`))?.[1];
       const value = Number(declaration?.match(/(\d+)%/)?.[1]) / 100;
@@ -288,6 +289,8 @@ describe("search prompt production binding", () => {
       const accent = mix(rgb(palette.accent), end, weight("accent"));
       const focus = mix(rgb(palette["focus-indicator"]), end, weight("focus"));
       const footer = mix(rgb(palette.accent), end, weight("secondary-accent"));
+      expect(contrast(footer, rgb(palette["inactive-tab"])), `${theme.id} selected command label`).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(text, rgb(palette["inactive-tab"])), `${theme.id} selected command shortcut`).toBeGreaterThanOrEqual(4.5);
       for (const back of [[0, 0, 0], [255, 255, 255]]) {
         const prompt = mix(rgb(palette["inactive-tab"]), back, weight("panel-alpha"));
         const panel = mix(rgb(palette["active-tab"]), mix([7, 8, 14], back, 0.44), weight("panel-alpha"));

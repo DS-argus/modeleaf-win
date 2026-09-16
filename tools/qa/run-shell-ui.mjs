@@ -140,6 +140,21 @@ try {
     assert(painted === initialPaint, `Painted PDF changed in ${theme}`);
     transcript.push({ action: "theme-pdf-invariance", theme, fixtureHash, pixelHash: hash, paintedHash: createHash("sha256").update(painted).digest("hex"), style, passed: true });
   }
+  for (const theme of themes) {
+    await evaluate(`shellQa.setTheme(${JSON.stringify(theme)});shellQa.showOverlay('command-palette');document.querySelectorAll('.command-palette-entry')[1].focus()`);
+    const target = await evaluate("(() => {const r=document.querySelectorAll('.command-palette-entry')[2].getBoundingClientRect();return {x:r.x+8,y:r.y+8};})()");
+    await call('Input.dispatchMouseEvent',{type:'mouseMoved',...target});
+    const ratios = await evaluate(`(() => {
+      const canvas=document.createElement('canvas');canvas.width=canvas.height=1;const ctx=canvas.getContext('2d');
+      const luminance=color=>{ctx.clearRect(0,0,1,1);ctx.fillStyle=color;ctx.fillRect(0,0,1,1);return [...ctx.getImageData(0,0,1,1).data].slice(0,3).reduce((sum,v,i)=>{v/=255;return sum+(v<=.04045?v/12.92:((v+.055)/1.055)**2.4)*[.2126,.7152,.0722][i]},0)};
+      const ratio=(a,b)=>(Math.max(a,b)+.05)/(Math.min(a,b)+.05);
+      return [...document.querySelectorAll('.command-palette-entry')].slice(0,3).map(row=>{const bg=luminance(getComputedStyle(row).backgroundColor);return {label:ratio(luminance(getComputedStyle(row.querySelector('.command-palette-entry-label')).color),bg),key:ratio(luminance(getComputedStyle(row.querySelector('.command-palette-entry-shortcut')).color),bg)};});
+    })()`);
+    assert(ratios.every(row=>row.label>=4.5&&row.key>=4.5),`Palette selected/focus/hover contrast: ${theme} ${JSON.stringify(ratios)}`);
+    transcript.push({action:'palette-interaction-contrast',theme,ratios,passed:true});
+    await evaluate('shellQa.showOverlay(undefined)');
+  }
+  await call('Input.dispatchMouseEvent',{type:'mouseMoved',x:900,y:400});
   const matrix = [];
   for (const theme of ["tokyo-night", "catppuccin-latte"]) for (const dpr of [1, 1.25, 1.5, 2]) for (const text of [1, 1.5]) {
     await call("Emulation.setDeviceMetricsOverride", { width: 480, height: 360, deviceScaleFactor: dpr, mobile: false });

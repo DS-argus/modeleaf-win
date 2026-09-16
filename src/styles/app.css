@@ -380,6 +380,9 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 #command-palette-dialog { width: min(360px, calc(100vw - 32px)); padding: 10px; }
 #command-palette-dialog input { padding: 5px 4px 7px; font-size: 0.8125rem; }
 .command-palette-entry { row-gap: 2px; column-gap: 10px; padding: 5px 6px; font-size: 0.75rem; border-radius: 4px; }
+.command-palette-entry[aria-selected="true"],
+.command-palette-entry:not(:disabled):hover,
+.command-palette-entry:not(:disabled):focus-visible { background: var(--theme-inactive-tab); }
 .command-palette-entry-label { min-width: 0; overflow-wrap: anywhere; color: var(--overlay-secondary-accent); }
 .command-palette-entry-shortcut { color: var(--overlay-text); font: 0.6875rem "Cascadia Mono", monospace; white-space: nowrap; }
 .command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text); font-size: 0.8em; }
