@@ -183,7 +183,7 @@ describe("shared shell status renderer", () => {
     const a = subject.active;
     a.reader.apply({ type: "view.fitPage" }); a.query = "a";
     const b = { reader: new ReaderState(), query: "", prompt: false };
-    b.reader.mountDocument(1); b.reader.setStatus("B error");
+    b.reader.mountDocument(1); b.reader.apply({ type: "view.fitWidth" }); b.reader.setStatus("B error");
     subject.activate(b);
     a.reader.setStatus("Late search result from A", "search");
     subject.renderer.render();
@@ -213,6 +213,7 @@ describe("shared shell status renderer", () => {
 
   it("keeps prompt-only and applied-query modes through native prompt Enter, empty, IME and Escape", () => {
     const subject = setup();
+    subject.reader.apply({ type: "view.fitWidth" });
     const dialog = document.createElement("dialog");
     const form = document.createElement("form"); const input = document.createElement("input");
     dialog.append(form); form.append(input); document.body.append(dialog);

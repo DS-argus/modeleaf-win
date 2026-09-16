@@ -2538,7 +2538,8 @@ describe("PdfReaderController", () => {
     await controller.adopt(session("opaque-adopted", 71), 14);
 
     expect(native.openPdfDialog).not.toHaveBeenCalled();
-    expect(committed).toHaveBeenCalledWith(1, "opaque-adopted.pdf", expect.anything(), expect.objectContaining({ sessionId: "opaque-adopted" }), 14);
+    expect(committed).toHaveBeenCalledWith(1, "opaque-adopted.pdf", expect.anything(), expect.objectContaining({ sessionId: "opaque-adopted" }), 14,
+      { complete: false, contentWidth: 20, contentHeight: 30, scale: 1 });
     await controller.dispose();
   });
 
@@ -2828,5 +2829,147 @@ describe("PdfReaderController", () => {
     expect([...host.querySelectorAll(".pdf-page-frame")]).toEqual(frames);
     await controller.dispose();
     resources.assertEmpty();
+  });
+  it("uses both viewport axes for the first committed Fit Page transform", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, { clientWidth: { value: 500 }, clientHeight: { value: 300 } });
+    const naturalPage: PdfPage = {
+      ...page(1),
+      getViewport: ({ scale }) => pdfViewport(200 * scale, 600 * scale, scale),
+    };
+    const committed = vi.fn();
+    const onPage = vi.fn();
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("first-fit-page", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => naturalPage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: committed, onPage, onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    expect(committed.mock.calls[0]?.[5]).toEqual({ complete: true, contentWidth: 500, contentHeight: 300, scale: 0.5 });
+    expect(onPage).toHaveBeenCalledWith(1, expect.objectContaining({ scale: 0.5 }));
+    expect(publishedCanvas(host).style.height).toBe("300px");
+    await controller.dispose(); resources.assertEmpty();
+  });
+
+  it.each(["width", "height"] as const)("retries opening at the latest %s without publishing its stale overlay transform", async (axis) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    let width = 500;
+    let height = 600;
+    Object.defineProperties(host, { clientWidth: { get: () => width }, clientHeight: { get: () => height } });
+    const naturalPage: PdfPage = {
+      ...page(1), getViewport: ({ scale }) => pdfViewport(200 * scale, 600 * scale, scale),
+    };
+    const committed = vi.fn();
+    const commitResults: boolean[] = [];
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("stale-opening-fit", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => naturalPage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: committed, onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit) => {
+        await Promise.resolve();
+        if (axis === "width") width = 100;
+        else height = 300;
+        commitResults.push(commit());
+      },
+    });
+    await controller.open(1);
+    expect(commitResults).toEqual([false, true]);
+    expect(committed).toHaveBeenCalledOnce();
+    expect(committed.mock.calls[0]?.[5]).toEqual({ complete: true, contentWidth: width, contentHeight: height, scale: 0.5 });
+    expect(publishedCanvas(host).dataset.scale).toBe("0.5");
+    await controller.dispose(); resources.assertEmpty();
+  });
+  it("shares staged teardown when disposal cancels an opening geometry retry", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    let height = 600;
+    Object.defineProperties(host, { clientWidth: { value: 500 }, clientHeight: { get: () => height } });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const teardown = vi.fn(() => { entered.resolve(); return release.promise; });
+    const render = vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() }));
+    const naturalPage: PdfPage = { ...page(1), getViewport: ({ scale }) => pdfViewport(200 * scale, 600 * scale, scale), render };
+    const committed = vi.fn();
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("cancel-fit-retry", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => naturalPage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: committed, onPage: vi.fn(), onStatus: vi.fn(),
+      onBeforeCommit: async (_rendered, commit, context) => {
+        if (!context.opening) throw new Error("Expected opening transaction");
+        context.registerStagedTeardown(teardown);
+        height = 300;
+        expect(commit()).toBe(false);
+      },
+    });
+    const opening = controller.open(1);
+    await entered.promise;
+    const disposal = controller.dispose();
+    await Promise.resolve();
+    expect(teardown).toHaveBeenCalledOnce();
+    release.resolve();
+    await Promise.all([opening, disposal]);
+    expect(teardown).toHaveBeenCalledOnce();
+    expect(render).toHaveBeenCalledOnce();
+    expect(committed).not.toHaveBeenCalled();
+    resources.assertEmpty();
+  });
+  it("projects margin, gap and corner anchors onto bounded resident page edges", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, { clientWidth: { value: 300 }, clientHeight: { value: 200 } });
+    const makePage = (number: number): PdfPage => ({ ...page(number), getViewport: ({ scale }) => ({
+      ...pdfViewport(100 * scale, 200 * scale, scale),
+      convertToViewportPoint: (x, y) => [x * scale, y * scale],
+      convertToPdfPoint: (x, y) => [x / scale, y / scale],
+    }) });
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("pointer-edges", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(300, vi.fn(async number => makePage(number))))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    await controller.synchronizeViewport(0, 200);
+    for (const frame of host.querySelectorAll<HTMLElement>(".pdf-page-frame")) {
+      Object.defineProperties(frame, { offsetLeft: { value: 100 }, offsetTop: { value: (Number(frame.dataset.page) - 1) * 212 } });
+    }
+    expect(controller.activePageNumber).toBe(1);
+    expect(controller.capturePointerAnchor({ x: 70, y: 50 })).toMatchObject({ pageNumber: 1, pagePoint: { x: 0, y: 50 }, viewportOffset: { x: 100, y: 50 } });
+    expect(controller.capturePointerAnchor({ x: 150, y: 206 })).toMatchObject({ pageNumber: 1, pagePoint: { x: 50, y: 200 }, viewportOffset: { x: 150, y: 200 } });
+    expect(controller.capturePointerAnchor({ x: 90, y: 205 })).toMatchObject({ pageNumber: 1, pagePoint: { x: 0, y: 200 } });
+    expect(controller.capturePointerAnchor({ x: 150, y: 225 })).toMatchObject({ pageNumber: 2, pagePoint: { x: 50, y: 13 }, viewportOffset: { x: 150, y: 225 } });
+    expect(controller.capturePointerAnchor({ x: 250, y: 225 })).toMatchObject({ pageNumber: 2, pagePoint: { x: 100, y: 13 }, viewportOffset: { x: 200, y: 225 } });
+    const query = vi.spyOn(host, "querySelector");
+    controller.capturePointerAnchor({ x: 70, y: 50 });
+    expect(query.mock.calls.length).toBeLessThanOrEqual(host.querySelectorAll("canvas").length);
+    await controller.dispose(); resources.assertEmpty();
+  });
+
+  it("restores the prior physical transform if final pointer verification fails", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    Object.defineProperties(host, { clientWidth: { value: 300 }, clientHeight: { value: 200 } });
+    const naturalPage: PdfPage = { ...page(1), getViewport: ({ scale }) => ({ ...pdfViewport(100 * scale, 200 * scale, scale),
+      convertToViewportPoint: (x, y) => [x * scale, y * scale], convertToPdfPoint: (x, y) => [x / scale, y / scale] }) };
+    const resources = new ResourceReservationManager();
+    const onPage = vi.fn();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("pointer-compensation", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1, vi.fn(async () => naturalPage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage, onStatus: vi.fn(),
+    });
+    await controller.open(1);
+    const settle = vi.spyOn(controller as unknown as { settlePointerAnchor: () => Promise<boolean> }, "settlePointerAnchor")
+      .mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    await expect(controller.setViewTransformAtPointer({ scale: 2, rotation: 0, devicePixelRatio: 1 }, { x: 50, y: 100 })).resolves.toBe(false);
+    expect(settle).toHaveBeenCalledTimes(2);
+    expect(publishedCanvas(host).dataset.scale).toBe("1");
+    expect(onPage.mock.calls.at(-1)?.[1]).toMatchObject({ scale: 1 });
+    await controller.dispose(); resources.assertEmpty();
   });
 });

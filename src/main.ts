@@ -5,7 +5,6 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import { TabWorkspace, type TabId } from "./core/TabWorkspace";
 import type { Action } from "./core/Action";
-import { wheelPageDirection } from "./platform/readerInput";
 import { type OpenFailureNotice, type OpenRequestAdoption } from "./platform/OpenRequestClient";
 import { validateProductConfig } from "./domain/config/ConfigValidator";
 import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
@@ -591,22 +590,43 @@ function reportPresentationFailure(session: PdfTabSession, error: unknown): void
   }
   render();
 }
-const fittedPageTurns = new WeakSet<HTMLElement>();
-function turnFittedPage(payload: Pick<TabPayload, "host" | "session">, direction: -1 | 1): boolean {
-  if (fittedPageTurns.has(payload.host)) return true;
-  const reader = payload.session.snapshot.reader;
-  if ((direction < 0 && reader.page <= 1) || (direction > 0 && reader.page >= reader.pageCount)) return false;
-  fittedPageTurns.add(payload.host);
-  void payload.session.navigateAdjacentPage(direction).then((result) => {
-    if (result.kind !== "verifiedLanding" && result.kind !== "noOp" && result.kind !== "stale") {
-      payload.session.reader.setStatus(navigationFailureStatus(result.kind));
-    }
-  }).catch((error: unknown) => reportPresentationFailure(payload.session, error)).finally(() => {
-    fittedPageTurns.delete(payload.host);
-    rootKeyboard.syncContext();
-    render();
-  });
-  return true;
+function bindReaderWheelInput(
+  host: HTMLElement,
+  session: PdfTabSession,
+  isActive: () => boolean,
+  onSettled: () => void,
+  onFailure: (error: unknown) => void,
+): () => void {
+  let disposed = false;
+  const onWheel = (event: WheelEvent): void => {
+    if (event.ctrlKey) event.preventDefault();
+    if (disposed || !isActive()) return;
+    if (!event.ctrlKey) { session.cancelWheelZoom(); return; }
+    void session.handleWheelInput({
+      ctrlKey: event.ctrlKey, deltaX: event.deltaX, deltaY: event.deltaY,
+      deltaMode: event.deltaMode, timeStamp: event.timeStamp,
+      clientX: event.clientX, clientY: event.clientY,
+    }).then(() => { if (!disposed && isActive()) onSettled(); }, (error: unknown) => {
+      if (!disposed && isActive()) onFailure(error);
+    });
+  };
+  const reset = (): void => session.resetWheelZoom();
+  const cancel = (): void => session.cancelWheelZoom();
+  const onKeyUp = (event: KeyboardEvent): void => { if (event.key === "Control") reset(); };
+  host.addEventListener("wheel", onWheel, { passive: false });
+  host.addEventListener("pointerleave", reset);
+  host.addEventListener("pointerdown", cancel);
+  window.addEventListener("keyup", onKeyUp);
+  window.addEventListener("blur", cancel);
+  return () => {
+    disposed = true;
+    cancel();
+    host.removeEventListener("wheel", onWheel);
+    host.removeEventListener("pointerleave", reset);
+    host.removeEventListener("pointerdown", cancel);
+    window.removeEventListener("keyup", onKeyUp);
+    window.removeEventListener("blur", cancel);
+  };
 }
 function createTab(): TabPayload {
   const host = document.createElement("section");
@@ -694,21 +714,9 @@ function createTab(): TabPayload {
       }
     },
   });
-  host.addEventListener("wheel", (event) => {
-    if (active().session !== session) return;
-    const reader = session.snapshot.reader;
-    const direction = wheelPageDirection({
-      zoomMode: reader.zoomMode,
-      deltaX: event.deltaX,
-      deltaY: event.deltaY,
-      page: reader.page,
-      pageCount: reader.pageCount,
-      ctrlKey: event.ctrlKey,
-    });
-    if (direction === 0) return;
-    event.preventDefault();
-    turnFittedPage({ host, session }, direction);
-  }, { passive: false });
+  const disposeWheelInput = bindReaderWheelInput(host, session, () => active().session === session,
+    () => { rootKeyboard.syncContext(); render(); },
+    (error) => reportPresentationFailure(session, error));
   let viewportFrameRequest: number | undefined;
   let viewportSynchronization: Promise<boolean> | undefined;
   let viewportDisposed = false;
@@ -717,7 +725,6 @@ function createTab(): TabPayload {
     viewportFrameRequest = undefined;
     viewportResyncRequested = false;
     if (viewportDisposed || active().session !== session || viewportSynchronization !== undefined) return;
-    if (session.snapshot.reader.zoomMode === "fit-page") return;
     viewportSynchronization = session.synchronizeViewport(host.scrollTop, host.clientHeight);
     const viewportSettlement = viewportSynchronization.catch((error: unknown) => {
       reportPresentationFailure(session, error);
@@ -727,7 +734,7 @@ function createTab(): TabPayload {
       viewportSynchronization = undefined;
       rootKeyboard.syncContext();
       render();
-      if (viewportResyncRequested && !viewportDisposed && active().session === session && session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
+      if (viewportResyncRequested && !viewportDisposed && active().session === session) scheduleViewportSync();
     });
   };
   const scheduleViewportSync = (): void => {
@@ -738,14 +745,42 @@ function createTab(): TabPayload {
   const onReaderScroll = (): void => {
     if (session.navigationLandingInProgress) return;
     session.clearVisibleLinkAuthority();
-    if (session.snapshot.reader.zoomMode !== "fit-page") scheduleViewportSync();
+    scheduleViewportSync();
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
+  let readerResizeFrame: number | undefined;
+  let readerWidth = host.clientWidth;
+  let readerHeight = host.clientHeight;
+  const onReaderResize = (): void => {
+    if (viewportDisposed || active().session !== session) return;
+    session.cancelWheelZoom();
+    session.invalidateViewportSynchronization();
+    if (readerResizeFrame !== undefined) return;
+    readerResizeFrame = window.requestAnimationFrame(() => {
+      readerResizeFrame = undefined;
+      if (viewportDisposed || active().session !== session) return;
+      void session.renderCurrentView().then(() => scheduleViewportSync()).catch((error: unknown) => reportPresentationFailure(session, error));
+    });
+  };
+  const readerResizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => {
+    const width = host.clientWidth;
+    const height = host.clientHeight;
+    if (width === readerWidth && height === readerHeight) return;
+    readerWidth = width;
+    readerHeight = height;
+    onReaderResize();
+  });
+  readerResizeObserver?.observe(host);
+  window.addEventListener("resize", onReaderResize);
   queueMicrotask(scheduleViewportSync);
   return { host, session, disposeUi: () => {
     viewportDisposed = true;
     if (viewportFrameRequest !== undefined) window.cancelAnimationFrame(viewportFrameRequest);
     host.removeEventListener("scroll", onReaderScroll);
+    disposeWheelInput();
+    readerResizeObserver?.disconnect();
+    window.removeEventListener("resize", onReaderResize);
+    if (readerResizeFrame !== undefined) window.cancelAnimationFrame(readerResizeFrame);
     copyContextMenu.dispose();
   } };
 }
@@ -1532,12 +1567,6 @@ function dispatch(action: Action): void {
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
     const verticalCssPixels = intent.verticalCssPixels + intent.viewportFactor * payload.host.clientHeight;
-    const fitPageDirection = reader.zoomMode === "fit-page" && verticalCssPixels !== 0 ? (verticalCssPixels > 0 ? 1 : -1) : 0;
-    if (fitPageDirection !== 0) {
-      turnFittedPage(payload, fitPageDirection);
-      rootKeyboard.syncContext(); render();
-      return;
-    }
     payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels, behavior: "instant" });
   }
   rootKeyboard.syncContext(); render();
@@ -1611,6 +1640,8 @@ const onDprChange = (): void => {
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
+  session.cancelWheelZoom();
+  session.invalidateViewportSynchronization();
   void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 };
 function bindDprChange(): void {
@@ -1644,8 +1675,6 @@ const disposeSearchPrompt = bindSearchPrompt(
 window.addEventListener("resize", () => {
   scheduleDprPollFallback();
   if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
-  const session = active().session;
-  void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);

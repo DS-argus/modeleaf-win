@@ -19,6 +19,8 @@ export interface ReaderSnapshot {
   readonly helpVisible: boolean;
   readonly zoomMode: ZoomMode;
   readonly customScale: number;
+  /** The page used to derive Fit Page; it is independent of the current page. */
+  readonly fitPageReference: number | undefined;
   readonly rotationQuarterTurns: number;
   readonly pendingScroll: PendingScrollIntent;
   readonly status: string;
@@ -32,8 +34,9 @@ export class ReaderState {
     pageCount: 0,
     documentGeneration: 0,
     helpVisible: false,
-    zoomMode: "fit-width",
+    zoomMode: "fit-page",
     customScale: DEFAULT_SCALE,
+    fitPageReference: undefined,
     rotationQuarterTurns: 0,
     pendingScroll: {
       horizontalCssPixels: 0,
@@ -58,11 +61,12 @@ export class ReaderState {
       page: 1,
       pageCount,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      zoomMode: "fit-width",
+      zoomMode: "fit-page",
       customScale: DEFAULT_SCALE,
+      fitPageReference: 1,
       rotationQuarterTurns: 0,
       pendingScroll: this.emptyScrollIntent(),
-      status: this.pageStatus(1, pageCount, "fit-width", DEFAULT_SCALE, 0),
+      status: this.pageStatus(1, pageCount, "fit-page", DEFAULT_SCALE, 0),
     };
   }
 
@@ -74,8 +78,9 @@ export class ReaderState {
       page: 0,
       pageCount: 0,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      zoomMode: "fit-width",
+      zoomMode: "fit-page",
       customScale: DEFAULT_SCALE,
+      fitPageReference: undefined,
       rotationQuarterTurns: 0,
       pendingScroll: this.emptyScrollIntent(),
       status: "No document open",
@@ -112,6 +117,8 @@ export class ReaderState {
         this.setZoomMode("fit-width");
         break;
       case "view.fitPage":
+        // Fit Page is explicit: even reapplying the same mode establishes the
+        // current page as the new reference. Ordinary page movement does not.
         this.setZoomMode("fit-page");
         break;
       case "view.zoom":
@@ -149,12 +156,23 @@ export class ReaderState {
     };
     return pendingScroll;
   }
-  restoreView(view: Pick<ReaderSnapshot, "zoomMode" | "customScale" | "rotationQuarterTurns">): void {
+
+  restoreView(view: Pick<ReaderSnapshot, "zoomMode" | "customScale" | "fitPageReference" | "rotationQuarterTurns">): void {
     if (!this.snapshotValue.hasDocument) return;
+    const fitPageReference = view.zoomMode === "fit-page" ? view.fitPageReference : undefined;
+    if (view.zoomMode === "fit-page") {
+      if (typeof fitPageReference !== "number"
+        || !Number.isSafeInteger(fitPageReference)
+        || fitPageReference < 1
+        || fitPageReference > this.snapshotValue.pageCount) {
+        throw new RangeError("fitPageReference must identify a document page");
+      }
+    }
     this.snapshotValue = {
       ...this.snapshotValue,
       zoomMode: view.zoomMode,
       customScale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.customScale)),
+      fitPageReference,
       rotationQuarterTurns: ((view.rotationQuarterTurns % 4) + 4) % 4,
     };
     this.refreshPageStatus();
@@ -227,6 +245,7 @@ export class ReaderState {
     this.snapshotValue = {
       ...this.snapshotValue,
       zoomMode,
+      fitPageReference: zoomMode === "fit-page" ? this.snapshotValue.page : undefined,
     };
     this.refreshPageStatus();
   }
@@ -240,6 +259,7 @@ export class ReaderState {
       ...this.snapshotValue,
       zoomMode: "custom",
       customScale,
+      fitPageReference: undefined,
     };
     this.refreshPageStatus();
   }
@@ -252,6 +272,7 @@ export class ReaderState {
       ...this.snapshotValue,
       zoomMode: "custom",
       customScale: 1,
+      fitPageReference: undefined,
     };
     this.refreshPageStatus();
   }

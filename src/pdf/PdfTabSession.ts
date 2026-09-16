@@ -1,6 +1,13 @@
 import { NavigationHistory, sameSnapshotWithinTolerance, type NavigationCause, type NavigationSnapshot, type NavigationTransaction } from "../domain/navigation/NavigationHistory";
 import { ReaderState, type ReaderSnapshot } from "../core/ReaderState";
 import {
+  consumeWheelZoom,
+  createWheelZoomState,
+  resetWheelZoomState,
+  type WheelZoomInput,
+  type WheelZoomState,
+} from "../platform/readerInput";
+import {
   PdfContentController,
   normalizePdfSearchQuery,
   type PdfContentControllerOptions,
@@ -16,6 +23,7 @@ import {
   type PdfBoundary,
   type PdfReaderControllerOptions,
   type PdfViewTransform,
+  type PdfViewportOffset,
   type PdfPresentationTopology,
   type PdfViewportRestoreOutcome,
   type ReaderNativeBoundary,
@@ -107,11 +115,20 @@ export class PdfTabSession {
   private openingFitRenderRevision = 0;
   private openingFitRenderIntent: number | undefined;
   private openingFitRenderSettlement: Promise<boolean> | undefined;
+  private wheelTargetScale: number | undefined;
+  private wheelAnchor: PdfViewportOffset | undefined;
+  private wheelSettlement: Promise<boolean> | undefined;
+  private wheelRevision = 0;
+  private wheelResolve: ((result: boolean) => void) | undefined;
+  private wheelReject: ((error: unknown) => void) | undefined;
+  private wheelInputState: WheelZoomState = createWheelZoomState();
+  private wheelOperationGeneration = 0;
   private activityGeneration = 0;
   private renderIntent = 0;
   private pendingPresentationRenders = 0;
   private readerStatusVersion = 0;
   private navigationIntent = 0;
+  private viewportGeometryRevision = 0;
   private navigationLandingIntent: number | undefined;
   private viewportIntent = 0;
   private cancelledNavigation: { readonly ownerIntent: number; readonly fenceIntent: number; readonly activityGeneration: number } | undefined;
@@ -120,6 +137,7 @@ export class PdfTabSession {
     readonly activityGeneration: number;
     readonly documentGeneration: number;
     readonly page: number;
+    readonly fitPageReference: number | undefined;
     readonly zoomMode: ReaderSnapshot["zoomMode"];
     readonly customScale: number;
     readonly rotationQuarterTurns: number;
@@ -127,10 +145,13 @@ export class PdfTabSession {
   private lastCommittedRender: {
     readonly documentGeneration: number;
     readonly page: number;
+    readonly fitPageReference: number | undefined;
     readonly zoomMode: ReaderSnapshot["zoomMode"];
     readonly customScale: number;
     readonly rotationQuarterTurns: number;
     readonly devicePixelRatio: number;
+    readonly contentWidth: number;
+    readonly contentHeight: number;
   } | undefined;
 
   public constructor(private readonly options: PdfTabSessionOptions) {
@@ -146,7 +167,8 @@ export class PdfTabSession {
       onPage: (page, transform) => this.onPage(page, transform),
       onEvictPage: (page) => { this.content?.evictPage(page); },
       onBeforeResidentCommit: async (pages) => this.content?.beginResidentPageAuthority(pages),
-      onCommitted: (pageCount, displayName) => {
+      onCommitted: (pageCount, displayName, _document, _session, _ownerGeneration, openingFit) => {
+        this.cancelWheelZoom();
         this.title = displayName;
         this.lastCommittedRender = undefined;
         this.reader.mountDocument(pageCount);
@@ -156,7 +178,9 @@ export class PdfTabSession {
         this.navigationHistory.reset();
         this.searchLandingEpoch = 0;
         const available = this.availableContentSize();
-        this.openingFitRenderPending = !(available.width > 0 && available.height > 0);
+        const openingComplete = openingFit?.complete ?? (available.width > 0 && available.height > 0);
+        this.openingFitRenderPending = !openingComplete
+          || (openingFit !== undefined && (available.width !== openingFit.contentWidth || available.height !== openingFit.contentHeight));
         this.openingFitRenderInFlight = false;
         this.openingFitRenderRevision += 1;
         this.openingFitRenderIntent = undefined;
@@ -203,6 +227,7 @@ export class PdfTabSession {
 
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
+    this.cancelWheelZoom();
     return this.pdfReader.adopt(session, ownerGeneration);
   }
   public get activeSessionIdentity(): { readonly sessionId: string; readonly documentGeneration: number; readonly ownerGeneration: number } | undefined { return this.pdfReader.activeSessionIdentity; }
@@ -238,7 +263,7 @@ export class PdfTabSession {
         this.content?.resumeInteractions();
         return;
       }
-      const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers();
+      const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers() || this.committedContentSizeDiffers();
       if (needsPresentationRestore) {
         await this.restorePresentation(activityGeneration);
       } else {
@@ -256,6 +281,7 @@ export class PdfTabSession {
     }
   }
   public async deactivate(): Promise<void> {
+    this.cancelWheelZoom();
     if (this.closed) return;
     await this.settleInactiveAuthority();
   }
@@ -267,6 +293,7 @@ export class PdfTabSession {
   }
   public async close(): Promise<void> {
     if (this.closeSettlement !== undefined) return this.closeSettlement;
+    this.cancelWheelZoom();
     this.closed = true;
     this.active = false;
     this.foregroundSuspended = false;
@@ -301,8 +328,12 @@ export class PdfTabSession {
     const activityGeneration = this.activityGeneration;
     const intent = this.renderIntent;
     const navigationIntent = this.navigationIntent;
+    const geometryRevision = this.viewportGeometryRevision;
+    const contentSize = this.availableContentSize();
     const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.navigationIntent === navigationIntent && this.renderIntent === intent
+      && this.viewportGeometryRevision === geometryRevision
+      && this.availableContentSize().width === contentSize.width && this.availableContentSize().height === contentSize.height
       && (openingFitRevision === undefined
         || (this.openingFitRenderPending && this.openingFitRenderRevision === openingFitRevision))
       && requestGuard();
@@ -318,7 +349,7 @@ export class PdfTabSession {
         this.presentationDirty = true;
         return false;
       }
-      const topology: PdfPresentationTopology = this.reader.snapshot.zoomMode === "fit-page" ? "single-page" : "continuous";
+      const topology: PdfPresentationTopology = "continuous";
       const committed = openingFitRevision === undefined
         ? await this.pdfReader.setPresentationTopology(topology, page, effectiveTransform, guard)
         : await this.pdfReader.setOpeningPresentationAtTop(topology, page, effectiveTransform, guard);
@@ -344,15 +375,15 @@ export class PdfTabSession {
     }
   }
   public invalidateViewportSynchronization(): void {
+    this.viewportGeometryRevision += 1;
     if (this.navigationLandingIntent !== undefined) return;
     this.viewportIntent += 1;
-    this.pdfReader.invalidateViewportSynchronization();
+    this.cancelWheelZoom();
   }
-  /** Production scroll entry point: materializes the bounded continuous window. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
     if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
     if (this.pendingPresentationRenders > 0) return false;
-    if (this.navigationLandingIntent !== undefined || this.reader.snapshot.zoomMode === "fit-page") return false;
+    if (this.navigationLandingIntent !== undefined) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
@@ -402,6 +433,7 @@ export class PdfTabSession {
   }
   public startSearch(source: string): PdfTabSearchDecision {
     if (this.closed || !this.isForegroundActive()) return { kind: "ignore" };
+    this.cancelWheelZoom();
     const content = this.content;
     if (content === undefined) return { kind: "ignore" };
     const query = normalizePdfSearchQuery(source);
@@ -420,6 +452,7 @@ export class PdfTabSession {
   }
   public cycleSearch(reverse = false): PdfTabSearchDecision {
     if (this.closed || !this.isForegroundActive()) return { kind: "ignore" };
+    this.cancelWheelZoom();
     const content = this.content;
     if (content === undefined || content.snapshot.searchIncomplete || content.snapshot.results.length === 0) return { kind: "ignore" };
     this.invalidatePageStepQueue();
@@ -438,18 +471,22 @@ export class PdfTabSession {
     return this.searchLandingEpoch;
   }
   public navigatePagePrompt(page: number): Promise<PdfTabNavigationDecision> {
+    this.cancelWheelZoom();
     this.invalidatePageStepQueue();
     return this.navigateHistoryJump(page, "page-prompt");
   }
   public navigateFirstPage(): Promise<PdfTabNavigationDecision> {
+    this.cancelWheelZoom();
     this.invalidatePageStepQueue();
     return this.navigateHistoryJump(1, "page-first");
   }
   public navigateLastPage(): Promise<PdfTabNavigationDecision> {
+    this.cancelWheelZoom();
     this.invalidatePageStepQueue();
     return this.navigateHistoryJump(this.reader.snapshot.pageCount, "page-last");
   }
   public navigateAdjacentPage(direction: -1 | 1): Promise<PdfTabNavigationDecision> {
+    this.cancelWheelZoom();
     return new Promise((resolve, reject) => {
       this.pendingPageStep?.resolve({ kind: "stale" });
       this.pendingPageStep = { direction, generation: this.pageStepGeneration, resolve, reject };
@@ -479,6 +516,7 @@ export class PdfTabSession {
   }
   public async navigateSearchLanding(request: PdfSearchLandingRequest): Promise<PdfTabNavigationDecision> {
     if (request.result.geometry === undefined) return { kind: "preflightRejected" };
+    this.cancelWheelZoom();
     if (request.searchGeneration < this.searchLandingGeneration
       || (request.searchGeneration === this.searchLandingGeneration && request.selectionSequence <= this.searchLandingSelection)) {
       return { kind: "stale" };
@@ -493,16 +531,22 @@ export class PdfTabSession {
     return this.navigateHistoryJump(request.result.pageNumber, "search", this.beginSearchLandingEpoch(), request.result.geometry, ownerGuard);
   }
   public navigateHistoryBack(): Promise<PdfTabNavigationDecision> {
+    this.cancelWheelZoom();
     this.invalidatePageStepQueue();
     return this.navigateHistoryTraversal("back");
   }
   public navigateHistoryForward(): Promise<PdfTabNavigationDecision> {
+    this.cancelWheelZoom();
     this.invalidatePageStepQueue();
     return this.navigateHistoryTraversal("forward");
   }
   public apply(action: Parameters<ReaderState["apply"]>[0]): void {
     if (this.closed || !this.isForegroundActive()) return;
-    if (action.type.startsWith("scroll.") || action.type.startsWith("page.") || action.type.startsWith("view.")) this.invalidateOpeningFitRender();
+    const movement = action.type.startsWith("scroll.") || action.type.startsWith("page.") || action.type.startsWith("view.");
+    if (movement) {
+      this.invalidateOpeningFitRender();
+      this.cancelWheelZoom();
+    }
     if (action.type.startsWith("scroll.")) {
       this.invalidatePageStepQueue();
       if (this.navigationLandingInProgress || this.pageStepActive) this.supersedeNavigation();
@@ -520,7 +564,180 @@ export class PdfTabSession {
     this.reader.apply(action);
   }
   public nextMatch(reverse: boolean): void { this.cycleSearch(reverse); }
+  /** Applies decoded Ctrl-wheel steps at a host-local CSS pointer offset. */
+  public zoomAt(steps: number, viewportOffset: PdfViewportOffset): Promise<boolean> {
+    if (this.closed || !this.isForegroundActive() || !this.reader.snapshot.hasDocument
+      || !Number.isSafeInteger(steps) || steps === 0
+      || !Number.isFinite(viewportOffset.x) || !Number.isFinite(viewportOffset.y)) return Promise.resolve(false);
+    if (this.lastCommittedRender === undefined) return Promise.resolve(false);
+    const committedScale = this.lastCommittedRender.customScale;
+    const baseScale = this.wheelTargetScale ?? committedScale;
+    const exponent = Math.max(-128, Math.min(128, steps));
+    const targetScale = Math.max(0.1, Math.min(8, baseScale * Math.pow(1.1, exponent)));
+    if (targetScale === committedScale && this.wheelSettlement === undefined) {
+      this.resetWheelZoom();
+      if (this.reader.snapshot.zoomMode === "custom") return Promise.resolve(false);
+      this.supersedeNavigation();
+      this.renderIntent += 1;
+      this.pdfReader.invalidateViewportSynchronization();
+      this.reader.restoreView({ ...this.reader.snapshot, zoomMode: "custom", customScale: targetScale, fitPageReference: undefined });
+      if (this.lastCommittedRender !== undefined) this.lastCommittedRender = { ...this.lastCommittedRender, zoomMode: "custom", fitPageReference: undefined };
+      this.pendingRenderRollback = undefined;
+      this.options.onStatus?.(this.reader.snapshot.status);
+      return Promise.resolve(true);
+    }
+    this.wheelTargetScale = targetScale;
+    this.wheelAnchor = { x: viewportOffset.x, y: viewportOffset.y };
+    this.wheelRevision += 1;
+    this.supersedeNavigation();
+    this.renderIntent += 1;
+    this.pdfReader.invalidateViewportSynchronization();
+    if (this.wheelSettlement === undefined) {
+      const generation = this.wheelOperationGeneration;
+      this.wheelSettlement = new Promise<boolean>((resolve, reject) => { this.wheelResolve = resolve; this.wheelReject = reject; });
+      void this.drainWheelZoom(generation);
+    }
+    return this.wheelSettlement;
+  }
+
+  /** Decodes one host wheel event and owns its tab-local zoom lifetime. */
+  public handleWheelInput(input: {
+    readonly ctrlKey: boolean;
+    readonly deltaX: number;
+    readonly deltaY: number;
+    readonly deltaMode: number;
+    readonly timeStamp: number;
+    readonly clientX: number;
+    readonly clientY: number;
+  }): Promise<boolean> {
+    if (this.closed || !this.isForegroundActive() || !this.reader.snapshot.hasDocument) {
+      this.resetWheelZoom();
+      return Promise.resolve(false);
+    }
+    const normalized: WheelZoomInput = {
+      ctrlKey: input.ctrlKey,
+      deltaX: input.deltaX,
+      deltaY: input.deltaY,
+      deltaMode: input.deltaMode,
+      timestamp: input.timeStamp,
+    };
+    const result = consumeWheelZoom(normalized, this.wheelInputState);
+    this.wheelInputState = result.state;
+    if (!input.ctrlKey) {
+      this.cancelWheelZoom();
+      return Promise.resolve(false);
+    }
+    if (result.steps === 0) return Promise.resolve(false);
+    const committedScale = this.wheelTargetScale ?? this.lastCommittedRender?.customScale ?? this.reader.snapshot.customScale;
+    if ((result.steps > 0 && committedScale >= 8) || (result.steps < 0 && committedScale <= 0.1)) {
+      this.resetWheelZoom();
+    }
+    const host = this.options.canvasHost;
+    const rect = host.getBoundingClientRect();
+    const viewportOffset: PdfViewportOffset = {
+      x: input.clientX - rect.left - host.clientLeft,
+      y: input.clientY - rect.top - host.clientTop,
+    };
+    return this.zoomAt(result.steps, viewportOffset);
+  }
+
+  /** Clears only the fractional wheel accumulator; accepted zoom work remains owned. */
+  public resetWheelZoom(): void {
+    this.wheelInputState = resetWheelZoomState();
+  }
+
+  /** Cancels pending wheel work without changing the last committed presentation. */
+  public cancelWheelZoom(): void {
+    this.resetWheelZoom();
+    this.invalidateWheelZoom();
+  }
+
+  private invalidateWheelZoom(): void {
+    if (this.wheelSettlement === undefined && this.wheelTargetScale === undefined) return;
+    if (this.wheelSettlement !== undefined) {
+      const rollback = this.pendingRenderRollback;
+      if (rollback !== undefined) this.rollbackPendingRender(rollback.intent, this.activityGeneration);
+    }
+    this.wheelOperationGeneration += 1;
+    this.wheelRevision += 1;
+    this.wheelTargetScale = undefined;
+    this.wheelAnchor = undefined;
+    this.renderIntent += 1;
+    this.pdfReader.invalidateViewportSynchronization();
+    const resolve = this.wheelResolve;
+    this.wheelResolve = undefined;
+    this.wheelReject = undefined;
+    this.wheelSettlement = undefined;
+    resolve?.(false);
+  }
+  private async drainWheelZoom(generation: number): Promise<void> {
+    let outcome = false;
+    let failure: unknown;
+    try {
+      while (!this.closed && this.isForegroundActive() && generation === this.wheelOperationGeneration
+        && this.wheelTargetScale !== undefined) {
+        const targetScale = this.wheelTargetScale;
+        const anchor = this.wheelAnchor;
+        if (anchor === undefined) break;
+        const revision = this.wheelRevision;
+        const snapshot = this.reader.snapshot;
+        const prior = this.lastCommittedRender;
+        const activityGeneration = this.activityGeneration;
+        const intent = ++this.renderIntent;
+        const restore = (): void => {
+          if (prior !== undefined && prior.documentGeneration === this.reader.snapshot.documentGeneration) {
+            this.pendingRenderRollback = { intent, activityGeneration, ...prior };
+            this.recoverFailedPresentation(intent, activityGeneration);
+            this.lastCommittedRender = prior;
+          }
+        };
+        if (prior !== undefined && prior.documentGeneration === snapshot.documentGeneration) {
+          this.pendingRenderRollback = { intent, activityGeneration, ...prior };
+        }
+        const requestGuard = (): boolean => !this.closed && this.isForegroundActive()
+          && activityGeneration === this.activityGeneration && generation === this.wheelOperationGeneration
+          && revision === this.wheelRevision;
+        let rendered: boolean;
+        try {
+          rendered = await this.pdfReader.setViewTransformAtPointer({ scale: targetScale,
+            rotation: snapshot.rotationQuarterTurns * 90, devicePixelRatio: this.devicePixelRatio() }, anchor, requestGuard);
+        } catch (error) {
+          if (generation !== this.wheelOperationGeneration) break;
+          if (revision !== this.wheelRevision) continue;
+          restore();
+          failure = error;
+          break;
+        }
+        if (generation !== this.wheelOperationGeneration) break;
+        if (revision !== this.wheelRevision) continue;
+        if (!rendered) {
+          restore();
+          failure = new Error("PDF_WHEEL_ZOOM_FAILED");
+          break;
+        }
+        if (this.wheelTargetScale !== targetScale) continue;
+        if (this.reader.snapshot.zoomMode !== "custom" || this.reader.snapshot.customScale !== targetScale) {
+          this.onPage(this.reader.snapshot.page, { scale: targetScale, rotation: snapshot.rotationQuarterTurns * 90, devicePixelRatio: this.devicePixelRatio() });
+        }
+        outcome = true;
+        break;
+      }
+    } finally {
+      if (generation === this.wheelOperationGeneration) {
+        const resolve = this.wheelResolve;
+        const reject = this.wheelReject;
+        this.wheelResolve = undefined;
+        this.wheelReject = undefined;
+        this.wheelSettlement = undefined;
+        this.wheelTargetScale = undefined;
+        this.wheelAnchor = undefined;
+        if (failure !== undefined) { this.resetWheelZoom(); reject?.(failure); }
+        else resolve?.(outcome);
+      }
+    }
+  }
   public invalidateSearch(): void {
+    this.cancelWheelZoom();
     this.searchLandingOwnerRevision += 1;
     this.searchLandingGeneration = Number.MAX_SAFE_INTEGER;
     this.searchLandingSelection = Number.MAX_SAFE_INTEGER;
@@ -537,7 +754,7 @@ export class PdfTabSession {
   private async renderCurrentViewPreservingAnchor(): Promise<boolean> {
     const navigationIntent = this.navigationIntent;
     const rendered = await this.renderPage(this.reader.snapshot.page);
-    if (rendered && navigationIntent === this.navigationIntent && this.reader.snapshot.zoomMode !== "fit-page") {
+    if (rendered && navigationIntent === this.navigationIntent) {
       await this.synchronizeViewport(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight);
     }
     return rendered;
@@ -554,6 +771,7 @@ export class PdfTabSession {
     activationGuard: () => boolean = () => true,
   ): Promise<PdfDestinationNavigationOutcome> {
     if (this.closed || !this.isForegroundActive() || !this.historyHealthy) return { kind: "rejected" };
+    this.cancelWheelZoom();
     const content = this.content;
     const origin = this.captureNavigationSnapshot();
     if (content === undefined || origin === undefined) return { kind: "rejected" };
@@ -566,7 +784,7 @@ export class PdfTabSession {
     const snapshot = this.reader.snapshot;
     let landingOwnerIntent = navigationIntent;
     const compensateToOrigin = async (compensationGuard: () => boolean = sessionGuard): Promise<"failed" | "stale"> => {
-      this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: snapshot.customScale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
+      this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: snapshot.customScale, fitPageReference: snapshot.fitPageReference, rotationQuarterTurns: snapshot.rotationQuarterTurns });
       const compensated = await this.restoreCanonicalLanding(origin, compensationGuard);
       if (!compensationGuard() || compensated.kind === "staleOrCancelled") return "stale";
       if (compensated.kind !== "verified" && compensated.kind !== "constrainedEdgeVerified") this.historyHealthy = false;
@@ -642,7 +860,7 @@ export class PdfTabSession {
       const renderIntent = ++this.renderIntent;
       this.pendingRenderRollback = { intent: renderIntent, activityGeneration, ...rollbackSnapshot };
       this.reader.apply({ type: "page.goTo", page });
-      this.reader.restoreView({ zoomMode: view.zoomMode, customScale: view.scale, rotationQuarterTurns: snapshot.rotationQuarterTurns });
+      this.reader.restoreView({ zoomMode: view.zoomMode, customScale: view.scale, fitPageReference: view.zoomMode === "fit-page" ? page : undefined, rotationQuarterTurns: snapshot.rotationQuarterTurns });
       let targetPublished = false;
       try {
         targetPublished = await this.renderPageRequest(page, targetTransform, undefined, guard);
@@ -866,7 +1084,9 @@ export class PdfTabSession {
     const rotation = snapshot.rotationQuarterTurns * 90;
     let scale = snapshot.customScale;
     if (snapshot.zoomMode !== "custom") {
-      const size = await this.pdfReader.getPageNaturalSize(page, rotation, guard);
+      const referencePage = snapshot.zoomMode === "fit-page" ? snapshot.fitPageReference : page;
+      if (referencePage === undefined) return undefined;
+      const size = await this.pdfReader.getPageNaturalSize(referencePage, rotation, guard);
       if (size === undefined || !guard()) return undefined;
       const available = this.availableContentSize();
       if (!Number.isFinite(available.width) || available.width <= 0 || !Number.isFinite(available.height) || available.height <= 0) return undefined;
@@ -883,6 +1103,12 @@ export class PdfTabSession {
       && committed.devicePixelRatio !== this.devicePixelRatio();
   }
 
+  private committedContentSizeDiffers(): boolean {
+    const committed = this.lastCommittedRender;
+    if (committed === undefined || committed.documentGeneration !== this.reader.snapshot.documentGeneration) return false;
+    const available = this.availableContentSize();
+    return committed.contentWidth !== available.width || committed.contentHeight !== available.height;
+  }
   private createContent(session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">, ownerGeneration: number): PdfContentController {
     return new PdfContentController({
       ...this.options.createContentOptions(session, ownerGeneration, this.reader),
@@ -1008,6 +1234,7 @@ export class PdfTabSession {
       return Promise.resolve(false);
     }
     const revision = this.openingFitRenderRevision;
+    const geometryRevision = this.viewportGeometryRevision;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
     const page = this.reader.snapshot.page;
@@ -1021,6 +1248,7 @@ export class PdfTabSession {
     this.openingFitRenderInFlight = true;
     const current = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
       && this.openingFitRenderPending && this.openingFitRenderRevision === revision
+      && this.viewportGeometryRevision === geometryRevision
       && this.reader.snapshot.documentGeneration === documentGeneration && this.navigationIntent === navigationIntent
       && this.renderIntent === intent;
     const settlement = (async (): Promise<boolean> => {
@@ -1030,8 +1258,13 @@ export class PdfTabSession {
         return false;
       }
       if (!current()) return false;
+      const finalAvailable = this.availableContentSize();
+      if (finalAvailable.width !== available.width || finalAvailable.height !== available.height) {
+        this.viewportGeometryRevision += 1;
+        return false;
+      }
       this.openingFitRenderPending = false;
-      if (this.reader.snapshot.zoomMode !== "fit-page" && this.navigationIntent === navigationIntent) {
+      if (this.navigationIntent === navigationIntent) {
         await this.synchronizeViewport(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight);
       }
       return true;
@@ -1046,7 +1279,6 @@ export class PdfTabSession {
     void settlement.then(clear, clear);
     return settlement;
   }
-
   private recoverFailedPresentation(intent: number, activityGeneration: number, failureStatus?: string): void {
     if (intent !== this.renderIntent || activityGeneration !== this.activityGeneration || this.closed) return;
     this.rollbackPendingRender(intent, activityGeneration, failureStatus);
@@ -1074,7 +1306,9 @@ export class PdfTabSession {
   private onPage(page: number, transform: PdfViewTransform): void {
     const snapshot = this.reader.snapshot;
     this.reader.apply({ type: "page.goTo", page });
-    this.reader.restoreView({ zoomMode: snapshot.zoomMode, customScale: transform.scale, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
+    const wheelCommit = this.wheelSettlement !== undefined && transform.scale === this.wheelTargetScale;
+    this.reader.restoreView({ zoomMode: wheelCommit ? "custom" : snapshot.zoomMode, customScale: transform.scale,
+      fitPageReference: wheelCommit ? undefined : snapshot.fitPageReference, rotationQuarterTurns: ((transform.rotation / 90) % 4 + 4) % 4 });
     this.content?.activateResidentPage(page);
     this.content?.activateVisiblePages(this.pdfReader.visiblePageNumbers);
     if (this.isForegroundActive() && this.activationGeneration === undefined) this.content?.resumeInteractions();
@@ -1085,7 +1319,10 @@ export class PdfTabSession {
       zoomMode: committed.zoomMode,
       customScale: committed.customScale,
       rotationQuarterTurns: committed.rotationQuarterTurns,
+      fitPageReference: committed.fitPageReference,
       devicePixelRatio: Math.min(2, transform.devicePixelRatio),
+      contentWidth: this.availableContentSize().width,
+      contentHeight: this.availableContentSize().height,
     };
     this.pendingRenderRollback = undefined;
     this.options.onStatus?.(this.reader.snapshot.status);

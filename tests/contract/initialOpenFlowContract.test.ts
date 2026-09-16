@@ -93,7 +93,9 @@ describe("initial open flow contract", () => {
     expect(main).toContain('behavior: "instant"');
     const scroll = main.slice(main.indexOf('if (type.startsWith("scroll."))'), main.indexOf("const rootKeyboard ="));
     expect(scroll).not.toContain("wheelPageDirection");
-    expect(scroll).toContain('reader.zoomMode === "fit-page"');
+    expect(scroll).not.toContain('reader.zoomMode === "fit-page"');
+    expect(main).not.toContain("turnFittedPage");
+    expect(scroll).toContain("payload.host.scrollBy({ left: intent.horizontalCssPixels, top: verticalCssPixels");
     expect(main).toContain('overlayOwner.active === undefined && result.kind === "verifiedLanding"');
   });
 });
