@@ -5,12 +5,37 @@ import { createTabStripRenderer, type TabStripTab } from "../../src/ui/shell/Tab
 import { createShellStatusRenderer } from "../../src/ui/shell/ShellStatusRenderer";
 import { createPrintProgress } from "../../src/ui/PrintProgress";
 import { AnnotationMode, getDocument, GlobalWorkerOptions } from "pdfjs-dist";
+import { renderCommandPalette } from "../../src/ui/CommandPaletteRenderer";
+import { buildCommandPaletteEntries } from "../../src/ui/CommandPaletteModel";
+import { buildHelpRows } from "../../src/ui/HelpModel";
 
 // Renderer-only fixture: no native behavior or installed version is simulated as evidence.
 const app = document.querySelector<HTMLElement>("#app")!;
 const emptyMarkup = mainSource.match(/<section id="empty-reader"[\s\S]*?<\/section>/)![0];
 app.innerHTML = `<section class="app-shell"><nav class="windows-menu" aria-label="Application menu"><details><summary>File</summary></details><details><summary>View</summary></details><details><summary>Help</summary></details></nav><div id="tabs" class="tab-strip" role="tablist" aria-label="Open PDFs"></div><main id="reader-main"><div class="tab-hosts"><div class="reader-surface tab-host"><div class="pdf-page-frame"><canvas class="pdf-page"></canvas></div></div></div>${emptyMarkup}</main><footer class="statusbar"></footer></section>`;
 const root = app.firstElementChild as HTMLElement;
+for (const id of ["help", "theme", "command-palette"]) {
+  root.insertAdjacentHTML("beforeend", mainSource.match(new RegExp(`<dialog id="${id}-dialog"[\\s\\S]*?</dialog>`))![0]);
+}
+renderCommandPalette(root.querySelector("#palette-list")!, buildCommandPaletteEntries().filter((entry) => entry.kind === "command"), 0, () => undefined);
+const helpGroups = new Map<string, HTMLElement>();
+for (const row of buildHelpRows()) {
+  let list = helpGroups.get(row.category);
+  if (!list) {
+    const section = document.createElement("section"); section.className = "help-group";
+    const heading = document.createElement("h2"); heading.textContent = row.category;
+    list = document.createElement("dl"); section.append(heading, list);
+    root.querySelector("#help-rows")!.append(section); helpGroups.set(row.category, list);
+  }
+  const label = document.createElement("dt"); label.textContent = row.label;
+  const key = document.createElement("dd"); key.textContent = row.shortcut; list.append(label, key);
+}
+for (const theme of THEMES) {
+  const option = document.createElement("button"); option.type = "button"; option.className = "theme-option";
+  option.setAttribute("role", "radio"); option.setAttribute("aria-checked", String(theme.id === "tokyo-night"));
+  option.textContent = theme.displayName; root.querySelector("#theme-list")!.append(option);
+}
+root.querySelector(".theme-footer")!.innerHTML = "<kbd>j/k</kbd> preview · <kbd>Enter</kbd> save · <kbd>Esc</kbd> cancel";
 const canvas = app.querySelector<HTMLCanvasElement>("canvas")!;
 const footer = app.querySelector<HTMLElement>("footer")!;
 const empty = app.querySelector<HTMLElement>("#empty-reader")!;
@@ -52,6 +77,11 @@ Object.assign(window, { shellQa: {
   ready, setTheme, setTabs,
   setStatus: (value: Partial<typeof status>, pending = "") => { status = { ...status, ...value }; shell.setPendingSequence(pending); shell.render(); },
   setVersion: shell.setVersion,
+  setPath: shell.setPathNotice,
+  showOverlay: (id: string | undefined) => {
+    root.querySelectorAll<HTMLDialogElement>("dialog[open]").forEach((dialog) => dialog.close());
+    if (id) root.querySelector<HTMLDialogElement>(`#${id}-dialog`)!.showModal();
+  },
   setPrint: print.update,
   setEmpty: (visible: boolean) => { empty.hidden = !visible; app.querySelector<HTMLElement>(".tab-hosts")!.hidden = visible; app.querySelector<HTMLElement>("#tabs")!.hidden = visible; },
   setDisabled: (id: string) => { tabs = tabs.map((tab) => ({ ...tab, disabled: tab.id === id })); strip.render(tabs); },

@@ -79,7 +79,7 @@ export function createShellStatusRenderer(
   pending.append(pendingPrefix, pendingValue);
   const pathNotice = span("status-path-notice");
   page.hidden = zoom.hidden = fitPage.hidden = fitWidth.hidden = search.hidden = pending.hidden = pathNotice.hidden = true;
-  live.replaceChildren(fitPage, fitWidth, search, message, pending, pathNotice);
+  live.replaceChildren(fitPage, fitWidth, search, pathNotice, message, pending);
   const printHost = span("status-print-host");
   printHost.setAttribute("aria-live", "polite");
   printHost.setAttribute("aria-atomic", "true");
@@ -107,6 +107,7 @@ export function createShellStatusRenderer(
     setText(zoom, zoomText);
     setHidden(zoom, !hasZoom);
     setText(message, state.message);
+    setHidden(message, state.message.length === 0);
     setTitle(message, state.message);
     setText(pendingValue, pendingSequence);
     setText(pendingPrefix, state.pending ? "Pending: " : "");

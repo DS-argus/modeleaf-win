@@ -25,6 +25,22 @@ function setup(options?: { readonly onHelp?: () => void }) {
 afterEach(() => { vi.useRealTimers(); document.body.replaceChildren(); });
 
 describe("shared shell status renderer", () => {
+  it("removes routine page and angle prose while keeping metrics and path beside badges", () => {
+    const subject = setup();
+    subject.reader.apply({ type: "view.rotate", quarterTurns: 1 });
+    subject.renderer.render();
+    const message = subject.footer.querySelector<HTMLElement>(".status-message")!;
+    expect(message.hidden).toBe(true);
+    expect(message.textContent).toBe("");
+    expect(subject.footer.querySelector(".status-page")?.textContent).toBe("1 / 3");
+    subject.renderer.setPathNotice({ text: "C:\\documents", copied: false });
+    const visible = Array.from(subject.footer.querySelector(".status-live")!.children).filter((node) => !(node as HTMLElement).hidden);
+    expect(visible.map((node) => node.className)).toEqual(["status-badge status-badge-fit-width", "status-path-notice"]);
+    subject.reader.setStatus("Page 1 of 3 could not be rendered · 90°");
+    subject.renderer.render();
+    expect(message.hidden).toBe(false);
+    expect(message.textContent).toBe("Page 1 of 3 could not be rendered · 90°");
+  });
   it("keeps page metrics outside live regions and the pending keys visually complete", () => {
     const subject = setup();
     subject.renderer.setPendingSequence("gg");

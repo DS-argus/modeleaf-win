@@ -249,8 +249,9 @@ describe("search prompt production binding", () => {
   it("gives help descriptions and palette shortcuts distinct themed roles without fading disabled rows", () => {
     expect(styles).toContain(".help-group dt { color: var(--overlay-secondary-accent); }");
     expect(styles).toContain(".help-group dd { margin: 0; color: var(--overlay-text);");
-    expect(styles).toContain(".command-palette-entry-shortcut { color: var(--overlay-secondary-accent);");
-    expect(styles).toContain('.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-accent); }');
+    expect(styles).toContain(".command-palette-entry-shortcut { color: var(--overlay-text);");
+    expect(styles).toContain(".command-palette-entry-label { min-width: 0; overflow-wrap: anywhere; color: var(--overlay-secondary-accent); }");
+    expect(styles).toContain('.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-text); }');
     expect(styles).toContain(".command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text);");
     expect(styles).not.toContain('.command-palette-entry[aria-disabled="true"] { opacity:');
     expect(styles).toContain("#command-palette-dialog[open] { display: flex; flex-direction: column; }");

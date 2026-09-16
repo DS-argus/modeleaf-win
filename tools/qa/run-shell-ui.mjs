@@ -100,6 +100,32 @@ try {
     await screenshot(`status-${name}`);
   }
   await evaluate("shellQa.setStatus({status:'',query:''},'')");
+  await evaluate("shellQa.setStatus({status:'Page 1 of 233 · 90°',page:1,pageCount:233,zoomMode:'fit-page'},'');shellQa.setPath({text:'C:\\\\documents\\\\papers',copied:false})");
+  const pathLayout = await evaluate(`(() => {const path=document.querySelector('.status-path-notice');const badge=document.querySelector('.status-badge-fit-page');const message=document.querySelector('.status-message');return {gap:path.getBoundingClientRect().left-badge.getBoundingClientRect().right,textAlign:getComputedStyle(path).textAlign,messageHidden:message.hidden,text:message.textContent,font:getComputedStyle(document.querySelector('footer')).fontSize};})()`);
+  assert(pathLayout.gap>=0 && pathLayout.gap<=8 && pathLayout.textAlign==='left' && pathLayout.messageHidden && pathLayout.text==='' && pathLayout.font==='10px', 'Compact status/path alignment contract');
+  await screenshot('owner-feedback-status-path');
+  await evaluate("shellQa.setPath(undefined);shellQa.setStatus({status:'',pageCount:3},'')");
+  const seam = await evaluate(`(() => {const selected=document.querySelector('[data-selected="true"]');return {previous:getComputedStyle(selected.previousElementSibling).borderRightColor,ordinary:getComputedStyle(document.querySelector('.workspace-tab-item')).borderRightColor};})()`);
+  assert(seam.previous==='rgba(0, 0, 0, 0)' && seam.ordinary!==seam.previous, 'Previous divider must not protrude into selected upper-left corner');
+  transcript.push({action:'owner-feedback-status-tab',pathLayout,seam,passed:true});
+  for (const theme of ['tokyo-night','catppuccin-latte']) for (const width of [1040,480]) for (const textScale of [1,1.5]) {
+    await call('Emulation.setDeviceMetricsOverride',{width,height:760,deviceScaleFactor:1,mobile:false});
+    await evaluate(`shellQa.setTheme(${JSON.stringify(theme)});document.documentElement.style.fontSize='${16*textScale}px'`);
+    for (const [id,maximum] of [['command-palette',360],['help',640],['theme',300]]) {
+      await evaluate(`shellQa.showOverlay(${JSON.stringify(id)})`);
+      const panel = await evaluate(`(() => {const d=document.querySelector('dialog[open]');const r=d.getBoundingClientRect();return {width:r.width,height:r.height,left:r.left,right:r.right,overflow:d.scrollWidth>d.clientWidth};})()`);
+      assert(panel.width<=Math.min(maximum,width-32)+1 && panel.left>=0 && panel.right<=width && !panel.overflow, `Compact ${id} ${theme}/${width}/${textScale}: ${JSON.stringify(panel)}`);
+      if (id==='command-palette') {
+        const colors = await evaluate(`(() => {const color=s=>getComputedStyle(document.querySelector(s)).color;return {label:color('.command-palette-entry-label'),key:color('.command-palette-entry-shortcut'),helpLabel:color('.help-group dt'),helpKey:color('.help-group dd')};})()`);
+        assert(colors.label!==colors.key && colors.label===colors.helpLabel && colors.key===colors.helpKey,'Palette must match help description/key color roles');
+      }
+      transcript.push({action:'compact-overlay',id,theme,width,textScale,...panel,passed:true});
+      await screenshot(`compact-${id}-${theme}-${width}-text${textScale}`);
+    }
+    await evaluate('shellQa.showOverlay(undefined)');
+  }
+  await call('Emulation.setDeviceMetricsOverride',{width:1040,height:760,deviceScaleFactor:1,mobile:false});
+  await evaluate("document.documentElement.style.fontSize='16px';shellQa.setTheme('tokyo-night')");
   const initial = await evaluate("shellQa.pixelHash()");
   const pdfBounds = await evaluate("(() => { const r=document.querySelector('canvas').getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; })()");
   const initialPaint = (await call("Page.captureScreenshot", { format: "png", clip: { ...pdfBounds, scale: 1 } })).data;

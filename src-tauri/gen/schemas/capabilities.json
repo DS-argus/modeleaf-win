@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Minimal Modeleaf window capability","local":true,"windows":["main","reader-*"],"permissions":["core:event:allow-listen","core:event:allow-unlisten"]}}
+{"default":{"identifier":"default","description":"Minimal Modeleaf window capability","local":true,"windows":["main","reader-*"],"permissions":["core:event:allow-listen","core:event:allow-unlisten","core:app:allow-version"]}}

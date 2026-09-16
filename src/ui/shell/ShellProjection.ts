@@ -47,7 +47,8 @@ export function projectWindowShell(snapshot: WindowShellSnapshot): ShellProjecti
 }
 export function projectShellStatus(input: ShellStatusInput): ShellStatusProjection {
   return {
-    message: input.status,
+    // Page/zoom already have dedicated fields; retain every non-routine diagnostic verbatim.
+    message: input.hasDocument && /^Page \d+ of \d+(?: · Custom \d+(?:\.\d+)?%)? · (?:0|90|180|270)°$/u.test(input.status) ? "" : input.status,
     pending: input.pendingSequence ? `Pending: ${input.pendingSequence}` : "",
     fitPage: input.hasDocument && input.zoomMode === "fit-page",
     fitWidth: input.hasDocument && input.zoomMode === "fit-width",
