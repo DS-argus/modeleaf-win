@@ -19,6 +19,7 @@ A keyboard-first, read-only PDF viewer for Windows 11 x64.
 - Fit width/page, Actual Size, zoom, and rotation
 - Native system printing with progress and cancellation, preserving page coverage
 - Command palette, shortcut help, and seven interface themes
+- Compact tabs with full filenames in tooltips; a single-line statusbar shows reader state and the installed app version when runtime metadata is available
 
 ## Availability
 
