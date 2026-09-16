@@ -136,9 +136,20 @@ try {
   }
   await call('Emulation.setDeviceMetricsOverride',{width:1040,height:760,deviceScaleFactor:1,mobile:false});
   await evaluate("document.documentElement.style.fontSize='16px';shellQa.setTheme('tokyo-night')");
+  // Start pixel invariance from a fresh viewport, independent of dialog focus/scale reflow.
+  await call("Page.navigate", { url: `http://127.0.0.1:${port}/tools/qa/shell-ui.html?phase=pixels` });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await evaluate("location.search==='?phase=pixels' && Boolean(window.shellQa)")) break;
+    await delay(100);
+  }
+  await evaluate("shellQa.ready");
+  // A centered canvas can land on half-pixels with a classic Windows scrollbar.
+  // Align this QA fixture so screenshot pixels exclude theme-colored edge blending.
+  await evaluate("document.querySelector('.pdf-page-frame').style.margin='0';shellQa.setVersion('0.1.3')");
   const initial = await evaluate("shellQa.pixelHash()");
   await settlePaint();
   const pdfBounds = await paintedBounds();
+  assert(Number.isInteger(pdfBounds.x) && Number.isInteger(pdfBounds.y), "PDF comparison fixture must be pixel-aligned, not blended with shell edges");
   const initialPaintData = (await call("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, clip: { ...pdfBounds, scale: 1 } })).data;
   await writeFile(resolve(evidence, "pdf-reference-pixels.png"), Buffer.from(initialPaintData, "base64"));
   const initialPaint = await decodePaintedHash(initialPaintData);
