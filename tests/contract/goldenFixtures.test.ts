@@ -239,7 +239,7 @@ describe("golden PDF fixtures", () => {
         expect(digest(firstBytes), `${file.name} hash`).toBe(file.sha256);
         expect(firstBytes.length, `${file.name} byte count`).toBe(file.bytes);
         expect(file.license, `${file.name} license`).toBe("test-generated");
-        expect(file.source, `${file.name} source`).toContain("v0.10.0");
+        expect(file.source, `${file.name} source`).toContain("Windows-generated");
         expect(
           file.sentinel,
           `${file.name} complete sentinel contract`,

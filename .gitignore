@@ -1,15 +1,20 @@
 node_modules/
+docs/handoff/
 dist/
 target/
 src-tauri/target/
 *.log
 .DS_Store
 .gjc/
-.internal/evidence/
+.internal/
 fixtures/phase0-generated/*.pdf
 fixtures/adversarial-generated/*.pdf
 evidence/phase0/
 
 builds/
 docs/window-porting/
+docs/debug/
+docs/reference/
 /test-pdf/
+.worktrees/
+worktrees/

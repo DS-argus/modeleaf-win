@@ -1,12 +1,7 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "repository": "DS-argus/modeleaf",
-    "sha": "0f7ff0b54c3674c48f6b555261f939397cfbfb88",
-    "sources": [
-      "PDFReaderCore/Theme/Theme.swift",
-      "PDFReaderCore/Theme/BuiltInThemes.swift"
-    ]
+    "source": "Modeleaf Windows theme registry"
   },
   "themeCount": 7,
   "tokenCount": 12,

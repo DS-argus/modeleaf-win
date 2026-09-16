@@ -3,7 +3,7 @@
   <h1>Modeleaf for Windows</h1>
 </div>
 
-A keyboard-first, read-only PDF viewer for Windows 11 x64, based on [Modeleaf for macOS](https://github.com/DS-argus/modeleaf).
+A keyboard-first, read-only PDF viewer for Windows 11 x64.
 
 ## Philosophy
 
@@ -37,7 +37,7 @@ scoop update
 scoop update modeleaf
 ```
 
-Scoop updates are user-invoked and become available after the bucket manifest is updated. The app does not update itself. Live configuration and in-app update retrieval remain incomplete. Printing uses the native system dialog with bounded, complete raster-page preparation; `Submitted to printer` confirms submission, not physical output or a completed Save As file. `of` (reveal the current PDF in Explorer) is not included yet. See the [verification and release checklist](docs/windows-release-checklist.md) and [parity matrix](docs/parity-matrix.md) for limitations.
+Scoop updates are user-invoked and become available after the bucket manifest is updated. The app does not update itself. Printing uses the native system dialog with bounded, complete raster-page preparation; `Submitted to printer` confirms submission, not physical output or a completed Save As file. `of` (reveal the current PDF in Explorer) is not included yet.
 
 ## Keys (defaults)
 
@@ -67,7 +67,7 @@ npm run build
 npm run tauri -- build --no-bundle
 ```
 
-For development, run `npm run tauri -- dev`. See the [engineering guide](docs/windows-porting/agent-runbook.md) for contribution and verification requirements.
+For development, run `npm run tauri -- dev`. Follow `AGENTS.md` for engineering and verification requirements.
 
 ## Credits
 
