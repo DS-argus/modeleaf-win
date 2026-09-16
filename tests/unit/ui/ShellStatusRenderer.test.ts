@@ -8,7 +8,7 @@ import { createRootKeyboardRouter } from "../../../src/platform/RootKeyboardRout
 import { validateProductConfig } from "../../../src/domain/config/ConfigValidator";
 import { performTabActivation } from "../../../src/application/TabActivationCoordinator";
 
-function setup() {
+function setup(options?: { readonly onHelp?: () => void }) {
   const source = readFileSync("src/main.ts", "utf8");
   document.body.innerHTML = `<input id="focus">${source.match(/<footer id="status"[^>]*><\/footer>/u)![0]}`;
   const footer = document.querySelector<HTMLElement>("#status")!;
@@ -17,13 +17,25 @@ function setup() {
   let active = { reader, query: "", prompt: false };
   const renderer = createShellStatusRenderer(footer, () => ({
     ...active.reader.snapshot, query: active.query, searchPromptOpen: active.prompt,
-  }));
+    ...(active.reader.snapshot.zoomMode === "custom" ? { zoom: active.reader.snapshot.customScale } : {}),
+  }), options);
   const modes = () => Array.from(footer.querySelectorAll<HTMLElement>(".status-badge:not([hidden])"), (node) => node.textContent);
   return { footer, reader, renderer, modes, get active() { return active; }, activate: (value: typeof active) => { active = value; renderer.render(); } };
 }
 afterEach(() => { vi.useRealTimers(); document.body.replaceChildren(); });
 
 describe("shared shell status renderer", () => {
+  it("keeps page metrics outside live regions and the pending keys visually complete", () => {
+    const subject = setup();
+    subject.renderer.setPendingSequence("gg");
+    const metrics = subject.footer.querySelector(".status-metrics")!;
+    expect(metrics.closest("[aria-live]")).toBeNull();
+    expect(metrics.getAttribute("aria-hidden")).toBe("true");
+    expect(subject.footer.querySelector(".status-pending-value")?.textContent).toBe("gg");
+    expect(subject.footer.querySelector(".status-pending")?.textContent).toBe("Pending: gg");
+    subject.renderer.setPendingSequence("");
+    expect(subject.footer.textContent).not.toContain("Pending:");
+  });
   it.each([["view.fitPage", "FIT PAGE"], ["view.fitWidth", "FIT WIDTH"]] as const)("preserves %s and search through render → pending → asynchronous status → idle", async (action, label) => {
     vi.useFakeTimers();
     const subject = setup();
@@ -55,17 +67,99 @@ describe("shared shell status renderer", () => {
     expect(subject.footer.textContent).toContain("PDF registry cleanup failed: current diagnostic");
     expect(subject.modes()).toEqual([label, "SEARCH"]);
     expect(Array.from(subject.footer.children)).toEqual(nodes);
-    expect(subject.footer.querySelectorAll("[aria-live], [role], button, [tabindex]")).toHaveLength(0);
-    expect(subject.footer.getAttribute("aria-live")).toBe("polite");
-    expect(subject.footer.getAttribute("aria-atomic")).toBe("true");
     expect(subject.footer.getAttribute("data-testid")).toBe("reader-status");
-    expect(document.activeElement).toBe(focus);
+    const live = subject.footer.querySelector<HTMLElement>(".status-live")!;
+    expect(subject.footer.getAttribute("role")).toBe("group");
+    expect(subject.footer.getAttribute("aria-label")).toBe("Reader status");
+    expect(subject.footer.hasAttribute("aria-live")).toBe(false);
+    expect(subject.footer.hasAttribute("aria-atomic")).toBe(false);
+    expect(live.getAttribute("role")).toBe("status");
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.getAttribute("aria-atomic")).toBe("true");
+    expect(live.querySelector(".status-version, .status-help, .status-print-host")).toBeNull();
+    expect(subject.renderer.printHost.parentElement).toBe(subject.footer);
+    expect(subject.renderer.printHost.closest(".status-live")).toBeNull();
+    expect(subject.footer.querySelector<HTMLElement>(".status-message")?.title).toBe("PDF registry cleanup failed: current diagnostic");
     const observer = new MutationObserver(vi.fn());
+    expect(document.activeElement).toBe(focus);
     observer.observe(subject.footer, { childList: true, attributes: true, subtree: true });
     subject.renderer.render();
     expect(observer.takeRecords()).toHaveLength(0);
     observer.disconnect();
     router.dispose();
+  });
+
+  it("separates dynamic status from truthful static version and print host", () => {
+    const subject = setup();
+    const live = subject.footer.querySelector<HTMLElement>(".status-live")!;
+    const version = subject.footer.querySelector<HTMLElement>(".status-version")!;
+    expect(subject.footer.getAttribute("role")).toBe("group");
+    expect(subject.footer.getAttribute("aria-label")).toBe("Reader status");
+    expect(subject.footer.hasAttribute("aria-live")).toBe(false);
+    expect(subject.footer.hasAttribute("aria-atomic")).toBe(false);
+    expect(live.getAttribute("role")).toBe("status");
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.getAttribute("aria-atomic")).toBe("true");
+    expect(version.hidden).toBe(true);
+    expect(version.textContent).toBe("");
+    expect(version.getAttribute("title")).toBeNull();
+    expect(subject.renderer.printHost.parentElement).toBe(subject.footer);
+    expect(subject.renderer.printHost.previousElementSibling).toBe(live);
+    expect(subject.renderer.printHost.getAttribute("aria-live")).toBe("polite");
+    expect(subject.renderer.printHost.getAttribute("aria-atomic")).toBe("true");
+    expect(version.closest("[aria-live]")).toBeNull();
+    expect(subject.renderer.printHost.closest(".status-live")).toBeNull();
+
+    subject.renderer.setVersion(" 0.1.3 ");
+    expect(version.hidden).toBe(false);
+    expect(version.textContent).toBe("v0.1.3");
+    expect(version.title).toBe("Installed Modeleaf version 0.1.3");
+    const versionText = version.textContent;
+    subject.reader.setStatus("Full diagnostic detail");
+    subject.renderer.render();
+    subject.renderer.setPendingSequence("g");
+    subject.renderer.setPathNotice({ text: "C:\\docs\\sample.pdf", copied: true });
+    expect(version.textContent).toBe(versionText);
+    expect(version.title).toBe("Installed Modeleaf version 0.1.3");
+    expect(subject.footer.querySelector<HTMLElement>(".status-message")?.title).toBe("Full diagnostic detail");
+    expect(subject.footer.querySelector<HTMLElement>(".status-path-notice")?.title).toBe("C:\\docs\\sample.pdf Copied!");
+
+    subject.renderer.setVersion("   ");
+    expect(version.hidden).toBe(true);
+    expect(version.textContent).toBe("");
+    expect(version.getAttribute("title")).toBeNull();
+  });
+
+  it("renders help as a static action outside the live region", () => {
+    const onHelp = vi.fn();
+    const subject = setup({ onHelp });
+    const help = subject.footer.querySelector<HTMLButtonElement>(".status-help")!;
+    expect(help.type).toBe("button");
+    expect(help.textContent).toBe("? help");
+    expect(help.closest(".status-live")).toBeNull();
+    help.click();
+    expect(onHelp).toHaveBeenCalledOnce();
+  });
+
+  it("shows valid page metrics and custom zoom without inventing fit percentages", () => {
+    const subject = setup();
+    subject.renderer.render();
+    const page = subject.footer.querySelector<HTMLElement>(".status-page")!;
+    const zoom = subject.footer.querySelector<HTMLElement>(".status-zoom")!;
+    expect(page.hidden).toBe(false);
+    expect(page.textContent).toBe("1 / 3");
+    expect(zoom.hidden).toBe(true);
+
+    subject.reader.apply({ type: "view.zoom", factor: 1.1 });
+    subject.renderer.render();
+    expect(page.textContent).toBe("1 / 3");
+    expect(zoom.hidden).toBe(false);
+    expect(zoom.textContent).toBe("138%");
+
+    subject.reader.closeDocument();
+    subject.renderer.render();
+    expect(page.hidden).toBe(true);
+    expect(zoom.hidden).toBe(true);
   });
 
   it("uses the active tab even when an inactive tab publishes late status, and restores retained query", () => {

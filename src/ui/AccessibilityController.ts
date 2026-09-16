@@ -122,8 +122,8 @@ function hasCurrentGeneration(announcement: AccessibilityAnnouncement): announce
 export function safeDocumentBasename(value: string): string {
   if (
     value.length === 0
-    || value.length > 128
-    || /[\\/:?#\u0000-\u001F\u007F]/u.test(value)
+    || value.length > 255
+    || /[\\/:?\u0000-\u001F\u007F]/u.test(value)
     || value.includes("://")
   ) return "PDF document";
   return value;

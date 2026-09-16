@@ -50,7 +50,7 @@ describe("W01 secure shell contract", () => {
     expect(csp).not.toMatch(/https?:\/\/(?!(?:ipc|modeleaf-pdf)\.localhost\b)|\bcdn\b|\*/i);
   });
 
-  it("limits the capability to quit-event listening on main and bounded reader windows", async () => {
+  it("limits capabilities to event listening and runtime version reading on bounded windows", async () => {
     const capability = await readJson("src-tauri/capabilities/default.json");
     const serialized = JSON.stringify(capability);
 
@@ -58,6 +58,7 @@ describe("W01 secure shell contract", () => {
     expect(capability.permissions).toEqual([
       "core:event:allow-listen",
       "core:event:allow-unlisten",
+      "core:app:allow-version",
     ]);
     expect(serialized).not.toMatch(/\b(fs|shell|process|opener)(:|\.|-|_)/i);
     expect(serialized).not.toMatch(/\*{2}|\ball\b/i);

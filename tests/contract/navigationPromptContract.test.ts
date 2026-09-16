@@ -28,7 +28,7 @@ describe("keyboard navigation and page prompt contract", () => {
 
   it("keeps the go-to-page prompt separate from the status row", () => {
     expect(main).toContain('id="prompt" class="prompt" role="group" aria-label="Go to page"');
-    expect(styles).toContain("grid-template-rows: auto auto minmax(0, 1fr) minmax(28px, auto)");
+    expect(styles).toContain("grid-template-rows: auto auto minmax(0, 1fr) 26px");
     expect(styles).not.toContain("grid-template-rows: auto 1fr auto 28px");
     expect(styles).toContain("#reader-main { grid-row: 3; min-height: 0; }");
     expect(styles).toContain(".statusbar { grid-row: 4; }");

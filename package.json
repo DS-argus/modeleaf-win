@@ -22,6 +22,7 @@
     "predev": "npm run assets:sync",
     "dev": "vite",
     "build": "npm run assets:sync && tsc --noEmit && vite build",
+    "qa:shell": "node tools/qa/run-shell-ui.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "pretauri": "npm run assets:sync",
