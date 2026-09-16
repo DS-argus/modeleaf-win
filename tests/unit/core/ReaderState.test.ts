@@ -8,15 +8,16 @@ describe("ReaderState", () => {
     expect(() => reader.mountDocument(Number.NaN)).toThrow(RangeError);
   });
 
-  it("mounts page one in fit width and restores those defaults on close", () => {
+  it("mounts page one in fit page and restores those defaults on close", () => {
     const reader = new ReaderState();
     reader.mountDocument(3);
     expect(reader.snapshot).toMatchObject({
       hasDocument: true,
       page: 1,
       pageCount: 3,
-      zoomMode: "fit-width",
+      zoomMode: "fit-page",
       customScale: 1.25,
+      fitPageReference: 1,
       rotationQuarterTurns: 0,
       status: "Page 1 of 3 · 0°",
     });
@@ -29,13 +30,27 @@ describe("ReaderState", () => {
       hasDocument: false,
       page: 0,
       pageCount: 0,
-      zoomMode: "fit-width",
+      zoomMode: "fit-page",
       customScale: 1.25,
+      fitPageReference: undefined,
       rotationQuarterTurns: 0,
       status: "No document open",
     });
   });
 
+  it("keeps the Fit Page reference independent from current-page movement", () => {
+    const reader = new ReaderState();
+    reader.mountDocument(4);
+    reader.apply({ type: "page.goTo", page: 3 });
+    expect(reader.snapshot.fitPageReference).toBe(1);
+    reader.apply({ type: "view.fitPage" });
+    expect(reader.snapshot.fitPageReference).toBe(3);
+    reader.apply({ type: "page.next" });
+    expect(reader.snapshot.fitPageReference).toBe(3);
+    reader.apply({ type: "view.fitWidth" });
+    expect(reader.snapshot.fitPageReference).toBeUndefined();
+    expect(() => reader.restoreView({ zoomMode: "fit-page", customScale: 1, rotationQuarterTurns: 0, fitPageReference: 0 })).toThrow(RangeError);
+  });
   it("clamps page navigation at document bounds", () => {
     const reader = new ReaderState();
     reader.mountDocument(3);
@@ -132,6 +147,7 @@ describe("ReaderState", () => {
       zoomMode: "fit-page",
       customScale: 1.375,
       rotationQuarterTurns: 0,
+      fitPageReference: 1,
       status: "Page 1 of 10 · 0°",
     });
     reader.apply({ type: "view.zoom", factor: 1 / 1.1 });
@@ -157,7 +173,7 @@ describe("ReaderState", () => {
     }
     expect(reader.snapshot.customScale).toBe(0.1);
 
-    reader.restoreView({ zoomMode: "fit-width", customScale: 1.25, rotationQuarterTurns: -1 });
+    reader.restoreView({ zoomMode: "fit-width", customScale: 1.25, fitPageReference: undefined, rotationQuarterTurns: -1 });
     expect(reader.snapshot).toMatchObject({
       zoomMode: "fit-width",
       customScale: 1.25,

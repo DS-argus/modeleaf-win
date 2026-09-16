@@ -57,6 +57,10 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | Previous / next tab | `P` / `N` |
 | Theme / palette / help | `T` / `:` / `?` |
 
+New PDFs open at **Fit Page** scale with continuous vertical scrolling. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to fit the current page instead.
+
+Use **Ctrl+wheel** to zoom around the pointer in 10% multiplicative steps (10–800%). Small wheel movements accumulate; normal wheel input scrolls. Over page margins, zoom preserves the nearest page edge. Use `h`/`l` or the left/right arrows to scroll horizontally when zoomed in. `0` selects PDF.js scale 1, not a calibrated physical paper size.
+
 ## Build from source
 
 Use the Node.js/npm versions specified in [package.json](package.json), the Rust MSVC toolchain, Visual Studio Build Tools with the C++ workload, and WebView2 Runtime.

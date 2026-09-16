@@ -1,4 +1,5 @@
 import { getDocument, GlobalWorkerOptions, AnnotationMode } from "pdfjs-dist";
+import { PDFJS_POLICY } from "../../src/pdf/PdfJsPolicy";
 import { type PdfLoadingTask } from "../../src/pdf/PdfReaderController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "../../src/pdf/PdfTabSession";
 import { ResourceReservationManager } from "../../src/pdf/ResourceBudget";
@@ -8,12 +9,13 @@ import "../../src/styles/app.css";
 
 // Real PDF.js/DOM/session QA with in-memory native authority. No Tauri calls,
 // user PDF paths, persistent state, native windows, or external URL activation.
-GlobalWorkerOptions.workerSrc = "/node_modules/pdfjs-dist/build/pdf.worker.mjs";
+GlobalWorkerOptions.workerSrc = new URL(PDFJS_POLICY.assets.workerSrc, `${location.origin}/`).href;
 const host = document.querySelector<HTMLElement>("#host")!;
 const hiddenOpening = new URLSearchParams(location.search).get("hidden") === "true";
 host.hidden = hiddenOpening;
 if (hiddenOpening && (host.clientWidth !== 0 || host.clientHeight !== 0)) throw new Error("Hidden opening fixture must have zero layout size");
-const fixture = "fixture-L-text-300.pdf";
+const fixture = new URLSearchParams(location.search).get("fixture") ?? "fixture-L-text-300.pdf";
+if (!["fixture-L-text-300.pdf", "print-mixed-rotation-4.pdf"].includes(fixture)) throw new Error("Unsupported reader QA fixture");
 const response = await fetch(`/fixtures/pdf/${fixture}`);
 if (!response.ok) throw new Error(`Fixture load failed: ${response.status}`);
 const bytes = new Uint8Array(await response.arrayBuffer());
@@ -62,6 +64,7 @@ const snapshot = () => ({
   canvases: host.querySelectorAll("canvas").length,
 });
 const requireInvariant = (value: boolean, message: string) => { if (!value) throw new Error(message); };
+Object.assign(window, { readerDiagnostics: { session, statuses, resources, host } });
 await publishActivateAndAdoptPdfTab(publish, session, () => session.adopt(opened, 1));
 await session.activate();
 publish();
