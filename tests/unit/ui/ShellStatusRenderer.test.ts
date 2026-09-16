@@ -28,6 +28,7 @@ describe("shared shell status renderer", () => {
   it("removes routine page and angle prose while keeping metrics and path beside badges", () => {
     const subject = setup();
     subject.reader.apply({ type: "view.rotate", quarterTurns: 1 });
+    subject.reader.apply({ type: "view.fitWidth" });
     subject.renderer.render();
     const message = subject.footer.querySelector<HTMLElement>(".status-message")!;
     expect(message.hidden).toBe(true);
