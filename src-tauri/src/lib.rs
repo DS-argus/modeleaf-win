@@ -280,9 +280,6 @@ fn commit_theme_state(
             Ok(committed)
         }
         Err(error) => {
-            if error == ThemeStateError::Storage {
-                let _ = app.emit("theme-state-committed", state.current());
-            }
             let tag = if error == ThemeStateError::Conflict {
                 diagnostics::DiagnosticTag::Conflict
             } else {
@@ -298,7 +295,6 @@ fn commit_theme_state(
         }
     }
 }
-
 #[tauri::command]
 fn record_diagnostic(
     diagnostics: State<'_, diagnostics::DiagnosticLog>,

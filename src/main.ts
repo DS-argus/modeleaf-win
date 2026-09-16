@@ -26,7 +26,7 @@ import { performTabActivation, performTabClose, queueRelativeTabActivation } fro
 import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
 import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "./application/WorkspaceTransitionQueue";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
-import { DEFAULT_THEME_ID, THEME_TOKENS, adoptDurableThemeState, isThemeId, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
+import { DEFAULT_THEME_ID, THEME_TOKENS, isThemeId, shouldAdoptDurableThemeState, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
 import { CLOSED_THEME_PICKER, THEME_PICKER_FOOTER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
@@ -226,6 +226,7 @@ const assertiveAnnouncements = required<HTMLElement>("#announcements-assertive")
 const accessibility = new AccessibilityController({ target: { polite: politeAnnouncements, assertive: assertiveAnnouncements } });
 
 let durableTheme: DurableThemeState = { themeId: DEFAULT_THEME_ID, revision: 0 };
+let durableThemeIsProvisional = true;
 let themePicker: ThemePickerModel = CLOSED_THEME_PICKER;
 
 function isDurableThemeState(value: unknown): value is DurableThemeState {
@@ -234,11 +235,9 @@ function isDurableThemeState(value: unknown): value is DurableThemeState {
     && typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0;
 }
 function adoptDurableTheme(candidate: DurableThemeState): boolean {
-  const previous = durableTheme;
-  const accepted = candidate.revision > previous.revision
-    || (candidate.revision === previous.revision && candidate.themeId === previous.themeId);
-  if (!accepted) return false;
-  durableTheme = adoptDurableThemeState(previous, candidate);
+  if (!shouldAdoptDurableThemeState(durableTheme, candidate, durableThemeIsProvisional)) return false;
+  durableTheme = candidate;
+  durableThemeIsProvisional = false;
   return true;
 }
 function applyTheme(themeId: ThemeId): void {
