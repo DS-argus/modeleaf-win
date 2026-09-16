@@ -8,14 +8,14 @@ describe("ReaderState", () => {
     expect(() => reader.mountDocument(Number.NaN)).toThrow(RangeError);
   });
 
-  it("mounts page one in fit page and restores those defaults on close", () => {
+  it("mounts page one in continuous fit and restores those defaults on close", () => {
     const reader = new ReaderState();
     reader.mountDocument(3);
     expect(reader.snapshot).toMatchObject({
       hasDocument: true,
       page: 1,
       pageCount: 3,
-      zoomMode: "fit-page",
+      zoomMode: "continuous-fit",
       customScale: 1.25,
       fitPageReference: 1,
       rotationQuarterTurns: 0,
@@ -30,7 +30,7 @@ describe("ReaderState", () => {
       hasDocument: false,
       page: 0,
       pageCount: 0,
-      zoomMode: "fit-page",
+      zoomMode: "continuous-fit",
       customScale: 1.25,
       fitPageReference: undefined,
       rotationQuarterTurns: 0,

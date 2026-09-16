@@ -1903,7 +1903,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
 
     await expect(zoom).resolves.toBe(false);
     await expect(successor).resolves.toBe(false);
-    expect(session.snapshot.reader.zoomMode).toBe("fit-page");
+    expect(session.snapshot.reader.zoomMode).toBe("continuous-fit");
     expect(session.snapshot.reader.fitPageReference).toBe(1);
     expect(session.snapshot.reader.customScale).toBe(1);
   });
@@ -1955,7 +1955,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       return false;
     }).mockImplementation(async (transform) => { internals.onPage(1, transform as { scale: number; rotation: number; devicePixelRatio: number }); return true; });
     await expect(session.zoomAt(1, { x: 20, y: 30 })).rejects.toThrow(failure === "exception" ? "raster failed" : "PDF_WHEEL_ZOOM_FAILED");
-    expect(session.snapshot.reader).toMatchObject({ zoomMode: "fit-page", customScale: 1, fitPageReference: 1 });
+    expect(session.snapshot.reader).toMatchObject({ zoomMode: "continuous-fit", customScale: 1, fitPageReference: 1 });
     await expect(session.zoomAt(1, { x: 20, y: 30 })).resolves.toBe(true);
     expect(zoom.mock.calls[1]?.[0]).toMatchObject({ scale: 1.1 });
   });

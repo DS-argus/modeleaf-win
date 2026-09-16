@@ -47,6 +47,10 @@ describe("ShellProjection", () => {
       message: "Searching · Fit page · Fit width", pending: "Pending: g", fitPage, fitWidth, search,
     });
   });
+  it("hides fit badges for the default continuous fit scale", () => {
+    expect(projectShellStatus({ hasDocument: true, zoomMode: "continuous-fit", searchPromptOpen: false, query: "", status: "Page 1 of 3 · 0°" }))
+      .toMatchObject({ fitPage: false, fitWidth: false, search: false, message: "" });
+  });
   it.each(["Searching…", "No matches", "No searchable text", "Search results are partial: TEXT_LIMIT", "Search failed"])("retains applied search independently of diagnostics: %s", (status) => {
     expect(projectShellStatus({ hasDocument: true, zoomMode: "fit-width", searchPromptOpen: false, query: "needle", status })).toEqual({ message: status, pending: "", fitPage: false, fitWidth: true, search: true });
   });
