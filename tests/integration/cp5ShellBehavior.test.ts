@@ -12,6 +12,8 @@ describe("CP5 shell integration", () => {
     expect(mainSource).toContain('invoke("commit_theme_state", { themeId: intent.themeId, baseRevision: intent.baseRevision })');
     expect(mainSource).toContain('revertThemePickerToDurable(picker, durableTheme.themeId, durableTheme.revision)');
     expect(mainSource).toContain('error: "theme-save-failed"');
+    expect(mainSource).toContain("let durableThemeIsProvisional = true;");
+    expect(mainSource).toContain("shouldAdoptDurableThemeState(durableTheme, candidate, durableThemeIsProvisional)");
   });
   it("routes quit through native admission, complete renderer cleanup, and native finish", () => {
     const quitHandler = mainSource.slice(mainSource.indexOf("function requestApplicationQuit"), mainSource.indexOf("function dispatch", mainSource.indexOf("function requestApplicationQuit")));
