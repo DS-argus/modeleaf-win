@@ -29,6 +29,15 @@ const evaluate = async (expression) => {
   return result.result.value;
 };
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const settlePaint = () => evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+const decodePaintedHash = (data) => evaluate(`(async () => {
+  const blob = await (await fetch('data:image/png;base64,${data}')).blob();
+  const bitmap = await createImageBitmap(blob);
+  const canvas = document.createElement('canvas'); canvas.width=bitmap.width; canvas.height=bitmap.height;
+  const context=canvas.getContext('2d'); context.drawImage(bitmap,0,0); bitmap.close();
+  const hash=await crypto.subtle.digest('SHA-256',context.getImageData(0,0,canvas.width,canvas.height).data);
+  return [...new Uint8Array(hash)].map(value=>value.toString(16).padStart(2,'0')).join('');
+})()`);
 const transcript = [];
 const screenshot = async (name) => {
   // Observe the DOM before capture; screenshots prove appearance, not native validation.
@@ -128,7 +137,10 @@ try {
   await evaluate("document.documentElement.style.fontSize='16px';shellQa.setTheme('tokyo-night')");
   const initial = await evaluate("shellQa.pixelHash()");
   const pdfBounds = await evaluate("(() => { const r=document.querySelector('canvas').getBoundingClientRect(); return {x:r.x,y:r.y,width:r.width,height:r.height}; })()");
-  const initialPaint = (await call("Page.captureScreenshot", { format: "png", clip: { ...pdfBounds, scale: 1 } })).data;
+  await settlePaint();
+  const initialPaintData = (await call("Page.captureScreenshot", { format: "png", clip: { ...pdfBounds, scale: 1 } })).data;
+  await writeFile(resolve(evidence, "pdf-reference-pixels.png"), Buffer.from(initialPaintData, "base64"));
+  const initialPaint = await decodePaintedHash(initialPaintData);
   const fixtureHash = createHash("sha256").update(await readFile(resolve(root, "fixtures/pdf/text-3-page.pdf"))).digest("hex");
   const themes = ["tokyo-night", "gruvbox-dark", "solarized-dark", "dracula", "everforest", "nord", "catppuccin-latte"];
   for (const theme of themes) {
@@ -136,9 +148,14 @@ try {
     const hash = await evaluate("shellQa.pixelHash()");
     const style = await evaluate("({filter:getComputedStyle(document.querySelector('canvas')).filter,opacity:getComputedStyle(document.querySelector('canvas')).opacity})");
     assert(hash === initial && style.filter === "none" && style.opacity === "1", `PDF pixels changed in ${theme}`);
+    await settlePaint();
     const painted = (await call("Page.captureScreenshot", { format: "png", clip: { ...pdfBounds, scale: 1 } })).data;
-    assert(painted === initialPaint, `Painted PDF changed in ${theme}`);
-    transcript.push({ action: "theme-pdf-invariance", theme, fixtureHash, pixelHash: hash, paintedHash: createHash("sha256").update(painted).digest("hex"), style, passed: true });
+    const paintedPixelHash = await decodePaintedHash(painted);
+    if (paintedPixelHash !== initialPaint) {
+      await writeFile(resolve(evidence, `pdf-mismatch-${theme}.png`), Buffer.from(painted, "base64"));
+    }
+    assert(paintedPixelHash === initialPaint, `Painted PDF changed in ${theme}`);
+    transcript.push({ action: "theme-pdf-invariance", theme, fixtureHash, pixelHash: hash, paintedHash: paintedPixelHash, style, passed: true });
   }
   for (const theme of themes) {
     await evaluate(`shellQa.setTheme(${JSON.stringify(theme)});shellQa.showOverlay('command-palette');document.querySelectorAll('.command-palette-entry')[1].focus()`);
@@ -201,11 +218,21 @@ try {
   socket?.close();
   for (const request of pending.values()) request.reject(new Error("QA connection closed"));
   pending.clear();
-  if (browser && browser.exitCode === null) {
-    const exited = new Promise((resolve) => browser.once("exit", resolve));
-    if (process.platform === "win32" && browser.pid) execFileSync("taskkill", ["/pid", String(browser.pid), "/T", "/F"], { stdio: "ignore" });
-    else browser.kill();
-    await exited;
+  if (browser?.pid && browser.exitCode === null && browser.signalCode === null) {
+    let killError;
+    try {
+      if (process.platform === "win32") execFileSync("taskkill", ["/pid", String(browser.pid), "/T", "/F"], { stdio: "pipe" });
+      else browser.kill();
+    } catch (error) { killError = error; }
+    // Windows can report an already-exited child as a taskkill failure.
+    // Verify process absence rather than accepting taskkill output as proof.
+    let exited = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      try { process.kill(browser.pid, 0); }
+      catch (error) { if (error.code !== "ESRCH") throw error; exited = true; break; }
+      await delay(100);
+    }
+    if (!exited) throw killError ?? new Error("QA browser did not exit");
   }
   await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   await server.close();

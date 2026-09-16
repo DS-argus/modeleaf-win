@@ -49,9 +49,10 @@
         { "name": "Audit production dependencies", "run": "npm run security:verify" },
         { "name": "Test frontend and packaging", "run": "npm test -- --maxWorkers=2" },
         { "name": "Build frontend", "run": "npm run build" },
-        { "name": "Verify shell renderer visual matrix", "run": "npm run qa:shell" },
+        { "id": "shell_qa", "name": "Verify shell renderer visual matrix", "run": "npm run qa:shell" },
         {
           "name": "Retain shell renderer comparison evidence",
+          "if": "${{ !cancelled() && (steps.shell_qa.outcome == 'success' || steps.shell_qa.outcome == 'failure') }}",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
             "name": "shell-renderer-evidence-${{ github.sha }}",
