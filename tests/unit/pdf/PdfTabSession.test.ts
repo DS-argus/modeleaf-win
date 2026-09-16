@@ -1618,6 +1618,19 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       else Object.defineProperty(globalThis, "getComputedStyle", styleDescriptor);
     }
   });
+  it("keeps a committed opening active when its follow-up Fit Page render is transiently stale", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & { openingFitRenderPending: boolean };
+    session.reader.mountDocument(1);
+    await session.activate();
+    internals.openingFitRenderPending = true;
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 200, height: 100 });
+    vi.spyOn(internals.pdfReader, "setOpeningPresentationAtTop").mockResolvedValue(false);
+
+    await expect(session.activate()).resolves.toBeUndefined();
+    expect(session.snapshot.active).toBe(true);
+    expect(internals.openingFitRenderPending).toBe(true);
+  });
   it("retries opening fit for a hidden empty adoption host after geometry returns", async () => {
     const session = createSession();
     const internals = session as unknown as SessionInternals & {

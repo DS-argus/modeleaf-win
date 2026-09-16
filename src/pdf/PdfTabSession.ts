@@ -243,8 +243,8 @@ export class PdfTabSession {
     if (this.closed) return;
     if (this.active) {
       if (!this.openingFitRenderPending) return;
-      const fitted = await this.renderOpeningFitPage();
-      if (!fitted && this.openingFitRenderPending) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
+      // An already committed opening remains usable while a later layout turn supplies Fit Page geometry.
+      await this.renderOpeningFitPage();
       return;
     }
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
