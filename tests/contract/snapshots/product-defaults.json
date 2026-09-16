@@ -1,28 +1,21 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "repository": "DS-argus/modeleaf",
-    "sha": "0f7ff0b54c3674c48f6b555261f939397cfbfb88",
-    "sources": [
-      "PDFReaderCore/Config/BuiltInDefaults.swift",
-      "PDFReaderCore/Actions/ActionRegistry.swift",
-      "docs/windows-porting/feature-spec.md",
-      "docs/windows-porting/architecture.md"
-    ]
+    "source": "Modeleaf Windows defaults"
   },
   "config": {
     "bounds": {
       "smallScrollPoints": {
-        "minimum": 1.0,
-        "maximum": 512.0
+        "minimum": 1,
+        "maximum": 512
       },
       "largeScrollViewportFraction": {
         "minimum": 0.1,
-        "maximum": 2.0
+        "maximum": 2
       },
       "zoomFactor": {
         "minimum": 1.01,
-        "maximum": 2.0
+        "maximum": 2
       },
       "prefixTimeoutMilliseconds": {
         "minimum": 100,
@@ -31,7 +24,7 @@
     },
     "defaults": {
       "navigation": {
-        "smallScrollPoints": 32.0,
+        "smallScrollPoints": 32,
         "largeScrollViewportFraction": 0.8,
         "zoomFactor": 1.1
       },

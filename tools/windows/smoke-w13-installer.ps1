@@ -11,7 +11,7 @@
 
     This script deliberately does NOT install, launch, or uninstall anything,
     and it never claims clean-VM, SmartScreen, or Narrator evidence. Those are
-    HUMAN-ONLY gates recorded in docs/windows-release-checklist.md.
+    HUMAN-ONLY validation remains an owner decision.
 
     An unsigned installer is reported, not treated as failure: signing requires
     credentials that are intentionally absent from this repository.
@@ -130,7 +130,6 @@ Write-Host '  - Clean Windows 10/11 VM install, launch, upgrade, uninstall'
 Write-Host '  - Open With and default-handler behavior in Explorer'
 Write-Host '  - SmartScreen reputation prompt'
 Write-Host '  - Narrator and forced-colors verification'
-Write-Host '  See docs/windows-release-checklist.md'
 
 if ($failures.Count -gt 0) {
     Write-Host ''

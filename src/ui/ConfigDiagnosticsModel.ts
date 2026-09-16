@@ -40,7 +40,7 @@ const MESSAGES: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /**
- * A `D` modifier is the macOS Command key. Converting it to Ctrl silently would
+ * A `D` modifier is unsupported on Windows. Converting it to Ctrl silently would
  * shadow explicit user bindings, so it is surfaced for the user
  * to resolve.
  */

@@ -1,9 +1,7 @@
 {
   "schemaVersion": 1,
   "baseline": {
-    "repository": "DS-argus/modeleaf",
-    "sha": "0f7ff0b54c3674c48f6b555261f939397cfbfb88",
-    "source": "PDFReaderCore/Actions/ActionID.swift"
+    "source": "Modeleaf Windows action registry"
   },
   "count": 51,
   "ids": [
