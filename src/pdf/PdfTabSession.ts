@@ -243,8 +243,7 @@ export class PdfTabSession {
     if (this.closed) return;
     if (this.active) {
       if (!this.openingFitRenderPending) return;
-      // An already committed opening remains usable while a later layout turn supplies Fit Page geometry.
-      await this.renderOpeningFitPage();
+      const fitted = await this.settleOpeningFit();
       return;
     }
     if (this.activityQuarantined) throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE");
@@ -256,7 +255,7 @@ export class PdfTabSession {
       await this.content?.synchronizeResidentPages(this.pdfReader.residentPageNumbers());
       if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
       if (this.openingFitRenderPending) {
-        const fitted = await this.renderOpeningFitPage();
+        const fitted = await this.settleOpeningFit();
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
         if (!fitted && this.openingFitRenderPending) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
         this.finishActivation(activityGeneration);
@@ -264,9 +263,8 @@ export class PdfTabSession {
         return;
       }
       const needsPresentationRestore = this.presentationEvicted || this.presentationDirty || this.committedDevicePixelRatioDiffers() || this.committedContentSizeDiffers();
-      if (needsPresentationRestore) {
-        await this.restorePresentation(activityGeneration);
-      } else {
+      if (needsPresentationRestore) await this.restorePresentation(activityGeneration);
+      else {
         this.content?.activateResidentPage(this.reader.snapshot.page);
         await this.restoreInterruptedSearch(activityGeneration);
         if (this.closed || !this.isForegroundActive() || this.activityGeneration !== activityGeneration) return;
@@ -279,6 +277,13 @@ export class PdfTabSession {
       if (!this.closed && this.activityGeneration === activityGeneration) await this.settleInactiveAuthority();
       throw error;
     }
+  }
+  private async settleOpeningFit(): Promise<boolean> {
+    for (let attempt = 0; attempt < 2 && this.openingFitRenderPending; attempt += 1) {
+      const fitted = await this.renderOpeningFitPage();
+      if (fitted || this.closed || !this.isForegroundActive()) return fitted;
+    }
+    return !this.openingFitRenderPending;
   }
   public async deactivate(): Promise<void> {
     this.cancelWheelZoom();
