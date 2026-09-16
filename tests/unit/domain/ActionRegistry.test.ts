@@ -21,10 +21,10 @@ const snapshot = JSON.parse(readFileSync(
 const RETIRED_ACTION_IDS = ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"] as const;
 
 describe("ActionRegistry", () => {
-  it("matches the exact frozen 51-action order with no duplicates", () => {
+  it("matches the exact frozen 42-action order with no duplicates", () => {
     expect(ACTION_IDS).toEqual(snapshot.ids);
     expect(ACTION_IDS).toHaveLength(snapshot.count);
-    expect(new Set(ACTION_IDS).size).toBe(51);
+    expect(new Set(ACTION_IDS).size).toBe(42);
     expect(ACTION_DESCRIPTORS.map(({ id }) => id)).toEqual(ACTION_IDS);
   });
 
@@ -58,7 +58,7 @@ describe("ActionRegistry", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(47);
+    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(38);
   });
 
   it("exposes exactly four input contexts and context-scoped availability", () => {
@@ -81,7 +81,8 @@ describe("ActionRegistry", () => {
     expect(getActionRuntimeAvailability("document.print", { ...ready, hasDocument: false })).toEqual({ enabled: false, reason: "No document open" });
     expect(getActionRuntimeAvailability("document.open", { ...ready, canCreateSession: false })).toEqual({ enabled: false, reason: "Document capacity unavailable" });
     expect(getActionRuntimeAvailability("app.new", { ...ready, canCreateWindow: false })).toEqual({ enabled: false, reason: "Window capacity unavailable" });
-    expect(getActionRuntimeAvailability("tab.select.3", ready)).toEqual({ enabled: false, reason: "Tab not open" });
+    expect(getActionRuntimeAvailability("tab.next", ready)).toEqual({ enabled: true });
+    expect(getActionRuntimeAvailability("tab.previous", ready)).toEqual({ enabled: true });
     expect(getActionRuntimeAvailability("tab.next", { ...ready, tabCount: 1 })).toEqual({ enabled: false, reason: "Only one tab open" });
     expect(getActionRuntimeAvailability("config.writeDefault", ready)).toEqual({ enabled: false, reason: "Config already exists" });
     expect(getActionRuntimeAvailability("config.resetDefault", { ...ready, configExists: false })).toEqual({ enabled: false, reason: "No config to reset" });

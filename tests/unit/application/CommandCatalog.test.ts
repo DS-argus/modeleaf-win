@@ -104,9 +104,9 @@ describe("CommandCatalog", () => {
       expect(command(rows, "update.show")).toBeUndefined();
     }
   });
-  it("preserves the nine individual tab selection projections", () => {
-    const ids = projectPaletteCommands(state(), config).map(({ id }) => id).filter((id) => /^tab\.select\.[1-9]$/u.test(id));
-    expect(ids).toEqual(["tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9"]);
+  it("keeps only previous and next tab actions in palette projections", () => {
+    const ids = projectPaletteCommands(state(), config).map(({ id }) => id).filter((id) => id.startsWith("tab."));
+    expect(ids).toEqual(["tab.next", "tab.previous"]);
   });
   it("marks future-workstream actions non-executable with an exact reason", () => {
     const rows = projectPaletteCommands(state({ implementedActionIds: new Set(["document.open"] as const) }), config);

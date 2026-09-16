@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "4e79f296ef9659bf5d6fa82d53fd562e73b7faf5e05d4ac73f4184cc6e9e1bb9";
+  "5e80f0fb4bcf551ca58e7f1b6366613f6e445e397ba959777e1c5c9d155a0c3e";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -15,15 +15,6 @@ const ACTION_IDS = [
   "help.show",
   "tab.next",
   "tab.previous",
-  "tab.select.1",
-  "tab.select.2",
-  "tab.select.3",
-  "tab.select.4",
-  "tab.select.5",
-  "tab.select.6",
-  "tab.select.7",
-  "tab.select.8",
-  "tab.select.9",
   "scroll.left",
   "scroll.down",
   "scroll.up",
@@ -89,7 +80,7 @@ const fingerprint = (value: unknown) =>
   createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 describe("Windows regression snapshots", () => {
-  it("freezes all 51 Windows action identifiers and separates fixed bindings", async () => {
+  it("freezes all 42 Windows action identifiers and separates fixed bindings", async () => {
     const actions = await json("tests/contract/snapshots/action-ids.json");
     const defaults = await json(
       "tests/contract/snapshots/product-defaults.json",
@@ -99,9 +90,9 @@ describe("Windows regression snapshots", () => {
       "complete product-default snapshot changed",
     ).toBe(PRODUCT_DEFAULTS_FINGERPRINT);
     expect(actions.schemaVersion).toBe(1);
-    expect(actions.count).toBe(51);
+    expect(actions.count).toBe(42);
     expect(actions.ids).toEqual(ACTION_IDS);
-    expect(new Set(actions.ids).size).toBe(51);
+    expect(new Set(actions.ids).size).toBe(42);
 
     const fixed = Object.keys(defaults.fixedBindings).filter(
       (key) => key !== "reason",
@@ -113,7 +104,7 @@ describe("Windows regression snapshots", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(configurable).toHaveLength(47);
+    expect(configurable).toHaveLength(38);
     expect(new Set([...configurable, ...fixed])).toEqual(new Set(ACTION_IDS));
     expect(defaults.configurableKeyTemplates["document.open"]).toEqual(["<C-S-o>"]);
     expect(defaults.configurableKeyTemplates["document.open"]).not.toContain("<C-o>");

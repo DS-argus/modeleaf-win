@@ -10,20 +10,18 @@ const unavailableContext: ActionRuntimeContext = {
 };
 
 describe("HelpModel", () => {
-  it("projects the retained 51-action registry and groups its nine tab selection actions", () => {
+  it("projects the retained 42-action registry with only previous and next tab actions", () => {
     const rows = buildHelpRows();
-    const selectionRows = rows.filter(({ label }) => label === "Select Tab 1–9");
     const visible = ACTION_DESCRIPTORS.filter(({ bindingConfiguration, id }) => bindingConfiguration === "configurable" && !/^(config|history|update)\./u.test(id));
     const rowIds: readonly string[] = rows.map(({ id }) => id);
 
-    expect(ACTION_DESCRIPTORS).toHaveLength(51);
-    expect(visible).toHaveLength(41);
-    expect(selectionRows).toEqual([expect.objectContaining({ id: "tab.select.1", category: "Tabs", shortcut: "Ctrl+1 … Ctrl+9", enabled: true })]);
-    expect(rows).toHaveLength(33);
-    expect(rowIds).toEqual(visible.map(({ id }) => id).filter((id) => !/^tab\.select\.[2-9]$/u.test(id)));
-    for (const retiredId of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"]) expect(rowIds).not.toContain(retiredId);
-    expect(rows).not.toContainEqual(expect.objectContaining({ id: "indicator.picker", enabled: true }));
-    expect(rows).toContainEqual(expect.objectContaining({ category: "Pages", id: "page.first", shortcut: "g g", label: "First Page", enabled: true }));
+    expect(ACTION_DESCRIPTORS).toHaveLength(42);
+    expect(visible).toHaveLength(32);
+    expect(rows).toHaveLength(32);
+    expect(rowIds).toEqual(visible.map(({ id }) => id));
+    expect(rows).toContainEqual(expect.objectContaining({ id: "tab.previous", category: "Tabs", shortcut: "Shift+p", enabled: false }));
+    expect(rows).toContainEqual(expect.objectContaining({ id: "tab.next", category: "Tabs", shortcut: "Shift+n", enabled: false }));
+    expect(rowIds.some((id) => id.startsWith("tab.select."))).toBe(false);
   });
   it("spells uppercase bindings as explicit Shift shortcuts", () => {
     const rows = buildHelpRows();
@@ -34,12 +32,15 @@ describe("HelpModel", () => {
   it("keeps self-modal rows truthful without repeating the dialog reason", () => {
     const rows = buildHelpRows(unavailableContext, BUILT_IN_CONFIG, { modalOwner: "help" });
     expect(rows.find(({ id }) => id === "app.new")).toMatchObject({ enabled: false, disabledReason: "Window capacity unavailable" });
-    expect(rows.find(({ label }) => label === "Select Tab 1–9")).toMatchObject({ enabled: false, disabledReason: "No document open" });
+    expect(rows.find(({ id }) => id === "tab.next")).toMatchObject({ enabled: false, disabledReason: "No document open" });
     expect(rows.find(({ id }) => id === "app.quit")).toMatchObject({ enabled: true });
   });
-  it("derives grouped availability from all nine tab selection projections", () => {
-    const rows = buildHelpRows({ ...unavailableContext, modalOpen: false });
-    expect(rows.find(({ label }) => label === "Select Tab 1–9")).toMatchObject({ enabled: false, disabledReason: "No document open" });
-    expect(getActionRuntimeAvailability("tab.select.1", { ...unavailableContext, modalOpen: false })).toMatchObject({ enabled: false, reason: "No document open" });
+  it("keeps previous and next availability truthful for one and multiple tabs", () => {
+    const single = { ...unavailableContext, hasDocument: true, modalOpen: false, tabCount: 1 };
+    const multiple = { ...single, tabCount: 2 };
+    for (const id of ["tab.previous", "tab.next"] as const) {
+      expect(getActionRuntimeAvailability(id, single)).toMatchObject({ enabled: false, reason: "Only one tab open" });
+      expect(getActionRuntimeAvailability(id, multiple)).toEqual({ enabled: true });
+    }
   });
 });

@@ -50,7 +50,7 @@ if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
 const shellConfig = shellConfigResult.value;
 const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
-  "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
+  "tab.next", "tab.previous",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
@@ -1379,8 +1379,6 @@ function dispatchActionId(id: ActionId): void {
   if (id === "history.back") { void active().session.navigateHistoryBack().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   if (id === "path.showParent" || id === "path.copy") { runPathShortcut(id === "path.showParent" ? "y" : "yy"); return; }
   if (id === "history.forward") { void active().session.navigateHistoryForward().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
-  const tabSelection = /^tab\.select\.(\d)$/u.exec(id);
-  if (tabSelection !== null) { dispatch({ type: "tab.activate", index: Number(tabSelection[1]) - 1 }); return; }
   const direct: Partial<Record<ActionId, Action>> = {
     "document.open": { type: "document.open" }, "document.close": { type: "tab.close" }, "document.print": { type: "document.print" },
     "app.quit": { type: "application.quit" }, "app.new": { type: "application.new" }, "palette.open": { type: "palette.toggle" }, "help.show": { type: "help.toggle" },

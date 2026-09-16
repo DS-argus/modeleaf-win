@@ -46,8 +46,8 @@ describe("CommandPaletteModel", () => {
   it("projects every retained configurable action and no retired reader command", () => {
     const configurable = ACTION_DESCRIPTORS.filter(({ bindingConfiguration, id }) => bindingConfiguration === "configurable" && !/^(config|history|update)\./u.test(id));
 
-    expect(ACTION_DESCRIPTORS).toHaveLength(51);
-    expect(configurable).toHaveLength(41);
+    expect(ACTION_DESCRIPTORS).toHaveLength(42);
+    expect(configurable).toHaveLength(32);
     for (const descriptor of configurable) {
       expect(buildCommandPaletteEntries(baseContext, [], descriptor.displayName)).toContainEqual(expect.objectContaining({
         kind: "command",
