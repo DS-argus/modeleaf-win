@@ -11,7 +11,7 @@ export type ShellProjectionResult =
 export type CurrentWindowCloseIntent = { readonly type: "window.close"; readonly windowId: WindowId };
 export interface ShellStatusInput {
   readonly hasDocument: boolean;
-  readonly zoomMode: "custom" | "fit-width" | "fit-page";
+  readonly zoomMode: "continuous-fit" | "custom" | "fit-width" | "fit-page";
   readonly searchPromptOpen: boolean;
   readonly query: string;
   readonly status: string;

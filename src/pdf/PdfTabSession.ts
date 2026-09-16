@@ -1089,7 +1089,7 @@ export class PdfTabSession {
     const rotation = snapshot.rotationQuarterTurns * 90;
     let scale = snapshot.customScale;
     if (snapshot.zoomMode !== "custom") {
-      const referencePage = snapshot.zoomMode === "fit-page" ? snapshot.fitPageReference : page;
+      const referencePage = snapshot.zoomMode === "fit-page" || snapshot.zoomMode === "continuous-fit" ? snapshot.fitPageReference : page;
       if (referencePage === undefined) return undefined;
       const size = await this.pdfReader.getPageNaturalSize(referencePage, rotation, guard);
       if (size === undefined || !guard()) return undefined;

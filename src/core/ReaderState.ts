@@ -1,6 +1,6 @@
 import type { Action } from "./Action";
 
-export type ZoomMode = "custom" | "fit-width" | "fit-page";
+export type ZoomMode = "continuous-fit" | "custom" | "fit-width" | "fit-page";
 const DEFAULT_SCALE = 1.25;
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 8;
@@ -19,7 +19,7 @@ export interface ReaderSnapshot {
   readonly helpVisible: boolean;
   readonly zoomMode: ZoomMode;
   readonly customScale: number;
-  /** The page used to derive Fit Page; it is independent of the current page. */
+  /** The page used to derive a page-fit scale; it is independent of the current page. */
   readonly fitPageReference: number | undefined;
   readonly rotationQuarterTurns: number;
   readonly pendingScroll: PendingScrollIntent;
@@ -34,7 +34,7 @@ export class ReaderState {
     pageCount: 0,
     documentGeneration: 0,
     helpVisible: false,
-    zoomMode: "fit-page",
+    zoomMode: "continuous-fit",
     customScale: DEFAULT_SCALE,
     fitPageReference: undefined,
     rotationQuarterTurns: 0,
@@ -61,12 +61,12 @@ export class ReaderState {
       page: 1,
       pageCount,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      zoomMode: "fit-page",
+      zoomMode: "continuous-fit",
       customScale: DEFAULT_SCALE,
       fitPageReference: 1,
       rotationQuarterTurns: 0,
       pendingScroll: this.emptyScrollIntent(),
-      status: this.pageStatus(1, pageCount, "fit-page", DEFAULT_SCALE, 0),
+      status: this.pageStatus(1, pageCount, "continuous-fit", DEFAULT_SCALE, 0),
     };
   }
 
@@ -78,7 +78,7 @@ export class ReaderState {
       page: 0,
       pageCount: 0,
       documentGeneration: this.snapshotValue.documentGeneration + 1,
-      zoomMode: "fit-page",
+      zoomMode: "continuous-fit",
       customScale: DEFAULT_SCALE,
       fitPageReference: undefined,
       rotationQuarterTurns: 0,
@@ -159,8 +159,8 @@ export class ReaderState {
 
   restoreView(view: Pick<ReaderSnapshot, "zoomMode" | "customScale" | "fitPageReference" | "rotationQuarterTurns">): void {
     if (!this.snapshotValue.hasDocument) return;
-    const fitPageReference = view.zoomMode === "fit-page" ? view.fitPageReference : undefined;
-    if (view.zoomMode === "fit-page") {
+    const fitPageReference = view.zoomMode === "fit-page" || view.zoomMode === "continuous-fit" ? view.fitPageReference : undefined;
+    if (view.zoomMode === "fit-page" || view.zoomMode === "continuous-fit") {
       if (typeof fitPageReference !== "number"
         || !Number.isSafeInteger(fitPageReference)
         || fitPageReference < 1

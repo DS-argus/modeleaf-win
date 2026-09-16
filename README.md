@@ -19,7 +19,6 @@ A keyboard-first, read-only PDF viewer for Windows 11 x64.
 - Fit width/page, Actual Size, zoom, and rotation
 - Native system printing with progress and cancellation, preserving page coverage
 - Command palette, shortcut help, and seven interface themes
-- Compact tabs with full filenames in tooltips; a single-line statusbar shows reader state and the installed app version when runtime metadata is available
 
 ## Availability
 
@@ -57,8 +56,9 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | Previous / next tab | `P` / `N` |
 | Theme / palette / help | `T` / `:` / `?` |
 
-New PDFs open at **Fit Page** scale with continuous vertical scrolling. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to fit the current page instead.
+New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page and show Fit Page mode.
 
+Precision-trackpad scrolling and pinch gestures are not currently supported.
 Use **Ctrl+wheel** to zoom around the pointer in 10% multiplicative steps (10–800%). Small wheel movements accumulate; normal wheel input scrolls. Over page margins, zoom preserves the nearest page edge. Use `h`/`l` or the left/right arrows to scroll horizontally when zoomed in. `0` selects PDF.js scale 1, not a calibrated physical paper size.
 
 ## Build from source

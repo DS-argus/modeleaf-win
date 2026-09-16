@@ -81,7 +81,7 @@ try {
   await open("?hidden=true");
   const hidden = await evaluate("({opening:window.readerOpening,reference:window.readerHarness.session.snapshot.reader.fitPageReference})");
   assert.equal(hidden.opening.hiddenOpening, true);
-  assert.equal(hidden.opening.opening.mode, "fit-page");
+  assert.equal(hidden.opening.opening.mode, "continuous-fit");
   assert.equal(hidden.reference, 1);
   results.push({ scenario: "zero-to-nonzero opening", result: hidden });
   results.push({ scenario: "300-page continuous forward/end/reverse and disposal", result: await evaluate("window.readerHarness.run()") });
