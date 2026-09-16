@@ -140,16 +140,18 @@ fn invalid_root_is_reported_once_and_recovers_on_explicit_commit() {
     fs::remove_dir_all(directory).unwrap();
 }
 #[test]
-fn persistence_failure_keeps_the_committed_theme_for_the_session() {
-    let directory = temp_dir("session-only");
+fn persistence_failure_keeps_the_previous_durable_theme() {
+    let directory = temp_dir("storage-failure");
     let blocked_parent = directory.join("not-a-directory");
     fs::write(&blocked_parent, b"block").unwrap();
     let manager = ThemeStateManager::load(blocked_parent.join("state.json"));
+    let previous = manager.current();
+
     assert_eq!(
-        manager.commit(ThemeId::Nord, 0),
+        manager.commit(ThemeId::Nord, previous.revision()),
         Err(ThemeStateError::Storage)
     );
-    assert_eq!(manager.current().theme_id(), ThemeId::Nord);
-    assert_eq!(manager.current().revision(), 1);
+    assert_eq!(manager.current(), previous);
+    assert!(!blocked_parent.join("state.json").exists());
     fs::remove_dir_all(directory).unwrap();
 }

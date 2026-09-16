@@ -57,6 +57,18 @@ export function isThemeId(value: unknown): value is ThemeId {
 export function themeForId(id: ThemeId): Theme { return THEME_BY_ID[id]; }
 
 export interface DurableThemeState { readonly themeId: ThemeId; readonly revision: number }
+
+/** The renderer default is replaceable until native returns its startup snapshot. */
+export function shouldAdoptDurableThemeState(
+  current: DurableThemeState,
+  candidate: DurableThemeState,
+  isProvisional: boolean,
+): boolean {
+  return isProvisional
+    || candidate.revision > current.revision
+    || (candidate.revision === current.revision && candidate.themeId === current.themeId);
+}
+
 export function adoptDurableThemeState(current: DurableThemeState, candidate: DurableThemeState): DurableThemeState {
   return candidate.revision > current.revision ? candidate : current;
 }

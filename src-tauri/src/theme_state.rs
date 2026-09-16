@@ -134,11 +134,11 @@ impl ThemeStateManager {
             .checked_add(1)
             .filter(|value| *value <= MAX_SAFE_REVISION)
             .ok_or(ThemeStateError::Storage)?;
-        inner.current = ThemeState { theme_id, revision };
         inner
             .store
             .set_selected_theme(theme_id.id().to_owned())
             .map_err(|_| ThemeStateError::Storage)?;
+        inner.current = ThemeState { theme_id, revision };
         Ok(inner.current)
     }
     pub fn take_startup_recovery_needed(&self) -> bool {

@@ -8,6 +8,7 @@ import {
   THEME_TOKENS,
   adoptDurableThemeState,
   isThemeId,
+  shouldAdoptDurableThemeState,
   themeForId,
 } from "../../../src/domain/theme/Theme";
 
@@ -41,5 +42,15 @@ describe("Theme", () => {
     expect(adoptDurableThemeState(current, { themeId: "dracula", revision: 3 })).toEqual({ themeId: "dracula", revision: 3 });
     expect(adoptDurableThemeState(current, { themeId: "dracula", revision: 2 })).toBe(current);
     expect(adoptDurableThemeState(current, { themeId: "dracula", revision: 1 })).toBe(current);
+
+  });
+  it("adopts a revision-zero startup snapshot only while the default is provisional", () => {
+    const current = { themeId: "tokyo-night" as const, revision: 0 };
+    const startup = { themeId: "catppuccin-latte" as const, revision: 0 };
+    const committed = { themeId: "nord" as const, revision: 1 };
+
+    expect(shouldAdoptDurableThemeState(current, startup, true)).toBe(true);
+    expect(shouldAdoptDurableThemeState(committed, startup, false)).toBe(false);
+    expect(shouldAdoptDurableThemeState(committed, committed, false)).toBe(true);
   });
 });
