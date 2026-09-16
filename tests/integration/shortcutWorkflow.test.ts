@@ -88,11 +88,8 @@ describe("shortcut workflow", () => {
     const palette = buildCommandPaletteEntries(runtime).filter((entry): entry is CommandPaletteCommandEntry => entry.kind === "command");
     const helpById = new Map(help.map((entry) => [entry.id, entry]));
     expect(palette).toHaveLength(12);
-    for (const entry of palette.filter(({ id }) => !/^tab\.select\.[1-9]$/u.test(id))) expect(entry).toMatchObject({ label: helpById.get(entry.id)?.label, shortcut: helpById.get(entry.id)?.shortcut });
-    const visiblePaletteTabRows = palette.filter(({ id }) => /^tab\.select\.[1-9]$/u.test(id));
-    expect(visiblePaletteTabRows.length).toBeGreaterThan(0);
-    for (const entry of visiblePaletteTabRows) expect(entry).toMatchObject({ label: expect.stringMatching(/^Select Tab [1-9]$/u), shortcut: expect.stringMatching(/^Ctrl\+[1-9]$/u) });
-    expect(helpById.get("tab.select.1")).toMatchObject({ label: "Select Tab 1–9", shortcut: "Ctrl+1 … Ctrl+9" });
+    for (const entry of palette) expect(entry).toMatchObject({ label: helpById.get(entry.id)?.label, shortcut: helpById.get(entry.id)?.shortcut });
+    expect(palette.filter(({ id }) => id.startsWith("tab."))).toEqual([expect.objectContaining({ id: "tab.next", label: "Next Tab" }), expect.objectContaining({ id: "tab.previous", label: "Previous Tab" })]);
     expect(help.map(({ shortcut }) => shortcut)).toEqual(expect.arrayContaining(["Ctrl+Shift+o", "Alt+F4", ":, Ctrl+Shift+p", "Shift+n", "g g", "Shift+g"]));
   });
   it("projects exact no-document current-window and theme behavior", () => {

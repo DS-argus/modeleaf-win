@@ -3,7 +3,7 @@
   "baseline": {
     "source": "Modeleaf Windows action registry"
   },
-  "count": 51,
+  "count": 42,
   "ids": [
     "document.open",
     "document.close",
@@ -14,15 +14,6 @@
     "help.show",
     "tab.next",
     "tab.previous",
-    "tab.select.1",
-    "tab.select.2",
-    "tab.select.3",
-    "tab.select.4",
-    "tab.select.5",
-    "tab.select.6",
-    "tab.select.7",
-    "tab.select.8",
-    "tab.select.9",
     "scroll.left",
     "scroll.down",
     "scroll.up",

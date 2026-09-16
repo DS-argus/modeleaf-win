@@ -9,7 +9,7 @@ export type InputContext = (typeof INPUT_CONTEXTS)[number];
 
 export const ACTION_IDS = Object.freeze([
   "document.open", "document.close", "document.print", "app.quit", "app.new", "palette.open", "help.show",
-  "tab.next", "tab.previous", "tab.select.1", "tab.select.2", "tab.select.3", "tab.select.4", "tab.select.5", "tab.select.6", "tab.select.7", "tab.select.8", "tab.select.9",
+  "tab.next", "tab.previous",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "history.back", "history.forward",
   "prompt.commit", "prompt.cancel", "search.prompt", "search.next", "search.previous", "search.cancel",
@@ -65,15 +65,6 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
 
   descriptor("tab.next", "Next Tab", contexts(READER_CONTEXTS)),
   descriptor("tab.previous", "Previous Tab", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.1", "Select Tab 1", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.2", "Select Tab 2", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.3", "Select Tab 3", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.4", "Select Tab 4", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.5", "Select Tab 5", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.6", "Select Tab 6", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.7", "Select Tab 7", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.8", "Select Tab 8", contexts(READER_CONTEXTS)),
-  descriptor("tab.select.9", "Select Tab 9", contexts(READER_CONTEXTS)),
 
   descriptor("scroll.left", "Scroll Left", contexts(READER_CONTEXTS), "allowed"),
   descriptor("scroll.down", "Scroll Down", contexts(READER_CONTEXTS), "allowed"),
@@ -158,7 +149,6 @@ export type ActionRuntimeAvailability =
 
 const DOCUMENT_ACTIONS = new Set<ActionId>([
   "document.close", "document.print", "tab.next", "tab.previous",
-  ...ACTION_IDS.filter((id) => id.startsWith("tab.select.")),
   ...ACTION_IDS.filter((id) => id.startsWith("scroll.")),
   ...ACTION_IDS.filter((id) => id.startsWith("page.")),
   "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel", "path.showParent", "path.copy",
@@ -178,8 +168,6 @@ export function getActionRuntimeAvailability(id: ActionId, state: ActionRuntimeC
   }
   if (id === "app.new" && !state.canCreateWindow) return { enabled: false, reason: "Window capacity unavailable" };
   if (DOCUMENT_ACTIONS.has(id) && !state.hasDocument) return { enabled: false, reason: "No document open" };
-  const tabMatch = /^tab\.select\.(\d)$/u.exec(id);
-  if (tabMatch !== null && Number(tabMatch[1]) > state.tabCount) return { enabled: false, reason: "Tab not open" };
   if ((id === "tab.next" || id === "tab.previous") && state.tabCount < 2) return { enabled: false, reason: "Only one tab open" };
   if (id === "config.writeDefault" && state.configExists) return { enabled: false, reason: "Config already exists" };
   if (id === "config.resetDefault" && !state.configExists) return { enabled: false, reason: "No config to reset" };

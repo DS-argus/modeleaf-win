@@ -19,14 +19,7 @@ export function helpCategoryForId(id: ActionId): HelpCategory {
   return "Application";
 }
 export function buildHelpRows(context: ActionRuntimeContext = DEFAULT_RUNTIME_CONTEXT, config: ProductConfig = DEFAULT_CONFIG, projectionOptions: CommandProjectionOptions = {}): readonly HelpRow[] {
-  const commands = projectHelpCommands(context, config, projectionOptions);
-  const tabSelectionCommands = commands.filter((command) => /^tab\.select\.[1-9]$/u.test(command.id));
-  const tabSelectionRow = buildTabSelectionRow(tabSelectionCommands);
-
-  return commands.flatMap((command) => {
-    if (!/^tab\.select\.[1-9]$/u.test(command.id)) return [helpRow(command)];
-    return command.id === "tab.select.1" && tabSelectionRow !== undefined ? [tabSelectionRow] : [];
-  });
+  return projectHelpCommands(context, config, projectionOptions).map(helpRow);
 }
 
 function helpRow(command: CommandProjection): HelpRow {
@@ -37,22 +30,5 @@ function helpRow(command: CommandProjection): HelpRow {
     label: command.title,
     enabled: command.enabled,
     ...(!command.enabled && command.disabledReason !== undefined ? { disabledReason: command.disabledReason } : {}),
-  });
-}
-function buildTabSelectionRow(commands: readonly CommandProjection[]): HelpRow | undefined {
-  const first = commands[0];
-  if (first === undefined) return undefined;
-  const enabled = commands.some((command) => command.enabled);
-  const last = commands.at(-1) ?? first;
-  const disabledReason = !enabled && commands.every((command) => command.disabledReason === first.disabledReason)
-    ? first.disabledReason
-    : undefined;
-  return Object.freeze({
-    id: first.id,
-    category: "Tabs",
-    shortcut: `${first.shortcuts.join(", ")} … ${last.shortcuts.join(", ")}`,
-    label: "Select Tab 1–9",
-    enabled,
-    ...(disabledReason !== undefined ? { disabledReason } : {}),
   });
 }
