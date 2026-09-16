@@ -49,6 +49,19 @@
         { "name": "Audit production dependencies", "run": "npm run security:verify" },
         { "name": "Test frontend and packaging", "run": "npm test -- --maxWorkers=2" },
         { "name": "Build frontend", "run": "npm run build" },
+        { "id": "shell_qa", "name": "Verify shell renderer visual matrix", "run": "npm run qa:shell" },
+        {
+          "name": "Retain shell renderer comparison evidence",
+          "if": "${{ !cancelled() && (steps.shell_qa.outcome == 'success' || steps.shell_qa.outcome == 'failure') }}",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "shell-renderer-evidence-${{ github.sha }}",
+            "path": ".internal/evidence/issue-114/**/*.png\n.internal/evidence/issue-114/**/automation.json\n.internal/evidence/issue-114/**/pixel-mismatch.json",
+            "if-no-files-found": "error",
+            "include-hidden-files": true,
+            "retention-days": 7
+          }
+        },
         { "name": "Check Rust formatting", "run": "cargo fmt --check --manifest-path src-tauri/Cargo.toml" },
         { "name": "Lint Rust", "run": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings" },
         { "name": "Test Rust", "run": "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=2" },

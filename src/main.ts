@@ -26,14 +26,16 @@ import { performTabActivation, performTabClose, queueRelativeTabActivation } fro
 import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
 import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "./application/WorkspaceTransitionQueue";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
-import { DEFAULT_THEME_ID, THEME_TOKENS, isThemeId, shouldAdoptDurableThemeState, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
+import { DEFAULT_THEME_ID, THEME_TOKENS, isThemeId, shouldAdoptDurableThemeState, themeForId, themeContrastEndpoint, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
 import { CLOSED_THEME_PICKER, THEME_PICKER_FOOTER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
 import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
-import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
+import { createTabStripRenderer } from "./ui/shell/TabStripRenderer";
+import { loadInstalledVersion } from "./platform/InstalledVersion";
+import { AccessibilityController, readerAccessibilityName } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
@@ -89,20 +91,24 @@ root.innerHTML = `
 <section id="app-shell" data-testid="app-shell" class="app-shell" tabindex="-1" role="application" aria-label="Modeleaf PDF reader">
   <nav id="windows-menu" data-testid="windows-menu" class="windows-menu" aria-label="Application menu"></nav>
   <div id="tab-strip" data-testid="tab-strip" class="tab-strip" role="tablist" aria-label="Open PDFs"></div>
-  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd></button></section></main>
+  <main id="reader-main" data-testid="reader-main" aria-label="PDF reader"><section id="tab-hosts" class="tab-hosts"></section><section id="empty-reader" data-testid="empty-reader" class="empty-reader"><button id="empty-reader-open" type="button" class="empty-reader-action"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v11H3V7Z"/></svg><span>Open PDF</span><kbd id="empty-reader-shortcut"></kbd></button></section></main>
   <section id="prompt" class="prompt" role="group" aria-label="Go to page" hidden></section>
   <dialog id="theme-dialog" class="mac-overlay theme-overlay" aria-labelledby="theme-title"><form id="theme-form"><h2 id="theme-title">Theme</h2><p id="theme-description" class="visually-hidden">j or k previews a theme. Enter saves it. Escape restores the previous theme.</p><div id="theme-list" class="theme-list" role="radiogroup" aria-describedby="theme-description"></div><p class="overlay-footer theme-footer">${THEME_PICKER_FOOTER.map(({ key, action }) => `<kbd>${key}</kbd> ${action}`).join(" · ")}</p><menu class="visually-hidden"><button id="theme-cancel" type="button">Cancel</button><button id="theme-apply" type="submit">Apply theme</button></menu></form></dialog>
   <dialog id="help-dialog" class="mac-overlay help-overlay" aria-label="Keyboard shortcuts"><div id="help-rows" class="help-groups"></div></dialog>
   <dialog id="search-dialog" class="search-prompt" aria-labelledby="search-title"><form id="search-form" autocomplete="off"><label id="search-title" class="visually-hidden" for="search-input">Search PDF text</label><span class="search-prefix" aria-hidden="true">/</span><input id="search-input" type="search" spellcheck="false" aria-label="Search PDF text" placeholder="Search PDF text"><p class="search-footer"><kbd>Enter</kbd> search · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="file-opener-dialog" class="mac-overlay list-overlay file-opener-overlay" aria-labelledby="file-opener-title"><form id="file-opener-form"><label id="file-opener-title" class="visually-hidden" for="file-opener-input">Open PDF</label><input id="file-opener-input" type="search" autocomplete="off" spellcheck="false" placeholder="Filter recent PDFs" aria-label="Filter recent PDFs"><ul id="file-opener-list" class="overlay-list file-opener-list" aria-label="Open PDF choices"></ul><p class="overlay-footer file-opener-footer"><kbd>Ctrl+j/k</kbd> move · <kbd>Ctrl+Shift+c</kbd> clear history · <kbd>Enter</kbd> open · <kbd>Esc</kbd> close</p></form></dialog>
   <dialog id="command-palette-dialog" class="mac-overlay list-overlay" aria-label="Command palette"><form id="command-palette-form"><input id="palette-input" type="search" autocomplete="off" spellcheck="false" placeholder="Type a command..." aria-label="Filter commands"><ul id="palette-list" class="overlay-list command-palette-list"></ul></form></dialog>
-  <footer id="status" data-testid="reader-status" class="statusbar" role="status" aria-live="polite" aria-atomic="true"></footer>
+  <footer id="status" data-testid="reader-status" class="statusbar" role="group" aria-label="Reader status"></footer>
   <div id="announcements-polite" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
   <div id="announcements-assertive" class="visually-hidden" aria-live="assertive" aria-atomic="true"></div>
 </section>`;
 
 const windowsMenu = required<HTMLElement>("#windows-menu");
 const tabStrip = required<HTMLElement>("#tab-strip");
+const shellTabs = createTabStripRenderer(tabStrip, {
+  activate: (id) => { const tab = workspace.snapshot.tabs.find((entry) => String(entry.id) === id); if (tab !== undefined) void switchTab(tab.id); },
+  close: (id) => { const tab = workspace.snapshot.tabs.find((entry) => String(entry.id) === id); if (tab !== undefined) closeTab(tab.id); },
+});
 const tabHosts = required<HTMLElement>("#tab-hosts");
 const emptyReader = required<HTMLElement>("#empty-reader");
 const emptyReaderOpen = required<HTMLButtonElement>("#empty-reader-open");
@@ -117,10 +123,14 @@ const shellStatus = createShellStatusRenderer(status, () => {
     searchPromptOpen: overlayOwner.active?.id === "search",
     query: session.query,
     status: reader.status,
+    page: reader.page,
+    pageCount: reader.pageCount,
+    ...(reader.zoomMode === "custom" ? { zoom: reader.customScale } : {}),
   };
-});
+}, { onHelp: () => dispatch({ type: "help.toggle" }) });
+void loadInstalledVersion().then((version) => shellStatus.setVersion(version));
 const printProgressOwner = new PrintProgressOwner<PdfTabSession>();
-const printProgressControl = createPrintProgress(status, () => printProgressOwner.cancel());
+const printProgressControl = createPrintProgress(shellStatus.printHost, () => printProgressOwner.cancel());
 let printFocusOwner: { readonly session: PdfTabSession; readonly element?: HTMLElement } | undefined;
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
@@ -243,6 +253,7 @@ function adoptDurableTheme(candidate: DurableThemeState): boolean {
 function applyTheme(themeId: ThemeId): void {
   const palette = themeForId(themeId).palette;
   for (const token of THEME_TOKENS) root.style.setProperty(`--theme-${token}`, palette[token]);
+  root.style.setProperty("--theme-contrast", themeContrastEndpoint(palette));
   root.dataset.theme = themeId;
 }
 function activeThemePicker(): ThemePickerOpenModel | null {
@@ -831,24 +842,11 @@ function render(): void {
     tab.payload.host.setAttribute("aria-label", readerAccessibilityName(title, tab.payload.session.snapshot.reader.pageCount));
     if (selected && tab.payload.session.snapshot.reader.hasDocument) accessibility.announce({ kind: "tab", active: documentTabs.findIndex((entry) => entry.id === tab.id) + 1, total: documentTabs.length });
   }
-  tabStrip.replaceChildren(...documentTabs.map((tab, index) => {
-    const selected = tab.id === workspace.activeTabId;
-    const semantics = tabAccessibilitySemantics({ basename: tab.payload.session.snapshot.title, ordinal: index + 1, total: documentTabs.length, active: selected });
-    const button = document.createElement("button");
-    button.type = "button"; button.className = "workspace-tab"; button.id = `reader-tab-${String(tab.id)}`;
-    button.role = semantics.role; button.setAttribute("aria-label", semantics.ariaLabel); button.setAttribute("aria-selected", semantics.ariaSelected); button.setAttribute("aria-setsize", String(semantics.ariaSetSize)); button.setAttribute("aria-posinset", String(semantics.ariaPosInSet)); button.setAttribute("aria-controls", `reader-panel-${String(tab.id)}`); button.tabIndex = semantics.tabIndex; button.textContent = tab.payload.session.snapshot.title;
-    button.title = tab.payload.session.snapshot.title;
-    button.addEventListener("click", () => void switchTab(tab.id));
-    const close = document.createElement("button"); close.type = "button"; close.className = "workspace-tab-close"; close.setAttribute("aria-label", "Close tab"); close.textContent = "×"; close.addEventListener("click", (event) => { event.stopPropagation(); closeTab(tab.id); });
-    const item = document.createElement("div"); item.className = "workspace-tab-item"; item.dataset.selected = String(selected); item.append(button, close); item.dataset.index = String(index); return item;
-  }));
-  const selectedTab = tabStrip.querySelector<HTMLElement>('[aria-selected="true"]')?.parentElement;
-  if (selectedTab !== null && selectedTab !== undefined) {
-    const stripBounds = tabStrip.getBoundingClientRect();
-    const selectedBounds = selectedTab.getBoundingClientRect();
-    if (selectedBounds.left < stripBounds.left) tabStrip.scrollLeft += selectedBounds.left - stripBounds.left;
-    else if (selectedBounds.right > stripBounds.right) tabStrip.scrollLeft += selectedBounds.right - stripBounds.right;
-  }
+  shellTabs.render(documentTabs.map((tab) => ({
+    id: String(tab.id),
+    title: tab.payload.session.snapshot.title,
+    selected: tab.id === workspace.activeTabId,
+  })));
 }
 function cancelPagePromptOwnership(): void {
   const revoked = revokePagePromptOwnership(pagePromptTransaction, suspendedPagePrompt);

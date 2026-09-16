@@ -15,7 +15,7 @@ html, body { overflow: hidden; }
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(0, 1fr) minmax(28px, auto);
+  grid-template-rows: auto auto minmax(0, 1fr) 26px;
   width: 100%;
   height: 100%;
   background: var(--theme-background);
@@ -26,36 +26,40 @@ html, body { overflow: hidden; }
 .statusbar { grid-row: 4; }
 
 .statusbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px 8px;
-  min-height: 28px;
-  padding: 3px 14px;
-  color: var(--theme-foreground);
-  font-size: 12px;
-  line-height: 1.4;
-  background: var(--theme-statusline);
+  container: statusbar / inline-size;
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 8px;
+  height: 26px; min-width: 0; padding: 0 8px;
+  border-top: 1px solid var(--theme-border);
+  color: var(--theme-foreground); background: var(--theme-statusline);
+  font: 0.625rem/1 "Cascadia Mono", Consolas, monospace; white-space: nowrap;
 }
-.status-message { min-width: 0; overflow-wrap: anywhere; }
-.status-pending { overflow-wrap: anywhere; }
-.status-badge {
-  flex: 0 0 auto;
-  padding: 0 5px;
-  border: 1px solid var(--theme-accent);
-  border-radius: 4px;
-  color: var(--theme-foreground);
-  background: color-mix(in srgb, var(--theme-accent) 12%, var(--theme-statusline));
-  font-size: 1em;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.status-badge-search {
-  border-style: dashed;
-  background: color-mix(in srgb, var(--theme-accent) 6%, var(--theme-statusline));
-}
-.status-path-notice { min-width: 0; overflow-wrap: anywhere; }
+.statusbar [hidden] { display: none; }
+.status-help { flex: 0 0 auto; padding: 2px 0; border: 0; color: var(--theme-accent); background: transparent; font: inherit; white-space: nowrap; }
+.status-help:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: 1px; }
+.status-live { display: flex; flex: 1 1 auto; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.status-metrics { display: flex; flex: 0 0 auto; gap: 8px; align-items: center; }
+.status-metrics:has(.status-page[hidden]):has(.status-zoom[hidden]) { display: none; }
+.status-page, .status-zoom { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.status-message, .status-path-notice { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
+.status-message { flex: 0 1 auto; }
+.status-path-notice { flex: 0 1 auto; text-align: left; }
+.status-pending { flex: 0 0 auto; color: var(--theme-accent); }
+.status-badge { flex: 0 0 auto; padding: 2px 4px; border: 1px solid var(--theme-border); border-radius: 3px; color: var(--theme-foreground); background: var(--theme-active-tab); font-size: 1em; font-weight: 600; }
+.status-badge-search { border-style: dashed; }
 .status-path-notice-copied { color: var(--theme-accent); font-weight: 600; }
+.status-version { flex: 0 0 auto; color: var(--theme-muted-text); font-variant-numeric: tabular-nums; }
+.status-print-host { min-width: 0; max-width: 45%; }
+.status-print-host:empty, .status-print-host:has(.print-progress[hidden]) { display: none; }
+.status-print-host .print-progress { flex-wrap: nowrap; font-size: inherit; }
+.status-print-host .print-progress > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.status-print-host .print-progress button { flex: 0 0 auto; padding: 1px 4px; }
+@container statusbar (max-width: 65em) { .status-help { display: none; } }
+@container statusbar (max-width: 51em) {
+  .status-message { max-width: 6ch; }
+  .status-live { gap: 4px; }
+  .status-print-host progress { display: none; }
+}
+@container statusbar (max-width: 36em) { .status-version { display: none; } }
 
 .reader-surface {
   display: block;
@@ -211,10 +215,10 @@ kbd {
   font-size: 0.9em;
 }
 
-/* Local foreground correction keeps translucent panels readable without changing theme palettes. */
+/* Overlay surfaces consume the same semantic roles in every theme. */
 .prompt, #search-dialog, .mac-overlay {
   --overlay-panel-alpha: 85%;
-  --overlay-contrast: white;
+  --overlay-contrast: var(--theme-contrast);
   --overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));
   --overlay-muted: color-mix(in srgb, var(--theme-foreground) 70%, var(--overlay-contrast));
   --overlay-secondary-accent: color-mix(in srgb, var(--theme-accent) 60%, var(--overlay-contrast));
@@ -222,7 +226,6 @@ kbd {
   --overlay-focus: color-mix(in srgb, var(--theme-focus-indicator) 40%, var(--overlay-contrast));
   color: var(--overlay-text);
 }
-[data-theme="catppuccin-latte"] :is(.prompt, #search-dialog, .mac-overlay) { --overlay-contrast: black; }
 .prompt {
   position: absolute;
   z-index: 20;
@@ -313,14 +316,14 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
   backdrop-filter: blur(18px) saturate(120%);
 }
 .mac-overlay form { margin: 0; }
-.theme-overlay { width: min(460px, calc(100vw - 40px)); padding: 18px 20px; }
-.theme-overlay h2 { margin: 0 0 8px; color: var(--overlay-muted); font-size: 17px; }
+.theme-overlay { width: min(300px, calc(100vw - 32px)); padding: 10px 12px; }
+.theme-overlay h2 { margin: 0 0 6px; color: var(--overlay-muted); font-size: 0.8125rem; }
 .theme-list { display: grid; gap: 1px; }
 .theme-option {
   width: 100%;
-  padding: 5px 8px;
+  padding: 4px 6px;
   color: var(--overlay-text);
-  font-size: 17px;
+  font-size: 0.75rem;
   line-height: 1.25;
   text-align: left;
   background: transparent;
@@ -374,11 +377,16 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
   outline: none;
 }
 .overlay-list-entry:disabled { color: var(--overlay-muted); cursor: not-allowed; }
-.command-palette-entry { row-gap: 3px; }
-.command-palette-entry-label { min-width: 0; overflow-wrap: anywhere; }
-.command-palette-entry-shortcut { color: var(--overlay-secondary-accent); font-family: "Cascadia Mono", monospace; white-space: nowrap; }
+#command-palette-dialog { width: min(360px, calc(100vw - 32px)); padding: 10px; }
+#command-palette-dialog input { padding: 5px 4px 7px; font-size: 0.8125rem; }
+.command-palette-entry { row-gap: 2px; column-gap: 10px; padding: 5px 6px; font-size: 0.75rem; border-radius: 4px; }
+.command-palette-entry[aria-selected="true"],
+.command-palette-entry:not(:disabled):hover,
+.command-palette-entry:not(:disabled):focus-visible { background: var(--theme-inactive-tab); }
+.command-palette-entry-label { min-width: 0; overflow-wrap: anywhere; color: var(--overlay-secondary-accent); }
+.command-palette-entry-shortcut { color: var(--overlay-text); font: 0.6875rem "Cascadia Mono", monospace; white-space: nowrap; }
 .command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text); font-size: 0.8em; }
-.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-accent); }
+.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-text); }
 .file-opener-overlay { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 14px 16px; overflow: hidden; }
 .file-opener-overlay form { display: grid; min-height: 0; max-height: calc(100vh - 60px); gap: 7px; }
 .file-opener-overlay input { min-height: 36px; padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-inactive-tab); }
@@ -396,26 +404,27 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .command-palette-list { min-height: 0; scrollbar-width: none; }
 .command-palette-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
 .overlay-footer { margin: 5px 8px 0; color: var(--overlay-secondary-accent); font-size: 12px; }
+.theme-footer { margin: 5px 6px 0; font-size: 0.6875rem; }
 .overlay-footer kbd { padding: 0; color: var(--overlay-text); background: transparent; border: 0; }
 
 .help-overlay {
-  width: min(1180px, calc(100vw - 48px));
+  width: min(640px, calc(100vw - 32px));
   max-height: calc(100vh - 64px);
-  padding: 20px 24px;
+  padding: 12px;
   overflow-y: auto;
 }
-.help-groups { columns: 2 420px; column-gap: 20px; }
+.help-groups { columns: 2 260px; column-gap: 10px; }
 .help-group {
   break-inside: avoid;
-  margin: 0 0 14px;
-  padding: 14px 16px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
   background: color-mix(in srgb, var(--theme-inactive-tab) 62%, transparent);
   border-radius: 8px;
 }
-.help-group h2 { margin: 0 0 6px; padding-bottom: 5px; color: var(--overlay-accent); border-bottom: 1px solid color-mix(in srgb, var(--overlay-accent) 30%, transparent); font-size: 14px; font-weight: 650; }
-.help-group dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 16px; margin: 0; }
-.help-overlay { font-size: 13px; }
-.help-group dd { font-size: 12px; }
+.help-group h2 { margin: 0 0 4px; padding-bottom: 4px; color: var(--overlay-accent); border-bottom: 1px solid color-mix(in srgb, var(--overlay-accent) 30%, transparent); font-size: 0.75rem; font-weight: 650; }
+.help-group dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 3px 10px; margin: 0; }
+.help-overlay { font-size: 0.75rem; }
+.help-group dd { font-size: 0.6875rem; }
 .help-group dt { color: var(--overlay-secondary-accent); }
 .help-group dd { margin: 0; color: var(--overlay-text); font-family: "Cascadia Mono", monospace; text-align: right; }
 .mac-overlay :is(input, .theme-option, .overlay-list-entry):focus-visible {
@@ -423,11 +432,11 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
   outline-offset: -2px;
 }
 .mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { box-shadow: inset 3px 0 var(--overlay-focus); }
-.windows-menu { display: flex; flex-wrap: wrap; gap: 0.15rem; min-height: 2rem; padding: 0 0.35rem; border-bottom: 1px solid var(--theme-border); background: var(--theme-background); }
+.windows-menu { display: flex; flex-wrap: nowrap; gap: 0; min-height: 28px; padding: 0 4px; border-bottom: 1px solid var(--theme-border); background: var(--theme-inactive-tab); }
 .windows-menu details { position: relative; }
-.windows-menu summary { cursor: default; list-style: none; padding: 0.4rem 0.55rem; }
+.windows-menu summary { cursor: default; list-style: none; padding: 4px 8px; font-size: 0.8125rem; line-height: 20px; }
 .windows-menu summary:hover, .windows-menu details[open] > summary { background: var(--theme-active-tab); }
-.windows-menu summary:focus-visible, .windows-menu-commands button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }
+.windows-menu summary:focus-visible, .windows-menu-commands button:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: -2px; }
 .windows-menu summary::-webkit-details-marker { display: none; }
 .windows-menu details:not([open]) > .windows-menu-commands,
 .windows-menu-commands[hidden], .windows-menu-shortcut[hidden] { display: none; }
@@ -439,17 +448,20 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .windows-menu-label { min-inline-size: 0; overflow-wrap: anywhere; }
 .windows-menu-shortcut { min-inline-size: 0; text-align: right; font-size: 0.75rem; color: var(--theme-muted-text); overflow-wrap: anywhere; }
 .windows-menu-commands button:disabled .windows-menu-shortcut { color: inherit; }
-.tab-strip { display: flex; flex-wrap: nowrap; min-width: 0; min-height: 34px; gap: 2px; padding: 3px 8px; overflow-x: auto; overflow-y: hidden; background: var(--theme-inactive-tab); border-bottom: 1px solid var(--theme-border); }
+.tab-strip { --tab-edge: var(--theme-accent); display: flex; flex-wrap: nowrap; align-items: end; min-width: 0; height: max(34px, 2.125rem); gap: 0; padding: 4px 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; background: var(--theme-inactive-tab); background-image: linear-gradient(var(--theme-active-tab), var(--theme-active-tab)), linear-gradient(var(--tab-edge), var(--tab-edge)); background-repeat: no-repeat; background-size: 100% 4px, 100% 1px; background-position: bottom, left bottom 4px; }
 .tab-strip[hidden] { display: none; }
-.workspace-tab-item { display: flex; align-items: center; box-sizing: border-box; flex: 0 0 184px; width: 184px; min-width: 184px; height: 26px; color: var(--theme-muted-text); background: var(--theme-active-tab); border: 1px solid transparent; }
-.workspace-tab-item:hover { color: var(--theme-foreground); background: var(--theme-border); }
-.workspace-tab-item[data-selected="true"] { color: var(--theme-foreground); border-color: color-mix(in srgb, var(--theme-accent) 72%, var(--theme-border)); font-weight: 650; }
-.workspace-tab, .workspace-tab-close { border: 0; color: inherit; background: transparent; }
-.workspace-tab { display: flex; align-items: center; align-self: stretch; flex: 1 1 auto; min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.workspace-tab-close { display: grid; place-items: center; align-self: stretch; flex: 0 0 auto; padding: 0 8px; font-size: 17px; line-height: 1; opacity: 0.75; }
-.workspace-tab-item[data-selected="true"] .workspace-tab-close { opacity: 0.85; }
+.workspace-tab-item { display: flex; align-items: center; box-sizing: border-box; flex: 0 1 184px; width: 184px; min-width: 40px; height: max(26px, 1.625rem); color: var(--theme-muted-text); background: var(--theme-inactive-tab); border: 1px solid transparent; border-right-color: var(--theme-border); border-bottom-color: var(--tab-edge); }
+.workspace-tab-item:hover { color: var(--theme-foreground); background: color-mix(in srgb, var(--theme-accent) 8%, var(--theme-inactive-tab)); }
+.workspace-tab-item:has(+ .workspace-tab-item[data-selected="true"]) { border-right-color: transparent; }
+.workspace-tab-item[data-selected="true"] { min-width: 120px; color: var(--theme-foreground); background: var(--theme-active-tab); border-color: var(--tab-edge); border-bottom-color: var(--theme-active-tab); border-radius: 6px 6px 0 0; font-weight: 650; }
+.workspace-tab, .workspace-tab-close { border: 0; color: inherit; background: transparent; font-family: inherit; }
+.workspace-tab { display: block; align-self: stretch; flex: 1 1 auto; min-width: 0; padding: 0 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.75rem; font-weight: inherit; text-align: left; }
+.workspace-tab-close { display: grid; place-items: center; align-self: stretch; flex: 0 0 22px; width: 22px; padding: 0; font-size: 1.0625rem; line-height: 1; opacity: 0.65; }
+.workspace-tab-item[data-selected="true"] .workspace-tab-close { opacity: 1; }
 .workspace-tab-item:hover .workspace-tab-close, .workspace-tab-close:focus-visible { opacity: 1; }
-.workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }
+.workspace-tab-close:hover:not(:disabled) { background: color-mix(in srgb, var(--theme-accent) 16%, transparent); }
+.workspace-tab:disabled, .workspace-tab-close:disabled { color: var(--theme-muted-text); cursor: not-allowed; }
+.workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: -3px; }
 .tab-hosts { min-height: 0; position: relative; }
 .tab-host { width: 100%; height: 100%; }
 .tab-host[hidden] { display: none; }
@@ -466,6 +478,7 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 }
 
 :root {
+  --theme-contrast: #ffffff;
   --theme-background: #1a1b26;
   --theme-foreground: #c0caf5;
   --theme-muted-text: #9aa5ce;
@@ -509,7 +522,7 @@ kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
 }
 .print-progress {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 4px 8px;
   margin-inline-start: auto;
@@ -528,54 +541,6 @@ kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
 }
 .print-progress button:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
 .print-progress button:disabled { opacity: 0.65; }
-@media (forced-colors: active) {
-  .help-group h2 { border-color: CanvasText; }
-  .command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }
-  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-secondary-accent: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
-  .mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }
-  .windows-menu summary:hover, .windows-menu details[open] > summary,
-  .windows-menu-commands button:hover:not(:disabled), .windows-menu-commands button:focus-visible { background: Highlight; color: HighlightText; }
-  .windows-menu summary:focus-visible, .windows-menu-commands button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
-  .windows-menu-commands { border-color: CanvasText; box-shadow: none; }
-  .windows-menu-commands button:disabled { color: GrayText; opacity: 1; }
-  .windows-menu-shortcut { color: inherit; }
-  .print-progress { color: CanvasText; forced-color-adjust: auto; }
-  .print-progress button:focus-visible { outline-color: Highlight; }
-  .statusbar, .status-badge { color: CanvasText; background: Canvas; }
-  .status-badge { border-color: CanvasText; }
-  .pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }
-  .pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }
-  .workspace-tab-item:hover, .workspace-tab-item[data-selected="true"] { color: HighlightText; background: Highlight; }
-  .workspace-tab, .workspace-tab-close { color: inherit; background: transparent; }
-  .workspace-tab-item:hover .workspace-tab-close, .workspace-tab-close:focus-visible { opacity: 1; }
-  .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
-  .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
-  .mac-overlay { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; backdrop-filter: none; }
-  #search-dialog { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
-  #search-dialog input { color: CanvasText; }
-  #search-dialog input::placeholder, .search-prefix, .search-footer, .search-footer kbd { color: CanvasText; }
-  #search-dialog input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
-  .textLayer .pdf-search-hit,
-  ::highlight(modeleaf-pdf-search-hits),
-  .pdf-search-fallback { background: Highlight; }
-  ::highlight(modeleaf-pdf-search-current),
-  .textLayer .pdf-search-current,
-  .pdf-search-fallback[data-search-current="true"] { background: Highlight; outline-color: HighlightText; }
-  .prompt { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
-  .file-opener-overlay, .file-opener-overlay input { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
-  .file-opener-entry, .file-opener-diagnostic, .file-opener-overlay input::placeholder { color: CanvasText; }
-  .file-opener-entry[aria-selected="true"] { color: HighlightText; background: Highlight; box-shadow: inset 3px 0 HighlightText; }
-  .file-opener-entry:not(:disabled):focus-visible, .file-opener-overlay input:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
-  .file-opener-recents-heading, .file-opener-footer, .file-opener-footer kbd { color: CanvasText; }
-  .file-opener-recents-heading { border-color: CanvasText; }
-}
-@media (min-resolution: 2dppx), (min-width: 1600px) {
-  .app-shell { min-width: 0; }
-  .tab-strip { min-height: 40px; }
-  .reader-surface { padding: clamp(16px, 2vw, 28px); }
-  .file-opener-overlay { max-width: calc(100vw - 32px); }
-  .file-opener-footer { overflow-wrap: anywhere; }
-}
 
 #reader-main {
   display: grid;
@@ -599,32 +564,77 @@ kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
 .empty-reader p { margin: 0; }
 .empty-reader button { min-width: 8rem; }
 
-/* The empty-state hint is the click target, so it must read as text while
-   behaving as a button for pointer and assistive-technology users. */
 .empty-reader-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  background: none;
-  border: 0;
-  padding: 8px 12px;
-  border-radius: 6px;
-  color: var(--theme-muted-text);
-  font: inherit;
-  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 10px;
+  max-width: calc(100vw - 32px); padding: 12px 20px;
+  border: 1px solid var(--theme-accent); border-radius: 25px;
+  background: var(--theme-background); color: var(--theme-foreground);
+  font: 500 1.0625rem "Segoe UI Variable", "Segoe UI", sans-serif; cursor: pointer;
 }
-.empty-reader-action:hover:not(:disabled) { background: var(--theme-active-tab); color: var(--theme-foreground); }
-.empty-reader-action:disabled { cursor: default; opacity: 0.6; }
-.empty-reader-action kbd {
-  padding: 2px 6px;
-  border: 1px solid var(--theme-border);
-  border-radius: 4px;
-  background: var(--theme-statusline);
-  color: var(--theme-foreground);
-}
+.empty-reader-action svg { width: 20px; height: 20px; flex: 0 0 auto; color: var(--theme-accent); }
+.empty-reader-action:hover:not(:disabled) { background: var(--theme-active-tab); }
+.empty-reader-action:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: 3px; }
+.empty-reader-action:disabled { cursor: default; color: var(--theme-muted-text); opacity: 0.6; }
+.empty-reader-action kbd { font: 600 0.75rem "Cascadia Mono", Consolas, monospace; color: var(--theme-accent); background: transparent; padding: 2px 4px; }
 
 .file-opener-diagnostic {
   padding: 8px 12px;
   color: var(--overlay-muted);
   line-height: 1.35;
+}
+@media (forced-colors: active) {
+  .help-group h2 { border-color: CanvasText; }
+  .command-palette-entry[aria-selected="true"] .command-palette-entry-label { color: HighlightText; }
+  .command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }
+  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-secondary-accent: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
+  .mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }
+  .windows-menu summary:hover, .windows-menu details[open] > summary,
+  .windows-menu-commands button:hover:not(:disabled), .windows-menu-commands button:focus-visible { background: Highlight; color: HighlightText; }
+  .windows-menu summary:focus-visible, .windows-menu-commands button:focus-visible { outline: 2px solid Highlight; outline-offset: -2px; }
+  .windows-menu-commands { border-color: CanvasText; box-shadow: none; }
+  .windows-menu-commands button:disabled { color: GrayText; opacity: 1; }
+  .windows-menu-shortcut { color: inherit; }
+  .print-progress { color: CanvasText; forced-color-adjust: auto; }
+  .print-progress button:focus-visible { outline-color: Highlight; }
+  .statusbar, .status-badge { color: CanvasText; background: Canvas; border-color: CanvasText; }
+  .status-help, .status-version, .status-message, .status-page, .status-zoom { color: CanvasText; }
+  .status-badge { border-color: CanvasText; }
+  .pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }
+  .pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }
+  .tab-strip { --tab-edge: CanvasText; background: Canvas; }
+  .workspace-tab-item { border-color: CanvasText; color: CanvasText; background: Canvas; }
+  .workspace-tab-item:hover { color: HighlightText; background: Highlight; }
+  .workspace-tab-item[data-selected="true"] { color: CanvasText; background: Canvas; border-color: Highlight; border-bottom-color: Canvas; }
+  .workspace-tab-item:has(:disabled) { color: GrayText; }
+  .workspace-tab, .workspace-tab-close { color: inherit; background: transparent; }
+  .workspace-tab-item:hover .workspace-tab-close, .workspace-tab-close:focus-visible { opacity: 1; }
+  .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
+  .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+  .mac-overlay { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; backdrop-filter: none; }
+  #search-dialog { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
+  #search-dialog input { color: CanvasText; }
+  #search-dialog input::placeholder, .search-prefix, .search-footer, .search-footer kbd { color: CanvasText; }
+  #search-dialog input:focus-visible { outline: 2px solid Highlight; outline-offset: 2px; }
+  .textLayer .pdf-search-hit,
+  ::highlight(modeleaf-pdf-search-hits),
+  .pdf-search-fallback { background: Highlight; }
+  ::highlight(modeleaf-pdf-search-current),
+  .textLayer .pdf-search-current,
+  .pdf-search-fallback[data-search-current="true"] { background: Highlight; outline-color: HighlightText; }
+  .prompt { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
+  .file-opener-overlay, .file-opener-overlay input { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
+  .file-opener-entry, .file-opener-diagnostic, .file-opener-overlay input::placeholder { color: CanvasText; }
+  .file-opener-entry[aria-selected="true"] { color: HighlightText; background: Highlight; box-shadow: inset 3px 0 HighlightText; }
+  .file-opener-entry:not(:disabled):focus-visible, .file-opener-overlay input:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+  .file-opener-recents-heading, .file-opener-footer, .file-opener-footer kbd { color: CanvasText; }
+  .file-opener-recents-heading { border-color: CanvasText; }
+  .empty-reader-action { border-color: ButtonText; color: ButtonText; background: Canvas; }
+  .empty-reader-action svg, .empty-reader-action kbd { color: ButtonText; }
+  .empty-reader-action:disabled { color: GrayText; opacity: 1; }
+}
+@media (min-resolution: 2dppx), (min-width: 1600px) {
+  .app-shell { min-width: 0; }
+  .reader-surface { padding: clamp(16px, 2vw, 28px); }
+  .file-opener-overlay { max-width: calc(100vw - 32px); }
+  .file-opener-footer { overflow-wrap: anywhere; }
 }

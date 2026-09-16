@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { THEMES } from "../../src/domain/theme/Theme";
+import { THEMES, themeContrastEndpoint } from "../../src/domain/theme/Theme";
 import {
   AccessibilityController, focusRestoreTarget,
   readerAccessibilityName,
@@ -176,34 +176,21 @@ describe("chrome accessibility contract", () => {
     cancel.remove();
     expect(focusRestoreTarget(cancel, activeTab, reader)).toBe(activeTab);
   });
-  it("keeps regular tabs equal-sized and accessible while narrow strips scroll", () => {
-    const projection = mainSource.slice(
-      mainSource.indexOf("tabStrip.replaceChildren"),
-      mainSource.indexOf("function cancelPagePromptOwnership"),
-    );
-    expect(projection).toContain('item.dataset.selected = String(selected)');
-    expect(projection).toContain('button.setAttribute("aria-label", semantics.ariaLabel)');
-    expect(projection).toContain("button.title = tab.payload.session.snapshot.title");
-    expect(projection).toContain('close.setAttribute("aria-label", "Close tab")');
-    expect(projection).toContain("event.stopPropagation(); closeTab(tab.id)");
-    expect(styles).toContain(".tab-strip { display: flex; flex-wrap: nowrap; min-width: 0; min-height: 34px;");
+  it("uses compact reference tabs with a square-bottom selected outline", () => {
+    expect(mainSource).toContain("createTabStripRenderer(tabStrip,");
+    expect(mainSource).toContain("shellTabs.render(documentTabs.map");
+    const item = styles.match(/\.workspace-tab-item \{([^}]+)\}/)?.[1];
+    const selected = styles.match(/\.workspace-tab-item\[data-selected="true"\] \{([^}]+)\}/)?.[1];
+    expect(item).toContain("min-width: 40px");
+    expect(item).toContain("flex: 0 1 184px");
+    expect(selected).toContain("min-width: 120px");
+    expect(selected).toContain("border-radius: 6px 6px 0 0");
+    expect(selected).toContain("border-bottom-color: var(--theme-active-tab)");
     expect(styles).toContain("overflow-x: auto; overflow-y: hidden;");
-    expect(styles).toContain(".workspace-tab-item { display: flex; align-items: center; box-sizing: border-box; flex: 0 0 184px; width: 184px; min-width: 184px; height: 26px; color: var(--theme-muted-text); background: var(--theme-active-tab); border: 1px solid transparent; }");
-    expect(styles).toContain(".workspace-tab-item:hover { color: var(--theme-foreground); background: var(--theme-border); }");
-    expect(styles).toContain('.workspace-tab-item[data-selected="true"] { color: var(--theme-foreground); border-color: color-mix(in srgb, var(--theme-accent) 72%, var(--theme-border)); font-weight: 650; }');
-    expect(styles).toContain(".workspace-tab, .workspace-tab-close { border: 0; color: inherit; background: transparent; }");
-    expect(styles).toContain(".workspace-tab { display: flex; align-items: center; align-self: stretch; flex: 1 1 auto; min-width: 0;");
     expect(styles).toContain("overflow: hidden; text-overflow: ellipsis; white-space: nowrap;");
-    expect(styles).toContain(".workspace-tab-close { display: grid; place-items: center; align-self: stretch; flex: 0 0 auto;");
-    expect(styles).toContain(".workspace-tab-item:hover .workspace-tab-close, .workspace-tab-close:focus-visible { opacity: 1; }");
-    expect(styles).toContain("line-height: 1; opacity: 0.75;");
-    expect(styles).not.toContain(".workspace-tab { max-width: 220px");
-    expect(styles).toContain(".workspace-tab:focus-visible, .workspace-tab-close:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: -2px; }");
-    expect(styles).toContain(".workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline-color: var(--theme-focus-indicator); }");
-    expect(styles).toContain("@media (forced-colors: active)");
-    expect(styles).toContain('.workspace-tab-item:hover, .workspace-tab-item[data-selected="true"] { color: HighlightText; background: Highlight; }');
-    expect(styles).toContain(".theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }");
-    expect(styles).toContain(".workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }");
+    expect(styles).toContain("outline: 2px solid var(--theme-focus-indicator); outline-offset: -3px;");
+    expect(styles).toContain("border-color: Highlight; border-bottom-color: Canvas;");
+    expect(styles).toContain(".workspace-tab-item:has(:disabled) { color: GrayText; }");
   });
 });
 describe("search prompt production binding", () => {
@@ -236,11 +223,12 @@ describe("search prompt production binding", () => {
   it("limits transparency and contrast corrections to real overlay panels", () => {
     const panelRule = styles.match(/\.prompt, #search-dialog, \.mac-overlay \{([^}]+)\}/)?.[1];
     expect(panelRule).toContain("--overlay-panel-alpha: 85%;");
-    expect(panelRule).toContain("--overlay-contrast: white;");
+    expect(panelRule).toContain("--overlay-contrast: var(--theme-contrast);");
     expect(panelRule).toContain("--overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));");
     expect(panelRule).toContain("--overlay-muted: color-mix(in srgb, var(--theme-foreground) 70%, var(--overlay-contrast));");
     expect(panelRule).not.toMatch(/\bopacity:|\bfilter:/);
-    expect(styles).toContain('[data-theme="catppuccin-latte"] :is(.prompt, #search-dialog, .mac-overlay) { --overlay-contrast: black; }');
+    expect(styles).not.toContain('[data-theme="catppuccin-latte"]');
+    expect(mainSource).toContain('root.style.setProperty("--theme-contrast", themeContrastEndpoint(palette))');
     expect(styles).toContain("background: color-mix(in srgb, var(--theme-inactive-tab) var(--overlay-panel-alpha), transparent);");
     expect(styles).toContain("background: color-mix(in srgb, var(--theme-active-tab) var(--overlay-panel-alpha), transparent);");
     expect(styles).toContain("#search-dialog input::placeholder { color: var(--overlay-muted); opacity: 1; }");
@@ -261,8 +249,9 @@ describe("search prompt production binding", () => {
   it("gives help descriptions and palette shortcuts distinct themed roles without fading disabled rows", () => {
     expect(styles).toContain(".help-group dt { color: var(--overlay-secondary-accent); }");
     expect(styles).toContain(".help-group dd { margin: 0; color: var(--overlay-text);");
-    expect(styles).toContain(".command-palette-entry-shortcut { color: var(--overlay-secondary-accent);");
-    expect(styles).toContain('.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-accent); }');
+    expect(styles).toContain(".command-palette-entry-shortcut { color: var(--overlay-text);");
+    expect(styles).toContain(".command-palette-entry-label { min-width: 0; overflow-wrap: anywhere; color: var(--overlay-secondary-accent); }");
+    expect(styles).toContain('.command-palette-entry:is([aria-selected="true"], :hover, :focus-visible) .command-palette-entry-shortcut { color: var(--overlay-text); }');
     expect(styles).toContain(".command-palette-entry-reason { grid-column: 1 / -1; color: var(--overlay-text);");
     expect(styles).not.toContain('.command-palette-entry[aria-disabled="true"] { opacity:');
     expect(styles).toContain("#command-palette-dialog[open] { display: flex; flex-direction: column; }");
@@ -275,6 +264,7 @@ describe("search prompt production binding", () => {
     expect(heading).toContain("font-weight: 650;");
   });
   it("keeps composed overlay text above 4.5 and focus above 3 across all theme backing extremes", () => {
+    expect(styles).toContain('.command-palette-entry[aria-selected="true"],\n.command-palette-entry:not(:disabled):hover,\n.command-palette-entry:not(:disabled):focus-visible { background: var(--theme-inactive-tab); }');
     const weight = (name: string): number => {
       const declaration = styles.match(new RegExp(`--overlay-${name}: ([^;]+);`))?.[1];
       const value = Number(declaration?.match(/(\d+)%/)?.[1]) / 100;
@@ -293,12 +283,14 @@ describe("search prompt production binding", () => {
     };
     for (const theme of THEMES) {
       const palette = theme.palette;
-      const end = theme.id === "catppuccin-latte" ? [0, 0, 0] : [255, 255, 255];
+      const end = rgb(themeContrastEndpoint(palette));
       const text = mix(rgb(palette.foreground), end, weight("text"));
       const muted = mix(rgb(palette.foreground), end, weight("muted"));
       const accent = mix(rgb(palette.accent), end, weight("accent"));
       const focus = mix(rgb(palette["focus-indicator"]), end, weight("focus"));
       const footer = mix(rgb(palette.accent), end, weight("secondary-accent"));
+      expect(contrast(footer, rgb(palette["inactive-tab"])), `${theme.id} selected command label`).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(text, rgb(palette["inactive-tab"])), `${theme.id} selected command shortcut`).toBeGreaterThanOrEqual(4.5);
       for (const back of [[0, 0, 0], [255, 255, 255]]) {
         const prompt = mix(rgb(palette["inactive-tab"]), back, weight("panel-alpha"));
         const panel = mix(rgb(palette["active-tab"]), mix([7, 8, 14], back, 0.44), weight("panel-alpha"));

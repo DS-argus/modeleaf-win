@@ -54,7 +54,7 @@ describe("Scoop preparation workflow", () => {
   it("pins external actions and keeps checkout credentials out of build scripts", () => {
     const actions = steps.filter((entry) => entry.uses !== undefined);
     expect(actions.map((entry) => entry.uses?.split("@")[0])).toEqual([
-      "actions/checkout", "actions/setup-node", "actions/upload-artifact",
+      "actions/checkout", "actions/setup-node", "actions/upload-artifact", "actions/upload-artifact",
     ]);
     for (const action of actions) expect(action.uses).toMatch(/^actions\/[a-z-]+@[0-9a-f]{40}$/u);
     expect(step("Check out source").with?.["persist-credentials"]).toBe(false);
@@ -62,6 +62,12 @@ describe("Scoop preparation workflow", () => {
     expect(step("Set up pinned Node.js").with?.["node-version-file"]).toBe("package.json");
   });
 
+  it("uploads only renderer screenshots and the automation transcript, never browser profiles", () => {
+    const upload = step("Retain shell renderer comparison evidence");
+    expect(upload.with?.path).toBe(".internal/evidence/issue-114/**/*.png\n.internal/evidence/issue-114/**/automation.json\n.internal/evidence/issue-114/**/pixel-mismatch.json");
+    expect(index("Verify shell renderer visual matrix")).toBeLessThan(index(upload.name));
+    expect(upload.with?.["retention-days"]).toBe(7);
+  });
   it("requires every applicable automated gate before preparing artifacts", () => {
     const expectedCommands: Record<string, string> = {
       "Install locked dependencies": "npm ci",
@@ -69,6 +75,7 @@ describe("Scoop preparation workflow", () => {
       "Audit production dependencies": "npm run security:verify",
       "Test frontend and packaging": "npm test -- --maxWorkers=2",
       "Build frontend": "npm run build",
+      "Verify shell renderer visual matrix": "npm run qa:shell",
       "Check Rust formatting": "cargo fmt --check --manifest-path src-tauri/Cargo.toml",
       "Lint Rust": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings",
       "Test Rust": "cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=2",

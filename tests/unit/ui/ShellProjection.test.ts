@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { currentWindowCloseIntent, projectShellStatus, projectWindowShell } from "../../../src/ui/shell/ShellProjection";
 
 describe("ShellProjection", () => {
+  it.each(["Page 1 of 233 · 0°", "Page 2 of 233 · 90°", "Page 3 of 233 · Custom 125.25% · 180°", "Page 4 of 233 · Custom 800% · 270°"])("suppresses only routine page prose: %s", (status) => {
+    expect(projectShellStatus({ hasDocument: true, zoomMode: "custom", searchPromptOpen: false, query: "", status }).message).toBe("");
+  });
+  it.each(["Page 1 of 233 failed", "Could not render · 90°", "Searching…", "Page 1 of 233 · 0°: error"])("retains diagnostic prose: %s", (status) => {
+    expect(projectShellStatus({ hasDocument: true, zoomMode: "fit-page", searchPromptOpen: false, query: "", status }).message).toBe(status);
+  });
   it("projects a semantic empty reader with stable landmarks", () => {
     const result = projectWindowShell({ windowId: "window-a", tabs: [] });
     expect(result).toMatchObject({ ok: true, emptyState: { heading: "No PDF open", focusTarget: "empty-reader-open" } });

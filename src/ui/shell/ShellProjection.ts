@@ -3,7 +3,7 @@ export type TabId = string;
 export interface ShellTabSnapshot { readonly id: TabId; readonly title: string; readonly hasDocument: boolean }
 export interface WindowShellSnapshot { readonly windowId: WindowId; readonly activeTabId?: TabId; readonly tabs: readonly ShellTabSnapshot[] }
 export interface ActiveShellRoute { readonly windowId: WindowId; readonly tab?: ShellTabSnapshot }
-export interface ShellLandmark { readonly id: "app-shell" | "tab-strip" | "reader-main" | "reader-status"; readonly role: "application" | "tablist" | "main" | "status"; readonly label: string }
+export interface ShellLandmark { readonly id: "app-shell" | "tab-strip" | "reader-main" | "reader-status"; readonly role: "application" | "tablist" | "main" | "group"; readonly label: string }
 export interface EmptyReaderState { readonly testId: "empty-reader"; readonly heading: "No PDF open"; readonly description: "Open a PDF to start reading."; readonly focusTarget: "empty-reader-open" }
 export type ShellProjectionResult =
   | { readonly ok: true; readonly active: ActiveShellRoute; readonly emptyState?: EmptyReaderState; readonly landmarks: readonly ShellLandmark[] }
@@ -29,7 +29,7 @@ export const SHELL_LANDMARKS: readonly ShellLandmark[] = Object.freeze([
   Object.freeze({ id: "app-shell", role: "application", label: "Modeleaf PDF reader" }),
   Object.freeze({ id: "tab-strip", role: "tablist", label: "Open PDFs" }),
   Object.freeze({ id: "reader-main", role: "main", label: "PDF reader" }),
-  Object.freeze({ id: "reader-status", role: "status", label: "Reader status" }),
+  Object.freeze({ id: "reader-status", role: "group", label: "Reader status" }),
 ]);
 const EMPTY_READER: EmptyReaderState = Object.freeze({ testId: "empty-reader", heading: "No PDF open", description: "Open a PDF to start reading.", focusTarget: "empty-reader-open" });
 
@@ -47,7 +47,8 @@ export function projectWindowShell(snapshot: WindowShellSnapshot): ShellProjecti
 }
 export function projectShellStatus(input: ShellStatusInput): ShellStatusProjection {
   return {
-    message: input.status,
+    // Page/zoom already have dedicated fields; retain every non-routine diagnostic verbatim.
+    message: input.hasDocument && /^Page \d+ of \d+(?: · Custom \d+(?:\.\d+)?%)? · (?:0|90|180|270)°$/u.test(input.status) ? "" : input.status,
     pending: input.pendingSequence ? `Pending: ${input.pendingSequence}` : "",
     fitPage: input.hasDocument && input.zoomMode === "fit-page",
     fitWidth: input.hasDocument && input.zoomMode === "fit-width",
