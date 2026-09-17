@@ -1,3 +1,5 @@
+# Agent runtime state
+.agent/
 node_modules/
 docs/handoff/
 dist/
@@ -17,5 +19,7 @@ docs/debug/
 docs/reference/
 /test-pdf/
 .worktrees/
-worktrees/
 docs/BACKLOG.md
+
+# Keep the repository agent entry point visible despite local excludes.
+!/AGENTS.md
