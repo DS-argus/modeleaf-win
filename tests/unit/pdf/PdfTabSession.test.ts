@@ -1780,7 +1780,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(internals.content).toBeUndefined();
     expect(successor.unmount).not.toHaveBeenCalled();
   });
-  it("keeps Fit Page on the continuous topology across rotation and zoom", async () => {
+  it("uses single-page topology for explicit Fit Page and returns to continuous after custom zoom", async () => {
     const session = createSession();
     const reader = (session as unknown as SessionInternals).pdfReader;
     session.reader.mountDocument(1);
@@ -1788,10 +1788,10 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await session.activate();
     session.apply({ type: "view.fitPage" });
     await session.renderCurrentView();
-    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("continuous", 1, expect.objectContaining({ scale: 1, rotation: 0 }), expect.any(Function));
+    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("single-page", 1, expect.objectContaining({ scale: 1, rotation: 0 }), expect.any(Function));
     session.apply({ type: "view.rotate", quarterTurns: 1 });
     await session.renderCurrentView();
-    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("continuous", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));
+    expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("single-page", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));
     session.apply({ type: "view.zoom", factor: 1.1 });
     await session.renderCurrentView();
     expect(reader.setPresentationTopology).toHaveBeenLastCalledWith("continuous", 1, expect.objectContaining({ rotation: 90 }), expect.any(Function));

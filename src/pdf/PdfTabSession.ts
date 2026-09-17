@@ -354,7 +354,7 @@ export class PdfTabSession {
         this.presentationDirty = true;
         return false;
       }
-      const topology: PdfPresentationTopology = "continuous";
+      const topology: PdfPresentationTopology = this.reader.snapshot.zoomMode === "fit-page" ? "single-page" : "continuous";
       const committed = openingFitRevision === undefined
         ? await this.pdfReader.setPresentationTopology(topology, page, effectiveTransform, guard)
         : await this.pdfReader.setOpeningPresentationAtTop(topology, page, effectiveTransform, guard);
