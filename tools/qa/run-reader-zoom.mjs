@@ -181,7 +181,7 @@ try {
   }
   const afterHashes = await hashes();
   assert.deepEqual(afterHashes, beforeHashes);
-  const report = { schemaVersion: 1, kind: "browser-automation-transcript", tool: "Chrome DevTools Protocol", status: "passed", browser: version.Browser, node: process.version, recordedAt: new Date().toISOString(), sourceHash: process.env.READER_QA_SOURCE_HASH ?? null, limitations: ["Headless Edge with real PDF.js and production wheel binding", "Native authority is mocked; not packaged WebView2 or physical device QA", "No native build or manual preview"], sourceHashesBefore: beforeHashes, sourceHashesAfter: afterHashes, results, transcript, actions: transcript, screenshot: "wheel-zoom.png"};
+  const report = { schemaVersion: 1, kind: "browser-automation-transcript", tool: "Chrome DevTools Protocol", status: "passed", browser: version.Browser, node: process.version, recordedAt: new Date().toISOString(), sourceHash: process.env.READER_QA_SOURCE_HASH ?? null, limitations: ["Headless Edge with real PDF.js and production wheel binding", "Native authority is mocked; not packaged WebView2 or physical device QA", "No native build or manual preview"], sourceHashesBefore: beforeHashes, sourceHashesAfter: afterHashes, results, transcript, actions: transcript.map(({ method, params }) => ({ type: method, params })), screenshot: "wheel-zoom.png"};
   await writeFile(resolve(evidence, "reader-zoom.json"), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ status: "passed", scenarios: results.length, evidence: resolve(evidence, "reader-zoom.json"), screenshot: resolve(evidence, "wheel-zoom.png") }));
 } catch (error) {
