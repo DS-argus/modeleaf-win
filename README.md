@@ -57,7 +57,7 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | Previous / next tab | `P` / `N` |
 | Theme / palette / help | `T` / `:` / `?` |
 
-New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page in a single-page Fit Page view.
+New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page in a single-page Fit Page view; in that view, `j`/`k` and `d`/`u` move to the next/previous page like `n`/`p`.
 
 Precision-trackpad scrolling and pinch gestures are not currently supported.
 Use **Ctrl+wheel** to zoom around the pointer in 10% multiplicative steps (10–800%). Small wheel movements accumulate; normal wheel input scrolls. Over page margins, zoom preserves the nearest page edge. Use `h`/`l` or the left/right arrows to scroll horizontally when zoomed in. `0` selects PDF.js scale 1, not a calibrated physical paper size.
