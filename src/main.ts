@@ -31,6 +31,7 @@ import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwn
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
+import { loadInstalledVersion } from "./platform/InstalledVersion";
 import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
@@ -116,10 +117,14 @@ const shellStatus = createShellStatusRenderer(status, () => {
     searchPromptOpen: overlayOwner.active?.id === "search",
     query: session.query,
     status: reader.status,
+    page: reader.page,
+    pageCount: reader.pageCount,
+    ...(reader.zoomMode === "custom" ? { zoom: reader.customScale } : {}),
   };
-});
+}, { onHelp: () => dispatch({ type: "help.toggle" }) });
+void loadInstalledVersion().then((version) => shellStatus.setVersion(version));
 const printProgressOwner = new PrintProgressOwner<PdfTabSession>();
-const printProgressControl = createPrintProgress(status, () => printProgressOwner.cancel());
+const printProgressControl = createPrintProgress(shellStatus.printHost, () => printProgressOwner.cancel());
 let printFocusOwner: { readonly session: PdfTabSession; readonly element?: HTMLElement } | undefined;
 const prompt = required<HTMLElement>("#prompt");
 const helpDialog = required<HTMLDialogElement>("#help-dialog");
