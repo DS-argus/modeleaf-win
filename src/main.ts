@@ -25,12 +25,13 @@ import { performTabActivation, performTabClose, queueRelativeTabActivation } fro
 import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "./application/OpenAdoptionOwnership";
 import { createRemovedTabTeardownSupervisor, createWorkspaceTransitionQueue } from "./application/WorkspaceTransitionQueue";
 import { PDFJS_POLICY } from "./pdf/PdfJsPolicy";
-import { DEFAULT_THEME_ID, THEME_TOKENS, isThemeId, shouldAdoptDurableThemeState, themeForId, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
+import { DEFAULT_THEME_ID, THEME_TOKENS, isThemeId, shouldAdoptDurableThemeState, themeForId, themeContrastEndpoint, type DurableThemeState, type ThemeId } from "./domain/theme/Theme";
 import { CLOSED_THEME_PICKER, THEME_PICKER_FOOTER, THEME_PICKER_ROWS, commitThemePicker, openThemePicker as createThemePicker, previewThemePickerRow, revertThemePicker, revertThemePickerToDurable, themePickerDialogKeyAction, type ThemePickerModel, type ThemePickerOpenModel } from "./ui/ThemePickerModel";
 import { createOverlayOwner, reduceOverlayOwner, type OverlayId, type OverlayOwnerState } from "./ui/overlays/OverlayOwner";
 import { overlayOwnsKey } from "./ui/overlays/OverlayKeyOwnership";
 import { bindCopyContextMenu } from "./ui/reader/CopyContextMenu";
 import { projectWindowShell } from "./ui/shell/ShellProjection";
+import { createTabStripRenderer } from "./ui/shell/TabStripRenderer";
 import { loadInstalledVersion } from "./platform/InstalledVersion";
 import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
@@ -103,6 +104,10 @@ root.innerHTML = `
 
 const windowsMenu = required<HTMLElement>("#windows-menu");
 const tabStrip = required<HTMLElement>("#tab-strip");
+const shellTabs = createTabStripRenderer(tabStrip, {
+  activate: (id) => { const tab = workspace.snapshot.tabs.find((entry) => String(entry.id) === id); if (tab !== undefined) void switchTab(tab.id); },
+  close: (id) => { const tab = workspace.snapshot.tabs.find((entry) => String(entry.id) === id); if (tab !== undefined) closeTab(tab.id); },
+});
 const tabHosts = required<HTMLElement>("#tab-hosts");
 const emptyReader = required<HTMLElement>("#empty-reader");
 const emptyReaderOpen = required<HTMLButtonElement>("#empty-reader-open");
@@ -247,6 +252,7 @@ function adoptDurableTheme(candidate: DurableThemeState): boolean {
 function applyTheme(themeId: ThemeId): void {
   const palette = themeForId(themeId).palette;
   for (const token of THEME_TOKENS) root.style.setProperty(`--theme-${token}`, palette[token]);
+  root.style.setProperty("--theme-contrast", themeContrastEndpoint(palette));
   root.dataset.theme = themeId;
 }
 function activeThemePicker(): ThemePickerOpenModel | null {
@@ -871,24 +877,11 @@ function render(): void {
     tab.payload.host.setAttribute("aria-label", readerAccessibilityName(title, tab.payload.session.snapshot.reader.pageCount));
     if (selected && tab.payload.session.snapshot.reader.hasDocument) accessibility.announce({ kind: "tab", active: documentTabs.findIndex((entry) => entry.id === tab.id) + 1, total: documentTabs.length });
   }
-  tabStrip.replaceChildren(...documentTabs.map((tab, index) => {
-    const selected = tab.id === workspace.activeTabId;
-    const semantics = tabAccessibilitySemantics({ basename: tab.payload.session.snapshot.title, ordinal: index + 1, total: documentTabs.length, active: selected });
-    const button = document.createElement("button");
-    button.type = "button"; button.className = "workspace-tab"; button.id = `reader-tab-${String(tab.id)}`;
-    button.role = semantics.role; button.setAttribute("aria-label", semantics.ariaLabel); button.setAttribute("aria-selected", semantics.ariaSelected); button.setAttribute("aria-setsize", String(semantics.ariaSetSize)); button.setAttribute("aria-posinset", String(semantics.ariaPosInSet)); button.setAttribute("aria-controls", `reader-panel-${String(tab.id)}`); button.tabIndex = semantics.tabIndex; button.textContent = tab.payload.session.snapshot.title;
-    button.title = tab.payload.session.snapshot.title;
-    button.addEventListener("click", () => void switchTab(tab.id));
-    const close = document.createElement("button"); close.type = "button"; close.className = "workspace-tab-close"; close.setAttribute("aria-label", "Close tab"); close.textContent = "×"; close.addEventListener("click", (event) => { event.stopPropagation(); closeTab(tab.id); });
-    const item = document.createElement("div"); item.className = "workspace-tab-item"; item.dataset.selected = String(selected); item.append(button, close); item.dataset.index = String(index); return item;
-  }));
-  const selectedTab = tabStrip.querySelector<HTMLElement>('[aria-selected="true"]')?.parentElement;
-  if (selectedTab !== null && selectedTab !== undefined) {
-    const stripBounds = tabStrip.getBoundingClientRect();
-    const selectedBounds = selectedTab.getBoundingClientRect();
-    if (selectedBounds.left < stripBounds.left) tabStrip.scrollLeft += selectedBounds.left - stripBounds.left;
-    else if (selectedBounds.right > stripBounds.right) tabStrip.scrollLeft += selectedBounds.right - stripBounds.right;
-  }
+  shellTabs.render(documentTabs.map((tab) => ({
+    id: String(tab.id),
+    title: tab.payload.session.snapshot.title,
+    selected: tab.id === workspace.activeTabId,
+  })));
 }
 function cancelPagePromptOwnership(): void {
   const revoked = revokePagePromptOwnership(pagePromptTransaction, suspendedPagePrompt);
