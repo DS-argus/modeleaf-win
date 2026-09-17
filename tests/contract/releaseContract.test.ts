@@ -23,6 +23,11 @@ interface TauriConfig {
 const tauriConfig = JSON.parse(readFileSync(join(root, "src-tauri", "tauri.conf.json"), "utf8")) as TauriConfig;
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { readonly version: string };
 const cargoToml = readFileSync(join(root, "src-tauri", "Cargo.toml"), "utf8");
+const packageLock = JSON.parse(readFileSync(join(root, "package-lock.json"), "utf8")) as {
+  readonly version: string;
+  readonly packages: { readonly "": { readonly version: string } };
+};
+const cargoLock = readFileSync(join(root, "src-tauri", "Cargo.lock"), "utf8");
 
 describe("Windows installer configuration", () => {
   it("bundles a per-user NSIS installer with WebView2 bootstrap", () => {
@@ -38,12 +43,17 @@ describe("Windows installer configuration", () => {
     expect(tauriConfig.bundle.windows?.nsis?.installerHooks).toBe("nsis/pdf-handler-candidate.nsh");
   });
 
-  it("keeps all package manifests on one semantic version", () => {
+  it("keeps all package manifests and lockfiles on release version 0.1.4", () => {
     const cargoVersion = /^version\s*=\s*"([^"]+)"/mu.exec(cargoToml)?.[1];
     expect(cargoVersion).toBeDefined();
     expect(tauriConfig.version).toBe(packageJson.version);
     expect(cargoVersion).toBe(packageJson.version);
     expect(tauriConfig.version).toMatch(/^\d+\.\d+\.\d+(?:-[\w.]+)?$/u);
+    expect(packageJson.version).toBe("0.1.4");
+    expect(packageLock.version).toBe(packageJson.version);
+    expect(packageLock.packages[""].version).toBe(packageJson.version);
+    const cargoLockVersion = /^name = "modeleaf"\r?\nversion = "([^"]+)"$/mu.exec(cargoLock)?.[1];
+    expect(cargoLockVersion).toBe(packageJson.version);
     expect(tauriConfig.identifier).toBe("com.dsargus.modeleaf");
   });
 
