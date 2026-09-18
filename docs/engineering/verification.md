@@ -33,6 +33,21 @@ The [publication workflow](../../.github/workflows/publish-scoop.yml) consumes e
 
 Record the receipt/executable identity, tested inputs and actions, observed results, and untested limitations in the task handoff/PR. Do not launch `src-tauri/target/debug/modeleaf.exe` directly as standalone evidence. Printing submission is not proof of physical output or a completed Save As file. Native dialogs, multiple windows, persistence failures, associations, and printing require the corresponding real native scenarios when affected.
 
+## Native reader repeat regression
+
+Run in the assigned worktree with exclusive native build and desktop-input ownership:
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
+npm run preview:worktree -- -Pdf fixtures/pdf/print-mixed-rotation-4.pdf
+node tools/qa/run-reader-repeat.mjs <ProcessId-from-preview> fixtures/pdf/print-mixed-rotation-4.pdf
+Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+```
+
+The runner binds the preview receipt/executable and source-PDF hashes, uses a bounded debugger attachment for read-only owner snapshots, and injects native Windows burst and held key-down/repeat sequences. It asserts trusted repeat events, page/boundary landings, Fit Page versus continuous/custom scrolling, unchanged active tab, transient failure status, and bounded settled raster/text/annotation resources. Evidence and a WebView screenshot stay under `.internal/evidence/reader-repeat/`. Do not type or change foreground windows during the run; foreground loss fails rather than sending input to another application. Close the owned preview before another native build.
+
+This is standalone bundled-frontend WebView2 debug evidence, not a headless simulation, physical human keyboard test, installed-release test, or release certification. Fractional desktop scaling and mixed-size pages are important: integer CSSOM scroll extents can differ from the browser-applied physical-pixel grid. Preserve the half-point PDF/history contract; verify the bounded browser-applied landing instead of widening canonical tolerance.
+
 ## Documentation-only changes
 
 Validate local links, documented commands, source-backed claims, ignore/tracking behavior, and `git diff --check`. Run relevant contract tests where guidance relies on their boundaries. A native rebuild/manual QA is unnecessary when only documentation changes; explicitly report those layers as NOT RUN. Never suppress warnings or label an unexecuted gate as passed.

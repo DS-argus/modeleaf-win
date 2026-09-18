@@ -14,12 +14,17 @@ afterEach(() => { for (const dispose of disposers.splice(0)) dispose(); vi.unstu
 function fixture() {
   let width = 0;
   let height = 0;
+  let outerWidth = 0;
+  let outerHeight = 0;
   let active = true;
   let observerCallback!: () => void;
   const disconnect = vi.fn();
   vi.stubGlobal("ResizeObserver", class { constructor(callback: () => void) { observerCallback = callback; } observe() {} disconnect = disconnect; });
   const host = document.createElement("section");
-  Object.defineProperties(host, { clientWidth: { get: () => width }, clientHeight: { get: () => height } });
+  Object.defineProperties(host, {
+    clientWidth: { get: () => width }, clientHeight: { get: () => height },
+    offsetWidth: { get: () => outerWidth }, offsetHeight: { get: () => outerHeight },
+  });
   let sequence = 0;
   const frames = new Map<number, FrameRequestCallback>();
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.set(++sequence, callback); return sequence; });
@@ -37,7 +42,8 @@ function fixture() {
   disposers.push(() => { payload.disposeUi(); vi.restoreAllMocks(); });
   return {
     host, session, disconnect, reportFailure, wheelDispose,
-    resize(w: number, h: number) { width = w; height = h; observerCallback(); },
+    resize(w: number, h: number) { width = w; height = h; outerWidth = w; outerHeight = h; observerCallback(); },
+    scrollbar(h: number) { height = h; observerCallback(); },
     deactivate() { active = false; },
     dispose: payload.disposeUi,
     flush() { const pending = [...frames.values()]; frames.clear(); for (const callback of pending) callback(0); },
@@ -66,6 +72,22 @@ describe("production reader viewport scheduling", () => {
     const f = fixture(); f.resize(0, 0);
     expect(f.session.invalidateViewportSynchronization).not.toHaveBeenCalled();
     expect(f.frameCount()).toBe(0);
+  });
+  it("does not cancel materialization when its own horizontal scrollbar changes client height", async () => {
+    const f = fixture();
+    f.resize(632, 1037);
+    f.flush();
+    await Promise.resolve();
+    f.flush();
+    await Promise.resolve();
+    f.session.invalidateViewportSynchronization.mockClear();
+    f.session.renderCurrentView.mockClear();
+    for (let index = 0; index < 10; index++) f.scrollbar(index % 2 === 0 ? 1021 : 1037);
+    expect(f.session.invalidateViewportSynchronization).not.toHaveBeenCalled();
+    expect(f.session.renderCurrentView).not.toHaveBeenCalled();
+    expect(f.frameCount()).toBe(0);
+    f.resize(632, 900);
+    expect(f.session.invalidateViewportSynchronization).toHaveBeenCalledOnce();
   });
   it("does not render a tab deactivated before its scheduled callback", () => {
     const f = fixture(); f.resize(800, 600); f.deactivate(); f.flush();
