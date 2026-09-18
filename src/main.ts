@@ -749,8 +749,10 @@ function createTab(): TabPayload {
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });
   let readerResizeFrame: number | undefined;
-  let readerWidth = host.clientWidth;
-  let readerHeight = host.clientHeight;
+  // Resident-page commits can toggle scrollbars. Only external box resizing
+  // may cancel that materialization; observing client geometry creates a loop.
+  let readerWidth = host.offsetWidth;
+  let readerHeight = host.offsetHeight;
   const onReaderResize = (): void => {
     if (viewportDisposed || active().session !== session) return;
     session.cancelWheelZoom();
@@ -763,14 +765,14 @@ function createTab(): TabPayload {
     });
   };
   const readerResizeObserver = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(() => {
-    const width = host.clientWidth;
-    const height = host.clientHeight;
+    const width = host.offsetWidth;
+    const height = host.offsetHeight;
     if (width === readerWidth && height === readerHeight) return;
     readerWidth = width;
     readerHeight = height;
     onReaderResize();
   });
-  readerResizeObserver?.observe(host);
+  readerResizeObserver?.observe(host, { box: "border-box" });
   window.addEventListener("resize", onReaderResize);
   queueMicrotask(scheduleViewportSync);
   return { host, session, disposeUi: () => {

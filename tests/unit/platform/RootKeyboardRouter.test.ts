@@ -168,11 +168,11 @@ describe("RootKeyboardRouter", () => {
   });
   it("allows held adjacent-page movement but suppresses held edge, tab, and prefix commands", () => {
     const repeatable = harness({ runtime: { ...runtime, tabCount: 3 } });
-    for (const value of [keyboard("n", { repeat: true }), keyboard("p", { repeat: true })]) {
+    for (const value of ["n", "p", "d", "u"].map((key) => keyboard(key, { repeat: true }))) {
       expect(repeatable.router.handleKeyDown(value.event)).toBe(true);
       expect(value.prevented()).toBe(true);
     }
-    expect(repeatable.dispatched).toEqual(["page.next", "page.previous"]);
+    expect(repeatable.dispatched).toEqual(["page.next", "page.previous", "scroll.largeDown", "scroll.largeUp"]);
 
     for (const value of [keyboard("G", { shiftKey: true, repeat: true }), keyboard("N", { shiftKey: true, repeat: true }), keyboard("P", { shiftKey: true, repeat: true }), keyboard("g", { repeat: true })]) {
       const suppressed = harness({ runtime: { ...runtime, tabCount: 3 } });

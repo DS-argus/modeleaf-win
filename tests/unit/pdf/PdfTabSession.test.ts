@@ -209,6 +209,35 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await expect(session.navigateAdjacentPage(1)).resolves.toEqual({ kind: "noOp" });
     expect(restore).toHaveBeenCalledTimes(2);
   });
+  it("keeps only the latest pending direction during a delayed adjacent landing", async () => {
+    const session = createSession();
+    session.reader.mountDocument(5);
+    await session.activate();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    let displayed = { pageIndex: 2, x: 0, y: 0 };
+    vi.spyOn(reader, "captureViewportLanding").mockImplementation(() => displayed);
+    const blocked = deferred<void>();
+    const restore = vi.spyOn(reader, "restoreViewportLanding").mockImplementation(async (target, guard) => {
+      await blocked.promise;
+      if (!guard()) return { kind: "staleOrCancelled" };
+      displayed = target;
+      return { kind: "verified", landing: target };
+    });
+    const first = session.navigateAdjacentPage(1);
+    await vi.waitFor(() => expect(restore).toHaveBeenCalledOnce());
+    const replaced = Array.from({ length: 100 }, (_, index) => session.navigateAdjacentPage(index % 2 === 0 ? 1 : -1));
+    const latest = session.navigateAdjacentPage(-1);
+    expect(await Promise.all(replaced)).toEqual(Array.from({ length: 100 }, () => ({ kind: "stale" })));
+    expect(restore).toHaveBeenCalledOnce();
+    blocked.resolve();
+    await expect(first).resolves.toEqual({ kind: "verifiedLanding" });
+    await expect(latest).resolves.toEqual({ kind: "verifiedLanding" });
+    expect(restore.mock.calls.map(([target]) => target.pageIndex)).toEqual([3, 2]);
+    expect(displayed.pageIndex).toBe(2);
+    expect(session.navigationLandingInProgress).toBe(false);
+    expect(session.canHistoryBack).toBe(false);
+  });
   it("keeps invocation order authoritative when absolute preflights settle out of order", async () => {
     const session = createSession();
     session.reader.mountDocument(3);

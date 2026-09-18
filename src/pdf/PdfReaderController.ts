@@ -1111,7 +1111,7 @@ export class PdfReaderController {
     }
     return false;
   }
-  public restoreScrollAnchor(anchor: PdfScrollAnchor): void {
+  public restoreScrollAnchor(anchor: PdfScrollAnchor): { readonly scrollLeft: number; readonly scrollTop: number; readonly landing: PdfViewportLanding } | undefined {
     const raster = this.current?.residentRasters.get(anchor.pageNumber);
     const frame = this.options.canvasHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${anchor.pageNumber}']`);
     if (raster === undefined || frame === null) return;
@@ -1130,6 +1130,17 @@ export class PdfReaderController {
     });
     host.scrollLeft = restored.scrollLeft;
     host.scrollTop = restored.scrollTop;
+    const scrollLeft = host.scrollLeft;
+    const scrollTop = host.scrollTop;
+    // CSSOM extents are integers, but WebView2 applies scrolling on its physical
+    // pixel grid. Retain that immediate, bounded result before yielding; it is
+    // not permission to accept a later raw scroll as a successful landing.
+    const browserDpr = typeof window === "undefined" ? 1 : window.devicePixelRatio;
+    const quantum = 1 / (Number.isFinite(browserDpr) && browserDpr > 0 ? browserDpr : 1);
+    if (Math.abs(scrollLeft - restored.scrollLeft) > quantum + 1e-6
+      || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) return undefined;
+    const landing = this.captureViewportLandingAtOffset(anchor.pageNumber, anchor.viewportOffset);
+    return landing === undefined ? undefined : { scrollLeft, scrollTop, landing };
   }
 
   private resolveReachableViewportLanding(anchor: PdfViewportAnchor): PdfViewportLanding | undefined {
@@ -1305,10 +1316,16 @@ export class PdfReaderController {
           y: placement === "page-top" ? 0 : this.options.canvasHost.clientHeight / 2,
         }),
       });
+      let appliedAnchor: ReturnType<PdfReaderController["restoreScrollAnchor"]>;
       const restoreOwnedAnchor = async (): Promise<boolean> => {
         if (this.current !== current || this.disposed || !(requestCommitGuard?.() ?? true)) return false;
-        this.restoreScrollAnchor(anchor);
+        appliedAnchor = this.restoreScrollAnchor(anchor);
         await Promise.resolve();
+        if (appliedAnchor !== undefined && (this.options.canvasHost.scrollLeft !== appliedAnchor.scrollLeft
+          || this.options.canvasHost.scrollTop !== appliedAnchor.scrollTop)) {
+          onViewportOwnershipLost?.();
+          return false;
+        }
         return this.current === current && !this.disposed && (requestCommitGuard?.() ?? true);
       };
       if (!await restoreOwnedAnchor()) return { kind: "staleOrCancelled" };
@@ -1372,7 +1389,7 @@ export class PdfReaderController {
         viewportMaterialized = this.publishFinalViewportIfMaterialized(current);
       }
       if (!viewportMaterialized) return { kind: "failed" };
-      const expected = this.resolveReachableViewportLanding(anchor);
+      const expected = appliedAnchor?.landing;
       if (expected === undefined) return { kind: "failed" };
       const landing = this.captureViewportLandingAtOffset(pageNumber, anchor.viewportOffset);
       if (landing === undefined) return { kind: "failed" };
