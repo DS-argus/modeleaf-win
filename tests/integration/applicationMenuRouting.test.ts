@@ -45,7 +45,7 @@ function hover(target: Element) { target.dispatchEvent(new MouseEvent("pointerov
 describe("application menu production-render/router integration", () => {
   it.each(["resolved", "rejected"])("blocks only the actual native picker, not pending adoption (%s)", async (outcome) => {
     const menu = document.createElement("nav");
-    menu.innerHTML = '<details><summary>Document</summary><div class="windows-menu-commands"><button data-menu-command="document.close">Close PDF</button></div></details>';
+    menu.innerHTML = '<details><summary>File</summary><div class="windows-menu-commands"><button data-menu-command="document.close">Close PDF</button></div></details>';
     document.body.append(menu);
     let settle!: () => void;
     const invoke = vi.fn(() => new Promise((resolve, reject) => { settle = () => outcome === "resolved" ? resolve({ tag: "CANCELLED" }) : reject(new Error("picker failed")); }));
@@ -127,14 +127,14 @@ describe("application menu production-render/router integration", () => {
   });
   it("preserves open section, button identity and focus across status publication", () => {
     const { menu, publish } = setup();
-    const summary = menu.querySelector('details[data-menu-section="document"] summary')!;
+    const summary = menu.querySelector('details[data-menu-section="application"] summary')!;
     hover(summary);
     const button = menu.querySelector<HTMLButtonElement>('button[data-menu-command="document.open"]')!;
     const summaryText = summary.firstChild;
     const buttonText = button.firstChild;
     button.focus();
     publish(); publish();
-    expect(menu.querySelector('details[data-menu-section="document"] summary')).toBe(summary);
+    expect(menu.querySelector('details[data-menu-section="application"] summary')).toBe(summary);
     expect(summary.firstChild).toBe(summaryText);
     expect(button.firstChild).toBe(buttonText);
     expect(menu.querySelector('button[data-menu-command="document.open"]')).toBe(button);

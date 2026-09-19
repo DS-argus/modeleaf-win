@@ -21,24 +21,46 @@ const navigationIds = [
 const settingsIds = ["theme.picker"];
 
 describe("WindowsMenuModel", () => {
-  it("applies the menu-only exclusions without changing the retained groups", () => {
+  it("consolidates document actions into File without changing shared projections", () => {
     const projected = projectMenuCommands(state(), config);
     const menu = buildWindowsMenuModel(state(), config);
-
-    expect(menu.map(({ label }) => label)).toEqual(["File", "Document", "Tabs", "Search", "View", "Settings"]);
+    expect(menu.map(({ label }) => label)).toEqual(["File", "Tabs", "Search", "View", "Settings"]);
     expect(menu.find(({ id }) => id === "settings")?.commands.map(({ id }) => id)).toEqual(["theme.picker"]);
     for (const section of menu) {
       const expected = projected.filter((command) =>
-        command.category === section.id && (section.id !== "settings" || command.id === "theme.picker"));
+        (command.category === section.id || (section.id === "application" && command.category === "document")) &&
+        (section.id !== "settings" || command.id === "theme.picker"));
       expect(section.commands).toEqual(expected);
     }
 
     const ids = menu.flatMap(({ commands }) => commands.map(({ id }) => id));
+    expect(menu.find(({ id }) => id === "application")?.commands.map(({ id }) => id)).toEqual([
+      "document.open", "document.close", "document.print", "app.quit", "app.new", "help.show", "path.showParent", "path.copy",
+    ]);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).not.toContain("palette.open");
     expect(ids).not.toContain("prompt.commit");
   });
 
+  it.each([
+    {}, { hasDocument: true }, { modalOpen: true }, { canOpenDocument: false },
+    { canCreateSession: false }, { canCreateWindow: false },
+  ])("preserves File action availability and effective shortcuts for %j", (overrides) => {
+    const custom = validateProductConfig({ keymap: { "document.open": ["<C-A-o>"] } });
+    if (!custom.ok) throw new Error("custom keymap invalid");
+    const runtime = state(overrides);
+    const projected = projectMenuCommands(runtime, custom.value);
+    const menu = buildWindowsMenuModel(runtime, custom.value);
+    expect(menu.some(({ id }) => id === "document")).toBe(false);
+    const file = menu.find(({ id }) => id === "application")!;
+    for (const command of projected.filter(({ category }) => category === "document" || category === "application")) {
+      expect(file.commands.filter(({ id }) => id === command.id)).toEqual([command]);
+    }
+    expect(file.commands.find(({ id }) => id === "document.open")?.shortcuts).toEqual(["Ctrl+Alt+o"]);
+    for (const project of [projectHelpCommands, projectPaletteCommands]) {
+      expect(project(runtime, custom.value).find(({ id }) => id === "document.open")?.category).toBe("document");
+    }
+  });
   it("keeps page navigation and theme entries on the shared projections", () => {
     for (const commands of [
       projectMenuCommands(state(), config),

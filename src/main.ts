@@ -898,6 +898,8 @@ function render(): void {
   }
   shellStatus.render();
   printProgressControl.update(printProgressOwner.progress);
+  // The positioned host container otherwise intercepts clicks over the empty action.
+  tabHosts.hidden = shell.emptyState !== undefined;
   emptyReader.hidden = shell.emptyState === undefined;
   emptyReader.setAttribute("aria-hidden", String(shell.emptyState === undefined));
   if (snapshot.reader.helpVisible && overlayOwner.active?.id !== "help") claimOverlay("help");
