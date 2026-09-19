@@ -51,6 +51,7 @@ async function key(key, code, virtualKey, modifiers = 0) {
     type, key, code, windowsVirtualKeyCode: virtualKey, modifiers,
     ...(type === "keyDown" && modifiers === 0 && (key === "Enter" || key === " ") ? { text: key === "Enter" ? "\r" : " " } : {}),
   });
+  await evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))");
 }
 async function click(selector, padding = false) {
   const point = await evaluate(`(() => {
