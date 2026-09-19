@@ -48,6 +48,10 @@ The runner binds the preview receipt/executable and source-PDF hashes, uses a bo
 
 This is standalone bundled-frontend WebView2 debug evidence, not a headless simulation, physical human keyboard test, installed-release test, or release certification. Fractional desktop scaling and mixed-size pages are important: integer CSSOM scroll extents can differ from the browser-applied physical-pixel grid. Preserve the half-point PDF/history contract; verify the bounded browser-applied landing instead of widening canonical tolerance.
 
+## Native empty-screen opening regression
+
+With exclusive native build/desktop-input ownership, launch `npm run preview:worktree` without a PDF and with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`, then run `node tools/qa/run-empty-open.mjs <ProcessId-from-preview>`. The runner validates the current source/executable receipt, uses trusted CDP pointer input on the banner label, shortcut badge and padding, exercises Enter/Space/Ctrl+Shift+O, checks File menu availability, cancels an owned native picker, and reopens `fixtures/pdf/links.pdf` through the banner's recent chooser after last-document close. It records evidence under `.internal/evidence/empty-open/` and leaves the owned preview running; close it before releasing resources. The fixture becomes a normal recent entry. This is standalone WebView2 debug evidence, not physical input or installed-release certification.
+
 ## Native protected-PDF regression
 
 With exclusive native build ownership and no running Modeleaf process:
