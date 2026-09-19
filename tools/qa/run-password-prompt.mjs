@@ -434,6 +434,7 @@ try {
         sample = await snapshot();
         return sample.dialogOpen && sample.errorVisible && sample.inputCleared && !sample.inputDisabled;
       }, label);
+      assert.equal(sample.inputFocused, true, `${label}: retry input focus`);
       assert.equal(sample.inputInvalid, true, `${label}: invalid state`);
       assert.equal(sample.describedByError, true, `${label}: described-by state`);
       return { ...sample, inputReceived };
@@ -536,7 +537,8 @@ try {
   await delay(750);
   const afterRejectedReplay = await snapshot();
   assert.equal(afterRejectedReplay.selectedTab, "locked.pdf", "Rejected external ingress replayed after password success");
-  assert.equal(afterRejectedReplay.tabCount, beforeExternalIngress.tabCount, "Rejected external ingress added a tab after password success");
+  assert.equal(reopenedDocument.tabCount, healthyView.tabCount + 1, "Successful opening did not commit exactly one new tab");
+  assert.equal(afterRejectedReplay.tabCount, reopenedDocument.tabCount, "Rejected external ingress added a tab after password success");
   scenarios.push({ name: "six-wrong-then-correct", passed: true, screenshot: incorrectScreenshot, attempts: wrongAttempts, document: reopenedDocument, inputReceived: retryCorrect.inputReceived, clearedAfterSubmit: retryCorrect.inputCleared, noReplay: true });
 
   // Move to the healthy tab so cancellation has a real prior-document owner to restore.
