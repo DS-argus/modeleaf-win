@@ -47,7 +47,10 @@ async function evaluate(expression) {
   return result.result.value;
 }
 async function key(key, code, virtualKey, modifiers = 0) {
-  for (const type of ["keyDown", "keyUp"]) await call("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: virtualKey, modifiers });
+  for (const type of ["keyDown", "keyUp"]) await call("Input.dispatchKeyEvent", {
+    type, key, code, windowsVirtualKeyCode: virtualKey, modifiers,
+    ...(type === "keyDown" && modifiers === 0 && (key === "Enter" || key === " ") ? { text: key === "Enter" ? "\r" : " " } : {}),
+  });
 }
 async function click(selector, padding = false) {
   const point = await evaluate(`(() => {
@@ -92,7 +95,7 @@ try {
   socket.onmessage = ({ data }) => { const m = JSON.parse(data), p = pending.get(m.id); if (p) { pending.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.done(m.result); } };
   assert.equal(await evaluate("document.querySelector('#empty-reader').hidden"), false, "Start on an empty screen");
   assert.equal(await evaluate("document.querySelector('#tab-hosts').hidden"), true);
-  await evaluate("globalThis.__emptyOpenClicks=[]; document.querySelector('#empty-reader-open').addEventListener('click', e => globalThis.__emptyOpenClicks.push({trusted:e.isTrusted,target:e.target.tagName})); true");
+  await evaluate("globalThis.__emptyOpenClicks=[]; globalThis.__emptyOpenClickHandler=e=>globalThis.__emptyOpenClicks.push({trusted:e.isTrusted,target:e.target.tagName}); document.querySelector('#empty-reader-open').addEventListener('click', globalThis.__emptyOpenClickHandler); true");
   for (const [selector, padding] of [["#empty-reader-open span", false], ["#empty-reader-shortcut", false], ["#empty-reader-open", true]]) {
     const before = await evaluate("globalThis.__emptyOpenClicks.length");
     const point = await click(selector, padding);
@@ -168,7 +171,7 @@ try {
   throw error;
 } finally {
   if (socket?.readyState === WebSocket.OPEN) {
-    await evaluate("delete globalThis.__emptyOpenClicks").catch(() => {});
+    await evaluate("document.querySelector('#empty-reader-open').removeEventListener('click', globalThis.__emptyOpenClickHandler); delete globalThis.__emptyOpenClickHandler; delete globalThis.__emptyOpenClicks").catch(() => {});
     socket.close();
   }
   observer?.stdin.end();
