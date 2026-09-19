@@ -403,10 +403,15 @@ try {
     return sample;
   };
   const documentReady = async (name, label) => {
+    let previous;
+    let stable = 0;
     let sample;
     await wait(async () => {
       sample = await snapshot();
-      return !sample.dialogOpen && sample.selectedTab === name && sample.renderedPages > 0;
+      const signature = JSON.stringify([sample.selectedTab, sample.activePage, sample.scrollTop, sample.scrollLeft, sample.renderedPages]);
+      stable = !sample.dialogOpen && sample.selectedTab === name && sample.renderedPages > 0 && signature === previous ? stable + 1 : 0;
+      previous = signature;
+      return stable >= 5 && await pendingIngressCount() === 0;
     }, label, 20_000);
     assert.equal(sample.selectedTabCount, 1, `${label}: selected tab cardinality`);
     return sample;
@@ -415,7 +420,7 @@ try {
     let sample;
     await wait(async () => {
       sample = await snapshot();
-      return !sample.dialogOpen && sample.emptyVisible && sample.tabCount === 0;
+      return !sample.dialogOpen && sample.emptyVisible && sample.tabCount === 0 && await pendingIngressCount() === 0;
     }, label);
     return sample;
   };
@@ -550,8 +555,8 @@ try {
   const priorRestored = await documentReady("text-3-page.pdf", "Cancel restores prior document");
   assert.equal(priorRestored.tabCount, healthyFocused.tabCount, "Cancel did not remove the staged password candidate");
   assert.equal(priorRestored.activeKind, "tab-host", "Cancel did not restore reader focus");
-  assert.equal(priorRestored.activePage, healthyView.activePage, "Cancel did not restore the prior page");
-  assert(Math.abs(priorRestored.scrollTop - healthyView.scrollTop) <= 1, "Cancel did not restore the prior viewport");
+  assert.equal(priorRestored.activePage, healthyFocused.activePage, "Cancel did not restore the prior page");
+  assert(Math.abs(priorRestored.scrollTop - healthyFocused.scrollTop) <= 1, `Cancel viewport changed: ${priorRestored.scrollTop} versus ${healthyFocused.scrollTop}`);
   scenarios.push({ name: "cancel-prior-document-restoration", passed: true, prompt: { dialogOpen: priorPrompt.dom.dialogOpen, inputFocused: priorPrompt.dom.inputFocused, inputCleared: priorPrompt.dom.inputCleared }, restored: { selectedTab: priorRestored.selectedTab, tabCount: priorRestored.tabCount, activePage: priorRestored.activePage, scrollTop: priorRestored.scrollTop, activeKind: priorRestored.activeKind } });
   // Bound document cleanup before exercising native WM_CLOSE with a pending password prompt.
   const tabsBeforeClose = (await snapshot()).tabCount;
