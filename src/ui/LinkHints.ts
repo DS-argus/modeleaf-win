@@ -366,7 +366,14 @@ export class LinkHints {
       badge.dataset.linkHintLabel = label;
       badge.dataset.linkHintCandidate = candidate.selectionId;
       badge.dataset.match = String(matches.has(index));
-      badge.textContent = label.toUpperCase();
+      const prefixLength = matches.has(index) ? state.typedPrefix.length : 0;
+      const entered = document.createElement("span");
+      entered.className = "link-hints-entered";
+      entered.textContent = label.slice(0, prefixLength).toUpperCase();
+      const remaining = document.createElement("span");
+      remaining.className = "link-hints-remaining";
+      remaining.textContent = label.slice(prefixLength).toUpperCase();
+      badge.append(entered, remaining);
       badge.style.left = `${candidate.rect.x + scrollLeft}px`;
       badge.style.top = `${candidate.rect.y + scrollTop}px`;
       children.push(badge);

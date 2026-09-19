@@ -153,6 +153,8 @@ describe("LinkHints", () => {
     expect(backspace.prevented()).toBe(true);
     expect(h.hints.currentPrefix).toBe("");
     expect(document.body.querySelectorAll('[data-match="true"]')).toHaveLength(27);
+    expect(document.querySelector('[data-link-hint-label="ff"] .link-hints-entered')?.textContent).toBe("");
+    expect(document.querySelector('[data-link-hint-label="ff"] .link-hints-remaining')?.textContent).toBe("FF");
   });
 
   it("reports invalid input and ignores repeated keys without changing the prefix", () => {
@@ -280,6 +282,10 @@ describe("LinkHints", () => {
       expect(firstPrefix.prevented()).toBe(true);
       expect(h.hints.currentPrefix).toBe("f");
       expect(document.body.querySelectorAll('[data-match="true"]')).toHaveLength(26);
+      expect(document.querySelector('[data-link-hint-label="ff"] .link-hints-entered')?.textContent).toBe("F");
+      expect(document.querySelector('[data-link-hint-label="ff"] .link-hints-remaining')?.textContent).toBe("F");
+      expect(document.querySelector('[data-link-hint-label="jf"] .link-hints-entered')?.textContent).toBe("");
+      expect(document.querySelector('[data-link-hint-label="jf"] .link-hints-remaining')?.textContent).toBe("JF");
       expect(dispatched).toEqual(["links.hint"]);
 
       const backspace = keyEvent("Backspace");

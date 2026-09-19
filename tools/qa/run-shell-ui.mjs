@@ -129,6 +129,11 @@ try {
         lineHeight: Number.parseFloat(footerStyle.lineHeight),
         messageFlexGrow: Number.parseFloat(messageStyle.flexGrow),
         messageWidth: messageBounds.width,
+        messageTop: messageBounds.top - footerBounds.top,
+        messageBottom: messageBounds.bottom - footerBounds.top,
+        messageLineHeight: Number.parseFloat(messageStyle.lineHeight),
+        paddingTop: Number.parseFloat(messageStyle.paddingTop),
+        paddingBottom: Number.parseFloat(messageStyle.paddingBottom),
         messageText: message.textContent,
         messageHidden: message.hidden,
         pendingText: pending.textContent,
@@ -140,6 +145,7 @@ try {
     assert(geometry.lineHeight >= 12 && geometry.messageFlexGrow === 1 && geometry.messageWidth > 0, `Descender status flex ${width}: ${JSON.stringify(geometry)}`);
     assert(geometry.messageText === descenderStatus.status && !geometry.messageHidden && geometry.pendingText === "Pending: g", `Descender status content ${width}: ${JSON.stringify(geometry)}`);
     assert(geometry.badgeBottom <= geometry.height && geometry.badgeTop >= 0, `Descender status badge ${width}: ${JSON.stringify(geometry)}`);
+    assert(geometry.messageTop >= 0 && geometry.messageBottom <= geometry.height && geometry.messageLineHeight >= 14 && geometry.paddingTop >= 2 && geometry.paddingBottom >= 2, `Descender message clearance ${width}: ${JSON.stringify(geometry)}`);
     transcript.push({ action: "status-descender-geometry", width, geometry, passed: true });
   }
   await evaluate("shellQa.setStatus({status:'',query:''},'')");

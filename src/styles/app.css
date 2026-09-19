@@ -36,7 +36,7 @@ html, body { overflow: hidden; }
 .statusbar [hidden] { display: none; }
 .status-help { flex: 0 0 auto; padding: 2px 0; border: 0; color: var(--theme-accent); background: transparent; font: inherit; white-space: nowrap; }
 .status-help:focus-visible { outline: 2px solid var(--theme-focus-indicator); outline-offset: 1px; }
-.status-live { display: flex; flex: 1 1 auto; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
+.status-live { display: flex; flex: 1 1 auto; align-self: stretch; align-items: center; gap: 8px; min-width: 0; overflow: hidden; }
 .status-metrics { display: flex; flex: 0 0 auto; gap: 8px; align-items: center; }
 .status-metrics:has(.status-page[hidden]):has(.status-zoom[hidden]) { display: none; }
 .status-page, .status-zoom { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
@@ -44,6 +44,7 @@ html, body { overflow: hidden; }
 .status-message { flex: 1 1 auto; }
 .status-path-notice { flex: 0 1 auto; text-align: left; }
 .status-pending { flex: 0 0 auto; color: var(--theme-accent); }
+.status-message, .status-path-notice, .status-pending { line-height: 1.4; padding-block: 2px; }
 .status-badge { flex: 0 0 auto; padding: 2px 4px; border: 1px solid var(--theme-border); border-radius: 3px; color: var(--theme-foreground); background: var(--theme-active-tab); font-size: 1em; font-weight: 600; }
 .status-badge-search { border-style: dashed; }
 .status-path-notice-copied { color: var(--theme-accent); font-weight: 600; }
@@ -238,6 +239,7 @@ html, body { overflow: hidden; }
   user-select: none;
 }
 .link-hints-label[data-match="false"] { opacity: 0.32; }
+.link-hints-entered { opacity: 0.45; }
 .link-hints-confirmation {
   position: absolute;
   display: grid;
