@@ -82,6 +82,7 @@ const call = (method, params = {}) => new Promise((done, reject) => {
     reject(new Error(`CDP timeout: ${method}`));
   }, 15_000);
   pending.set(id, {
+    method,
     done: (result) => { clearTimeout(timer); done(result); },
     reject: (error) => { clearTimeout(timer); reject(error); },
   });
@@ -204,12 +205,11 @@ async function axFor(selector) {
   return sanitizeAxTree(await call("Accessibility.getPartialAXTree", { nodeId, fetchRelatives: true }));
 }
 async function passwordAxSemantics() {
-  const [dialog, input, open, cancel] = await Promise.all([
-    axFor("#password-dialog"),
-    axFor("#password-input"),
-    axFor("#password-open"),
-    axFor("#password-cancel"),
-  ]);
+  // DOM.getDocument resets frontend node IDs; do not race independent AX lookups.
+  const dialog = await axFor("#password-dialog");
+  const input = await axFor("#password-input");
+  const open = await axFor("#password-open");
+  const cancel = await axFor("#password-cancel");
   const first = (nodes, roles = []) => nodes.find((node) => roles.length === 0 || roles.includes(node.role)) ?? nodes[0] ?? null;
   return {
     dialog: first(dialog, ["dialog"]),
@@ -381,7 +381,7 @@ try {
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
-    if (message.error) request.reject(new Error(`CDP command failed: ${message.method ?? "request"}`));
+    if (message.error) request.reject(new Error(`CDP ${request.method}: ${sanitize(message.error.message)}`));
     else request.done(message.result);
   };
   socket.onclose = () => {
