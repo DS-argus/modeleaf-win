@@ -149,12 +149,12 @@ let cancelPendingShellInput: () => void = () => undefined;
 let syncPendingShellInput: () => void = () => undefined;
 let focusOwnerSequence = 0;
 let overlayOwner: OverlayOwnerState = createOverlayOwner(SHELL_WINDOW_ID, "empty-reader-open");
-let passwordOwner: PdfTabSession | undefined;
-const passwordPrompt = createPasswordPrompt({ onCancel: () => passwordOwner?.cancelPasswordOpening() });
-function passwordModalOpen(): boolean { return passwordOwner !== undefined; }
+let protectedOpenSession: PdfTabSession | undefined;
+const passwordPrompt = createPasswordPrompt({ onCancel: () => protectedOpenSession?.cancelPasswordOpening() });
+function passwordModalOpen(): boolean { return protectedOpenSession !== undefined; }
 function dismissPasswordPrompt(): void {
   passwordPrompt.dismiss();
-  passwordOwner = undefined;
+  protectedOpenSession = undefined;
   cancelPendingShellInput();
 }
 function focusTargetId(element: HTMLElement | null): string | undefined {
@@ -659,7 +659,7 @@ function createTab(): TabPayload {
     native,
     onPassword: (request) => {
       if (shellDisposing || request.signal.aborted) return Promise.resolve(null);
-      passwordOwner = session;
+      protectedOpenSession = session;
       applicationMenuOwner.close();
       const overlay = overlayOwner.active?.id;
       if (overlay === "theme") closeThemePicker(true);
@@ -990,7 +990,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         await adoptWithCommittedPresentation(
           () => publishActivateAndAdoptPdfTab(render, payload.session, async () => {
             try { return await payload.session.adopt(request, request.ownerGeneration); }
-            finally { if (passwordOwner === payload.session) dismissPasswordPrompt(); }
+            finally { if (protectedOpenSession === payload.session) dismissPasswordPrompt(); }
           }),
           async () => {
             if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
@@ -1413,11 +1413,11 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
       else if (ownedOverlay !== undefined) releaseOverlay(ownedOverlay);
       cancelPagePromptOwnership();
       shellDisposing = true;
-      passwordOwner?.cancelPasswordOpening();
+      protectedOpenSession?.cancelPasswordOpening();
       passwordPrompt.dismiss();
       // Drain the password candidate before rejecting its native open request.
       // Both paths own cancellation barriers; they must not race the same handle.
-      await passwordOwner?.close();
+      await protectedOpenSession?.close();
       themeUnlisten?.();
       recentSnapshotUnlisten?.();
       quitUnlisten?.();

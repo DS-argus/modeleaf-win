@@ -60,7 +60,7 @@ const createProductionReaderHost = new Function(
 
 const productionFragments = [
   sourceFragment("function isNativeCompositionEvent(", "function isOverlayOwnedKey(", "native composition guard"),
-  sourceFragment('const SHELL_WINDOW_ID = "current-window";', "let passwordOwner", "overlay focus prelude"),
+  sourceFragment('const SHELL_WINDOW_ID = "current-window";', "let protectedOpenSession", "overlay focus prelude"),
   sourceFragment("function focusTargetId(", "const applicationMenuOwner =", "overlay focus helpers"),
   sourceFragment("function claimOverlay(", "const paletteList =", "overlay open/close functions"),
   sourceFragment("function restoreOpenFocus(", "function handleOpenTerminal(", "native terminal focus restoration"),

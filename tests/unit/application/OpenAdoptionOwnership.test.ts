@@ -119,7 +119,7 @@ describe("OpenAdoptionOwnership", () => {
       publishActivateAndAdoptPdfTab, rollbackOpenAdoptionOwnership,
       activateCurrentTab: async () => { await active().session.activate(); render(); },
       shellDisposing: false, reportOpenInvokeFailure: errors,
-      passwordOwner: undefined, dismissPasswordPrompt: vi.fn(),
+      protectedOpenSession: undefined, dismissPasswordPrompt: vi.fn(),
       cancelledOpenFocus: undefined,
     };
     const names = Object.keys(dependencies);

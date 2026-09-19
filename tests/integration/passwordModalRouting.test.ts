@@ -62,10 +62,10 @@ describe("production password modal shell routing", () => {
 
   it("settles password cancellation before draining sessions on native window close", () => {
     const quit = source.slice(source.indexOf("function requestApplicationQuit("), source.indexOf('// Global Any listeners'));
-    expect(quit.indexOf("passwordOwner?.cancelPasswordOpening()")).toBeLessThan(quit.indexOf("payload.session.close()"));
+    expect(quit.indexOf("protectedOpenSession?.cancelPasswordOpening()")).toBeLessThan(quit.indexOf("payload.session.close()"));
     expect(quit.indexOf("payload.session.close()")).toBeLessThan(quit.indexOf('invoke("close_current_window"'));
-    expect(source).toContain("finally { if (passwordOwner === payload.session) dismissPasswordPrompt(); }");
+    expect(source).toContain("finally { if (protectedOpenSession === payload.session) dismissPasswordPrompt(); }");
     expect(source).toContain("canAdmitOpen: () => !shellDisposing && !passwordModalOpen()");
-    expect(quit.indexOf("await passwordOwner?.close()")).toBeLessThan(quit.indexOf("shellOpen.dispose()"));
+    expect(quit.indexOf("await protectedOpenSession?.close()")).toBeLessThan(quit.indexOf("shellOpen.dispose()"));
   });
 });

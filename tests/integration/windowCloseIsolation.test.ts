@@ -64,10 +64,10 @@ function renderer(
     if (command === "close_current_window" && pendingClose.get(label) !== args?.requestId) throw new Error("WINDOW_CLOSE_STALE");
   });
   const noop = () => undefined;
-  const passwordOwner = password.owner;
+  const protectedOpenSession = password.owner;
   const passwordPrompt = password.prompt ?? { dismiss: noop };
   const dependencies = {
-    passwordOwner, passwordPrompt,
+    protectedOpenSession, passwordPrompt,
     listen, getCurrentWindow, invoke, overlayOwner: {},
     closeThemePicker: noop, closePalette: noop, closeFileOpener: noop, releaseOverlay: noop,
     cancelPagePromptOwnership: noop, themeUnlisten: undefined, recentSnapshotUnlisten: undefined,
@@ -87,20 +87,20 @@ describe("production window-close event isolation", () => {
     const bridge = eventBridge();
     const pending = new Map([["main", 7]]);
     const order: string[] = [];
-    const passwordOwner = {
+    const protectedOpenSession = {
       cancelPasswordOpening: vi.fn(() => { order.push("cancel"); }),
       close: vi.fn(async () => { order.push("close"); }),
     };
     const passwordPrompt = { dismiss: vi.fn(() => { order.push("dismiss"); }) };
-    const main = renderer("main", pending, bridge, { owner: passwordOwner, prompt: passwordPrompt });
+    const main = renderer("main", pending, bridge, { owner: protectedOpenSession, prompt: passwordPrompt });
     main.openDispose.mockImplementation(() => { order.push("openDispose"); });
     await vi.waitFor(() => expect(main.invoke).toHaveBeenCalledWith("window_close_ready"));
 
     bridge.emit("window-close-requested", "main", { requestId: 7 });
     await main.pending();
-    expect(passwordOwner.cancelPasswordOpening).toHaveBeenCalledOnce();
+    expect(protectedOpenSession.cancelPasswordOpening).toHaveBeenCalledOnce();
     expect(passwordPrompt.dismiss).toHaveBeenCalledOnce();
-    expect(passwordOwner.close).toHaveBeenCalledOnce();
+    expect(protectedOpenSession.close).toHaveBeenCalledOnce();
     expect(order).toEqual(["cancel", "dismiss", "close", "openDispose"]);
   });
   it.each(["main", "reader-secondary"])("closing %s leaves the other renderer operational", async (closingLabel) => {
