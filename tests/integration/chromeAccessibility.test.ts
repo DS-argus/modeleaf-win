@@ -221,7 +221,7 @@ describe("search prompt production binding", () => {
     expect(mainSource).not.toContain('class="search-prompt mac-overlay"');
   });
   it("limits transparency and contrast corrections to real overlay panels", () => {
-    const panelRule = styles.match(/\.prompt, #search-dialog, \.mac-overlay \{([^}]+)\}/)?.[1];
+    const panelRule = styles.match(/\.prompt, #search-dialog, \.mac-overlay, \.password-prompt \{([^}]+)\}/)?.[1];
     expect(panelRule).toContain("--overlay-panel-alpha: 85%;");
     expect(panelRule).toContain("--overlay-contrast: var(--theme-contrast);");
     expect(panelRule).toContain("--overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));");

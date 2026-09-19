@@ -13,6 +13,8 @@ Modeleaf is a Tauri 2 Windows PDF reader with a TypeScript/Vite renderer in WebV
 
 Native startup/second-instance argv, drag/drop, and picker selection enter the open-request coordinator. Renderer adoption is serialized: reuse or stage a tab, adopt/render, then commit successful presentation; failure rolls back. Successful adoption precedes recent-file recording, and Rust derives the trusted recent identity from the retained session handle.
 
+Protected-document challenges stay inside the candidate's PDF.js loading lifetime. The reader owns challenge generations, cancellation, and bounded loading time; time spent waiting for password input does not consume the metadata deadline. The shell owns the modal prompt and rejects new open ingress rather than replaying it after dismissal. Passwords are ephemeral renderer-to-PDF.js callback values, never native DTOs or durable state. Cancellation rolls back the staged tab and restores the prior focus; window close cancels the challenge before draining sessions.
+
 Native PDF access is scoped by window owner, owner generation, session identifier, and document generation. Preserve those checks and renderer stale-result guards when changing async code. A tab/window switch or close must not let late work mutate a new owner's presentation.
 
 Normal native session closure is cancellation-barrier gated: drain reads, printing, and external-link work before removing the session. Window/application teardown is deadline-bounded and can defer unsettled cleanup; do not equate a timeout or a submitted print job with successful completion. Tests and the owning implementation, not a simplified diagram, define detailed transitions.

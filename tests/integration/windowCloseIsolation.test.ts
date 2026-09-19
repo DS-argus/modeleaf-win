@@ -44,7 +44,18 @@ function eventBridge() {
     },
   };
 }
-function renderer(label: string, pendingClose: Map<string, number>, bridge: ReturnType<typeof eventBridge>) {
+function renderer(
+  label: string,
+  pendingClose: Map<string, number>,
+  bridge: ReturnType<typeof eventBridge>,
+  password: {
+    readonly owner?: {
+      readonly cancelPasswordOpening: () => void;
+      readonly close: () => Promise<void> | void;
+    };
+    readonly prompt?: { readonly dismiss: () => void };
+  } = {},
+) {
   bridge.metadata.currentWindow.label = label;
   const menuDispose = vi.fn();
   const openDispose = vi.fn();
@@ -53,7 +64,10 @@ function renderer(label: string, pendingClose: Map<string, number>, bridge: Retu
     if (command === "close_current_window" && pendingClose.get(label) !== args?.requestId) throw new Error("WINDOW_CLOSE_STALE");
   });
   const noop = () => undefined;
+  const passwordOwner = password.owner;
+  const passwordPrompt = password.prompt ?? { dismiss: noop };
   const dependencies = {
+    passwordOwner, passwordPrompt,
     listen, getCurrentWindow, invoke, overlayOwner: {},
     closeThemePicker: noop, closePalette: noop, closeFileOpener: noop, releaseOverlay: noop,
     cancelPagePromptOwnership: noop, themeUnlisten: undefined, recentSnapshotUnlisten: undefined,
@@ -69,6 +83,26 @@ function renderer(label: string, pendingClose: Map<string, number>, bridge: Retu
 }
 
 describe("production window-close event isolation", () => {
+  it("cancels password opening before dismissing the prompt during window close", async () => {
+    const bridge = eventBridge();
+    const pending = new Map([["main", 7]]);
+    const order: string[] = [];
+    const passwordOwner = {
+      cancelPasswordOpening: vi.fn(() => { order.push("cancel"); }),
+      close: vi.fn(async () => { order.push("close"); }),
+    };
+    const passwordPrompt = { dismiss: vi.fn(() => { order.push("dismiss"); }) };
+    const main = renderer("main", pending, bridge, { owner: passwordOwner, prompt: passwordPrompt });
+    main.openDispose.mockImplementation(() => { order.push("openDispose"); });
+    await vi.waitFor(() => expect(main.invoke).toHaveBeenCalledWith("window_close_ready"));
+
+    bridge.emit("window-close-requested", "main", { requestId: 7 });
+    await main.pending();
+    expect(passwordOwner.cancelPasswordOpening).toHaveBeenCalledOnce();
+    expect(passwordPrompt.dismiss).toHaveBeenCalledOnce();
+    expect(passwordOwner.close).toHaveBeenCalledOnce();
+    expect(order).toEqual(["cancel", "dismiss", "close", "openDispose"]);
+  });
   it.each(["main", "reader-secondary"])("closing %s leaves the other renderer operational", async (closingLabel) => {
     const bridge = eventBridge();
     const pending = new Map([[closingLabel, 7]]);

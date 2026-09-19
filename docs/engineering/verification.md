@@ -48,6 +48,19 @@ The runner binds the preview receipt/executable and source-PDF hashes, uses a bo
 
 This is standalone bundled-frontend WebView2 debug evidence, not a headless simulation, physical human keyboard test, installed-release test, or release certification. Fractional desktop scaling and mixed-size pages are important: integer CSSOM scroll extents can differ from the browser-applied physical-pixel grid. Preserve the half-point PDF/history contract; verify the bounded browser-applied landing instead of widening canonical tolerance.
 
+## Native protected-PDF regression
+
+With exclusive native build ownership and no running Modeleaf process:
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
+npm run preview:worktree -- -Pdf fixtures/pdf/locked.pdf
+node tools/qa/run-password-prompt.mjs <ProcessId-from-preview>
+Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+```
+
+The runner checks the current preview source/executable receipt, exercises correct and repeated incorrect attempts, modal input/action blocking, native second-instance rejection, cancellation restoration, and pending-password WM_CLOSE. It records sanitized focus/accessibility checks and cleared-input screenshots under `.internal/evidence/password-prompt/`, checks source fixture hashes and non-persistence of a unique incorrect input, and closes the owned preview. Never include password values or raw password accessibility values in evidence. This is bundled-frontend WebView2 debug QA with CDP-injected input, not human keyboard, screen-reader narration, or installed-release certification.
+
 ## Documentation-only changes
 
 Validate local links, documented commands, source-backed claims, ignore/tracking behavior, and `git diff --check`. Run relevant contract tests where guidance relies on their boundaries. A native rebuild/manual QA is unnecessary when only documentation changes; explicitly report those layers as NOT RUN. Never suppress warnings or label an unexecuted gate as passed.

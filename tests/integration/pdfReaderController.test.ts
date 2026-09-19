@@ -1742,109 +1742,247 @@ describe("PdfReaderController", () => {
     expect(native.closeSession).toHaveBeenCalledOnce();
     await controller.dispose();
   });
-  it("rejects a locked PDF without replacing the healthy document", async () => {
+  it("submits the first password and commits the document", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
-    const healthy = task(documentWith(1));
     const pending = deferred<PdfDocument>();
+    const updates: string[] = [];
+    const requests: Array<{ readonly reason: string; readonly signal: AbortSignal }> = [];
     const protectedTask: PdfLoadingTask = {
       promise: pending.promise,
       destroy: vi.fn(async () => undefined),
     };
-    const loading = [healthy, protectedTask];
-    const native = nativeBoundary(vi.fn()
-      .mockResolvedValueOnce(session("healthy-password", 1))
-      .mockResolvedValueOnce(session("cancel-password", 2)));
-    const host = document.createElement("div");
-    const statuses: string[] = [];
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("password-first-correct", 1)));
     const controller = new PdfReaderController({
       native,
       resources: new ResourceReservationManager(),
-      pdf: { getDocument: vi.fn(() => loading.shift()!), annotationMode: 0 },
-      canvasHost: host,
-      onCommitted: vi.fn(),
-      onPage: vi.fn(),
-      onStatus: (message) => statuses.push(message),
-    });
-
-    await controller.open(1);
-    const healthyCanvas = publishedCanvas(host);
-    const replacement = controller.open(2);
-    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
-    protectedTask.onPassword!(() => undefined, 1);
-    await replacement;
-
-    expect(publishedCanvas(host)).toBe(healthyCanvas);
-    expect(statuses.at(-1)).toBe("Password-protected PDFs are not supported.");
-    expect(protectedTask.destroy).toHaveBeenCalledOnce();
-    expect(native.closeSession).toHaveBeenCalledOnce();
-    await controller.dispose();
-  });
-  it("rejects a locked candidate and releases all resources", async () => {
-    const pending = deferred<PdfDocument>();
-    const protectedTask: PdfLoadingTask = {
-      promise: pending.promise,
-      destroy: vi.fn(async () => undefined),
-    };
-    const native = nativeBoundary(vi.fn().mockResolvedValue(session("rejected-password-ui", 1)));
-    const statuses: string[] = [];
-    const resources = new ResourceReservationManager();
-    const controller = new PdfReaderController({
-      native,
-      resources,
       pdf: { getDocument: vi.fn(() => protectedTask), annotationMode: 0 },
       canvasHost: document.createElement("div"),
       onCommitted: vi.fn(),
       onPage: vi.fn(),
-      onStatus: (message) => statuses.push(message),
+      onStatus: vi.fn(),
+      onPassword: async (request) => {
+        requests.push(request);
+        return "modeleaf";
+      },
+    });
+    const updatePassword = vi.fn((password: string) => {
+      updates.push(password);
+      pending.resolve(documentWith(1));
     });
 
     const opening = controller.open(1);
     await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
-    protectedTask.onPassword!(() => undefined, 1);
+    protectedTask.onPassword!(updatePassword, 1);
     await opening;
 
-    expect(statuses.at(-1)).toBe("Password-protected PDFs are not supported.");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.reason).toBe("required");
+    expect(requests[0]?.signal.aborted).toBe(true);
+    expect(updates).toEqual(["modeleaf"]);
+    expect(updatePassword).toHaveBeenCalledOnce();
+    expect(protectedTask.onPassword).toBeUndefined();
+    await controller.dispose();
     expect(protectedTask.destroy).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
-    await controller.dispose();
-    resources.assertEmpty();
   });
-  it("keeps repeated locked callbacks idempotent while releasing the native session", async () => {
+  it("allows unlimited incorrect password retries before a correct submission", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const pending = deferred<PdfDocument>();
-    const loadingTask: PdfLoadingTask = {
-      promise: pending.promise,
-      destroy: vi.fn(() => {
-        pending.reject(new Error("PASSWORD_INCORRECT"));
-      }),
-    };
-    const native = nativeBoundary(vi.fn().mockResolvedValue(session("protected", 1)));
-    const statuses: string[] = [];
+    const updates: string[] = [];
+    const requests: string[] = [];
+    const protectedTask: PdfLoadingTask = { promise: pending.promise, destroy: vi.fn(async () => undefined) };
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("password-retries", 1)));
     const controller = new PdfReaderController({
       native,
       resources: new ResourceReservationManager(),
-      pdf: { getDocument: vi.fn(() => loadingTask), annotationMode: 0 },
+      pdf: { getDocument: vi.fn(() => protectedTask), annotationMode: 0 },
       canvasHost: document.createElement("div"),
       onCommitted: vi.fn(),
       onPage: vi.fn(),
-      onStatus: (message) => statuses.push(message),
+      onStatus: vi.fn(),
+      onPassword: async (request) => {
+        requests.push(request.reason);
+        return requests.length <= 6 ? `wrong-${requests.length}` : "modeleaf";
+      },
+    });
+    const updatePassword = vi.fn((password: string) => {
+      updates.push(password);
+      if (updates.length < 7) protectedTask.onPassword!(updatePassword, 2);
+      else pending.resolve(documentWith(1));
     });
 
-    const opening = controller.open(5);
-    await vi.waitFor(() => expect(loadingTask.onPassword).toBeTypeOf("function"));
-    loadingTask.onPassword!(() => undefined, 1);
-    await Promise.resolve();
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      loadingTask.onPassword!(() => undefined, 2);
-      await Promise.resolve();
-    }
+    const opening = controller.open(1);
+    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
+    protectedTask.onPassword!(updatePassword, 1);
     await opening;
 
-    expect(loadingTask.destroy).toHaveBeenCalledOnce();
-    expect(statuses.at(-1)).toMatch(/password/i);
+    expect(requests).toEqual(["required", "incorrect", "incorrect", "incorrect", "incorrect", "incorrect", "incorrect"]);
+    expect(updates).toEqual(["wrong-1", "wrong-2", "wrong-3", "wrong-4", "wrong-5", "wrong-6", "modeleaf"]);
+    await controller.dispose();
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
   });
+  it("cancels a password request with null and cleans the candidate exactly once", async () => {
+    const pending = deferred<PdfDocument>();
+    const protectedTask: PdfLoadingTask = { promise: pending.promise, destroy: vi.fn(async () => undefined) };
+    const statuses: string[] = [];
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("password-cancelled", 1)));
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => protectedTask), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: (status) => statuses.push(status),
+      onPassword: async () => null,
+    });
 
+    const opening = controller.open(1);
+    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
+    protectedTask.onPassword!(vi.fn(), 1);
+    await opening;
+
+    expect(statuses.at(-1)).toBe("Opening PDF cancelled.");
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
+    expect(native.cancelSession).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+    await controller.dispose();
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+  });
+  it("ignores stale password callbacks after cancellation before the callback launches", async () => {
+    const pending = deferred<PdfDocument>();
+    const callback = vi.fn(async () => "stale-secret");
+    const updatePassword = vi.fn();
+    const protectedTask: PdfLoadingTask = { promise: pending.promise, destroy: vi.fn(async () => undefined) };
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("password-stale", 1)));
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => protectedTask), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      onPassword: callback,
+    });
+
+    const opening = controller.open(1);
+    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
+    const staleHandler = protectedTask.onPassword!;
+    staleHandler(updatePassword, 1);
+    controller.cancelPasswordOpening();
+    await opening;
+    await Promise.resolve();
+    staleHandler(updatePassword, 2);
+
+    expect(callback).not.toHaveBeenCalled();
+    expect(updatePassword).not.toHaveBeenCalled();
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+  });
+  it("ignores a password callback result that resolves after candidate replacement", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const decision = deferred<string | null>();
+    const pending = deferred<PdfDocument>();
+    const updatePassword = vi.fn();
+    const callback = vi.fn(async (_request: { readonly signal: AbortSignal }) => decision.promise);
+    const protectedTask: PdfLoadingTask = { promise: pending.promise, destroy: vi.fn(async () => undefined) };
+    const healthyTask = task(documentWith(1));
+    const loading = [protectedTask, healthyTask];
+    const native = nativeBoundary(vi.fn()
+      .mockResolvedValueOnce(session("password-replaced", 1))
+      .mockResolvedValueOnce(session("password-successor", 2)));
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => loading.shift()!), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      onPassword: callback,
+    });
+
+    const opening = controller.open(1);
+    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
+    protectedTask.onPassword!(updatePassword, 1);
+    await vi.waitFor(() => expect(callback).toHaveBeenCalledOnce());
+    const request = callback.mock.calls[0]?.[0];
+    const replacement = controller.open(2);
+    await replacement;
+    decision.resolve("stale-secret");
+    await Promise.resolve();
+    await opening;
+
+    expect(request?.signal.aborted).toBe(true);
+    expect(updatePassword).not.toHaveBeenCalled();
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
+    await controller.dispose();
+    expect(native.closeSession).toHaveBeenCalledTimes(2);
+  });
+  it("unblocks disposal while PDF.js task.promise remains pending", async () => {
+    const pending = deferred<PdfDocument>();
+    const protectedTask: PdfLoadingTask = { promise: pending.promise, destroy: vi.fn(async () => undefined) };
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("password-dispose", 1)));
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => protectedTask), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+    });
+
+    const opening = controller.open(1);
+    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
+    await controller.dispose();
+    await opening;
+
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
+    expect(native.cancelSession).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+  });
+  it("keeps cancellation eligible after password submission until precommit adoption", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const pending = deferred<PdfDocument>();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const protectedTask: PdfLoadingTask = { promise: pending.promise, destroy: vi.fn(async () => undefined) };
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("password-precommit-cancel", 1)));
+    const committed = vi.fn();
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => protectedTask), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: committed,
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+      onPassword: async () => "modeleaf",
+      onBeforeCommit: async (_rendered, commitCanvas) => {
+        entered.resolve();
+        await release.promise;
+        commitCanvas();
+      },
+    });
+    const updatePassword = vi.fn(() => pending.resolve(documentWith(1)));
+
+    const opening = controller.open(1);
+    await vi.waitFor(() => expect(protectedTask.onPassword).toBeTypeOf("function"));
+    protectedTask.onPassword!(updatePassword, 1);
+    await entered.promise;
+    controller.cancelPasswordOpening();
+    release.resolve();
+    await opening;
+
+    expect(committed).not.toHaveBeenCalled();
+    expect(protectedTask.destroy).toHaveBeenCalledOnce();
+    expect(native.cancelSession).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+  });
   it("maps locality rejection without disturbing the committed canvas", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const native = nativeBoundary(vi.fn()
