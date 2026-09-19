@@ -43,13 +43,13 @@ describe("Windows installer configuration", () => {
     expect(tauriConfig.bundle.windows?.nsis?.installerHooks).toBe("nsis/pdf-handler-candidate.nsh");
   });
 
-  it("keeps all package manifests and lockfiles on release version 0.1.4", () => {
+  it("keeps all package manifests and lockfiles on release version 0.1.5", () => {
     const cargoVersion = /^version\s*=\s*"([^"]+)"/mu.exec(cargoToml)?.[1];
     expect(cargoVersion).toBeDefined();
     expect(tauriConfig.version).toBe(packageJson.version);
     expect(cargoVersion).toBe(packageJson.version);
     expect(tauriConfig.version).toMatch(/^\d+\.\d+\.\d+(?:-[\w.]+)?$/u);
-    expect(packageJson.version).toBe("0.1.4");
+    expect(packageJson.version).toBe("0.1.5");
     expect(packageLock.version).toBe(packageJson.version);
     expect(packageLock.packages[""].version).toBe(packageJson.version);
     const cargoLockVersion = /^name = "modeleaf"\r?\nversion = "([^"]+)"$/mu.exec(cargoLock)?.[1];

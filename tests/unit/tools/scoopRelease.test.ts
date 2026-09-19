@@ -192,7 +192,7 @@ function requireCliFailure(result: SpawnSyncReturns<string>): string {
 }
 
 describe("Scoop release validation and notes", () => {
-  it("validates the exact four-file contract and returns truthful initial-release notes", async () => {
+  it("validates the exact four-file contract and returns truthful release notes", async () => {
     const fixture = await createFixture();
     const result = await validateScoopRelease(validatorOptions(fixture));
 
@@ -203,12 +203,16 @@ describe("Scoop release validation and notes", () => {
       assetBasenames: ASSET_BASENAMES,
       releaseNotes: expect.any(String),
     });
-    expect(result.releaseNotes).toContain("initial experimental Modeleaf release for Windows 11 x64");
-    expect(result.releaseNotes).toContain("owner accepted basic app use");
+    expect(result.releaseNotes).toContain("experimental Modeleaf release for Windows 11 x64");
+    expect(result.releaseNotes).not.toMatch(/initial experimental|owner accepted basic app use/iu);
     expect(result.releaseNotes).toMatch(/native behavior.*DPI scaling.*Narrator accessibility.*clean-machine installation.*signature checks are unverified/isu);
-    expect(result.releaseNotes).toContain("Live configuration changes are not yet applied completely.");
-    expect(result.releaseNotes).toContain("Full-document printing is incomplete.");
-    expect(result.releaseNotes).toContain("Update retrieval is incomplete.");
+    expect(result.releaseNotes).toContain("Automated tests and package validation do not certify installed behavior.");
+    expect(result.releaseNotes).toContain("Changes since 0.1.4:");
+    expect(result.releaseNotes).toContain("rapid and held-key page navigation, boundary landings, and viewport settlement");
+    expect(result.releaseNotes).toContain("password-protected PDF support with modal password entry, incorrect-password retry, and cancellation");
+    expect(result.releaseNotes).toContain("Passwords are not persisted.");
+    expect(result.releaseNotes).toContain("CLI enhancements and update notifications are not included in this release.");
+    expect(result.releaseNotes).toContain("The app does not download or install updates.");
     expect(result.releaseNotes).toMatch(/table of contents \(TOC\).*keyboard link hints.*link-destination indicators.*retired/isu);
     expect(result.releaseNotes).toContain("Prerequisite: Install the Microsoft Edge WebView2 Runtime");
     expect(result.releaseNotes).toContain(
