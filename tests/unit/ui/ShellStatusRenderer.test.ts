@@ -42,6 +42,22 @@ describe("shared shell status renderer", () => {
     expect(message.hidden).toBe(false);
     expect(message.textContent).toBe("Page 1 of 3 could not be rendered · 90°");
   });
+  it("keeps descenders and long page prompts within compact status contracts", () => {
+    const styles = readFileSync("src/styles/app.css", "utf8");
+    const main = readFileSync("src/main.ts", "utf8");
+    expect(styles).toMatch(/\.statusbar \{[\s\S]*height: 26px;[\s\S]*font: 0\.625rem\/1\.2/u);
+    expect(styles).toContain(".status-message { flex: 1 1 auto; }");
+    expect(styles).not.toContain(".status-message { max-width: 6ch; }");
+    expect(main).toContain('id="prompt" class="prompt" role="group" aria-label="Go to page"');
+    const subject = setup();
+    const diagnostic = "g p y Go to page: 12 — long status remains readable";
+    subject.reader.setStatus(diagnostic);
+    subject.renderer.setPendingSequence("g");
+    const message = subject.footer.querySelector<HTMLElement>(".status-message")!;
+    expect(message.textContent).toBe(diagnostic);
+    expect(message.title).toBe(diagnostic);
+    expect(subject.footer.querySelector(".status-pending")?.textContent).toBe("Pending: g");
+  });
   it("keeps page metrics outside live regions and the pending keys visually complete", () => {
     const subject = setup();
     subject.renderer.setPendingSequence("gg");

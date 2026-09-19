@@ -51,7 +51,7 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | First / last page | `gg` / `G` |
 | Go to page | `g`, number, `Enter` |
 | Actual Size | `0` |
-| Back / forward | `Alt+Left` / `Alt+Right` |
+| Back / forward | `Ctrl+O` / `Ctrl+I` (also `Alt+Left` / `Alt+Right`) |
 | Search / next / previous result | `/` / `Enter` / `Shift+Enter` |
 | Follow a PDF link | `f`, label; `Enter` confirms external URLs, `Escape` cancels |
 | Fit width / page | `w` / `F` |
@@ -59,6 +59,7 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | Previous / next tab | `P` / `N` |
 | Theme / palette / help | `T` / `:` / `?` |
 
+Jump history is temporary and local to each tab. Page-number/first/last jumps, internal PDF links, and search navigation record positions; ordinary scrolling, adjacent-page steps, zoom and rotation do not add entries. `Ctrl+O` goes back and `Ctrl+I` forward; opening PDFs remains `Ctrl+Shift+O`.
 New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page in a single-page Fit Page view; in that view, `j`/`k` and `d`/`u` move to the next/previous page like `n`/`p`.
 
 Precision-trackpad scrolling and pinch gestures are not currently supported.

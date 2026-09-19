@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { validateProductConfig } from "../../../src/domain/config/ConfigValidator";
 import { createRootKeyboardRouter, type RootKeyboardContext } from "../../../src/platform/RootKeyboardRouter";
 import {
@@ -101,6 +101,27 @@ async function settlePromises(): Promise<void> {
 }
 
 describe("LinkHints", () => {
+  afterEach(() => document.body.replaceChildren());
+  it("keeps a zoomed and scrolled host outside the hint overlay layout", () => {
+    const h = subject(snapshot(Array.from({ length: 62 }, (_, index) => candidate(`link-${index}`))));
+    h.host.scrollLeft = 5.384615;
+    h.host.scrollTop = 26480.7695;
+    h.host.getBoundingClientRect = () => new DOMRect(10, 63, 976, 1037);
+    h.setSnapshot(Object.freeze({ ...h.authority.visibleLinkSnapshot, scrollLeft: h.host.scrollLeft, scrollTop: h.host.scrollTop }));
+    expect(h.hints.show()).toBe(true);
+    const overlay = document.querySelector<HTMLElement>(".link-hints-overlay")!;
+    expect(overlay.parentElement).toBe(document.body);
+    expect(h.host.contains(overlay)).toBe(false);
+    expect(overlay.style.left).toBe("10px");
+    expect(overlay.style.top).toBe("63px");
+    expect(overlay.style.width).toBe("600px");
+    expect(overlay.style.height).toBe("400px");
+    h.hints.handleKeyDown(keyEvent("f").event);
+    expect(h.hints.isPresenting).toBe(true);
+    expect(h.hints.currentPrefix).toBe("f");
+    h.hints.dispose();
+    expect(document.querySelector(".link-hints-overlay")).toBeNull();
+  });
   it("generates stable labels and classifies prefixes without mutating candidates", () => {
     expect(LINK_HINT_ALPHABET.startsWith("fjdksla")).toBe(true);
     expect(generateLinkHintLabels(4)).toEqual(["f", "j", "d", "k"]);
@@ -119,19 +140,19 @@ describe("LinkHints", () => {
     const h = subject(snapshot(entries));
     expect(h.hints.show()).toBe(true);
     expect(h.hints.visibleLabels).toHaveLength(27);
-    expect(h.host.querySelectorAll("[data-link-hint-label]")).toHaveLength(27);
+    expect(document.body.querySelectorAll("[data-link-hint-label]")).toHaveLength(27);
 
     const first = keyEvent("f");
     expect(h.hints.handleKeyDown(first.event)).toBe(true);
     expect(first.prevented()).toBe(true);
     expect(h.hints.currentPrefix).toBe("f");
-    expect(h.host.querySelectorAll('[data-match="true"]')).toHaveLength(26);
+    expect(document.body.querySelectorAll('[data-match="true"]')).toHaveLength(26);
 
     const backspace = keyEvent("Backspace");
     expect(h.hints.handleKeyDown(backspace.event)).toBe(true);
     expect(backspace.prevented()).toBe(true);
     expect(h.hints.currentPrefix).toBe("");
-    expect(h.host.querySelectorAll('[data-match="true"]')).toHaveLength(27);
+    expect(document.body.querySelectorAll('[data-match="true"]')).toHaveLength(27);
   });
 
   it("reports invalid input and ignores repeated keys without changing the prefix", () => {
@@ -160,8 +181,8 @@ describe("LinkHints", () => {
     const label = keyEvent("f");
     expect(h.hints.handleKeyDown(label.event)).toBe(true);
     await settlePromises();
-    const prompt = h.host.querySelector<HTMLElement>('[data-link-hints-confirmation="url"]');
-    const urlNode = h.host.querySelector<HTMLElement>('[data-link-hints-confirmation-url]');
+    const prompt = document.body.querySelector<HTMLElement>('[data-link-hints-confirmation="url"]');
+    const urlNode = document.body.querySelector<HTMLElement>('[data-link-hints-confirmation-url]');
     expect(prompt).not.toBeNull();
     expect(urlNode?.textContent).toBe(url);
     expect(urlNode?.innerHTML).not.toContain("<unsafe>");
@@ -208,7 +229,7 @@ describe("LinkHints", () => {
     expect(h.hints.show()).toBe(true);
     h.hints.cancel();
     expect(h.hints.isPresenting).toBe(false);
-    expect(h.host.querySelector('[data-link-hints="overlay"]')).toBeNull();
+    expect(document.body.querySelector('[data-link-hints="overlay"]')).toBeNull();
     expect(h.cancelVisibleLinkActivation).toHaveBeenCalledTimes(2);
   });
 
@@ -258,14 +279,14 @@ describe("LinkHints", () => {
       expect(router.handleKeyDown(firstPrefix.event)).toBe(true);
       expect(firstPrefix.prevented()).toBe(true);
       expect(h.hints.currentPrefix).toBe("f");
-      expect(h.host.querySelectorAll('[data-match="true"]')).toHaveLength(26);
+      expect(document.body.querySelectorAll('[data-match="true"]')).toHaveLength(26);
       expect(dispatched).toEqual(["links.hint"]);
 
       const backspace = keyEvent("Backspace");
       expect(router.handleKeyDown(backspace.event)).toBe(true);
       expect(backspace.prevented()).toBe(true);
       expect(h.hints.currentPrefix).toBe("");
-      expect(h.host.querySelectorAll('[data-match="true"]')).toHaveLength(27);
+      expect(document.body.querySelectorAll('[data-match="true"]')).toHaveLength(27);
 
       const retryPrefix = keyEvent("f");
       const secondKey = keyEvent("f");

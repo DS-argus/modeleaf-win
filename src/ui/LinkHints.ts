@@ -162,7 +162,7 @@ export class LinkHints {
     overlay.setAttribute("aria-label", "PDF link hints");
     overlay.setAttribute("aria-live", "polite");
     overlay.setAttribute("role", "status");
-    context.host.append(overlay);
+    document.body.append(overlay);
     this.activeState = {
       context,
       snapshot,
@@ -347,10 +347,15 @@ export class LinkHints {
     if (state === undefined) return;
     const matches = new Set(linkHintCandidates(state.labels, state.typedPrefix));
     const host = state.context.host;
-    const scrollLeft = host.scrollLeft;
-    const scrollTop = host.scrollTop;
+    const scrollLeft = 0;
+    const scrollTop = 0;
     const visibleWidth = host.clientWidth > 0 ? host.clientWidth : Math.max(0, state.snapshot.viewport.width);
     const visibleHeight = host.clientHeight > 0 ? host.clientHeight : Math.max(0, state.snapshot.viewport.height);
+    const bounds = host.getBoundingClientRect();
+    state.overlay.style.left = `${bounds.left + host.clientLeft}px`;
+    state.overlay.style.top = `${bounds.top + host.clientTop}px`;
+    state.overlay.style.width = `${visibleWidth}px`;
+    state.overlay.style.height = `${visibleHeight}px`;
     const children: HTMLElement[] = [];
     const labelPlacements: Array<{ readonly element: HTMLElement; readonly candidate: PdfVisibleLinkCandidate }> = [];
     for (let index = 0; index < state.candidates.length; index += 1) {

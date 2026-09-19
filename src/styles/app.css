@@ -31,7 +31,7 @@ html, body { overflow: hidden; }
   height: 26px; min-width: 0; padding: 0 8px;
   border-top: 1px solid var(--theme-border);
   color: var(--theme-foreground); background: var(--theme-statusline);
-  font: 0.625rem/1 "Cascadia Mono", Consolas, monospace; white-space: nowrap;
+  font: 0.625rem/1.2 "Cascadia Mono", Consolas, monospace; white-space: nowrap;
 }
 .statusbar [hidden] { display: none; }
 .status-help { flex: 0 0 auto; padding: 2px 0; border: 0; color: var(--theme-accent); background: transparent; font: inherit; white-space: nowrap; }
@@ -41,7 +41,7 @@ html, body { overflow: hidden; }
 .status-metrics:has(.status-page[hidden]):has(.status-zoom[hidden]) { display: none; }
 .status-page, .status-zoom { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
 .status-message, .status-path-notice { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-family: "Segoe UI Variable", "Segoe UI", sans-serif; }
-.status-message { flex: 0 1 auto; }
+.status-message { flex: 1 1 auto; }
 .status-path-notice { flex: 0 1 auto; text-align: left; }
 .status-pending { flex: 0 0 auto; color: var(--theme-accent); }
 .status-badge { flex: 0 0 auto; padding: 2px 4px; border: 1px solid var(--theme-border); border-radius: 3px; color: var(--theme-foreground); background: var(--theme-active-tab); font-size: 1em; font-weight: 600; }
@@ -55,7 +55,6 @@ html, body { overflow: hidden; }
 .status-print-host .print-progress button { flex: 0 0 auto; padding: 1px 4px; }
 @container statusbar (max-width: 65em) { .status-help { display: none; } }
 @container statusbar (max-width: 51em) {
-  .status-message { max-width: 6ch; }
   .status-live { gap: 4px; }
   .status-print-host progress { display: none; }
 }
@@ -210,12 +209,12 @@ html, body { overflow: hidden; }
   box-shadow: 0 0 0 1px var(--theme-background);
 }
 .link-hints-overlay {
-  position: absolute;
-  inset: 0;
+  position: fixed;
+  inset: auto;
   z-index: 12;
-  overflow: visible;
+  overflow: clip;
   pointer-events: none;
-  contain: layout style;
+  contain: layout paint;
 }
 .link-hints-label {
   position: absolute;

@@ -45,8 +45,8 @@ describe("ActionRegistry", () => {
     expect(DEFAULT_BINDINGS["view.fitPage"]).toEqual(["F"]);
     expect(DEFAULT_BINDINGS["view.zoomReset"]).toEqual(["0"]);
     expect(DEFAULT_BINDINGS["view.zoomReset"]).not.toContain("<C-1>");
-    expect(DEFAULT_BINDINGS["history.back"]).toEqual(["<A-Left>"]);
-    expect(DEFAULT_BINDINGS["history.forward"]).toEqual(["<A-Right>"]);
+    expect(DEFAULT_BINDINGS["history.back"]).toEqual(["<A-Left>", "<C-o>"]);
+    expect(DEFAULT_BINDINGS["history.forward"]).toEqual(["<A-Right>", "<C-i>"]);
     expect(DEFAULT_BINDINGS["document.open"]).toEqual(["<C-S-o>"]);
     expect(DEFAULT_BINDINGS["document.open"]).not.toContain("<C-o>");
   });

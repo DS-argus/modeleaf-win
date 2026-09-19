@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const PRODUCT_DEFAULTS_FINGERPRINT =
-  "b1b691e3704a7524aa25ca43adc33e59b4e4e844245b4a465af658510c82f3cd";
+  "668b85f13dbb55655a2ba502b51c90bf5e7c8597ae8f883f2d149aea863120e4";
 const ACTION_IDS = [
   "document.open",
   "document.close",
@@ -112,9 +112,11 @@ describe("Windows regression snapshots", () => {
     expect(defaults.configurableKeyTemplates["app.quit"]).toEqual(["<A-F4>"]);
     expect(defaults.configurableKeyTemplates["history.back"]).toEqual([
       "<A-Left>",
+      "<C-o>",
     ]);
     expect(defaults.configurableKeyTemplates["history.forward"]).toEqual([
       "<A-Right>",
+      "<C-i>",
     ]);
     expect(defaults.config.defaults.input).toEqual({
       prefixTimeoutMilliseconds: 400,
