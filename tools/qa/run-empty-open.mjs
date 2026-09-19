@@ -159,7 +159,7 @@ try {
   await wait(async () => !(await evaluate("document.querySelector('#empty-reader').hidden")), "last document closed");
   await click("#empty-reader-shortcut");
   await wait(chooserOpen, "banner reopened after last close");
-  await call("Input.insertText", { text: fixture });
+  await call("Input.insertText", { text: "links.pdf" });
   await wait(async () => await evaluate(`[...document.querySelectorAll('.file-opener-recent')].some(e=>e.title===${JSON.stringify(fixture)})`), "fixture recent available");
   await click(`.file-opener-recent[title=${JSON.stringify(fixture)}]`);
   await wait(async () => await evaluate("document.querySelector('#empty-reader').hidden && !document.querySelector('#tab-hosts').hidden"), "banner recent adopted");
