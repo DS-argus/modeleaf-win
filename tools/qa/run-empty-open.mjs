@@ -151,15 +151,16 @@ try {
   // Seed a real recent through the supported second-instance ingress, then reopen it from the banner.
   execFileSync(executable, [fixture], { timeout: 15000 });
   await wait(async () => await evaluate("document.querySelector('#empty-reader').hidden && !document.querySelector('#tab-hosts').hidden && document.querySelectorAll('.pdf-page-frame').length > 0"), "fixture rendered");
+  await wait(async () => await evaluate(`window.__TAURI_INTERNALS__.invoke('list_recents',{}).then(r=>r.entries?.some(e=>e.displayPath===${JSON.stringify(fixture)}))`), "fixture recent committed");
   for (const id of ["document.close", "document.print"]) assert.equal(await evaluate(`document.querySelector('[data-menu-command="${id}"]').disabled`), false);
   await click(`${fileSelector} summary`);
   await click('[data-menu-command="document.close"]');
   await wait(async () => !(await evaluate("document.querySelector('#empty-reader').hidden")), "last document closed");
   await click("#empty-reader-shortcut");
   await wait(chooserOpen, "banner reopened after last close");
-  await call("Input.insertText", { text: "links.pdf" });
-  await wait(async () => await evaluate("[...document.querySelectorAll('.file-opener-entry')].some(e=>e.textContent.includes('links.pdf'))"), "fixture recent available");
-  await key("Enter", "Enter", 13);
+  await call("Input.insertText", { text: fixture });
+  await wait(async () => await evaluate(`[...document.querySelectorAll('.file-opener-recent')].some(e=>e.title===${JSON.stringify(fixture)})`), "fixture recent available");
+  await click(`.file-opener-recent[title=${JSON.stringify(fixture)}]`);
   await wait(async () => await evaluate("document.querySelector('#empty-reader').hidden && !document.querySelector('#tab-hosts').hidden"), "banner recent adopted");
   transcript.push({ action: "last-close-banner-recent-open", fixtureSha256: fixtureHash, passed: true });
   assert.equal(hash(await readFile(fixture)), fixtureHash, "Source PDF remains unchanged");
