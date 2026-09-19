@@ -19,6 +19,12 @@ Native PDF access is scoped by window owner, owner generation, session identifie
 
 Normal native session closure is cancellation-barrier gated: drain reads, printing, and external-link work before removing the session. Window/application teardown is deadline-bounded and can defer unsettled cleanup; do not equate a timeout or a submitted print job with successful completion. Tests and the owning implementation, not a simplified diagram, define detailed transitions.
 
+## PDF link hints
+
+`PdfContentController` supplies bounded, immutable snapshots of actionable annotation occurrences intersecting the reader viewport. Selection retains opaque identity and snapshot authority; `PdfTabSession` forwards selection through existing guarded navigation or the committed native external-link registry. No text URL inference, synthetic clicks, or alternate shell-launch path is used.
+
+The shell owns transient hint labels and an anchored safe-text URL confirmation. Its root input route gives hint characters priority over reader bindings without overriding password, editable, IME, print, or overlay ownership. Viewport and owner changes invalidate selection; external launch requires a fresh non-repeat Enter and cannot be retracted once dispatched. Only successful hint-initiated internal navigation with an explicit PDF coordinate receives a transient transformed marker. Ordinary clicks, page-only targets, and unrelated history/navigation do not acquire new confirmation or marker behavior. No hint, popup, or indicator fields are persisted.
+
 ## Persistence
 
 Rust initializes config, state, and diagnostic services in app-local storage. Config is `config.toml`; the active writer-owned `state.json` fields are **selected_theme** and **recent_files**. Reader pages, zoom, rotation, viewport/history, windows, tabs, and sessions are not persisted.

@@ -92,7 +92,15 @@ pub fn validate_external_link(target: &str) -> Result<(), ExternalLinkError> {
         {
             Ok(())
         }
-
+        "mailto"
+            if parsed.host().is_none()
+                && parsed.cannot_be_a_base()
+                && !parsed.path().is_empty()
+                && parsed.fragment().is_none()
+                && !has_invalid_mailto_escape_or_control(target) =>
+        {
+            Ok(())
+        }
         _ => Err(ExternalLinkError::LinkRejected),
     }
 }
@@ -120,6 +128,52 @@ fn has_raw_userinfo(target: &str) -> bool {
         .next()
         .unwrap_or(authority)
         .contains('@')
+}
+fn has_invalid_mailto_escape_or_control(target: &str) -> bool {
+    let bytes = target.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            index += 1;
+            continue;
+        }
+        let mut decoded = Vec::new();
+        while index < bytes.len() && bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return true;
+            }
+            let Some(high) = hex_value(bytes[index + 1]) else {
+                return true;
+            };
+            let Some(low) = hex_value(bytes[index + 2]) else {
+                return true;
+            };
+            decoded.push((high << 4) | low);
+            index += 3;
+        }
+        if decoded
+            .iter()
+            .any(|value| matches!(value, 0x00..=0x1f | 0x7f))
+        {
+            return true;
+        }
+        match std::str::from_utf8(&decoded) {
+            Ok(value) if value.chars().any(char::is_control) => return true,
+            Ok(_) => {}
+            Err(_) if decoded.iter().any(|value| matches!(value, 0x80..=0x9f)) => return true,
+            Err(_) => {}
+        }
+    }
+    false
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

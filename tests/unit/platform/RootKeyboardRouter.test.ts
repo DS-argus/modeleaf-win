@@ -32,15 +32,14 @@ function harness(overrides: Partial<RootKeyboardContext> = {}) {
 }
 
 describe("RootKeyboardRouter", () => {
-  it("prevents only handled bindings", () => {
+  it("keeps Ctrl+Shift+O as Open and prevents only handled bindings", () => {
     const h = harness(); const open = keyboard("O", { ctrlKey: true, shiftKey: true }); h.router.handleKeyDown(open.event);
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual(["document.open"]);
     const unknown = keyboard("q"); h.router.handleKeyDown(unknown.event); expect(unknown.prevented()).toBe(false);
   });
-  it("leaves f, t, Shift+J, and Shift+K unclaimed after retiring reader hints", () => {
+  it("leaves t, Shift+J, and Shift+K unclaimed", () => {
     const h = harness();
     const retired = [
-      keyboard("f"),
       keyboard("t"),
       keyboard("J", { shiftKey: true }),
       keyboard("K", { shiftKey: true }),
@@ -253,21 +252,100 @@ describe("RootKeyboardRouter", () => {
     h.router.handleKeyDown(event.event);
     expect(event.prevented()).toBe(true); expect(h.dispatched).toEqual([]);
   });
-  it("does not dispatch Open for the obsolete default Ctrl+O chord", () => {
-    const h = harness();
-    const old = keyboard("o", { ctrlKey: true });
-    expect(h.router.handleKeyDown(old.event)).toBe(false);
-    expect(old.prevented()).toBe(false);
+  it("dispatches Ctrl+O back and Ctrl+I forward exactly once while suppressing repeats", () => {
+    const h = harness({ runtime: { ...runtime, canHistoryBack: true, canHistoryForward: true } });
+    const back = keyboard("o", { ctrlKey: true });
+    const backRepeat = keyboard("o", { ctrlKey: true, repeat: true });
+    const forward = keyboard("i", { ctrlKey: true });
+    const forwardRepeat = keyboard("i", { ctrlKey: true, repeat: true });
+    for (const event of [back, backRepeat, forward, forwardRepeat]) {
+      expect(h.router.handleKeyDown(event.event)).toBe(true);
+      expect(event.prevented()).toBe(true);
+    }
+    expect(h.dispatched).toEqual(["history.back", "history.forward"]);
+  });
+  it.each(["pagePrompt", "searchPrompt", "searchResults"] as const)("keeps Ctrl history navigation-only outside navigation: %s", (inputContext) => {
+    const h = harness({ inputContext, runtime: { ...runtime, canHistoryBack: true, canHistoryForward: true } });
+    for (const event of [keyboard("o", { ctrlKey: true }), keyboard("i", { ctrlKey: true })]) {
+      expect(h.router.handleKeyDown(event.event)).toBe(false);
+      expect(event.prevented()).toBe(false);
+    }
+    expect(h.dispatched).toEqual([]);
+  });
+  it("does not dispatch Ctrl history while a modal is open", () => {
+    const h = harness({ runtime: { ...runtime, modalOpen: true, canHistoryBack: true, canHistoryForward: true } });
+    const back = keyboard("o", { ctrlKey: true });
+    const forward = keyboard("i", { ctrlKey: true });
+    expect(h.router.handleKeyDown(back.event)).toBe(true);
+    expect(h.router.handleKeyDown(forward.event)).toBe(true);
+    expect(back.prevented()).toBe(true);
+    expect(forward.prevented()).toBe(true);
+    expect(h.dispatched).toEqual([]);
+    expect(h.disabled).toEqual(["history.back:Close the current dialog", "history.forward:Close the current dialog"]);
+  });
+  it.each([{ nativeOwnedTarget: true }, { isComposing: true }, { keyCode: 229 }])("leaves Ctrl history native-owned during editable or IME input: %o", (overrides) => {
+    const h = harness({ runtime: { ...runtime, canHistoryBack: true, canHistoryForward: true } });
+    const back = keyboard("o", { ctrlKey: true, ...overrides });
+    const forward = keyboard("i", { ctrlKey: true, ...overrides });
+    expect(h.router.handleKeyDown(back.event)).toBe(false);
+    expect(h.router.handleKeyDown(forward.event)).toBe(false);
+    expect(back.prevented()).toBe(false);
+    expect(forward.prevented()).toBe(false);
+    expect(h.dispatched).toEqual([]);
+  });
+  it("does not treat plain Tab as Ctrl history forward", () => {
+    const h = harness({ runtime: { ...runtime, canHistoryForward: true } });
+    const tab = keyboard("Tab");
+    expect(h.router.handleKeyDown(tab.event)).toBe(false);
+    expect(tab.prevented()).toBe(false);
     expect(h.dispatched).toEqual([]);
   });
   it("keeps an explicit user Open override authoritative", () => {
-    const custom = validateProductConfig({ keymap: { "document.open": ["<C-o>"] } });
+    const custom = validateProductConfig({ keymap: { "document.open": ["<C-A-o>"] } });
     if (!custom.ok) throw new Error("custom config invalid");
     const dispatched: string[] = [];
     const router = createRootKeyboardRouter({ config: custom.value, getContext: () => ({ windowId: "a", routeRevision: "a", generation: 1, inputContext: "navigation", runtime }), onDispatch: id => dispatched.push(id) });
     expect(router.handleKeyDown(keyboard("O", { ctrlKey: true, shiftKey: true }).event)).toBe(false);
-    expect(router.handleKeyDown(keyboard("o", { ctrlKey: true }).event)).toBe(true);
+    expect(router.handleKeyDown(keyboard("o", { ctrlKey: true, altKey: true }).event)).toBe(true);
     expect(dispatched).toEqual(["document.open"]);
+    router.dispose();
+  });
+  it("gives an active hint owner priority over bound keys without intercepting native or IME input", () => {
+    let context: RootKeyboardContext = { windowId: "window-a", routeRevision: "route-a", generation: 1, inputContext: "navigation", runtime };
+    const dispatched: string[] = [];
+    let priorityCalls = 0;
+    const router = createRootKeyboardRouter({
+      config,
+      getContext: () => context,
+      onDispatch: (id) => dispatched.push(id),
+      onPriorityKeyDown: (event, current) => {
+        priorityCalls += 1;
+        expect(current).toBe(context);
+        return event.key === "j";
+      },
+    });
+
+    const owned = keyboard("j");
+    expect(router.handleKeyDown(owned.event)).toBe(true);
+    expect(owned.prevented()).toBe(true);
+    expect(priorityCalls).toBe(1);
+    expect(dispatched).toEqual([]);
+
+    for (const overrides of [{ nativeOwnedTarget: true }, { isComposing: true }, { keyCode: 229 }]) {
+      const native = keyboard("j", overrides);
+      expect(router.handleKeyDown(native.event)).toBe(false);
+      expect(native.prevented()).toBe(false);
+    }
+    expect(priorityCalls).toBe(1);
+    expect(dispatched).toEqual([]);
+
+    context = { ...context, routeRevision: "route-b" };
+    router.syncContext();
+    const released = keyboard("j");
+    expect(router.handleKeyDown(released.event)).toBe(true);
+    expect(released.prevented()).toBe(true);
+    expect(priorityCalls).toBe(2);
+    expect(dispatched).toEqual([]);
     router.dispose();
   });
 });

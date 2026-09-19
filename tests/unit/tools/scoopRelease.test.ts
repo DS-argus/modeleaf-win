@@ -213,7 +213,8 @@ describe("Scoop release validation and notes", () => {
     expect(result.releaseNotes).toContain("Passwords are not persisted.");
     expect(result.releaseNotes).toContain("CLI enhancements and update notifications are not included in this release.");
     expect(result.releaseNotes).toContain("The app does not download or install updates.");
-    expect(result.releaseNotes).toMatch(/table of contents \(TOC\).*keyboard link hints.*link-destination indicators.*retired/isu);
+    expect(result.releaseNotes).toContain("PDF-provided links support keyboard hints with f, required external-URL confirmation, and transient internal destination-coordinate feedback.");
+    expect(result.releaseNotes).toContain("Embedded table of contents (TOC) remains retired.");
     expect(result.releaseNotes).toContain("Prerequisite: Install the Microsoft Edge WebView2 Runtime");
     expect(result.releaseNotes).toContain(
       `scoop install https://github.com/${REPOSITORY}/releases/download/${TAG}/modeleaf.json`,

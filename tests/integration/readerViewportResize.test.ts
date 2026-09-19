@@ -37,8 +37,8 @@ function fixture() {
   };
   const reportFailure = vi.fn();
   const wheelDispose = vi.fn();
-  const init = new Function("host", "session", "active", "rootKeyboard", "render", "reportPresentationFailure", "copyContextMenu", "disposeWheelInput", "queueMicrotask", code);
-  const payload = init(host, session, () => active ? { session } : { session: undefined }, { syncContext: vi.fn() }, vi.fn(), reportFailure, { dispose: vi.fn() }, wheelDispose, () => undefined) as { disposeUi(): void };
+  const init = new Function("host", "session", "active", "rootKeyboard", "render", "reportPresentationFailure", "copyContextMenu", "disposeWheelInput", "queueMicrotask", "cancelLinkHints", code);
+  const payload = init(host, session, () => active ? { session } : { session: undefined }, { syncContext: vi.fn() }, vi.fn(), reportFailure, { dispose: vi.fn() }, wheelDispose, () => undefined, vi.fn()) as { disposeUi(): void };
   disposers.push(() => { payload.disposeUi(); vi.restoreAllMocks(); });
   return {
     host, session, disconnect, reportFailure, wheelDispose,

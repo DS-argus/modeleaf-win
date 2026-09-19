@@ -13,8 +13,38 @@ export interface PdfContentDocument { readonly numPages: number; getPage(pageNum
 export interface PdfContentViewport { readonly width: number; readonly scale: number; readonly height: number; readonly rotation: number; readonly rawDims: { readonly pageWidth: number; readonly pageHeight: number }; convertToViewportPoint(x: number, y: number): readonly [number, number]; convertToPdfPoint(x: number, y: number): readonly [number, number]; }
 export interface PdfContentRenderRequest { readonly pageNumber: number; readonly page: PdfContentPage; readonly viewport: PdfContentViewport; readonly canvas: HTMLCanvasElement; readonly retainedPages?: readonly number[]; readonly commitCanvas?: (accessory?: HTMLElement) => boolean; }
 export interface PdfExternalLinkRegistration { readonly annotationId: string; readonly target: string; }
+export interface PdfVisibleLinkGeometry {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}
+export type PdfVisibleLinkKind = "external" | "internal";
+export type PdfVisibleLinkSelectionId = string;
+export interface PdfVisibleLinkCandidate {
+  readonly selectionId: PdfVisibleLinkSelectionId;
+  readonly pageNumber: number;
+  readonly kind: PdfVisibleLinkKind;
+  readonly rect: PdfVisibleLinkGeometry;
+  readonly url?: string;
+}
+export interface PdfVisibleLinkSnapshot {
+  readonly revision: number;
+  readonly generation: number | null;
+  readonly viewport: PdfVisibleLinkGeometry;
+  readonly scrollLeft: number;
+  readonly scrollTop: number;
+  readonly truncated: boolean;
+  readonly candidates: readonly PdfVisibleLinkCandidate[];
+}
+export type PdfLinkActivationResult =
+  | { readonly kind: "activated"; readonly link: PdfVisibleLinkKind; readonly landing?: { readonly pageIndex: number; readonly x: number; readonly y: number } }
+  | { readonly kind: "confirmation-required"; readonly url: string }
+  | { readonly kind: "stale" | "rejected" | "unsupported" | "failed" | "in-progress" | "already-activated" | "same-location" };
+export type PdfDestinationNavigationOutcome =
+  | { readonly kind: "verified"; readonly landing?: { readonly pageIndex: number; readonly x: number; readonly y: number } }
+  | { readonly kind: "rejected" | "same-location" | "stale" | "failed" };
 export type PdfLinkActivationCause = "internal-link";
-export type PdfDestinationNavigationOutcome = { readonly kind: "verified" | "rejected" | "same-location" | "stale" | "failed" };
 export interface PdfSearchGeometry { readonly x: number; readonly y: number; readonly width: number; readonly height: number; }
 interface PdfSearchGeometryRange { readonly start: number; readonly end: number; readonly originX: number; readonly originY: number; readonly advanceX: number; readonly advanceY: number; readonly thicknessX: number; readonly thicknessY: number; readonly width: number; readonly height: number; readonly reverse: boolean; }
 export interface PdfSearchResult { readonly pageNumber: number; readonly index: number; readonly length: number; readonly geometry?: PdfSearchGeometry; }
@@ -27,7 +57,7 @@ export interface PdfContentControllerOptions {
   readonly onStatus: (message: string, source?: "search") => void;
   readonly onSearchCleared?: () => void;
   readonly navigateToPage: (pageNumber: number) => void;
-  readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean) => Promise<PdfDestinationNavigationOutcome>;
+  readonly navigateToDestination: (pageNumber: number, destination: readonly unknown[], cause: PdfLinkActivationCause, isActivationCurrent: () => boolean, returnLanding?: boolean) => Promise<PdfDestinationNavigationOutcome>;
   readonly resolveDestinationPage?: (reference: unknown) => Promise<number | null>;
   readonly onSearchResults: (update: PdfSearchResultsUpdate) => void;
   readonly requestSearchLanding: (request: PdfSearchLandingRequest) => Promise<PdfSearchLandingOutcome>;
@@ -64,6 +94,7 @@ interface LinkGroup {
   readonly key: string;
   readonly annotation: PdfContentAnnotation;
   readonly annotationId: string;
+  readonly selectionId: PdfVisibleLinkSelectionId;
   registryRevision: number | undefined;
   readonly rectangles: readonly DOMRect[];
 }
@@ -273,10 +304,49 @@ const isExternalUrl = (value: string): boolean => {
         && parsed.password.length === 0
         && !authority.includes("@");
     }
-    return false;
+    if (protocol !== "mailto:") return false;
+    const separator = value.indexOf(":");
+    const remainder = separator < 0 ? "" : value.slice(separator + 1);
+    return parsed.host.length === 0
+      && !remainder.startsWith("/")
+      && parsed.pathname.length > 0
+      && parsed.hash.length === 0
+      && !remainder.includes("#")
+      && !hasInvalidMailtoEscapeOrControl(value);
   } catch {
     return false;
   }
+};
+
+const hasInvalidMailtoEscapeOrControl = (value: string): boolean => {
+  const isControlByte = (byte: number): boolean => byte <= 0x1f || byte === 0x7f;
+  for (let index = 0; index < value.length;) {
+    if (value[index] !== "%") {
+      index += 1;
+      continue;
+    }
+    const runStart = index;
+    const bytes: number[] = [];
+    while (index < value.length && value[index] === "%") {
+      const high = value.charCodeAt(index + 1);
+      const low = value.charCodeAt(index + 2);
+      const isHex = (code: number): boolean => (code >= 0x30 && code <= 0x39)
+        || (code >= 0x41 && code <= 0x46)
+        || (code >= 0x61 && code <= 0x66);
+      if (!Number.isFinite(high) || !Number.isFinite(low) || !isHex(high) || !isHex(low)) return true;
+      const highValue = high <= 0x39 ? high - 0x30 : high <= 0x46 ? high - 0x41 + 10 : high - 0x61 + 10;
+      const lowValue = low <= 0x39 ? low - 0x30 : low <= 0x46 ? low - 0x41 + 10 : low - 0x61 + 10;
+      bytes.push((highValue << 4) | lowValue);
+      index += 3;
+    }
+    if (bytes.some(isControlByte)) return true;
+    try {
+      if (/[\u0000-\u001f\u007f-\u009f]/u.test(decodeURIComponent(value.slice(runStart, index)))) return true;
+    } catch {
+      if (bytes.some((byte) => byte >= 0x80 && byte <= 0x9f)) return true;
+    }
+  }
+  return false;
 };
 
 /** Renders the selectable PDF content that is deliberately kept outside the raster canvas. */
@@ -291,6 +361,7 @@ export class PdfContentController {
   private renderedViewport: PdfContentViewport | undefined;
   private renderedCanvas: HTMLCanvasElement | undefined;
   private readonly appliedDestinationLandings = new Map<number, { readonly pageIndex: number; readonly x: number; readonly y: number }>();
+  private readonly destinationMarkerPoints = new Map<number, { readonly pageIndex: number; readonly x: number; readonly y: number }>();
   private pendingDestination: {
     readonly document: PdfContentDocument;
     readonly generation: number;
@@ -302,6 +373,12 @@ export class PdfContentController {
   private destinationScrollSettlement: { readonly intentId: number; readonly promise: Promise<void>; readonly finish: () => void } | undefined;
   private destinationSequence = 0;
   private linkActivationSequence = 0;
+  private hintActivationEpoch = 0;
+  private visibleLinkRevision = 0;
+  private visibleLinkSelectionSequence = 0;
+  private readonly activatedVisibleLinkSelections = new WeakMap<PdfVisibleLinkSnapshot, Set<PdfVisibleLinkSelectionId>>();
+  private destinationIndicator: HTMLElement | undefined;
+  private destinationIndicatorTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly resolvedDestinationPages = new WeakMap<PdfContentAnnotation, number>();
   private renderSequence = 0;
   private sessionId: string | undefined;
@@ -350,6 +427,66 @@ export class PdfContentController {
   public constructor(private readonly options: PdfContentControllerOptions) {}
 
   public get searchQuery(): string { return this.query; }
+  public get visibleLinkSnapshot(): PdfVisibleLinkSnapshot {
+    const host = this.options.host;
+    const bounds = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : undefined;
+    const width = this.viewportExtent(host.clientWidth, bounds?.width);
+    const height = this.viewportExtent(host.clientHeight, bounds?.height);
+    const candidates: PdfVisibleLinkCandidate[] = [];
+    let truncated = false;
+    for (const group of this.visibleLinkGroups) {
+      if (!this.isActionableLinkGroup(group)) continue;
+      const rect = this.visibleLinkGeometry(group);
+      if (rect === undefined) continue;
+      if (candidates.length >= MAX_VISIBLE_LINK_CANDIDATES) {
+        truncated = true;
+        break;
+      }
+      candidates.push(Object.freeze({
+        selectionId: group.selectionId,
+        pageNumber: group.pageNumber,
+        kind: group.annotation.url === undefined ? "internal" : "external",
+        rect: Object.freeze(rect),
+        ...(group.annotation.url === undefined ? {} : { url: group.annotation.url }),
+      }));
+    }
+    return Object.freeze({
+      revision: this.visibleLinkRevision,
+      generation: this.generation ?? null,
+      viewport: Object.freeze({ x: 0, y: 0, width, height }),
+      scrollLeft: Number.isFinite(host.scrollLeft) ? host.scrollLeft : 0,
+      scrollTop: Number.isFinite(host.scrollTop) ? host.scrollTop : 0,
+      truncated,
+      candidates: Object.freeze(candidates),
+    });
+  }
+
+  public async activateVisibleLink(
+    snapshot: PdfVisibleLinkSnapshot,
+    selectionId: PdfVisibleLinkSelectionId,
+    confirmExternal = false,
+  ): Promise<PdfLinkActivationResult> {
+    if (!this.interactionsEnabled || this.isClosing() || !this.isVisibleLinkSnapshotCurrent(snapshot)) return { kind: "stale" };
+    const group = this.visibleLinkGroups.find((candidate) => candidate.selectionId === selectionId);
+    const selected = snapshot.candidates.find((candidate) => candidate.selectionId === selectionId);
+    const currentSelected = this.visibleLinkSnapshot.candidates.find((candidate) => candidate.selectionId === selectionId);
+    if (currentSelected === undefined || selected === undefined
+      || currentSelected.pageNumber !== selected.pageNumber
+      || currentSelected.kind !== selected.kind
+      || currentSelected.url !== selected.url
+      || currentSelected.rect.x !== selected.rect.x
+      || currentSelected.rect.y !== selected.rect.y
+      || currentSelected.rect.width !== selected.rect.width
+      || currentSelected.rect.height !== selected.rect.height) return { kind: "stale" };
+    if (group === undefined || selected === undefined || !this.isActionableLinkGroup(group)) return { kind: "stale" };
+    if (group.annotation.url !== undefined && !confirmExternal) return { kind: "confirmation-required", url: group.annotation.url };
+    const activated = this.activatedVisibleLinkSelections.get(snapshot);
+    if (activated?.has(selectionId)) return { kind: "already-activated" };
+    if (activated === undefined) this.activatedVisibleLinkSelections.set(snapshot, new Set([selectionId]));
+    else activated.add(selectionId);
+    const outcome = await this.activateLink(group, "internal-link", true, true, snapshot.revision);
+    return outcome;
+  }
   public get snapshot(): PdfContentSnapshot {
     return {
       pageNumber: this.renderedPage ?? this.evictedPage ?? null,
@@ -363,6 +500,8 @@ export class PdfContentController {
   }
 
   public mount(document: PdfContentDocument, generation: number, sessionId: string): void {
+    this.cancelDestinationIndicator();
+    this.visibleLinkRevision += 1;
     void this.unmount().catch(() => undefined);
     this.mountedEpoch += 1;
     this.closingEpoch = undefined;
@@ -375,6 +514,8 @@ export class PdfContentController {
     this.searchPending = false;
     this.currentResult = -1;
     this.pendingResultIndex = undefined;
+    this.appliedDestinationLandings.clear();
+    this.destinationMarkerPoints.clear();
     this.pendingDestination = undefined;
     this.searchCleanupFailure = undefined;
     this.partialSearchReason = undefined;
@@ -387,6 +528,8 @@ export class PdfContentController {
 
   /** Cancels foreground rendering/search while retaining completed search state. */
   public suspend(): void {
+    this.cancelDestinationIndicator();
+    this.visibleLinkRevision += 1;
     this.interactionsEnabled = false;
     this.interactionEpoch += 1;
     this.renderSequence += 1;
@@ -434,6 +577,8 @@ export class PdfContentController {
   }
 
   public async unmount(): Promise<void> {
+    this.cancelDestinationIndicator();
+    this.visibleLinkRevision += 1;
     this.closingEpoch = this.mountedEpoch;
     const document = this.document;
     const generation = this.generation;
@@ -707,6 +852,7 @@ export class PdfContentController {
   }
 
   public activateVisiblePages(pageNumbers: readonly number[]): number {
+    this.visibleLinkRevision += 1;
     const visible = new Set(pageNumbers);
     this.visiblePageNumbers.clear();
     pageNumbers.forEach((page) => this.visiblePageNumbers.add(page));
@@ -735,6 +881,7 @@ export class PdfContentController {
   }
   /** Releases one resident page's overlays and reservation without disturbing siblings. */
   public evictPage(pageNumber: number): boolean {
+    this.cancelDestinationIndicator();
     const remainingVisiblePages = [...new Set(this.visibleLinkGroups.filter((group) => group.pageNumber !== pageNumber).map((group) => group.pageNumber))];
     const entry = this.residentEntries.get(pageNumber);
     if (entry === undefined) return false;
@@ -838,6 +985,7 @@ export class PdfContentController {
     ];
   }
   public queueDestination(pageNumber: number, destination: readonly unknown[]): number | undefined {
+    this.cancelDestinationIndicator();
     const document = this.document;
     const generation = this.generation;
     if (document === undefined || generation === undefined) return undefined;
@@ -868,9 +1016,17 @@ export class PdfContentController {
     this.appliedDestinationLandings.delete(intentId);
     return landing;
   }
+
+  public takeDestinationMarker(intentId: number): { readonly pageIndex: number; readonly x: number; readonly y: number } | undefined {
+    const point = this.destinationMarkerPoints.get(intentId);
+    this.destinationMarkerPoints.delete(intentId);
+    return point;
+  }
   public cancelDestination(intentId?: number, preserveLinkActivation = false): void {
+    this.cancelDestinationIndicator();
     if (intentId === undefined) {
       this.appliedDestinationLandings.clear();
+      this.destinationMarkerPoints.clear();
       if (!preserveLinkActivation) this.linkActivationSequence += 1;
       this.pendingDestination = undefined;
       this.destinationScrollSettlement?.finish();
@@ -878,6 +1034,7 @@ export class PdfContentController {
     }
     if (this.pendingDestination?.intentId === intentId) this.pendingDestination = undefined;
     this.appliedDestinationLandings.delete(intentId);
+    this.destinationMarkerPoints.delete(intentId);
     if (this.destinationScrollSettlement?.intentId === intentId) this.destinationScrollSettlement.finish();
   }
   public applyQueuedDestinationToResidentPage(pageNumber: number): boolean {
@@ -949,7 +1106,13 @@ export class PdfContentController {
       && finite(intent.destination[5])) {
       const first = request.viewport.convertToViewportPoint(intent.destination[2], intent.destination[3]);
       const second = request.viewport.convertToViewportPoint(intent.destination[4], intent.destination[5]);
-      scrollTo([Math.min(first[0], second[0]), Math.min(first[1], second[1])]);
+      const targetViewportX = Math.min(first[0], second[0]);
+      const targetViewportY = Math.min(first[1], second[1]);
+      const markerPoint = request.viewport.convertToPdfPoint(targetViewportX, targetViewportY);
+      if (Number.isFinite(markerPoint[0]) && Number.isFinite(markerPoint[1])) {
+        this.destinationMarkerPoints.set(intent.intentId, { pageIndex: request.pageNumber - 1, x: markerPoint[0], y: markerPoint[1] });
+      }
+      scrollTo([targetViewportX, targetViewportY]);
       return;
     }
 
@@ -978,6 +1141,9 @@ export class PdfContentController {
     const targetX = x ?? current[0];
     const targetY = y ?? current[1];
     if (!Number.isFinite(targetX) || !Number.isFinite(targetY)) return;
+    if (destinationX !== undefined || destinationY !== undefined) {
+      this.destinationMarkerPoints.set(intent.intentId, { pageIndex: request.pageNumber - 1, x: targetX, y: targetY });
+    }
     const rotation = ((request.viewport.rotation % 360) + 360) % 360;
     const swapsAxes = rotation === 90 || rotation === 270;
     scrollTo(request.viewport.convertToViewportPoint(targetX, targetY), {
@@ -1239,7 +1405,17 @@ export class PdfContentController {
     this.currentResult = index; this.pendingResultIndex = undefined; this.reportCurrentMatch(""); this.applyHighlights(); return result;
   }
 
+  public cancelVisibleLinkActivation(): void {
+    this.hintActivationEpoch += 1;
+    this.visibleLinkRevision += 1;
+    this.cancelDestinationIndicator();
+  }
   public clearVisibleLinkAuthority(): void {
+    this.linkActivationSequence += 1;
+    this.visibleLinkRevision += 1;
+    this.cancelDestinationIndicator();
+    this.appliedDestinationLandings.clear();
+    this.destinationMarkerPoints.clear();
     this.visiblePageNumbers.clear();
     this.visibleLinkGroups = [];
     for (const entry of this.residentEntries.values()) {
@@ -1248,6 +1424,93 @@ export class PdfContentController {
         element.setAttribute("aria-label", "PDF link");
       });
     }
+  }
+  private viewportExtent(primary: number, fallback: number | undefined): number {
+    if (Number.isFinite(primary) && primary > 0) return primary;
+    return fallback !== undefined && Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+  }
+
+  private isActionableLinkGroup(group: LinkGroup): boolean {
+    if (group.annotation.url !== undefined) return isExternalUrl(group.annotation.url);
+    return group.annotation.action === undefined
+      && group.annotation.dest !== undefined
+      && !group.key.startsWith("unsupported-");
+  }
+
+  private visibleLinkGeometry(group: LinkGroup): PdfVisibleLinkGeometry | undefined {
+    const entry = this.residentEntries.get(group.pageNumber);
+    const rectangle = group.rectangles[0];
+    if (entry === undefined || rectangle === undefined) return undefined;
+    const host = this.options.host;
+    const bounds = typeof host.getBoundingClientRect === "function" ? host.getBoundingClientRect() : undefined;
+    const width = this.viewportExtent(host.clientWidth, bounds?.width);
+    const height = this.viewportExtent(host.clientHeight, bounds?.height);
+    if (!(width > 0 && height > 0)) return undefined;
+    const origin = this.canvasScrollOrigin(entry.canvas);
+    const left = origin[0] + rectangle.left - host.scrollLeft;
+    const top = origin[1] + rectangle.top - host.scrollTop;
+    const right = left + rectangle.width;
+    const bottom = top + rectangle.height;
+    const clippedLeft = Math.max(0, left);
+    const clippedTop = Math.max(0, top);
+    const clippedRight = Math.min(width, right);
+    const clippedBottom = Math.min(height, bottom);
+    return Number.isFinite(clippedLeft) && Number.isFinite(clippedTop)
+      && Number.isFinite(clippedRight) && Number.isFinite(clippedBottom)
+      && clippedRight > clippedLeft && clippedBottom > clippedTop
+      ? { x: clippedLeft, y: clippedTop, width: clippedRight - clippedLeft, height: clippedBottom - clippedTop }
+      : undefined;
+  }
+
+  private isVisibleLinkSnapshotCurrent(snapshot: PdfVisibleLinkSnapshot): boolean {
+    if (snapshot.generation !== (this.generation ?? null)
+      || snapshot.revision !== this.visibleLinkRevision) return false;
+    const current = this.visibleLinkSnapshot;
+    if (current.scrollLeft !== snapshot.scrollLeft || current.scrollTop !== snapshot.scrollTop
+      || current.viewport.width !== snapshot.viewport.width || current.viewport.height !== snapshot.viewport.height) return false;
+    return true;
+  }
+
+  private showDestinationIndicator(
+    landing: { readonly pageIndex: number; readonly x: number; readonly y: number },
+    isCurrent: () => boolean,
+  ): void {
+    if (!isCurrent()) return;
+    const entry = this.residentEntries.get(landing.pageIndex + 1);
+    if (entry === undefined || !Number.isFinite(landing.x) || !Number.isFinite(landing.y)) return;
+    const [x, y] = entry.viewport.convertToViewportPoint(landing.x, landing.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)
+      || x < 0 || y < 0 || x > entry.viewport.width || y > entry.viewport.height) return;
+    this.cancelDestinationIndicator();
+    const indicator = documentCreate("div", "pdf-destination-indicator");
+    indicator.setAttribute("aria-hidden", "true");
+    indicator.style.position = "absolute";
+    indicator.style.left = `${x}px`;
+    indicator.style.top = `${y}px`;
+    indicator.style.width = "28px";
+    indicator.style.height = "28px";
+    indicator.style.boxSizing = "border-box";
+    indicator.style.border = "2px solid currentColor";
+    indicator.style.borderRadius = "50%";
+    indicator.style.pointerEvents = "none";
+    indicator.style.transform = "translate(-50%, -50%) scale(1)";
+    indicator.style.opacity = "0.9";
+    indicator.style.zIndex = "2";
+    entry.annotationLayer.append(indicator);
+    this.destinationIndicator = indicator;
+    const generation = this.interactionEpoch;
+    const timer = setTimeout(() => {
+      if (this.destinationIndicator !== indicator || generation !== this.interactionEpoch) return;
+      this.cancelDestinationIndicator();
+    }, 900);
+    this.destinationIndicatorTimer = timer;
+  }
+
+  private cancelDestinationIndicator(): void {
+    if (this.destinationIndicatorTimer !== undefined) clearTimeout(this.destinationIndicatorTimer);
+    this.destinationIndicatorTimer = undefined;
+    this.destinationIndicator?.remove();
+    this.destinationIndicator = undefined;
   }
   private async appendLinkGroups(
     layer: HTMLElement,
@@ -1267,21 +1530,26 @@ export class PdfContentController {
         annotation, annotationId: `page-${pageNumber}-render-${sequence}-annotation-${index}`, rect, index, key,
       };
     }))).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
-    const groups: LinkGroup[] = [];
-    for (const candidate of candidates.sort((left, right) =>
-      this.compareRectangles(left.rect, right.rect) || left.index - right.index)) {
-      if (groups.some((group) =>
-        this.sameDestination(group.key, candidate.key) && this.sameRectangle(group.rectangles[0]!, candidate.rect))) continue;
-      groups.push({
+    const linkGroups: LinkGroup[] = [];
+    for (const candidate of candidates.sort((left, right) => this.compareRectangles(left.rect, right.rect) || left.index - right.index)) {
+      if (linkGroups.some((group) => group.key === candidate.key
+        && group.rectangles[0]!.left === candidate.rect.left
+        && group.rectangles[0]!.top === candidate.rect.top
+        && group.rectangles[0]!.width === candidate.rect.width
+        && group.rectangles[0]!.height === candidate.rect.height)) continue;
+      linkGroups.push({
         pageNumber,
         key: candidate.key,
         annotation: candidate.annotation,
         annotationId: candidate.annotationId,
+        selectionId: `pdf-link-${this.mountedEpoch}-${++this.visibleLinkSelectionSequence}`,
         registryRevision: undefined,
         rectangles: [candidate.rect],
       });
     }
-    const linkGroups = groups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!) || this.compareStrings(left.key, right.key) || this.compareStrings(left.annotationId, right.annotationId));
+    linkGroups.sort((left, right) => this.compareRectangles(left.rectangles[0]!, right.rectangles[0]!)
+      || this.compareStrings(left.key, right.key)
+      || this.compareStrings(left.annotationId, right.annotationId));
     linkGroups.forEach((group) => {
       group.rectangles.forEach((rect) => {
         const target = documentCreate("button", "pdf-link-overlay");
@@ -1322,46 +1590,76 @@ export class PdfContentController {
     return linkGroups;
   }
 
-  private async activateLink(group: LinkGroup, cause: PdfLinkActivationCause): Promise<void> {
+  private async activateLink(
+    group: LinkGroup,
+    cause: PdfLinkActivationCause,
+    externalConfirmed = true,
+    showIndicator = false,
+    authorityRevision?: number,
+  ): Promise<PdfLinkActivationResult> {
     const document = this.document;
     const generation = this.generation;
-    if (!this.interactionsEnabled || document === undefined || generation === undefined || this.isClosing()) return;
+    if (!this.interactionsEnabled || document === undefined || generation === undefined || this.isClosing()) return { kind: "rejected" };
     const interactionEpoch = this.interactionEpoch;
     const { annotation } = group;
     const activation = ++this.linkActivationSequence;
+    const hintActivationEpoch = authorityRevision === undefined ? undefined : this.hintActivationEpoch;
     const isOwnerActive = (): boolean => activation === this.linkActivationSequence
       && interactionEpoch === this.interactionEpoch
       && this.interactionsEnabled
-      && this.isCurrent(generation, document);
+      && this.isCurrent(generation, document)
+      && (hintActivationEpoch === undefined || hintActivationEpoch === this.hintActivationEpoch);
+    const isAuthorityCurrent = (): boolean => authorityRevision === undefined || authorityRevision === this.visibleLinkRevision;
     const isActive = (): boolean => isOwnerActive()
       && this.visibleLinkGroups.includes(group)
       && this.residentEntries.get(group.pageNumber)?.linkGroups.includes(group) === true;
 
     if (annotation.url !== undefined) {
-      if (!isExternalUrl(annotation.url)) { this.options.onStatus("Unsupported PDF link destination."); this.markLinkOutcome(group, "unsupported"); }
-      else if (isActive() && group.registryRevision !== undefined) {
-        const operationSequence = ++this.externalDispatchSequence;
-        const operationId = `external-${this.sessionId ?? "unmounted"}-${group.registryRevision}-${group.annotationId}-${operationSequence}`;
-        let rawActivation: Promise<number>;
-        try {
-          rawActivation = Promise.resolve(this.options.openExternal(group.annotationId, group.registryRevision, operationId, operationSequence));
-        } catch (error) {
-          rawActivation = Promise.reject(error);
+      if (!isExternalUrl(annotation.url)) {
+        if (isActive()) {
+          this.options.onStatus("Unsupported PDF link destination.");
+          this.markLinkOutcome(group, "unsupported");
         }
-        this.trackLinkActivation("external", rawActivation.then(() => undefined, () => undefined));
-        this.reportLinkActivation(
-          this.withDeadline(rawActivation, LINK_ACTIVATION_TIMEOUT_MS, "LINK_LAUNCH_TIMEOUT"),
-          operationSequence,
-          isOwnerActive,
-          (reportedSequence) => this.markLinkOutcome(group, `opened dispatch ${reportedSequence}`),
-          (failure) => this.markLinkOutcome(group, `failed ${failure}`),
-        );
+        return { kind: "unsupported" };
       }
-      return;
+      if (!externalConfirmed) return { kind: "confirmation-required", url: annotation.url };
+      if (!isActive() || !isAuthorityCurrent() || group.registryRevision === undefined) return { kind: "stale" };
+      const operationSequence = ++this.externalDispatchSequence;
+      const operationId = `external-${this.sessionId ?? "unmounted"}-${group.registryRevision}-${group.annotationId}-${operationSequence}`;
+      let rawActivation: Promise<number>;
+      try {
+        rawActivation = Promise.resolve(this.options.openExternal(group.annotationId, group.registryRevision, operationId, operationSequence));
+      } catch (error) {
+        rawActivation = Promise.reject(error);
+      }
+      this.trackLinkActivation("external", rawActivation.then(() => undefined, () => undefined));
+      try {
+        const reportedSequence = await this.withDeadline(rawActivation, LINK_ACTIVATION_TIMEOUT_MS, "LINK_LAUNCH_TIMEOUT");
+        if (!isOwnerActive() || !isActive() || !isAuthorityCurrent()) return { kind: "stale" };
+        if (!Number.isSafeInteger(reportedSequence) || reportedSequence !== operationSequence) {
+          this.options.onStatus("PDF link dispatch receipt was invalid.");
+          return { kind: "failed" };
+        }
+        this.markLinkOutcome(group, `opened dispatch ${reportedSequence}`);
+        this.options.onStatus(`PDF link opened (dispatch ${reportedSequence}).`);
+        return { kind: "activated", link: "external" };
+      } catch (error) {
+        if (!isOwnerActive() || !isActive() || !isAuthorityCurrent()) return { kind: "stale" };
+        this.markLinkOutcome(group, `failed ${externalFailureTag(error) ?? "failed"}`);
+        this.options.onStatus(isExternalLaunchTimeout(error)
+          ? "PDF link launch outcome is unknown; it may still open later."
+          : isExternalDispatchExpired(error)
+            ? "PDF link was not opened because dispatch expired."
+            : "PDF link could not be opened.");
+        return { kind: "failed" };
+      }
     }
     if (annotation.action !== undefined || annotation.dest === undefined) {
-      if (this.visibleLinkGroups.includes(group)) { this.options.onStatus("Unsupported PDF link action."); this.markLinkOutcome(group, "unsupported"); }
-      return;
+      if (this.visibleLinkGroups.includes(group)) {
+        this.options.onStatus("Unsupported PDF link action.");
+        this.markLinkOutcome(group, "unsupported");
+      }
+      return { kind: "unsupported" };
     }
 
     let releaseSettlement!: () => void;
@@ -1382,36 +1680,42 @@ export class PdfContentController {
       const destination = typeof annotation.dest === "string"
         ? await awaitRaw(Promise.resolve(document.getDestination?.(annotation.dest)))
         : annotation.dest;
-      if (!isActive()) return;
+      if (!isActive()) return { kind: "stale" };
       if (!Array.isArray(destination) || !isValidPdfDestination(destination)) {
         this.options.onStatus("Unsupported PDF link destination.");
         this.markLinkOutcome(group, "unsupported");
-        return;
+        return { kind: "unsupported" };
       }
       const pageNumber = this.resolvedDestinationPages.get(annotation) ?? await this.destinationPage(destination, document, awaitRaw);
-      if (!isActive()) return;
+      if (!isActive()) return { kind: "stale" };
       if (pageNumber === null) {
         this.options.onStatus("Unsupported PDF link destination.");
         this.markLinkOutcome(group, "unsupported");
-      } else {
-        const outcome = await awaitRaw(this.options.navigateToDestination(pageNumber, destination, cause, isOwnerActive));
-        if (isOwnerActive() && outcome.kind !== "verified" && outcome.kind !== "same-location" && outcome.kind !== "stale") {
-          this.options.onStatus("PDF link destination could not be reached.");
-          this.markLinkOutcome(group, `failed ${outcome.kind}`);
-        }
+        return { kind: "unsupported" };
       }
+      if (!isAuthorityCurrent()) return { kind: "stale" };
+      const outcome = await awaitRaw(this.options.navigateToDestination(pageNumber, destination, cause, isOwnerActive, showIndicator));
+      if (!isOwnerActive()) return { kind: "stale" };
+      if (outcome.kind === "verified") {
+        if (showIndicator && outcome.landing !== undefined) this.showDestinationIndicator(outcome.landing, isOwnerActive);
+        return { kind: "activated", link: "internal", ...(outcome.landing === undefined ? {} : { landing: outcome.landing }) };
+      }
+      if (outcome.kind === "same-location") return { kind: "same-location" };
+      if (outcome.kind === "stale") return { kind: "stale" };
+      this.options.onStatus("PDF link destination could not be reached.");
+      this.markLinkOutcome(group, `failed ${outcome.kind}`);
+      return { kind: "failed" };
     } catch (error) {
-      if (isActive()) {
-        this.options.onStatus(error instanceof Error && error.message === "PDF link destination resolution timed out."
-          ? error.message
-          : "Unsupported PDF link destination.");
-        this.markLinkOutcome(group, "unsupported");
-      }
+      if (!isActive()) return { kind: "stale" };
+      this.options.onStatus(error instanceof Error && error.message === "PDF link destination resolution timed out."
+        ? error.message
+        : "Unsupported PDF link destination.");
+      this.markLinkOutcome(group, "unsupported");
+      return { kind: "unsupported" };
     } finally {
       void rawSettlement.then(releaseSettlement);
     }
   }
-
   private destinationReference(value: unknown): { readonly num: number; readonly gen: number } | undefined {
     if (typeof value !== "object" || value === null) return undefined;
     const { num, gen } = value as { readonly num?: unknown; readonly gen?: unknown };
@@ -1471,9 +1775,6 @@ export class PdfContentController {
     }
     return [typeof value, String(value)];
   }
-  private sameDestination(left: string, right: string): boolean {
-    return left === right;
-  }
 
   private toRectangle(rectangle: readonly number[], viewport: PdfContentViewport): DOMRect | null {
     if (rectangle.length !== 4) return null;
@@ -1484,13 +1785,6 @@ export class PdfContentController {
     const width = Math.abs(second[0] - first[0]);
     const height = Math.abs(second[1] - first[1]);
     return width > 0 && height > 0 ? new DOMRect(left, top, width, height) : null;
-  }
-
-  private sameRectangle(left: DOMRect, right: DOMRect): boolean {
-    return left.left === right.left
-      && left.top === right.top
-      && left.width === right.width
-      && left.height === right.height;
   }
   private compareRectangles(left: DOMRect, right: DOMRect): number {
     return left.top - right.top
@@ -1841,6 +2135,10 @@ export class PdfContentController {
     await this.withDeadline(cancellation, Math.max(1, deadline - Date.now()));
   }
   private clearRenderedContent(): void {
+    this.cancelDestinationIndicator();
+    this.visibleLinkRevision += 1;
+    this.appliedDestinationLandings.clear();
+    this.destinationMarkerPoints.clear();
     for (const entry of this.residentEntries.values()) {
       entry.layer.remove();
       entry.textLayer.remove();
@@ -1924,34 +2222,6 @@ export class PdfContentController {
     return finalizer?.state === "failed" || finalizer?.state === "skipped";
   }
   private isClosing(): boolean { return this.closingEpoch === this.mountedEpoch; }
-  private reportLinkActivation(
-    operation: Promise<number>,
-    operationSequence: number,
-    isOwnerActive: () => boolean,
-    onSuccess: (reportedSequence: number) => void,
-    onFailure: (failure: string) => void,
-  ): void {
-    void operation.then(
-      (reportedSequence) => {
-        if (!isOwnerActive()) return;
-        if (!Number.isSafeInteger(reportedSequence) || reportedSequence !== operationSequence) {
-          this.options.onStatus("PDF link dispatch receipt was invalid.");
-          return;
-        }
-        onSuccess(reportedSequence);
-        this.options.onStatus(`PDF link opened (dispatch ${reportedSequence}).`);
-      },
-      (error: unknown) => {
-        if (!isOwnerActive()) return;
-        onFailure(externalFailureTag(error) ?? "failed");
-        this.options.onStatus(isExternalLaunchTimeout(error)
-          ? "PDF link launch outcome is unknown; it may still open later."
-          : isExternalDispatchExpired(error)
-            ? "PDF link was not opened because dispatch expired."
-            : "PDF link could not be opened.");
-      },
-    );
-  }
   private markLinkOutcome(group: LinkGroup, outcome: string): void {
     for (const entry of this.residentEntries.values()) {
       for (const target of entry.layer.querySelectorAll<HTMLElement>(".pdf-link-overlay")) {
@@ -2076,3 +2346,4 @@ const documentCreate = <Tag extends keyof HTMLElementTagNameMap>(
   element.className = className;
   return element;
 };
+const MAX_VISIBLE_LINK_CANDIDATES = 256

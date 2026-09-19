@@ -109,6 +109,45 @@ try {
     transcript.push({action:'status-case',name,observed,passed:true});
     await screenshot(`status-${name}`);
   }
+  const descenderStatus = { status: "g p y Go to page: 12 — a long diagnostic status remains available", query: "needle", zoomMode: "custom", zoom: 1.25 };
+  for (const width of [1040, 480]) {
+    await call("Emulation.setDeviceMetricsOverride", { width, height: 760, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`shellQa.setStatus(${JSON.stringify(descenderStatus)},"g")`);
+    const geometry = await evaluate(`(() => {
+      const footer = document.querySelector('footer');
+      const message = document.querySelector('.status-message');
+      const pending = document.querySelector('.status-pending');
+      const badge = document.querySelector('.status-badge-search');
+      const footerStyle = getComputedStyle(footer);
+      const messageStyle = getComputedStyle(message);
+      const footerBounds = footer.getBoundingClientRect();
+      const messageBounds = message.getBoundingClientRect();
+      const badgeBounds = badge.getBoundingClientRect();
+      return {
+        height: footerBounds.height,
+        overflow: footer.scrollWidth > footer.clientWidth,
+        lineHeight: Number.parseFloat(footerStyle.lineHeight),
+        messageFlexGrow: Number.parseFloat(messageStyle.flexGrow),
+        messageWidth: messageBounds.width,
+        messageTop: messageBounds.top - footerBounds.top,
+        messageBottom: messageBounds.bottom - footerBounds.top,
+        messageLineHeight: Number.parseFloat(messageStyle.lineHeight),
+        paddingTop: Number.parseFloat(messageStyle.paddingTop),
+        paddingBottom: Number.parseFloat(messageStyle.paddingBottom),
+        messageText: message.textContent,
+        messageHidden: message.hidden,
+        pendingText: pending.textContent,
+        badgeTop: badgeBounds.top - footerBounds.top,
+        badgeBottom: badgeBounds.bottom - footerBounds.top,
+      };
+    })()`);
+    assert(geometry.height === 26 && !geometry.overflow, `Descender status row ${width}: ${JSON.stringify(geometry)}`);
+    assert(geometry.lineHeight >= 12 && geometry.messageFlexGrow === 1 && geometry.messageWidth > 0, `Descender status flex ${width}: ${JSON.stringify(geometry)}`);
+    assert(geometry.messageText === descenderStatus.status && !geometry.messageHidden && geometry.pendingText === "Pending: g", `Descender status content ${width}: ${JSON.stringify(geometry)}`);
+    assert(geometry.badgeBottom <= geometry.height && geometry.badgeTop >= 0, `Descender status badge ${width}: ${JSON.stringify(geometry)}`);
+    assert(geometry.messageTop >= 0 && geometry.messageBottom <= geometry.height && geometry.messageLineHeight >= 14 && geometry.paddingTop >= 2 && geometry.paddingBottom >= 2, `Descender message clearance ${width}: ${JSON.stringify(geometry)}`);
+    transcript.push({ action: "status-descender-geometry", width, geometry, passed: true });
+  }
   await evaluate("shellQa.setStatus({status:'',query:''},'')");
   await evaluate("shellQa.setStatus({status:'Page 1 of 233 · 90°',page:1,pageCount:233,zoomMode:'fit-page'},'');shellQa.setPath({text:'C:\\\\documents\\\\papers',copied:false})");
   const pathLayout = await evaluate(`(() => {const path=document.querySelector('.status-path-notice');const badge=document.querySelector('.status-badge-fit-page');const message=document.querySelector('.status-message');return {gap:path.getBoundingClientRect().left-badge.getBoundingClientRect().right,textAlign:getComputedStyle(path).textAlign,messageHidden:message.hidden,text:message.textContent,font:getComputedStyle(document.querySelector('footer')).fontSize};})()`);

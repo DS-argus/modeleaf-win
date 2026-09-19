@@ -14,7 +14,7 @@ A keyboard-first, read-only PDF viewer for Windows 11 x64.
 ## Key features
 
 - Continuous reading, page navigation, and Back/Forward history
-- Text search, text selection/copying, and ordinary PDF link clicks
+- Text search, text selection/copying, PDF link hints, and ordinary link clicks
 - Tabs, a recent-file picker, folder-path display, and PDF-path copying
 - Password-protected local PDFs with unlimited retries and no saved passwords
 - Fit width/page, Actual Size, zoom, and rotation
@@ -51,17 +51,21 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | First / last page | `gg` / `G` |
 | Go to page | `g`, number, `Enter` |
 | Actual Size | `0` |
-| Back / forward | `Alt+Left` / `Alt+Right` |
+| Back / forward | `Ctrl+O` / `Ctrl+I` (also `Alt+Left` / `Alt+Right`) |
 | Search / next / previous result | `/` / `Enter` / `Shift+Enter` |
+| Follow a PDF link | `f`, label; `Enter` confirms external URLs, `Escape` cancels |
 | Fit width / page | `w` / `F` |
 | Zoom / rotate | `=` `-` / `[` `]` |
 | Previous / next tab | `P` / `N` |
 | Theme / palette / help | `T` / `:` / `?` |
 
+Jump history is temporary and local to each tab. Page-number/first/last jumps, internal PDF links, and search navigation record positions; ordinary scrolling, adjacent-page steps, zoom and rotation do not add entries. `Ctrl+O` goes back and `Ctrl+I` forward; opening PDFs remains `Ctrl+Shift+O`.
 New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page in a single-page Fit Page view; in that view, `j`/`k` and `d`/`u` move to the next/previous page like `n`/`p`.
 
 Precision-trackpad scrolling and pinch gestures are not currently supported.
 Use **Ctrl+wheel** to zoom around the pointer in 10% multiplicative steps (10–800%). Small wheel movements accumulate; normal wheel input scrolls. Over page margins, zoom preserves the nearest page edge. Use `h`/`l` or the left/right arrows to scroll horizontally when zoomed in. `0` selects PDF.js scale 1, not a calibrated physical paper size.
+
+Press `f` to label visible links supplied by the PDF, then type a label to select it. Internal links navigate directly and briefly mark an explicit destination coordinate; page-only destinations have no marker. External `http(s)` and `mailto:` links show their URL near the source and require `Enter` confirmation before one launch through the registered Windows handler; safely encoded `subject`/`body` query text is supported. `Escape` cancels, `Backspace` corrects the label, and moving the viewport or changing focus cancels pending hints and URL confirmation. Ordinary mouse clicks are unchanged; text that merely looks like a URL is not a link.
 
 Password-protected PDFs open with a modal prompt. Enter submits; Escape or Cancel returns to the previous document (or start screen). Incorrect attempts clear the input and can be retried without a limit. While prompted, document and tab actions are blocked; closing the window remains available. Passwords are never saved.
 

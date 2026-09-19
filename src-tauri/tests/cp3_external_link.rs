@@ -15,13 +15,26 @@ fn allows_only_http_and_https_targets() {
         assert_eq!(validate_external_link(target), Ok(()), "{target}");
     }
 }
+#[test]
+fn allows_opaque_mailto_recipients_and_queries() {
+    for target in [
+        "mailto:reader@example.com",
+        "MAILTO:one@example.com,two@example.com?subject=PDF%20question&body=Please%20review",
+        "mailto:reader",
+        "mailto:@example.com",
+        "mailto:reader@",
+        "mailto:reader%20name@example.com",
+        "mailto:reader@example.com?subject=PDF%20%E2%9C%93",
+    ] {
+        assert_eq!(validate_external_link(target), Ok(()), "{target}");
+    }
+}
 
 #[test]
 fn rejected_targets_never_reach_the_launcher() {
     let oversized = format!("https://example.com/{}", "a".repeat(8_192));
     let rejected = [
         "javascript:alert(1)",
-        "mailto:reader@example.com?subject=PDF%20question",
         "file:///C:/document.pdf",
         "data:text/plain,hello",
         "relative/path",
@@ -30,27 +43,26 @@ fn rejected_targets_never_reach_the_launcher() {
         "http:a:b@www.example.com",
         "https:reader:secret@example.com",
         "https://example.com/\u{0000}",
+        "mailto:",
+        "mailto://?subject=missing-address",
+        "mailto://reader@example.com",
+        "mailto:///reader@example.com",
+        "mailto:reader@example.com#fragment",
+        "mailto:reader@example.com#",
         "mailto:reader@example.com?subject=hello\r\nBcc:other@example.com",
         "mailto:reader@example.com?subject=hello%0d%0aBcc:other@example.com",
-        "mailto:?subject=missing-address",
-        "mailto://?subject=missing-address",
-        "mailto:////?subject=missing-address",
-        "mailto:reader",
-        "mailto:@example.com",
-        "mailto:reader@",
-        "mailto:reader%20name@example.com",
-        "mailto:reader%09name@example.com",
-        "mailto:reader%00@example.com",
-        "mailto:reader%1f@example.com",
-        "mailto:reader@example%0d.com",
-        "mailto:%2f",
-        "mailto:%2F%2F",
-        "mailto:reader%ZZ@example.com",
-        "mailto:reader%FF@example.com",
+        "mailto:reader@example.com?subject=hello%00",
+        "mailto:reader@example.com?subject=hello%1f",
+        "mailto:reader@example.com?subject=hello%7f",
+        "mailto:reader@example.com?subject=hello%80",
+        "mailto:reader@example.com?subject=hello%9f",
+        "mailto:reader@example.com?subject=hello%C2%80",
+        "mailto:reader@example.com?subject=hello%C2%9f",
+        "mailto:reader@example.com?subject=hello%ZZ",
+        "mailto:reader@example.com?subject=hello%",
         "https://[not-an-ipv6-address]/",
         &oversized,
     ];
-
     for target in rejected {
         let mut launches = 0;
         let result = open_external_link_with(target, |_| {

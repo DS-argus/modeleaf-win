@@ -10,14 +10,14 @@ const unavailableContext: ActionRuntimeContext = {
 };
 
 describe("HelpModel", () => {
-  it("projects the retained 42-action registry with only previous and next tab actions", () => {
+  it("projects the retained 43-action registry with only previous and next tab actions", () => {
     const rows = buildHelpRows();
     const visible = ACTION_DESCRIPTORS.filter(({ bindingConfiguration, id }) => bindingConfiguration === "configurable" && !/^(config|history|update)\./u.test(id));
     const rowIds: readonly string[] = rows.map(({ id }) => id);
 
-    expect(ACTION_DESCRIPTORS).toHaveLength(42);
-    expect(visible).toHaveLength(32);
-    expect(rows).toHaveLength(32);
+    expect(ACTION_DESCRIPTORS).toHaveLength(43);
+    expect(visible).toHaveLength(33);
+    expect(rows).toHaveLength(33);
     expect(rowIds).toEqual(visible.map(({ id }) => id));
     expect(rows).toContainEqual(expect.objectContaining({ id: "tab.previous", category: "Tabs", shortcut: "Shift+p", enabled: false }));
     expect(rows).toContainEqual(expect.objectContaining({ id: "tab.next", category: "Tabs", shortcut: "Shift+n", enabled: false }));

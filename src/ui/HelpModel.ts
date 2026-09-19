@@ -11,7 +11,7 @@ const DEFAULT_RUNTIME_CONTEXT: ActionRuntimeContext = Object.freeze({ hasDocumen
 
 export function helpCategoryForId(id: ActionId): HelpCategory {
   if (id.startsWith("tab.")) return "Tabs";
-  if (id.startsWith("page.") || id.startsWith("prompt.")) return "Pages";
+  if (id.startsWith("links.") || id.startsWith("page.") || id.startsWith("prompt.")) return "Pages";
   if (id.startsWith("scroll.")) return "Scroll";
   if (id.startsWith("view.")) return "View / Zoom";
   if (id.startsWith("search.")) return "Search";

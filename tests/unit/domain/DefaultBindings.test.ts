@@ -41,6 +41,18 @@ describe("DefaultBindings", () => {
     expect(Object.keys(DEFAULT_BINDINGS)).toEqual(ACTION_IDS);
   });
 
+  it("keeps lowercase PDF hints distinct from uppercase Fit Page in reader contexts", () => {
+    const ids = ["links.hint", "view.fitPage"] as const;
+    const trie = new KeySequenceTrie(ids.map((actionId) => ({
+      actionId,
+      sequence: DEFAULT_BINDINGS[actionId][0]!,
+      contexts: ["navigation", "searchResults"] as const,
+    })));
+    expect(trie.binding(trie.child(trie.start(), "f"), "navigation")?.actionId).toBe("links.hint");
+    expect(trie.binding(trie.child(trie.start(), "F"), "navigation")?.actionId).toBe("view.fitPage");
+    expect(trie.binding(trie.child(trie.start(), "f"), "pagePrompt")).toBeUndefined();
+    expect(getActionDescriptor("links.hint")?.repeatBehavior).toBe("suppressed");
+  });
   it("has exactly four non-configurable fixed binding IDs", () => {
     expect(FIXED_ACTION_IDS).toEqual(["prompt.commit", "prompt.cancel", "search.next", "search.previous"]);
   });

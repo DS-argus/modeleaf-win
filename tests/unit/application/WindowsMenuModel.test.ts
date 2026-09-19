@@ -16,6 +16,7 @@ const state = (overrides: Partial<ActionRuntimeContext> = {}): ActionRuntimeCont
 const navigationIds = [
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt",
+  "links.hint",
 ];
 const settingsIds = ["theme.picker"];
 

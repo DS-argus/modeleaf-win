@@ -118,16 +118,21 @@
       "g"
     ],
     "history.back": [
-      "<A-Left>"
+      "<A-Left>",
+      "<C-o>"
     ],
     "history.forward": [
-      "<A-Right>"
+      "<A-Right>",
+      "<C-i>"
     ],
     "search.prompt": [
       "/"
     ],
     "search.cancel": [
       "<Esc>"
+    ],
+    "links.hint": [
+      "f"
     ],
     "view.zoomIn": [
       "=",
