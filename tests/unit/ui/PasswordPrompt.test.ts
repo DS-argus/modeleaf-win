@@ -40,8 +40,9 @@ describe("createPasswordPrompt", () => {
     tab(false, true); expect(document.activeElement).toBe(value.cancel);
     value.open.click();
     await expect(result).resolves.toBe("");
-    expect(document.activeElement).toBe(value.cancel);
+    expect(document.activeElement).toBe(value.input);
     tab(); expect(document.activeElement).toBe(value.cancel);
+    tab(); expect(document.activeElement).toBe(value.input);
     tab(true); expect(document.activeElement).toBe(value.cancel);
     cleanup(value);
   });
@@ -59,7 +60,14 @@ describe("createPasswordPrompt", () => {
     await expect(result).resolves.toBe("correct horse");
     expect(value.input.value).toBe("");
     expect(value.open.disabled).toBe(true);
-    expect(value.input.disabled).toBe(true);
+    expect(value.input.disabled).toBe(false);
+    expect(value.input.readOnly).toBe(true);
+    expect(document.activeElement).toBe(value.input);
+    const repeatedEnter = new KeyboardEvent("keydown", { key: "Enter", repeat: true, bubbles: true, cancelable: true });
+    value.input.dispatchEvent(repeatedEnter);
+    expect(repeatedEnter.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(value.input);
+    expect(value.onCancel).not.toHaveBeenCalled();
     expect(value.prompt.active).toBe(true);
 
     controller.abort();
@@ -80,6 +88,7 @@ describe("createPasswordPrompt", () => {
 
     const retryController = new AbortController();
     const retry = value.prompt.request({ reason: "incorrect", signal: retryController.signal });
+    expect(value.input.readOnly).toBe(false);
     expect(value.error.hidden).toBe(false);
     expect(value.error.textContent).toBe("Incorrect password");
     expect(value.input.getAttribute("aria-describedby")).toBe("password-error");

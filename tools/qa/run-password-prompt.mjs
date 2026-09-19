@@ -161,6 +161,7 @@ const snapshotRaw = () => evaluate(`(() => {
     inputFocused: active === input,
     inputCleared: input instanceof HTMLInputElement ? input.value.length === 0 : false,
     inputDisabled: input instanceof HTMLInputElement ? input.disabled : true,
+    inputReadOnly: input instanceof HTMLInputElement ? input.readOnly : true,
     errorVisible: error instanceof HTMLElement ? !error.hidden : false,
     inputInvalid: input?.getAttribute("aria-invalid") === "true",
     describedByError: input?.getAttribute("aria-describedby") === "password-error",
@@ -432,12 +433,32 @@ try {
     await call("Input.insertText", { text: value });
     const inputReceived = await evaluate("document.querySelector('#password-input')?.value.length > 0");
     assert.equal(inputReceived, true, `${label}: CDP input was not received`);
+    await evaluate(`(() => {
+      const dialog = document.querySelector('#password-dialog');
+      const form = dialog.querySelector('form');
+      const input = document.querySelector('#password-input');
+      const record = (event) => {
+        if (event.type === 'keydown' && event.key !== 'Enter') return;
+        dialog.dataset.submitFocus = document.activeElement === input && input.readOnly && !input.disabled ? 'input-readonly' : 'unexpected-focus';
+        dialog.removeEventListener('keydown', record);
+        form.removeEventListener('submit', record);
+      };
+      dialog.addEventListener('keydown', record);
+      form.addEventListener('submit', record);
+    })()`);
     if (viaButton) await click("#password-open"); else await dispatchKey("Enter");
+    const submitFocus = await evaluate(`(() => {
+      const dialog = document.querySelector('#password-dialog');
+      const result = dialog.dataset.submitFocus;
+      delete dialog.dataset.submitFocus;
+      return result;
+    })()`);
+    assert.equal(submitFocus, "input-readonly", `${label}: submission moved focus away from the readonly input`);
     if (incorrect) {
       let sample;
       await wait(async () => {
         sample = await snapshot();
-        return sample.dialogOpen && sample.errorVisible && sample.inputCleared && !sample.inputDisabled;
+        return sample.dialogOpen && sample.errorVisible && sample.inputCleared && !sample.inputDisabled && !sample.inputReadOnly && !sample.openDisabled;
       }, label);
       assert.equal(sample.inputFocused, true, `${label}: retry input focus`);
       assert.equal(sample.inputInvalid, true, `${label}: invalid state`);

@@ -135,6 +135,7 @@ export function createPasswordPrompt(options: PasswordPromptOptions = {}): Passw
     clearInput();
     clearError();
     input.disabled = true;
+    input.readOnly = false;
     open.disabled = true;
     closeDialog();
   };
@@ -166,9 +167,9 @@ export function createPasswordPrompt(options: PasswordPromptOptions = {}): Passw
     removeAbortListener(request);
     const password = input.value;
     clearInput();
-    input.disabled = true;
+    input.readOnly = true;
     open.disabled = true;
-    cancel.focus();
+    focusInput();
     request.resolve(password);
   };
 
@@ -254,6 +255,7 @@ export function createPasswordPrompt(options: PasswordPromptOptions = {}): Passw
       composing = false;
       suppressNextSubmit = false;
       input.disabled = false;
+      input.readOnly = false;
       open.disabled = false;
       if (request.reason === "incorrect") showError();
       else clearError();
