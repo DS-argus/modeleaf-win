@@ -168,6 +168,7 @@ export function createPasswordPrompt(options: PasswordPromptOptions = {}): Passw
     clearInput();
     input.disabled = true;
     open.disabled = true;
+    cancel.focus();
     request.resolve(password);
   };
 
@@ -181,6 +182,15 @@ export function createPasswordPrompt(options: PasswordPromptOptions = {}): Passw
   };
 
   const onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Tab" && !composing && !isComposing(event)) {
+      event.preventDefault();
+      if (event.ctrlKey || event.altKey || event.metaKey) return;
+      const controls = [input, open, cancel].filter((control) => !control.disabled);
+      const index = controls.findIndex((control) => control === ownerDocument.activeElement);
+      const next = (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
+      controls[next]?.focus();
+      return;
+    }
     if (event.key === "Escape") {
       if (composing || isComposing(event)) return;
       event.preventDefault();

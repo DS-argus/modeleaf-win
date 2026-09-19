@@ -25,6 +25,26 @@ function cleanup(value: ReturnType<typeof setup>): void {
 }
 
 describe("createPasswordPrompt", () => {
+  it("cycles Tab inside enabled controls including while validation is pending", async () => {
+    const value = setup();
+    const result = value.prompt.request({ reason: "required", signal: new AbortController().signal });
+    const tab = (shiftKey = false, ctrlKey = false) => {
+      const event = new KeyboardEvent("keydown", { key: "Tab", shiftKey, ctrlKey, bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    };
+    tab(true); expect(document.activeElement).toBe(value.cancel);
+    tab(); expect(document.activeElement).toBe(value.input);
+    tab(); expect(document.activeElement).toBe(value.open);
+    tab(); expect(document.activeElement).toBe(value.cancel);
+    tab(false, true); expect(document.activeElement).toBe(value.cancel);
+    value.open.click();
+    await expect(result).resolves.toBe("");
+    expect(document.activeElement).toBe(value.cancel);
+    tab(); expect(document.activeElement).toBe(value.cancel);
+    tab(true); expect(document.activeElement).toBe(value.cancel);
+    cleanup(value);
+  });
   it("submits a password, clears the secret, and remains modal until dismissed", async () => {
     const value = setup();
     const controller = new AbortController();
