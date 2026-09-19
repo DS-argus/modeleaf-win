@@ -37,10 +37,9 @@ describe("RootKeyboardRouter", () => {
     expect(open.prevented()).toBe(true); expect(h.dispatched).toEqual(["document.open"]);
     const unknown = keyboard("q"); h.router.handleKeyDown(unknown.event); expect(unknown.prevented()).toBe(false);
   });
-  it("leaves f, t, Shift+J, and Shift+K unclaimed after retiring reader hints", () => {
+  it("leaves t, Shift+J, and Shift+K unclaimed", () => {
     const h = harness();
     const retired = [
-      keyboard("f"),
       keyboard("t"),
       keyboard("J", { shiftKey: true }),
       keyboard("K", { shiftKey: true }),
@@ -268,6 +267,44 @@ describe("RootKeyboardRouter", () => {
     expect(router.handleKeyDown(keyboard("O", { ctrlKey: true, shiftKey: true }).event)).toBe(false);
     expect(router.handleKeyDown(keyboard("o", { ctrlKey: true }).event)).toBe(true);
     expect(dispatched).toEqual(["document.open"]);
+    router.dispose();
+  });
+  it("gives an active hint owner priority over bound keys without intercepting native or IME input", () => {
+    let context: RootKeyboardContext = { windowId: "window-a", routeRevision: "route-a", generation: 1, inputContext: "navigation", runtime };
+    const dispatched: string[] = [];
+    let priorityCalls = 0;
+    const router = createRootKeyboardRouter({
+      config,
+      getContext: () => context,
+      onDispatch: (id) => dispatched.push(id),
+      onPriorityKeyDown: (event, current) => {
+        priorityCalls += 1;
+        expect(current).toBe(context);
+        return event.key === "j";
+      },
+    });
+
+    const owned = keyboard("j");
+    expect(router.handleKeyDown(owned.event)).toBe(true);
+    expect(owned.prevented()).toBe(true);
+    expect(priorityCalls).toBe(1);
+    expect(dispatched).toEqual([]);
+
+    for (const overrides of [{ nativeOwnedTarget: true }, { isComposing: true }, { keyCode: 229 }]) {
+      const native = keyboard("j", overrides);
+      expect(router.handleKeyDown(native.event)).toBe(false);
+      expect(native.prevented()).toBe(false);
+    }
+    expect(priorityCalls).toBe(1);
+    expect(dispatched).toEqual([]);
+
+    context = { ...context, routeRevision: "route-b" };
+    router.syncContext();
+    const released = keyboard("j");
+    expect(router.handleKeyDown(released.event)).toBe(true);
+    expect(released.prevented()).toBe(true);
+    expect(priorityCalls).toBe(2);
+    expect(dispatched).toEqual([]);
     router.dispose();
   });
 });

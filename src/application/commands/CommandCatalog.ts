@@ -28,6 +28,7 @@ const CATEGORY_BY_PREFIX: readonly [string, CommandCategory][] = Object.freeze([
   ["app.", "application"], ["tab.", "tabs"], ["search.", "search"],
   ["view.", "view"], ["config.", "settings"], ["theme.", "settings"], ["update.", "settings"],
   ["document.", "document"], ["scroll.", "navigation"], ["page.", "navigation"],
+  ["links.", "navigation"],
   ["history.", "navigation"], ["palette.", "application"], ["help.", "application"],
 ]);
 

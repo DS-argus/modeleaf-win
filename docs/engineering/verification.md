@@ -61,6 +61,19 @@ Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 
 The runner checks the current preview source/executable receipt, exercises correct and repeated incorrect attempts, modal input/action blocking, native second-instance rejection, cancellation restoration, and pending-password WM_CLOSE. It records sanitized focus/accessibility checks and cleared-input screenshots under `.internal/evidence/password-prompt/`, checks source fixture hashes and non-persistence of a unique incorrect input, and closes the owned preview. Never include password values or raw password accessibility values in evidence. This is bundled-frontend WebView2 debug QA with CDP-injected input, not human keyboard, screen-reader narration, or installed-release certification.
 
+## Native PDF link-hint regression
+
+With exclusive native build ownership and no running Modeleaf process:
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9333'
+npm run preview:worktree -- -Pdf fixtures/pdf/links.pdf
+node tools/qa/run-link-hints.mjs <ProcessId-from-preview>
+Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
+```
+
+The runner validates the preview source/executable receipt and fixture hashes, exercises annotation-only labels, duplicate occurrences, URL selection/repeated Enter/Escape, viewport cancellation, internal landing coordinates and indicator expiration, and retained `F` behavior. Evidence stays under `.internal/evidence/link-hints/`; the runner closes the owned preview. It checks the CDP `autoRepeat` event before sending repeated Enter to an external confirmation. It deliberately does not confirm a valid external URL with non-repeat Enter, so successful OS/browser launch remains unverified by this runner. Native registry authorization is covered separately by the Rust gate tests. This is bundled WebView2 debug QA with CDP-injected input, not physical human input, installed-release certification, or an accessibility narration test.
+
 ## Documentation-only changes
 
 Validate local links, documented commands, source-backed claims, ignore/tracking behavior, and `git diff --check`. Run relevant contract tests where guidance relies on their boundaries. A native rebuild/manual QA is unnecessary when only documentation changes; explicitly report those layers as NOT RUN. Never suppress warnings or label an unexecuted gate as passed.

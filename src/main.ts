@@ -38,6 +38,7 @@ import { AccessibilityController, readerAccessibilityName, tabAccessibilitySeman
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
 import { createPasswordPrompt } from "./ui/PasswordPrompt";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
+import { LinkHints, type LinkHintHostContext } from "./ui/LinkHints";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 import { TauriPdfPrintBoundary } from "./pdf/TauriPdfPrintBoundary";
 import { createPrintProgress } from "./ui/PrintProgress";
@@ -55,6 +56,7 @@ const IMPLEMENTED_ACTION_IDS: ReadonlySet<ActionId> = new Set<ActionId>([
   "tab.next", "tab.previous",
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "prompt.commit", "prompt.cancel",
+  "links.hint",
   "search.prompt", "search.next", "search.previous", "search.cancel", "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "path.showParent", "path.copy",
   "config.writeDefault", "config.resetDefault", "theme.picker",
@@ -378,10 +380,13 @@ const native = {
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
 };
 
+let linkHints: LinkHints | undefined;
+const cancelLinkHints = (): void => { linkHints?.cancel(); };
 type TabPayload = { readonly host: HTMLElement; readonly session: PdfTabSession; readonly disposeUi: () => void };
 let workspace!: TabWorkspace<TabPayload>;
 const resources = new ResourceReservationManager((needed) => {
   if (workspace === undefined || !["canvas-bytes", "canvas-cache-bytes", "text-page-bytes", "text-document-bytes", "text-process-bytes", "search-document-results", "search-process-results", "search-extractor"].includes(needed.kind)) return;
+  cancelLinkHints();
   const activeTabId = workspace.activeTabId;
   for (const tab of workspace.snapshot.tabs) {
     if (tab.id !== activeTabId) tab.payload.session.evictInactiveHeavyResources();
@@ -455,8 +460,8 @@ const workspaceTransitions = createWorkspaceTransitionQueue(() => {
   render();
 });
 const removedTabTeardown = createRemovedTabTeardownSupervisor<TabPayload>({
-  remove: (value) => { value.disposeUi(); value.host.remove(); },
-  close: (value) => value.session.close(),
+  remove: (value) => { cancelLinkHints(); value.disposeUi(); value.host.remove(); },
+  close: (value) => { cancelLinkHints(); return value.session.close(); },
 });
 function queueWorkspaceTransition(work: () => Promise<void> | void): Promise<void> { return workspaceTransitions.enqueue(work); }
 function queueWorkspaceOwnership(work: () => Promise<void> | void): Promise<void> { return workspaceTransitions.enqueueOwnership(work); }
@@ -698,9 +703,9 @@ function createTab(): TabPayload {
         return "failedWithoutMovement";
       },
       navigateToPage: (page) => { if (!passwordModalOpen() && active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch((error: unknown) => reportPresentationFailure(session, error)); } },
-      navigateToDestination: async (page, destination, cause, isActivationCurrent) => {
+      navigateToDestination: async (page, destination, cause, isActivationCurrent, returnLanding) => {
         if (passwordModalOpen() || active().session !== session) return { kind: "stale" };
-        try { return await session.navigateToDestination(page, destination, cause, isActivationCurrent); }
+        try { return await session.navigateToDestination(page, destination, cause, isActivationCurrent, returnLanding); }
         catch (error: unknown) { reportPresentationFailure(session, error); return { kind: "failed" }; }
       },
       resolveDestinationPage: (reference) => session.resolveDestinationPage(reference),
@@ -764,6 +769,7 @@ function createTab(): TabPayload {
   };
   const onReaderScroll = (): void => {
     if (session.navigationLandingInProgress) return;
+    cancelLinkHints();
     session.clearVisibleLinkAuthority();
     scheduleViewportSync();
   };
@@ -774,6 +780,7 @@ function createTab(): TabPayload {
   let readerWidth = host.offsetWidth;
   let readerHeight = host.offsetHeight;
   const onReaderResize = (): void => {
+    cancelLinkHints();
     if (viewportDisposed || active().session !== session) return;
     session.cancelWheelZoom();
     session.invalidateViewportSynchronization();
@@ -808,6 +815,19 @@ function createTab(): TabPayload {
 }
 workspace = new TabWorkspace(createTab, 8, { dispose: disposeWorkspaceTab });
 active().session.activate();
+linkHints = new LinkHints({
+  getContext: (): LinkHintHostContext | undefined => {
+    if (workspace === undefined) return undefined;
+    const current = workspace.getPayload(workspace.activeTabId);
+    if (current === undefined || !current.session.snapshot.reader.hasDocument) return undefined;
+    return { authority: current.session, host: current.host };
+  },
+  onFeedback: (message) => {
+    if (workspace === undefined) return;
+    active().session.reader.setStatus(message);
+    render();
+  },
+});
 
 let updateNotice: UpdateNoticeState = HIDDEN_UPDATE_NOTICE;
 const RELEASE_REPOSITORY = "DS-argus/modeleaf-win";
@@ -1460,6 +1480,13 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
 );
 function dispatchActionId(id: ActionId): void {
   if (passwordModalOpen() && id !== "app.quit") return;
+  if (id !== "links.hint" && id !== "app.quit") cancelLinkHints();
+  if (id === "links.hint") {
+    cancelPendingShellInput();
+    if (overlayOwner.active !== undefined || nativeOpenPending || nativePickerOpen || passwordModalOpen()) return;
+    linkHints?.show();
+    return;
+  }
   if (id === "history.back") { void active().session.navigateHistoryBack().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   if (id === "path.showParent" || id === "path.copy") { runPathShortcut(id === "path.showParent" ? "y" : "yy"); return; }
   if (id === "history.forward") { void active().session.navigateHistoryForward().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
@@ -1567,6 +1594,7 @@ function navigateAdjacentReaderPage(payload: TabPayload, direction: -1 | 1): voi
 
 function dispatch(action: Action): void {
   if (passwordModalOpen() && action.type !== "application.quit") return;
+  cancelLinkHints();
   const type = action.type;
   if (type === "document.open") { if (nativeOpenPending) return; if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } void openFileOpener(); return; }
   if (type === "document.print") {
@@ -1642,6 +1670,8 @@ const rootKeyboard = createRootKeyboardRouter({
     inputContext: pagePromptTransaction !== undefined ? "pagePrompt" : overlayOwner.active?.id === "search" ? "searchPrompt" : active().session.query.length > 0 ? "searchResults" : "navigation",
     runtime: commandAvailabilityContext(),
   }),
+  onPriorityKeyDown: (event) => linkHints?.handleKeyDown(event) ?? false,
+  onPriorityCancel: cancelLinkHints,
   onDispatch: (id, sequenceDispatch) => {
     dispatchActionId(id);
     const transaction = pagePromptTransaction;
@@ -1690,6 +1720,7 @@ window.addEventListener("keydown", (event) => {
     key: event.key, ctrlKey: event.ctrlKey, altKey: event.altKey, shiftKey: event.shiftKey, metaKey: event.metaKey,
     repeat: event.repeat, isComposing: event.isComposing, keyCode: event.keyCode,
     altGraph: event.getModifierState("AltGraph"),
+    priorityOwnedTarget: isEditableTarget(event.target) || (target !== null && target.closest("dialog[open]") !== null) || isOverlayOwnedKey(event, target),
     nativeOwnedTarget: (isEditableTarget(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) || isOverlayOwnedKey(event, target),
     preventDefault: () => event.preventDefault(),
   });
@@ -1700,6 +1731,7 @@ let dprMediaQuery: MediaQueryList | undefined;
 let dprPollTimer: ReturnType<typeof setTimeout> | undefined;
 let devicePixelRatio = window.devicePixelRatio;
 const onDprChange = (): void => {
+  cancelLinkHints();
   devicePixelRatio = window.devicePixelRatio;
   bindDprChange();
   const session = active().session;
@@ -1736,11 +1768,13 @@ const disposeSearchPrompt = bindSearchPrompt(
   render,
 );
 window.addEventListener("resize", () => {
+  cancelLinkHints();
   scheduleDprPollFallback();
   if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);
+window.addEventListener("focusin", () => cancelLinkHints());
 window.addEventListener("focusin", (event) => { if (isEditableTarget(event.target)) rootKeyboard.cancelPending(); });
 fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); dispatchFileOpenerEntry(); });
 fileOpenerInput.addEventListener("input", () => { fileOpenerModel = updateChooserQuery(fileOpenerModel, fileOpenerInput.value); renderFileOpener(); });

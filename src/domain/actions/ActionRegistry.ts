@@ -13,6 +13,7 @@ export const ACTION_IDS = Object.freeze([
   "scroll.left", "scroll.down", "scroll.up", "scroll.right", "scroll.largeDown", "scroll.largeUp",
   "page.next", "page.previous", "page.first", "page.last", "page.prompt", "history.back", "history.forward",
   "prompt.commit", "prompt.cancel", "search.prompt", "search.next", "search.previous", "search.cancel",
+  "links.hint",
   "view.zoomIn", "view.zoomOut", "view.zoomReset", "view.fitWidth", "view.fitPage", "view.rotateLeft", "view.rotateRight",
   "config.reload", "config.writeDefault", "config.resetDefault", "theme.picker", "update.show",
   "path.showParent", "path.copy",
@@ -88,6 +89,7 @@ export const ACTION_DESCRIPTORS: readonly ActionDescriptor[] = Object.freeze([
   descriptor("search.previous", "Previous Match", contexts(SEARCH_RESULTS_CONTEXT), "allowed", "fixed"),
   descriptor("search.cancel", "Clear Search", contexts(SEARCH_RESULTS_CONTEXT)),
 
+  descriptor("links.hint", "Follow PDF Link", contexts(READER_CONTEXTS)),
   descriptor("view.zoomIn", "Zoom In", contexts(READER_CONTEXTS), "allowed"),
   descriptor("view.zoomOut", "Zoom Out", contexts(READER_CONTEXTS), "allowed"),
   descriptor("view.zoomReset", "Actual Size", contexts(READER_CONTEXTS)),
@@ -151,7 +153,7 @@ const DOCUMENT_ACTIONS = new Set<ActionId>([
   "document.close", "document.print", "tab.next", "tab.previous",
   ...ACTION_IDS.filter((id) => id.startsWith("scroll.")),
   ...ACTION_IDS.filter((id) => id.startsWith("page.")),
-  "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel", "path.showParent", "path.copy",
+  "links.hint", "history.back", "history.forward", "search.prompt", "search.next", "search.previous", "search.cancel", "path.showParent", "path.copy",
   ...ACTION_IDS.filter((id) => id.startsWith("view.")),
 ]);
 

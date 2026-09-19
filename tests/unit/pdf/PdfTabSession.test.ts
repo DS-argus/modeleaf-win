@@ -376,7 +376,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
 
     session.apply({ type: "page.next" });
     session.clearVisibleLinkAuthority();
-    expect(content.clearVisibleLinkAuthority).toHaveBeenCalledOnce();
+    expect(content.clearVisibleLinkAuthority).toHaveBeenCalledTimes(2);
   });
   it("commits verified history, traverses directionally, and preserves stacks on compensated failure", async () => {
     const session = createSession();

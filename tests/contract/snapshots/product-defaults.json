@@ -129,6 +129,9 @@
     "search.cancel": [
       "<Esc>"
     ],
+    "links.hint": [
+      "f"
+    ],
     "view.zoomIn": [
       "=",
       "+"

@@ -3,7 +3,7 @@
   "baseline": {
     "source": "Modeleaf Windows action registry"
   },
-  "count": 42,
+  "count": 43,
   "ids": [
     "document.open",
     "document.close",
@@ -33,6 +33,7 @@
     "search.next",
     "search.previous",
     "search.cancel",
+    "links.hint",
     "view.zoomIn",
     "view.zoomOut",
     "view.zoomReset",

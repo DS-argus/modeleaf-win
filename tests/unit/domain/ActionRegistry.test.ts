@@ -21,10 +21,10 @@ const snapshot = JSON.parse(readFileSync(
 const RETIRED_ACTION_IDS = ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"] as const;
 
 describe("ActionRegistry", () => {
-  it("matches the exact frozen 42-action order with no duplicates", () => {
+  it("matches the exact frozen 43-action order with no duplicates", () => {
     expect(ACTION_IDS).toEqual(snapshot.ids);
     expect(ACTION_IDS).toHaveLength(snapshot.count);
-    expect(new Set(ACTION_IDS).size).toBe(42);
+    expect(new Set(ACTION_IDS).size).toBe(43);
     expect(ACTION_DESCRIPTORS.map(({ id }) => id)).toEqual(ACTION_IDS);
   });
 
@@ -37,7 +37,7 @@ describe("ActionRegistry", () => {
     }
 
     const assignedSequences = new Set(Object.values(DEFAULT_BINDINGS).flat());
-    for (const sequence of ["t", "J", "K", "f", "of", "I"]) {
+    for (const sequence of ["t", "J", "K", "of", "I"]) {
       expect(assignedSequences.has(sequence)).toBe(false);
     }
     expect(DEFAULT_BINDINGS["scroll.down"]).toContain("j");
@@ -58,7 +58,7 @@ describe("ActionRegistry", () => {
       "search.next",
       "search.previous",
     ]);
-    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(38);
+    expect(CONFIGURABLE_ACTION_DESCRIPTORS).toHaveLength(39);
   });
 
   it("exposes exactly four input contexts and context-scoped availability", () => {
@@ -77,6 +77,9 @@ describe("ActionRegistry", () => {
 
   it("returns explicit runtime availability reasons for capacities and ownership", () => {
     const ready = { hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true, tabCount: 2, modalOpen: false, updateAvailable: true, configExists: true, searchActive: true, canHistoryBack: true, canHistoryForward: true };
+    expect(getActionRuntimeAvailability("links.hint", ready)).toEqual({ enabled: true });
+    expect(getActionRuntimeAvailability("links.hint", { ...ready, hasDocument: false })).toEqual({ enabled: false, reason: "No document open" });
+    expect(getActionRuntimeAvailability("links.hint", { ...ready, modalOpen: true })).toEqual({ enabled: false, reason: "Close the current dialog" });
     expect(getActionRuntimeAvailability("document.print", ready)).toEqual({ enabled: true });
     expect(getActionRuntimeAvailability("document.print", { ...ready, hasDocument: false })).toEqual({ enabled: false, reason: "No document open" });
     expect(getActionRuntimeAvailability("document.open", { ...ready, canCreateSession: false })).toEqual({ enabled: false, reason: "Document capacity unavailable" });

@@ -15,6 +15,9 @@ import {
   type PdfLinkActivationCause,
   type PdfSearchLandingRequest,
   type PdfContentSnapshot,
+  type PdfLinkActivationResult,
+  type PdfVisibleLinkSelectionId,
+  type PdfVisibleLinkSnapshot,
 } from "./PdfContentController";
 import { resolvePdfDestinationView } from "./PdfDestination";
 import {
@@ -383,6 +386,7 @@ export class PdfTabSession {
     }
   }
   public invalidateViewportSynchronization(): void {
+    this.content?.clearVisibleLinkAuthority();
     this.viewportGeometryRevision += 1;
     if (this.navigationLandingIntent !== undefined) return;
     this.viewportIntent += 1;
@@ -552,6 +556,7 @@ export class PdfTabSession {
     if (this.closed || !this.isForegroundActive()) return;
     const movement = action.type.startsWith("scroll.") || action.type.startsWith("page.") || action.type.startsWith("view.");
     if (movement) {
+      this.content?.clearVisibleLinkAuthority();
       this.invalidateOpeningFitRender();
       this.cancelWheelZoom();
     }
@@ -755,6 +760,27 @@ export class PdfTabSession {
     this.endSearchLandingEpoch();
   }
   public get query(): string { return this.content?.searchQuery ?? ""; }
+  public get visibleLinkSnapshot(): PdfVisibleLinkSnapshot {
+    if (!this.isForegroundActive() || this.content === undefined) return Object.freeze({
+      revision: 0,
+      generation: null,
+      viewport: Object.freeze({ x: 0, y: 0, width: 0, height: 0 }),
+      scrollLeft: 0,
+      scrollTop: 0,
+      truncated: false,
+      candidates: Object.freeze([]),
+    });
+    return this.content.visibleLinkSnapshot;
+  }
+  public activateVisibleLink(
+    snapshot: PdfVisibleLinkSnapshot,
+    selectionId: PdfVisibleLinkSelectionId,
+    confirmExternal = false,
+  ): Promise<PdfLinkActivationResult> {
+    if (this.closed || !this.isForegroundActive() || this.content === undefined) return Promise.resolve({ kind: "stale" });
+    return this.content.activateVisibleLink(snapshot, selectionId, confirmExternal);
+  }
+  public cancelVisibleLinkActivation(): void { this.content?.cancelVisibleLinkActivation(); }
   public clearVisibleLinkAuthority(): void { this.content?.clearVisibleLinkAuthority(); }
   public renderCurrentView(): Promise<boolean> {
     return this.openingFitRenderPending ? this.renderOpeningFitPage() : this.renderCurrentViewPreservingAnchor();
@@ -777,6 +803,7 @@ export class PdfTabSession {
     destination: readonly unknown[],
     cause: PdfLinkActivationCause = "internal-link",
     activationGuard: () => boolean = () => true,
+    returnLanding = false,
   ): Promise<PdfDestinationNavigationOutcome> {
     if (this.closed || !this.isForegroundActive() || !this.historyHealthy) return { kind: "rejected" };
     this.cancelWheelZoom();
@@ -889,13 +916,15 @@ export class PdfTabSession {
         this.navigationHistory.rollback(prepared.transaction);
         return await settleStaleAfterMovement();
       }
-      const verificationTarget = content.takeDestinationLanding(intentId);
-      if (verificationTarget === undefined) {
+      const destinationLanding = content.takeDestinationLanding(intentId);
+      const destinationMarker = returnLanding ? content.takeDestinationMarker(intentId) : undefined;
+      if (destinationLanding === undefined) {
         this.navigationHistory.rollback(prepared.transaction);
         return { kind: await compensateToOrigin() };
       }
+      const restoreTarget = destinationLanding ?? target;
       const completion = await this.pdfReader.restoreViewportLanding(
-        verificationTarget,
+        restoreTarget,
         guard,
         targetTransform,
         "center",
@@ -910,7 +939,7 @@ export class PdfTabSession {
         return { kind: await compensateToOrigin() };
       }
       const displayed = this.captureNavigationSnapshot();
-      const finalVerificationTarget = completion.kind === "constrainedEdgeVerified" ? completion.expected : verificationTarget;
+      const finalVerificationTarget = completion.kind === "constrainedEdgeVerified" ? completion.expected : destinationLanding ?? target;
       if (displayed === undefined) {
         this.navigationHistory.rollback(prepared.transaction);
         return { kind: await compensateToOrigin() };
@@ -919,7 +948,7 @@ export class PdfTabSession {
       if (historyResult === "same-location") return { kind: "same-location" };
       if (historyResult !== "committed") return { kind: await compensateToOrigin() };
       this.endSearchLandingEpoch();
-      return { kind: "verified" };
+      return { kind: "verified", ...(returnLanding && destinationMarker !== undefined ? { landing: destinationMarker } : {}) };
     } finally {
       if (observesRawActivity) {
         for (const event of rawActivityEvents) this.options.canvasHost.removeEventListener(event, fenceForRawActivity);

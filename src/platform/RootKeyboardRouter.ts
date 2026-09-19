@@ -14,6 +14,7 @@ export interface RootKeyboardEvent {
   readonly keyCode?: number;
   readonly nativeOwnedTarget?: boolean;
   readonly altGraph?: boolean;
+  readonly priorityOwnedTarget?: boolean;
   preventDefault(): void;
 }
 export interface RootKeyboardContext {
@@ -34,6 +35,10 @@ export interface RootKeyboardRouterOptions {
   readonly now?: () => number;
   readonly setTimer?: (callback: () => void, delay: number) => number;
   readonly clearTimer?: (timer: number) => void;
+  /** Gives a transient reader owner first refusal before normal bindings. */
+  readonly onPriorityKeyDown?: (event: RootKeyboardEvent, context: RootKeyboardContext) => boolean;
+  /** Cancels transient reader ownership whenever root input ownership is revoked. */
+  readonly onPriorityCancel?: () => void;
 }
 export interface RootKeyboardRouter { readonly handleKeyDown: (event: RootKeyboardEvent) => boolean; readonly cancelPending: () => void; readonly syncContext: () => void; readonly dispose: () => void }
 
@@ -47,8 +52,11 @@ export function createRootKeyboardRouter(options: RootKeyboardRouterOptions): Ro
   let owner = ownerKey(options.getContext());
 
   const clear = (): void => { if (timer !== undefined) clearTimer(timer); timer = undefined; };
-  const cancelPending = (): void => { clear(); engine.reset(); options.onState?.(engine.state()); };
-  const syncContext = (): void => { const next = ownerKey(options.getContext()); if (next !== owner) { owner = next; cancelPending(); } };
+  const cancelPending = (): void => { clear(); engine.reset(); options.onPriorityCancel?.(); options.onState?.(engine.state()); };
+  const syncContext = (): void => {
+    const next = ownerKey(options.getContext());
+    if (next !== owner) { owner = next; cancelPending(); }
+  };
   const emit = (result: SequenceResult): void => {
     options.onState?.(result);
     if (result.kind !== "dispatch") return;
@@ -73,6 +81,18 @@ export function createRootKeyboardRouter(options: RootKeyboardRouterOptions): Ro
   const handleKeyDown = (event: RootKeyboardEvent): boolean => {
     syncContext();
     const context = options.getContext();
+    const token = keyboardToken(event);
+    if (options.onPriorityKeyDown !== undefined
+      && token !== undefined && !event.priorityOwnedTarget) {
+      const prioritized = options.onPriorityKeyDown(event, context);
+      if (prioritized) {
+        clear();
+        engine.reset();
+        event.preventDefault();
+        options.onState?.({ kind: "idle" });
+        return true;
+      }
+    }
     if (isPhysicalHistoryAccelerator(event)) {
       cancelPending();
       event.preventDefault();
@@ -85,7 +105,6 @@ export function createRootKeyboardRouter(options: RootKeyboardRouterOptions): Ro
       else if (!availability.enabled) options.onDisabled?.(historyAction, availability.reason);
       return true;
     }
-    const token = keyboardToken(event);
     if (token === undefined) { cancelPending(); return false; }
     const timestamp = now();
     const pending = engine.state();
@@ -105,7 +124,8 @@ export function createRootKeyboardRouter(options: RootKeyboardRouterOptions): Ro
     schedule();
     return claimed;
   };
-  return Object.freeze({ handleKeyDown, cancelPending, syncContext, dispose: clear });
+  const dispose = (): void => { clear(); options.onPriorityCancel?.(); };
+  return Object.freeze({ handleKeyDown, cancelPending, syncContext, dispose });
 }
 
 function bindings(config: ProductConfig): readonly SequenceBinding[] {

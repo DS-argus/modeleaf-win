@@ -96,15 +96,15 @@ describe("Retired reader features", () => {
       target.remove();
     }
   });
-  it("removes TOC, hints, and destination indicators without removing ordinary reader behavior", () => {
-    for (const id of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"]) expect(ACTION_IDS).not.toContain(id);
-    expect(ACTION_IDS).toEqual(expect.arrayContaining(["history.back", "history.forward", "search.prompt"]));
+  it("retires TOC and indicator settings while retaining link-hint scope and ordinary reader behavior", () => {
+    for (const id of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "indicator.picker"]) expect(ACTION_IDS).not.toContain(id);
+    expect(ACTION_IDS).toEqual(expect.arrayContaining(["history.back", "history.forward", "search.prompt", "links.hint"]));
 
     for (const path of [
       "src/domain/outlines/OutlineModel.ts", "src/domain/outlines/OutlineSelector.ts",
       "src/pdf/PdfOutlineAdapter.ts", "src/pdf/PdfOutlineProbe.ts",
       "src/ui/reader/TocController.ts", "src/ui/reader/TocWidgetModel.ts", "src/ui/reader/TocWidgetView.ts",
-      "src/domain/links/LinkHints.ts", "src/domain/links/IndicatorSettings.ts", "src/ui/IndicatorPickerModel.ts",
+      "src/domain/links/IndicatorSettings.ts", "src/ui/IndicatorPickerModel.ts",
     ]) expect(existsSync(resolve(process.cwd(), path))).toBe(false);
 
     const styles = source("src/styles/app.css");
@@ -117,17 +117,17 @@ describe("Retired reader features", () => {
     const nativeIndicatorApi = `${source("src-tauri/src/lib.rs")}\n${source("src-tauri/src/commands/state.rs")}`;
 
     for (const text of [main, styles, content]) {
-      for (const retired of ["toc-widget", "pdf-link-hint", "handleHintKey", "toggleHints", "hintsVisible"]) expect(text).not.toContain(retired);
+      for (const retired of ["toc-widget"]) expect(text).not.toContain(retired);
     }
     for (const retired of [
-      "IndicatorSettings", "IndicatorPickerModel", "indicator-picker", "destination-indicator",
+      "IndicatorSettings", "IndicatorPickerModel", "indicator-picker",
       "indicatorPicker", "indicatorSettings", "readIndicatorState", "commitIndicatorState",
       "indicator.picker", "indicator.open", "linkIndicatorVisible", "dismissLinkIndicator", "indicatorPublicationPending",
     ]) expect(main).not.toContain(retired);
-    for (const retired of ["IndicatorSettings", "indicatorSettings", "indicatorElement", "indicatorTimer", "indicatorPublicationPending", "linkIndicatorVisible", "dismissLinkIndicator", "showDestinationIndicator", "pdf-destination-indicator"]) {
+    for (const retired of ["IndicatorSettings", "indicatorSettings", "indicatorElement", "indicatorTimer", "indicatorPublicationPending", "linkIndicatorVisible", "dismissLinkIndicator"]) {
       expect(`${content}\n${session}`).not.toContain(retired);
     }
-    for (const retired of [".pdf-destination-indicator", "destination-indicator-", "--indicator-color", "--indicator-duration"]) expect(styles).not.toContain(retired);
+    for (const retired of ["--indicator-color", "--indicator-duration"]) expect(styles).not.toContain(retired);
     for (const retired of ["IndicatorSettings", "readIndicatorState", "commitIndicatorState", "read_indicator_state", "commit_indicator_state"]) expect(facade).not.toContain(retired);
     for (const retired of ["read_indicator_state", "commit_indicator_state"]) expect(nativeIndicatorApi).not.toContain(retired);
     expect(commandCatalog).not.toContain('["indicator.", "settings"]');
@@ -137,6 +137,8 @@ describe("Retired reader features", () => {
     const keymap = BUILT_IN_CONFIG.keymap as Readonly<Record<string, readonly string[] | undefined>>;
     expect(keymap["indicator.picker"]).toBeUndefined();
     expect(Object.values(keymap).flatMap((bindings) => bindings ?? [])).not.toContain("I");
+    expect(keymap["links.hint"]).toEqual(["f"]);
+    expect(existsSync(resolve(process.cwd(), "src/ui/LinkHints.ts"))).toBe(true);
 
     expect(content).toContain("pdf-link-overlay");
     expect(main).toContain('invoke<number>("open_external_link"');
@@ -170,8 +172,7 @@ describe("Retired reader features", () => {
   });
   it.each([
     { label: "plain Escape", key: "Escape" },
-    { label: "retired f hint", key: "f" },
-    { label: "retired t hint", key: "t" },
+    { label: "unbound t key", key: "t" },
     { label: "unrelated Shift+J", key: "J", shiftKey: true },
     { label: "unrelated Shift+K", key: "K", shiftKey: true },
     { label: "modified Escape", key: "Escape", ctrlKey: true },
@@ -189,6 +190,24 @@ describe("Retired reader features", () => {
       expect(event.defaultPrevented).toBe(false);
       expect(reachedTarget).toHaveBeenCalledOnce();
       expect(root.onDispatch).not.toHaveBeenCalled();
+    } finally {
+      root.dispose();
+      target.remove();
+    }
+  });
+
+  it("routes the retained f hint binding to the positive link-hint action", () => {
+    const target = document.createElement("button");
+    document.body.append(target);
+    const reachedTarget = vi.fn();
+    target.addEventListener("keydown", reachedTarget);
+    const root = installRootCapture();
+    try {
+      const event = new KeyboardEvent("keydown", { key: "f", bubbles: true, cancelable: true });
+      expect(target.dispatchEvent(event)).toBe(false);
+      expect(event.defaultPrevented).toBe(true);
+      expect(reachedTarget).not.toHaveBeenCalled();
+      expect(root.onDispatch).toHaveBeenCalledWith("links.hint", expect.anything());
     } finally {
       root.dispose();
       target.remove();

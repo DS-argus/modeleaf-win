@@ -1058,7 +1058,7 @@ describe("PdfContentController", () => {
     subject.host.querySelector<HTMLButtonElement>(".pdf-link-overlay")!.click();
 
     await vi.waitFor(() => expect(navigateDestination).toHaveBeenCalledWith(
-      2, [1, { name: "Fit" }], "internal-link", expect.any(Function),
+      2, [1, { name: "Fit" }], "internal-link", expect.any(Function), false,
     ));
     await expect(navigation).resolves.toEqual({ kind: "verified" });
     expect(subject.controller.snapshot.pageNumber).toBe(2);

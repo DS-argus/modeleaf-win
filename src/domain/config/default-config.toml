@@ -26,6 +26,7 @@
 "history.forward" = ["<A-Right>"]
 "search.prompt" = ["/"]
 "search.cancel" = ["<Esc>"]
+"links.hint" = ["f"]
 "view.zoomIn" = ["=", "+"]
 "view.zoomOut" = ["-"]
 "view.zoomReset" = ["0"]

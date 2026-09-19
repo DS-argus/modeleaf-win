@@ -205,6 +205,72 @@ html, body { overflow: hidden; }
   outline: 2px solid var(--theme-focus-indicator);
   outline-offset: 1px;
 }
+.pdf-destination-indicator {
+  color: var(--theme-accent);
+  box-shadow: 0 0 0 1px var(--theme-background);
+}
+.link-hints-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 12;
+  overflow: visible;
+  pointer-events: none;
+  contain: layout style;
+}
+.link-hints-label {
+  position: absolute;
+  display: block;
+  min-width: 1.15em;
+  max-width: 8em;
+  padding: 2px 4px;
+  overflow: hidden;
+  color: var(--theme-background);
+  background: color-mix(in srgb, var(--theme-accent) 92%, transparent);
+  border: 1px solid var(--theme-accent);
+  border-radius: 3px;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 30%);
+  font: 700 0.6875rem/1 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translate(-1px, -1px);
+  pointer-events: none;
+  user-select: none;
+}
+.link-hints-label[data-match="false"] { opacity: 0.32; }
+.link-hints-confirmation {
+  position: absolute;
+  display: grid;
+  gap: 3px;
+  width: min(420px, calc(100% - 16px));
+  max-width: calc(100% - 16px);
+  padding: 6px 8px;
+  overflow: hidden;
+  color: var(--theme-foreground);
+  background: color-mix(in srgb, var(--theme-active-tab) 97%, transparent);
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 80%, var(--theme-border));
+  border-radius: 4px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 38%);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  pointer-events: auto;
+  user-select: text;
+}
+.link-hints-confirmation-url {
+  display: block;
+  max-width: 100%;
+  color: var(--theme-foreground);
+  overflow: auto;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  max-height: 8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  direction: ltr;
+  unicode-bidi: plaintext;
+}
+.link-hints-confirmation-actions { color: var(--theme-muted-text); }
 kbd {
   padding: 1px 6px;
   border: 1px solid var(--theme-border);
@@ -627,6 +693,11 @@ kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
   .statusbar, .status-badge { color: CanvasText; background: Canvas; border-color: CanvasText; }
   .status-help, .status-version, .status-message, .status-page, .status-zoom { color: CanvasText; }
   .status-badge { border-color: CanvasText; }
+  .pdf-destination-indicator { color: Highlight; outline: 1px solid Canvas; forced-color-adjust: none; }
+  .link-hints-label { color: Canvas; background: Highlight; border-color: Highlight; box-shadow: none; forced-color-adjust: auto; }
+  .link-hints-label[data-match="false"] { opacity: 0.65; }
+  .link-hints-confirmation { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: auto; }
+  .link-hints-confirmation-url, .link-hints-confirmation-actions { color: CanvasText; }
   .pdf-link-overlay { background: transparent; box-shadow: none; forced-color-adjust: none; }
   .pdf-link-overlay:focus-visible { outline: 3px solid Highlight; outline-offset: 1px; }
   .tab-strip { --tab-edge: CanvasText; background: Canvas; }
