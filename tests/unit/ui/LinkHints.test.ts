@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
+import { validateProductConfig } from "../../../src/domain/config/ConfigValidator";
+import { createRootKeyboardRouter, type RootKeyboardContext } from "../../../src/platform/RootKeyboardRouter";
 import {
   LINK_HINT_ALPHABET,
   LinkHints,
@@ -208,5 +210,75 @@ describe("LinkHints", () => {
     expect(h.hints.isPresenting).toBe(false);
     expect(h.host.querySelector('[data-link-hints="overlay"]')).toBeNull();
     expect(h.cancelVisibleLinkActivation).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a composed root-owned 27-link overlay through prefix, invalid, and Backspace input", async () => {
+    const entries = Array.from({ length: 27 }, (_, index) => candidate(`link-${index}`, index === 0 ? "internal" : "external"));
+    const h = subject(snapshot(entries));
+    const validated = validateProductConfig({});
+    if (!validated.ok) throw new Error("built-in config invalid");
+    const runtime = {
+      hasDocument: true, canOpenDocument: true, canCreateSession: true, canCreateWindow: true,
+      tabCount: 1, modalOpen: false, updateAvailable: false, configExists: false, searchActive: false,
+      canHistoryBack: false, canHistoryForward: false,
+    };
+    const context: RootKeyboardContext = {
+      windowId: "window-a", routeRevision: "route-a", generation: 7, inputContext: "navigation", runtime,
+    };
+    const dispatched: string[] = [];
+    let router: ReturnType<typeof createRootKeyboardRouter>;
+    router = createRootKeyboardRouter({
+      config: validated.value,
+      getContext: () => context,
+      onDispatch: (actionId) => {
+        dispatched.push(actionId);
+        if (actionId === "links.hint") {
+          router.cancelPending();
+          expect(h.hints.show()).toBe(true);
+        }
+      },
+      onPriorityKeyDown: (event) => h.hints.handleKeyDown(event),
+      onPriorityCancel: () => h.hints.cancel(),
+    });
+    try {
+      const open = keyEvent("f");
+      expect(router.handleKeyDown(open.event)).toBe(true);
+      expect(open.prevented()).toBe(true);
+      expect(dispatched).toEqual(["links.hint"]);
+      expect(h.hints.visibleLabels).toHaveLength(27);
+
+      const invalid = keyEvent("?");
+      expect(router.handleKeyDown(invalid.event)).toBe(true);
+      expect(invalid.prevented()).toBe(true);
+      expect(h.hints.currentPrefix).toBe("");
+      expect(h.feedback).toHaveBeenLastCalledWith("Type a PDF link hint.");
+      expect(dispatched).toEqual(["links.hint"]);
+
+      const firstPrefix = keyEvent("f");
+      expect(router.handleKeyDown(firstPrefix.event)).toBe(true);
+      expect(firstPrefix.prevented()).toBe(true);
+      expect(h.hints.currentPrefix).toBe("f");
+      expect(h.host.querySelectorAll('[data-match="true"]')).toHaveLength(26);
+      expect(dispatched).toEqual(["links.hint"]);
+
+      const backspace = keyEvent("Backspace");
+      expect(router.handleKeyDown(backspace.event)).toBe(true);
+      expect(backspace.prevented()).toBe(true);
+      expect(h.hints.currentPrefix).toBe("");
+      expect(h.host.querySelectorAll('[data-match="true"]')).toHaveLength(27);
+
+      const retryPrefix = keyEvent("f");
+      const secondKey = keyEvent("f");
+      expect(router.handleKeyDown(retryPrefix.event)).toBe(true);
+      expect(router.handleKeyDown(secondKey.event)).toBe(true);
+      expect(retryPrefix.prevented()).toBe(true);
+      expect(secondKey.prevented()).toBe(true);
+      await settlePromises();
+      expect(h.activateVisibleLink).toHaveBeenCalledWith(expect.anything(), "link-0", false);
+      expect(h.hints.isPresenting).toBe(false);
+      expect(dispatched).toEqual(["links.hint"]);
+    } finally {
+      router.dispose();
+    }
   });
 });

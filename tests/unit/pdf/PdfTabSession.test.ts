@@ -42,6 +42,7 @@ type SessionInternals = {
     activateResidentPage: (page: number) => boolean;
     activateVisiblePages: (pages: readonly number[]) => number;
     clearVisibleLinkAuthority: () => void;
+    cancelVisibleLinkActivation: () => void;
     evictInactiveHeavyResources: () => boolean;
   };
   pdfReader: {
@@ -93,6 +94,7 @@ function installContent(session: PdfTabSession, snapshot: SearchSnapshot) {
     activateResidentPage: vi.fn(() => true),
     activateVisiblePages: vi.fn(() => 0),
     clearVisibleLinkAuthority: vi.fn(),
+    cancelVisibleLinkActivation: vi.fn(),
     evictInactiveHeavyResources: vi.fn(() => true),
   };
   (session as unknown as SessionInternals).content = content;
@@ -377,6 +379,22 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     session.apply({ type: "page.next" });
     session.clearVisibleLinkAuthority();
     expect(content.clearVisibleLinkAuthority).toHaveBeenCalledTimes(2);
+  });
+  it("keeps resident link authority through a no-op scroll and fences only after host movement", async () => {
+    const session = createSession();
+    const content = installContent(session, { query: "", results: [], searchPending: false, searchIncomplete: false });
+    session.reader.mountDocument(1);
+    await session.activate();
+
+    session.apply({ type: "scroll.byCssPixels", axis: "horizontal", delta: 32 });
+    expect(content.clearVisibleLinkAuthority).not.toHaveBeenCalled();
+
+    session.cancelVisibleLinkActivation();
+    expect(content.cancelVisibleLinkActivation).toHaveBeenCalledOnce();
+    expect(content.clearVisibleLinkAuthority).not.toHaveBeenCalled();
+
+    session.apply({ type: "view.zoom", factor: 1.1 });
+    expect(content.clearVisibleLinkAuthority).toHaveBeenCalledOnce();
   });
   it("commits verified history, traverses directionally, and preserves stacks on compensated failure", async () => {
     const session = createSession();

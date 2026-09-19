@@ -770,7 +770,7 @@ function createTab(): TabPayload {
   const onReaderScroll = (): void => {
     if (session.navigationLandingInProgress) return;
     cancelLinkHints();
-    session.clearVisibleLinkAuthority();
+    session.cancelVisibleLinkActivation();
     scheduleViewportSync();
   };
   host.addEventListener("scroll", onReaderScroll, { passive: true });

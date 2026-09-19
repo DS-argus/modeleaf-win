@@ -556,7 +556,9 @@ export class PdfTabSession {
     if (this.closed || !this.isForegroundActive()) return;
     const movement = action.type.startsWith("scroll.") || action.type.startsWith("page.") || action.type.startsWith("view.");
     if (movement) {
-      this.content?.clearVisibleLinkAuthority();
+      // The host scroll event revokes link activation after the browser applies the offset.
+      // A bounded edge/no-op scroll has no event, so do not discard resident links here.
+      if (!action.type.startsWith("scroll.")) this.content?.clearVisibleLinkAuthority();
       this.invalidateOpeningFitRender();
       this.cancelWheelZoom();
     }

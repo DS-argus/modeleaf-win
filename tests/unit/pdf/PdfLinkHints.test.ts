@@ -192,6 +192,26 @@ describe("PdfContentController visible link facade", () => {
     expect(await subject.controller.activateVisibleLink(fresh, selectionId, true)).toEqual({ kind: "activated", link: "external" });
     expect(subject.openExternal).toHaveBeenCalledTimes(2);
   });
+  it("exposes safe mailto candidates, requires confirmation, and settles one native failure", async () => {
+    const mailto = "mailto:guohao.li@eigent.ai?subject=PDF%20%E2%9C%93&body=Please%20review";
+    const subject = setup([{ subtype: "Link", rect: [20, 20, 40, 35], url: mailto }]);
+    await render(subject);
+    const captured = subject.controller.visibleLinkSnapshot;
+    const candidate = captured.candidates[0];
+    expect(candidate).toMatchObject({ kind: "external", url: mailto });
+    expect(candidate).toBeDefined();
+    const selectionId = candidate!.selectionId;
+
+    expect(await subject.controller.activateVisibleLink(captured, selectionId)).toEqual({ kind: "confirmation-required", url: mailto });
+    expect(subject.openExternal).not.toHaveBeenCalled();
+
+    subject.openExternal.mockRejectedValueOnce({ tag: "LINK_LAUNCH_FAILED" });
+    expect(await subject.controller.activateVisibleLink(captured, selectionId, true)).toEqual({ kind: "failed" });
+    expect(subject.openExternal).toHaveBeenCalledOnce();
+    expect(await subject.controller.activateVisibleLink(captured, selectionId, true)).toEqual({ kind: "already-activated" });
+    expect(subject.openExternal).toHaveBeenCalledOnce();
+    expect(subject.statuses).toContain("PDF link could not be opened.");
+  });
 
   it("transforms an explicit near-edge PDF marker point into a transient indicator and expires it", async () => {
     vi.useFakeTimers();

@@ -1822,6 +1822,8 @@ describe("PdfContentController", () => {
 
     expect(subject.prepareExternalLinks).toHaveBeenCalledWith([
       { annotationId: "page-1-render-2-annotation-0", target: "https://example.test/safe" },
+      { annotationId: "page-1-render-2-annotation-1", target: "mailto:reader%40example.test" },
+      { annotationId: "page-1-render-2-annotation-7", target: "mailto:reader" },
     ], 1);
     expect(subject.host.querySelector(".textLayer")?.textContent).toContain("selectable");
   });

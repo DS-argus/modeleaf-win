@@ -304,10 +304,49 @@ const isExternalUrl = (value: string): boolean => {
         && parsed.password.length === 0
         && !authority.includes("@");
     }
-    return false;
+    if (protocol !== "mailto:") return false;
+    const separator = value.indexOf(":");
+    const remainder = separator < 0 ? "" : value.slice(separator + 1);
+    return parsed.host.length === 0
+      && !remainder.startsWith("/")
+      && parsed.pathname.length > 0
+      && parsed.hash.length === 0
+      && !remainder.includes("#")
+      && !hasInvalidMailtoEscapeOrControl(value);
   } catch {
     return false;
   }
+};
+
+const hasInvalidMailtoEscapeOrControl = (value: string): boolean => {
+  const isControlByte = (byte: number): boolean => byte <= 0x1f || byte === 0x7f;
+  for (let index = 0; index < value.length;) {
+    if (value[index] !== "%") {
+      index += 1;
+      continue;
+    }
+    const runStart = index;
+    const bytes: number[] = [];
+    while (index < value.length && value[index] === "%") {
+      const high = value.charCodeAt(index + 1);
+      const low = value.charCodeAt(index + 2);
+      const isHex = (code: number): boolean => (code >= 0x30 && code <= 0x39)
+        || (code >= 0x41 && code <= 0x46)
+        || (code >= 0x61 && code <= 0x66);
+      if (!Number.isFinite(high) || !Number.isFinite(low) || !isHex(high) || !isHex(low)) return true;
+      const highValue = high <= 0x39 ? high - 0x30 : high <= 0x46 ? high - 0x41 + 10 : high - 0x61 + 10;
+      const lowValue = low <= 0x39 ? low - 0x30 : low <= 0x46 ? low - 0x41 + 10 : low - 0x61 + 10;
+      bytes.push((highValue << 4) | lowValue);
+      index += 3;
+    }
+    if (bytes.some(isControlByte)) return true;
+    try {
+      if (/[\u0000-\u001f\u007f-\u009f]/u.test(decodeURIComponent(value.slice(runStart, index)))) return true;
+    } catch {
+      if (bytes.some((byte) => byte >= 0x80 && byte <= 0x9f)) return true;
+    }
+  }
+  return false;
 };
 
 /** Renders the selectable PDF content that is deliberately kept outside the raster canvas. */
