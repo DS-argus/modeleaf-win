@@ -36,6 +36,7 @@ import { loadInstalledVersion } from "./platform/InstalledVersion";
 import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
+import { createPasswordPrompt } from "./ui/PasswordPrompt";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { ResourceReservationManager } from "./pdf/ResourceBudget";
 import { TauriPdfPrintBoundary } from "./pdf/TauriPdfPrintBoundary";
@@ -148,6 +149,14 @@ let cancelPendingShellInput: () => void = () => undefined;
 let syncPendingShellInput: () => void = () => undefined;
 let focusOwnerSequence = 0;
 let overlayOwner: OverlayOwnerState = createOverlayOwner(SHELL_WINDOW_ID, "empty-reader-open");
+let protectedOpenSession: PdfTabSession | undefined;
+const passwordPrompt = createPasswordPrompt({ onCancel: () => protectedOpenSession?.cancelPasswordOpening() });
+function passwordModalOpen(): boolean { return protectedOpenSession !== undefined; }
+function dismissPasswordPrompt(): void {
+  passwordPrompt.dismiss();
+  protectedOpenSession = undefined;
+  cancelPendingShellInput();
+}
 function focusTargetId(element: HTMLElement | null): string | undefined {
   if (element === null || element === document.body) return undefined;
   if (element.id.length === 0) { focusOwnerSequence += 1; element.id = `shell-focus-${focusOwnerSequence}`; }
@@ -198,7 +207,7 @@ function applyOverlayEffects(effects: ReturnType<typeof reduceOverlayOwner>["eff
   }
 }
 const applicationMenuOwner = bindApplicationMenuOwner({ menu: windowsMenu,
-  canOpen: () => overlayOwner.active === undefined && !nativePickerOpen,
+  canOpen: () => overlayOwner.active === undefined && !nativePickerOpen && !passwordModalOpen(),
   onOpen: () => cancelPendingShellInput(),
   onCommand: (actionId) => dispatchActionId(actionId as ActionId),
 });
@@ -433,7 +442,6 @@ const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
   "This PDF exceeds reader resource limits.",
   "Opening PDF cancelled.",
   "The PDF password was not accepted.",
-  "The PDF password was not accepted after five attempts.",
   "The local PDF renderer could not start.",
   "The PDF operation timed out.",
 ]);
@@ -495,7 +503,7 @@ function commandAvailabilityContext(): ActionRuntimeContext {
     canOpenDocument: !nativeOpenPending && (workspace.snapshot.tabs.some((tab) => !tab.payload.session.snapshot.reader.hasDocument) || canCreateSession),
     canCreateWindow: true,
     tabCount: workspace.snapshot.tabs.length,
-    modalOpen: overlayOwner.active !== undefined,
+    modalOpen: overlayOwner.active !== undefined || passwordModalOpen(),
     updateAvailable: false,
     configExists,
     searchActive: active().session.query.length > 0,
@@ -649,6 +657,18 @@ function createTab(): TabPayload {
   let viewportSyncDocumentGeneration = -1;
   session = new PdfTabSession({
     native,
+    onPassword: (request) => {
+      if (shellDisposing || request.signal.aborted) return Promise.resolve(null);
+      protectedOpenSession = session;
+      applicationMenuOwner.close();
+      const overlay = overlayOwner.active?.id;
+      if (overlay === "theme") closeThemePicker(true);
+      else if (overlay === "commandPalette") closePalette();
+      else if (overlay === "recent") closeFileOpener();
+      else if (overlay !== undefined) releaseOverlay(overlay);
+      cancelPendingShellInput();
+      return passwordPrompt.request(request);
+    },
     printNative: (opened, generation) => new TauriPdfPrintBoundary(opened, generation),
     onPrintProgress: (progress) => {
       if (shellDisposing || workspace === undefined) return;
@@ -677,9 +697,9 @@ function createTab(): TabPayload {
         if (decision.kind === "uncompensatedInvariantFailure") return "displayedAfterUnverifiedMovement";
         return "failedWithoutMovement";
       },
-      navigateToPage: (page) => { if (active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch((error: unknown) => reportPresentationFailure(session, error)); } },
+      navigateToPage: (page) => { if (!passwordModalOpen() && active().session === session) { session.apply({ type: "page.goTo", page }); void session.renderPage(page).catch((error: unknown) => reportPresentationFailure(session, error)); } },
       navigateToDestination: async (page, destination, cause, isActivationCurrent) => {
-        if (active().session !== session) return { kind: "stale" };
+        if (passwordModalOpen() || active().session !== session) return { kind: "stale" };
         try { return await session.navigateToDestination(page, destination, cause, isActivationCurrent); }
         catch (error: unknown) { reportPresentationFailure(session, error); return { kind: "failed" }; }
       },
@@ -714,7 +734,7 @@ function createTab(): TabPayload {
       }
     },
   });
-  const disposeWheelInput = bindReaderWheelInput(host, session, () => active().session === session,
+  const disposeWheelInput = bindReaderWheelInput(host, session, () => !passwordModalOpen() && active().session === session,
     () => { rootKeyboard.syncContext(); render(); },
     (error) => reportPresentationFailure(session, error));
   let viewportFrameRequest: number | undefined;
@@ -897,6 +917,7 @@ function cancelPagePromptOwnership(): void {
 }
 async function activateCurrentTab(focus = false): Promise<void> { const current = active(); await current.session.activate(); render(); if (focus) current.host.focus({ preventScroll: true }); }
 function switchTabNow(id: TabId): Promise<void> {
+  if (passwordModalOpen()) return Promise.resolve();
   const sameTab = id === workspace.activeTabId;
   return performTabActivation(id, {
     activeId: () => workspace.activeTabId,
@@ -910,11 +931,13 @@ function switchTabNow(id: TabId): Promise<void> {
     reportFailure: (payload) => payload.session.reader.setStatus(sameTab ? "Could not activate this tab." : "Could not switch tabs."),
   });
 }
-function switchTab(id: TabId): Promise<void> { return queueWorkspaceActivation(() => switchTabNow(id)); }
+function switchTab(id: TabId): Promise<void> { return passwordModalOpen() ? Promise.resolve() : queueWorkspaceActivation(() => switchTabNow(id)); }
 function switchAdjacentTab(direction: -1 | 1): Promise<void> {
+  if (passwordModalOpen()) return Promise.resolve();
   return queueRelativeTabActivation(direction, queueWorkspaceActivation, (step) => workspace.adjacentId(step), switchTabNow);
 }
 function closeTab(id: TabId): void {
+  if (passwordModalOpen()) return;
   void queueWorkspaceTransition(() => performTabClose(id, {
     activeId: () => workspace.activeTabId,
     cancelPending: cancelPagePromptOwnership,
@@ -933,8 +956,11 @@ interface PendingOpenAdoption {
   readonly payload?: TabPayload;
   readonly priorActiveId?: TabId;
 }
+let cancelledOpenFocus: { readonly requestId: string; readonly element: HTMLElement } | undefined;
 const pendingOpenAdoptions = new Map<string, PendingOpenAdoption>();
 async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
+  if (shellDisposing) throw new Error("OPEN_WINDOW_CLOSING");
+  const priorFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   pendingOpenAdoptions.set(request.requestId, { request });
   try {
     await queueWorkspaceOwnership(() => withOpenAdoptionOwnership({
@@ -962,13 +988,17 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
       pendingOpenAdoptions.set(request.requestId, { request, id, payload, priorActiveId });
       try {
         await adoptWithCommittedPresentation(
-          () => publishActivateAndAdoptPdfTab(render, payload.session, () => payload.session.adopt(request, request.ownerGeneration)),
+          () => publishActivateAndAdoptPdfTab(render, payload.session, async () => {
+            try { return await payload.session.adopt(request, request.ownerGeneration); }
+            finally { if (protectedOpenSession === payload.session) dismissPasswordPrompt(); }
+          }),
           async () => {
             if (staged && !workspace.commitAdoption(id)) throw new Error("ADOPTION_COMMIT_FAILED");
             await activateCurrentTab(true);
           },
         );
       } catch (error) {
+        if (shellDisposing) throw error;
         const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status, error instanceof OpenAdoptionPresentationError ? "presentation" : "adoption");
         if (error instanceof OpenAdoptionPresentationError) {
           const pending = pendingOpenAdoptions.get(request.requestId);
@@ -985,6 +1015,12 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         await activateCurrentTab();
         active().session.reader.setStatus(candidateStatus);
         render();
+        if (candidateStatus === "Opening PDF cancelled.") {
+          const element = priorFocus?.isConnected && priorFocus !== document.body && !priorFocus.closest("[hidden], [inert]")
+            ? priorFocus : active().session.snapshot.reader.hasDocument ? active().host : emptyReaderOpen;
+          element.focus({ preventScroll: true });
+          cancelledOpenFocus = { requestId: request.requestId, element };
+        }
         throw error;
       }
     }));
@@ -997,6 +1033,11 @@ function restoreOpenFocus(terminal: InitiatedTerminal): void {
   if (terminal.tag === "DISPOSED") return;
   if ("requestId" in terminal && terminal.requestId !== undefined && terminal.requestId.length > 0 && pendingOpenAdoptions.has(terminal.requestId)) return;
   const current = active();
+  if ("requestId" in terminal && cancelledOpenFocus?.requestId === terminal.requestId) {
+    cancelledOpenFocus.element.focus({ preventScroll: true });
+    cancelledOpenFocus = undefined;
+    return;
+  }
   if (current.session.snapshot.reader.hasDocument) current.host.focus({ preventScroll: true });
   else emptyReaderOpen.focus({ preventScroll: true });
 }
@@ -1013,6 +1054,7 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
     }
     return;
   }
+  if (cancelledOpenFocus?.requestId === terminal.requestId) cancelledOpenFocus = undefined;
   const pending = pendingOpenAdoptions.get(terminal.requestId);
   if (pending === undefined) return;
   pendingOpenAdoptions.delete(terminal.requestId);
@@ -1058,6 +1100,7 @@ function handleOpenTerminal(terminal: InitiatedTerminal): void {
   }, (error: unknown) => reportOpenInvokeFailure(error));
 }
 const shellOpen = createShellOpenCoordinator({
+  canAdmitOpen: () => !shellDisposing && !passwordModalOpen(),
   listen,
   invoke: async (command, args) => {
     if (command !== "open_pdf_dialog") return invoke(command, args);
@@ -1293,7 +1336,7 @@ function closeFileOpener(): void {
   releaseOverlay("recent");
 }
 function dispatchFileOpenerEntry(): void {
-  if (nativeOpenPending) return;
+  if (nativeOpenPending || passwordModalOpen()) return;
   const row = chooserRows(fileOpenerModel)[fileOpenerModel.activeIndex];
   if (row === undefined) return;
   if (row.kind === "browse") {
@@ -1341,9 +1384,9 @@ function dispatchFileOpenerEntry(): void {
   });
 }
 async function openFileOpener(): Promise<void> {
-  if (nativeOpenPending || overlayOwner.active !== undefined) return;
+  if (nativeOpenPending || overlayOwner.active !== undefined || passwordModalOpen()) return;
   await Promise.all([initialRecentsReady, shellOpen.ready]);
-  if (nativeOpenPending || overlayOwner.active !== undefined) return;
+  if (nativeOpenPending || overlayOwner.active !== undefined || passwordModalOpen()) return;
   fileOpenerModel = createOpenChooser(fileOpenerModel.prepared, fileOpenerModel.generation + 1);
   if (recentStateHealth === "UNAVAILABLE" && fileOpenerModel.prepared.tag === "READY") {
     fileOpenerModel = retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE);
@@ -1370,6 +1413,11 @@ function requestApplicationQuit(beginNative = true, currentWindowOnly = false, c
       else if (ownedOverlay !== undefined) releaseOverlay(ownedOverlay);
       cancelPagePromptOwnership();
       shellDisposing = true;
+      protectedOpenSession?.cancelPasswordOpening();
+      passwordPrompt.dismiss();
+      // Drain the password candidate before rejecting its native open request.
+      // Both paths own cancellation barriers; they must not race the same handle.
+      await protectedOpenSession?.close();
       themeUnlisten?.();
       recentSnapshotUnlisten?.();
       quitUnlisten?.();
@@ -1411,6 +1459,7 @@ void listen("quit-requested", () => { void requestApplicationQuit(false); }).the
   () => undefined,
 );
 function dispatchActionId(id: ActionId): void {
+  if (passwordModalOpen() && id !== "app.quit") return;
   if (id === "history.back") { void active().session.navigateHistoryBack().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
   if (id === "path.showParent" || id === "path.copy") { runPathShortcut(id === "path.showParent" ? "y" : "yy"); return; }
   if (id === "history.forward") { void active().session.navigateHistoryForward().then(render, (error: unknown) => reportPresentationFailure(active().session, error)); return; }
@@ -1517,6 +1566,7 @@ function navigateAdjacentReaderPage(payload: TabPayload, direction: -1 | 1): voi
 }
 
 function dispatch(action: Action): void {
+  if (passwordModalOpen() && action.type !== "application.quit") return;
   const type = action.type;
   if (type === "document.open") { if (nativeOpenPending) return; if (!commandAvailabilityContext().canOpenDocument) { active().session.reader.setStatus("TAB_CAPACITY"); render(); return; } void openFileOpener(); return; }
   if (type === "document.print") {
@@ -1628,6 +1678,7 @@ const rootKeyboard = createRootKeyboardRouter({
 cancelPendingShellInput = rootKeyboard.cancelPending;
 syncPendingShellInput = rootKeyboard.syncContext;
 window.addEventListener("keydown", (event) => {
+  if (passwordModalOpen()) return;
   const target = event.target instanceof Element ? event.target : null;
   if (printProgressControl.containsFocus() && !event.isComposing && event.keyCode !== 229
     && !event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
@@ -1741,6 +1792,7 @@ window.addEventListener("beforeunload", () => {
   quitUnlisten?.();
   windowCloseUnlisten?.();
   shellDisposing = true;
+  passwordPrompt.dispose();
   shellOpen.dispose();
   removedTabTeardown.dispose();
   rootKeyboard.dispose();

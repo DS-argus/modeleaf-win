@@ -25,9 +25,9 @@ export type OpenRequestTerminal = (requestId: string, outcome: OpenRequestTermin
 export type OpenRequestUnlisten = () => void;
 export type OpenRequestListener = (event: string, handler: (event: { readonly payload: unknown }) => void) => Promise<OpenRequestUnlisten> | OpenRequestUnlisten;
 export type OpenRequestInvoke = (command: string, args: { readonly requestId?: string; readonly failureId?: string }) => Promise<unknown>;
-export interface OpenRequestClientOptions { readonly listen: OpenRequestListener; readonly invoke: OpenRequestInvoke; readonly adopt: (request: OpenRequestAdoption) => Promise<void> | void; readonly onFailure?: (tag: OpenFailureNotice["tag"]) => void; readonly onTerminal?: OpenRequestTerminal; }
+export interface OpenRequestClientOptions { readonly listen: OpenRequestListener; readonly invoke: OpenRequestInvoke; readonly adopt: (request: OpenRequestAdoption) => Promise<void> | void; readonly onFailure?: (tag: OpenFailureNotice["tag"]) => void; readonly onTerminal?: OpenRequestTerminal; readonly canAdmitOpen?: () => boolean; }
 export interface OpenRequestClient { readonly ready: Promise<void>; readonly admitNotice: (notice: unknown, onTerminal?: OpenRequestTerminal, onProgress?: OpenRequestProgressCallback) => void; readonly retryPending: () => void; readonly dispose: () => void; }
-type Request = { state: "queued" | "ack" | "reject" | "done"; terminal?: OpenRequestTerminal; progress?: OpenRequestProgressCallback; outcome?: OpenRequestTerminalOutcome; descriptor?: ClaimedOpenRequest; baseReason?: "CLAIM_INVALID" | "ADOPTION_FAILED" | "OWNERSHIP_CAPACITY" };
+type Request = { state: "queued" | "ack" | "reject" | "done"; terminal?: OpenRequestTerminal; progress?: OpenRequestProgressCallback; outcome?: OpenRequestTerminalOutcome; descriptor?: ClaimedOpenRequest; baseReason?: "CLAIM_INVALID" | "ADOPTION_FAILED" | "OWNERSHIP_CAPACITY"; rejecting?: boolean; blocked?: boolean };
 type Failure = { state: "queued" | "ack" | "done"; tag: OpenFailureNotice["tag"]; published: boolean };
 type Ingress = { readonly tag: "OPEN_REQUEST"; readonly requestId: string } | { readonly tag: "OPEN_FAILURE"; readonly failureId: string; readonly failureTag: OpenFailureNotice["tag"] };
 const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -70,30 +70,71 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
   const failures = new Map<string, Failure>();
   const terminals = new Map<string, OpenRequestTerminal>();
   const progresses = new Map<string, OpenRequestProgressCallback>();
+  let blockedEnumerationQueued = false;
+  let blockedEnumerationDirty = false;
+  let enumerationTail: Promise<void> = Promise.resolve();
+  const blockedRequestIds = new Set<string>();
+  const explicitAdmissions = new Set<string>();
   const fifo: Ingress[] = [];
   let retryPending: () => void;
   const enqueue = (task: () => Promise<void>) => { tail = tail.then(task, task); void tail.catch(() => undefined); };
+  const admissionAllowed = (): boolean => { if (options.canAdmitOpen === undefined) return true; try { return options.canAdmitOpen(); } catch { return false; } };
   const clearTimer = () => { if (timer !== undefined) { clearTimeout(timer); timer = undefined; } };
-  const scheduleRetry = () => { if (!active) return; clearTimer(); const delay = retryDelay; retryDelay = Math.min(retryDelay * 2, RETRY_MAX); timer = setTimeout(() => { timer = undefined; retryPending(); }, delay); };
-  const scheduleReconcile = () => { if (!active || timer !== undefined) return; timer = setTimeout(() => { timer = undefined; retryPending(); }, RECONCILE_INTERVAL); };
+  let wakePending: () => void;
+  const scheduleRetry = () => { if (!active) return; clearTimer(); const delay = retryDelay; retryDelay = Math.min(retryDelay * 2, RETRY_MAX); timer = setTimeout(() => { timer = undefined; wakePending(); }, delay); };
+  let finishBlockedRejection: (id: string, item: Request) => void;
+  let retryBlockedRejections: () => void;
+  const scheduleReconcile = () => { if (!active || timer !== undefined) return; timer = setTimeout(() => { timer = undefined; wakePending(); }, RECONCILE_INTERVAL); };
   const resetRetry = () => { retryDelay = RETRY_INITIAL; };
   const makeRoom = <T extends { state: string }>(items: Map<string, T>): boolean => { if (items.size < HISTORY_LIMIT) return true; const completedId = Array.from(items).find(([, item]) => item.state === "done")?.[0]; if (completedId === undefined) return false; items.delete(completedId); return true; };
   const rememberTerminal = (id: string, callback: OpenRequestTerminal) => { if (terminals.has(id)) return; if (terminals.size >= HISTORY_LIMIT) terminals.delete(terminals.keys().next().value as string); terminals.set(id, callback); };
+  const rememberBlockedEvent = (id: string): boolean => { if (blockedRequestIds.has(id)) return false; if (blockedRequestIds.size >= HISTORY_LIMIT) blockedRequestIds.delete(blockedRequestIds.values().next().value as string); blockedRequestIds.add(id); return true; };
   const rememberProgress = (id: string, callback: OpenRequestProgressCallback) => { if (progresses.has(id)) return; if (progresses.size >= HISTORY_LIMIT) progresses.delete(progresses.keys().next().value as string); progresses.set(id, callback); };
   const completeRequest = (id: string, item: Request, outcome: OpenRequestTerminalOutcome) => {
     if (item.state === "done") return;
     item.state = "done";
     item.outcome = outcome;
+    if (item.blocked) blockedRequestIds.delete(id);
     const terminal = item.terminal;
     delete item.terminal;
     if (terminal !== undefined) { try { terminal(id, outcome); } catch { /* Terminal cleanup must not disrupt acknowledgement. */ } }
     if (options.onTerminal !== undefined && options.onTerminal !== terminal) { try { options.onTerminal(id, outcome); } catch { /* Global terminal ownership is isolated. */ } }
   };
-  const rejectDisposedRequest = (id: string, item: Request): void => {
+  const rejectRequest = (id: string, item: Request, baseReason: "CLAIM_INVALID" | "REQUEST_EXPIRED"): void => {
+    if (item.state === "done" || item.rejecting) return;
+    item.rejecting = true;
+    const complete = (cleanup: "NATIVE_COMPLETE" | "TRANSFERRED_TRUSTED_DESCRIPTOR" | "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR"): void => {
+      item.rejecting = false;
+      completeRequest(id, item, { tag: "REJECTED", phase: "REJECT", baseReason, cleanup });
+    };
     void options.invoke("reject_open_request", { requestId: id }).then(
-      () => completeRequest(id, item, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" }),
-      () => completeRequest(id, item, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: item.descriptor === undefined ? "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" : "TRANSFERRED_TRUSTED_DESCRIPTOR" }),
+      () => complete("NATIVE_COMPLETE"),
+      () => complete(item.descriptor === undefined ? "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" : "TRANSFERRED_TRUSTED_DESCRIPTOR"),
     );
+  };
+  const rejectDisposedRequest = (id: string, item: Request): void => { rejectRequest(id, item, "REQUEST_EXPIRED"); };
+  const rejectBlockedRequest = (id: string): void => {
+    const existing = requests.get(id);
+    if (existing !== undefined) {
+      if (existing.blocked && existing.state === "reject") finishBlockedRejection(id, existing);
+      return;
+    }
+    blockedRequestIds.add(id);
+    if (!makeRoom(requests)) { scheduleReconcile(); return; }
+    const terminal = terminals.get(id);
+    const progress = progresses.get(id);
+    terminals.delete(id);
+    progresses.delete(id);
+    explicitAdmissions.delete(id);
+    const item: Request = {
+      state: "reject",
+      baseReason: "CLAIM_INVALID",
+      blocked: true,
+      ...(terminal === undefined ? {} : { terminal }),
+      ...(progress === undefined ? {} : { progress }),
+    };
+    requests.set(id, item);
+    finishBlockedRejection(id, item);
   };
   const finishFailure = async (id: string): Promise<boolean> => {
     const item = failures.get(id);
@@ -124,6 +165,22 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
       }
       scheduleRetry();
       return false;
+    }
+  };
+  finishBlockedRejection = (id: string, item: Request): void => {
+    if (item.state === "done" || item.rejecting) return;
+    item.rejecting = true;
+    void finishRequest(id, item).then((settled) => {
+      item.rejecting = false;
+      if (!settled && !active) completeRequest(id, item, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: item.descriptor === undefined ? "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" : "TRANSFERRED_TRUSTED_DESCRIPTOR" });
+    }, () => {
+      item.rejecting = false;
+      if (!active) completeRequest(id, item, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: item.descriptor === undefined ? "NATIVE_LIFECYCLE_ONLY_NO_DESCRIPTOR" : "TRANSFERRED_TRUSTED_DESCRIPTOR" });
+    });
+  };
+  retryBlockedRejections = (): void => {
+    for (const [id, item] of requests) {
+      if (item.blocked && item.state === "reject") finishBlockedRejection(id, item);
     }
   };
   const processRequest = async (id: string): Promise<boolean> => {
@@ -169,12 +226,13 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
   const admitIngress = (item: Ingress) => {
     if (fifo.length >= INGRESS_LIMIT) { scheduleReconcile(); return; }
     if (item.tag === "OPEN_REQUEST") {
-      if (requests.has(item.requestId)) return;
+      if (requests.has(item.requestId)) { explicitAdmissions.delete(item.requestId); return; }
       if (!makeRoom(requests)) { scheduleReconcile(); return; }
       const terminal = terminals.get(item.requestId);
       const progress = progresses.get(item.requestId);
       terminals.delete(item.requestId);
       progresses.delete(item.requestId);
+      explicitAdmissions.delete(item.requestId);
       requests.set(item.requestId, {
         state: "queued",
         ...(terminal === undefined ? {} : { terminal }),
@@ -187,10 +245,11 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
     }
     fifo.push(item);
   };
-  const enumerate = async (): Promise<boolean> => {
+  const enumerate = async (blockedAtStart = false): Promise<boolean> => {
     try {
       const pending = ingressList(await options.invoke("list_pending_open_ingress", {}));
       if (pending === undefined) return false;
+      retryBlockedRejections();
       if (!active) {
         for (const ingress of pending) {
           if (ingress.tag !== "OPEN_REQUEST" || requests.has(ingress.requestId)) continue;
@@ -200,7 +259,21 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
         }
         return true;
       }
-      for (const ingress of pending) admitIngress(ingress);
+      const blocked = blockedAtStart || !admissionAllowed();
+      for (const ingress of pending) {
+        if (ingress.tag !== "OPEN_REQUEST") { admitIngress(ingress); continue; }
+        const existing = requests.get(ingress.requestId);
+        if (existing !== undefined) {
+          if (existing.blocked && existing.state === "reject") finishBlockedRejection(ingress.requestId, existing);
+          else blockedRequestIds.delete(ingress.requestId);
+          continue;
+        }
+        if (!explicitAdmissions.has(ingress.requestId) && (blocked || blockedRequestIds.has(ingress.requestId))) {
+          rejectBlockedRequest(ingress.requestId);
+          continue;
+        }
+        admitIngress(ingress);
+      }
       return true;
     } catch { return false; }
   };
@@ -214,7 +287,44 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
       fifo.shift();
     }
   };
-  const registerListeners = async (): Promise<boolean> => { listenersAttempted = true; let requestUnlisten: OpenRequestUnlisten | undefined; let failureUnlisten: OpenRequestUnlisten | undefined; try { requestUnlisten = await options.listen(OPEN_REQUEST_EVENT, () => retryPending()); failureUnlisten = await options.listen(OPEN_FAILURE_EVENT, () => retryPending()); if (!active) { requestUnlisten(); failureUnlisten(); return false; } unlistenRequest = requestUnlisten; unlistenFailure = failureUnlisten; listenersReady = true; resetRetry(); return true; } catch { requestUnlisten?.(); failureUnlisten?.(); return false; } };
+  const queueEnumeration = (blockedAtStart: boolean): Promise<boolean> => {
+    const next = enumerationTail.then(() => enumerate(blockedAtStart), () => enumerate(blockedAtStart));
+    enumerationTail = next.then(() => undefined, () => undefined);
+    return next;
+  };
+  const runBlockedEnumeration = (): void => {
+    if (!active) return;
+    if (blockedEnumerationQueued) { blockedEnumerationDirty = true; return; }
+    blockedEnumerationQueued = true;
+    void queueEnumeration(true).then((complete) => {
+      blockedEnumerationQueued = false;
+      if (!active) return;
+      if (blockedEnumerationDirty) {
+        blockedEnumerationDirty = false;
+        runBlockedEnumeration();
+        return;
+      }
+      if (complete) scheduleReconcile(); else scheduleRetry();
+    }, () => {
+      blockedEnumerationQueued = false;
+      if (!active) return;
+      if (blockedEnumerationDirty) { blockedEnumerationDirty = false; runBlockedEnumeration(); return; }
+      scheduleRetry();
+    });
+  };
+  const handleRequestEvent = (event: { readonly payload: unknown }): void => {
+    if (!active) return;
+    const item = notice(event.payload);
+    if (!admissionAllowed()) {
+      const remembered = item === undefined ? true : rememberBlockedEvent(item.requestId);
+      if (blockedEnumerationQueued && remembered) { blockedEnumerationDirty = true; return; }
+      if (blockedEnumerationQueued) return;
+      runBlockedEnumeration();
+      return;
+    }
+    retryPending();
+  };
+  const registerListeners = async (): Promise<boolean> => { listenersAttempted = true; let requestUnlisten: OpenRequestUnlisten | undefined; let failureUnlisten: OpenRequestUnlisten | undefined; try { requestUnlisten = await options.listen(OPEN_REQUEST_EVENT, handleRequestEvent); failureUnlisten = await options.listen(OPEN_FAILURE_EVENT, () => wakePending()); if (!active) { requestUnlisten(); failureUnlisten(); return false; } unlistenRequest = requestUnlisten; unlistenFailure = failureUnlisten; listenersReady = true; resetRetry(); return true; } catch { requestUnlisten?.(); failureUnlisten?.(); return false; } };
   const admitNotice = (value: unknown, onTerminal?: OpenRequestTerminal, onProgress?: OpenRequestProgressCallback) => {
     const item = notice(value);
     if (!active || item === undefined) return;
@@ -228,10 +338,34 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
     } else {
       if (onTerminal !== undefined) rememberTerminal(item.requestId, onTerminal);
       if (onProgress !== undefined) rememberProgress(item.requestId, onProgress);
+      if (!admissionAllowed()) {
+        rejectBlockedRequest(item.requestId);
+        return;
+      }
+      explicitAdmissions.add(item.requestId);
+      blockedRequestIds.delete(item.requestId);
     }
     retryPending();
   };
-  retryPending = () => { if (!active || reconcileQueued) return; reconcileQueued = true; enqueue(async () => { reconcileQueued = false; if (!active) return; const shouldRegister = !listenersReady && !listenersAttempted; const complete = await enumerate(); await drain(); const listenerComplete = shouldRegister ? await registerListeners() : listenersReady; if (complete) scheduleReconcile(); else scheduleRetry(); if (complete || listenerComplete) { resolveReady?.(); resolveReady = undefined; } }); };
+  retryPending = () => {
+    if (!active) return;
+    if (!admissionAllowed() && listenersAttempted) { runBlockedEnumeration(); return; }
+    if (reconcileQueued) return;
+    reconcileQueued = true;
+    enqueue(async () => {
+      reconcileQueued = false;
+      if (!active) return;
+      const shouldRegister = !listenersReady && !listenersAttempted;
+      const listenerComplete = shouldRegister ? await registerListeners() : listenersReady;
+      const complete = await queueEnumeration(!admissionAllowed());
+      // Keep reconciliation alive while a first/startup adoption waits for input.
+      if (complete) scheduleReconcile(); else scheduleRetry();
+      await drain();
+      if (complete) scheduleReconcile(); else scheduleRetry();
+      if (complete || listenerComplete) { resolveReady?.(); resolveReady = undefined; }
+    });
+  };
+  wakePending = () => { if (!active) return; if (!admissionAllowed()) runBlockedEnumeration(); else retryPending(); };
   retryPending();
   return { ready, admitNotice, retryPending, dispose: () => {
     if (!active) return;
@@ -250,5 +384,7 @@ export function createOpenRequestClient(options: OpenRequestClientOptions): Open
     }
     terminals.clear();
     progresses.clear();
+    explicitAdmissions.clear();
+    blockedRequestIds.clear();
   } };
 }

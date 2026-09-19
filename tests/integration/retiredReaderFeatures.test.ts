@@ -31,12 +31,13 @@ const rootCaptureStart = main.indexOf(rootCapturePrefix);
 const rootCaptureEnd = main.indexOf("}, { capture: true });", rootCaptureStart);
 if (rootCaptureStart < 0 || rootCaptureEnd < 0) throw new Error("Production root keyboard capture is missing");
 const rootCaptureBody = main.slice(rootCaptureStart + rootCapturePrefix.length, rootCaptureEnd);
-const routeRootKey = new Function("event", "rootKeyboard", "isEditableTarget", "isOverlayOwnedKey", "printProgressControl", rootCaptureBody) as (
+const routeRootKey = new Function("event", "rootKeyboard", "isEditableTarget", "isOverlayOwnedKey", "printProgressControl", "passwordModalOpen", rootCaptureBody) as (
   event: KeyboardEvent,
   rootKeyboard: RootKeyboardRouter,
   editableGuard: typeof isEditableTarget,
   overlayGuard: (event: KeyboardEvent, target: Element | null) => boolean,
   printControl: PrintProgressControl,
+  passwordModalOpen: () => boolean,
 ) => void;
 
 const runtime: ActionRuntimeContext = {
@@ -45,7 +46,7 @@ const runtime: ActionRuntimeContext = {
   searchActive: false, canHistoryBack: true, canHistoryForward: true,
 };
 
-function installRootCapture(owner: { readonly active?: { readonly id: string } } = {}) {
+function installRootCapture(owner: { readonly active?: { readonly id: string } } = {}, passwordModalOpen: () => boolean = () => false) {
   const printHost = document.createElement("footer");
   document.body.append(printHost);
   const onCancel = vi.fn();
@@ -62,6 +63,7 @@ function installRootCapture(owner: { readonly active?: { readonly id: string } }
     isEditableTarget,
     (keyEvent, target) => isOverlayOwnedKey(keyEvent, target, owner, overlayOwnsKey),
     printProgressControl,
+    passwordModalOpen,
   );
   window.addEventListener("keydown", capture, true);
   return {
@@ -77,6 +79,23 @@ function installRootCapture(owner: { readonly active?: { readonly id: string } }
 }
 
 describe("Retired reader features", () => {
+  it("leaves root keyboard inert while the password modal owns the window", () => {
+    const target = document.createElement("button");
+    document.body.append(target);
+    const reachedTarget = vi.fn();
+    target.addEventListener("keydown", reachedTarget);
+    const root = installRootCapture({}, () => true);
+    try {
+      const event = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+      expect(target.dispatchEvent(event)).toBe(true);
+      expect(event.defaultPrevented).toBe(false);
+      expect(reachedTarget).toHaveBeenCalledOnce();
+      expect(root.onDispatch).not.toHaveBeenCalled();
+    } finally {
+      root.dispose();
+      target.remove();
+    }
+  });
   it("removes TOC, hints, and destination indicators without removing ordinary reader behavior", () => {
     for (const id of ["toc.toggle", "toc.scrollDown", "toc.scrollUp", "link.hint", "indicator.picker"]) expect(ACTION_IDS).not.toContain(id);
     expect(ACTION_IDS).toEqual(expect.arrayContaining(["history.back", "history.forward", "search.prompt"]));

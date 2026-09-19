@@ -42,6 +42,7 @@ export interface PdfTabSnapshot {
 
 export interface PdfTabSessionOptions {
   readonly printNative?: PdfReaderControllerOptions["printNative"];
+  readonly onPassword?: PdfReaderControllerOptions["onPassword"];
   readonly onPrintProgress?: (progress: PdfPrintProgress | undefined) => void;
   readonly native: ReaderNativeBoundary;
   readonly pdf: PdfBoundary;
@@ -159,6 +160,7 @@ export class PdfTabSession {
       native: options.native,
       ...(options.printNative === undefined ? {} : { printNative: options.printNative }),
       ...(options.onPrintProgress === undefined ? {} : { onPrintProgress: options.onPrintProgress }),
+      ...(options.onPassword === undefined ? {} : { onPassword: options.onPassword }),
       pdf: options.pdf,
       resources: options.resources,
       canvasHost: options.canvasHost,
@@ -225,6 +227,7 @@ export class PdfTabSession {
     };
   }
 
+  public cancelPasswordOpening(): void { this.pdfReader.cancelPasswordOpening(); }
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
     this.cancelWheelZoom();

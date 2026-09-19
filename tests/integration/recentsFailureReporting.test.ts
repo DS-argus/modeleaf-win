@@ -73,6 +73,7 @@ function createRecentLifecycleHarness(
     listRecentDocuments,
     invoke,
     nativeOpenPending: false,
+    passwordModalOpen: () => false,
     fileOpenerInput,
     claimOverlay,
     active: () => ({ session: { reader: { setStatus } } }),
@@ -121,6 +122,7 @@ function createOpenFailureHarness(rejection: unknown) {
     openFailurePhase,
     openFailureStatus,
     nativeOpenPending: false,
+    passwordModalOpen: () => false,
     fileOpenerModel: model,
     chooserRows,
     closeFileOpener: vi.fn(),
@@ -177,6 +179,7 @@ describe("recent failure reporting", () => {
     const claimOverlay = vi.fn((id: string) => { overlayOwner.active = { id }; });
     const open = evaluate<() => Promise<void>>(source, {
       nativeOpenPending: false,
+      passwordModalOpen: () => false,
       overlayOwner,
       initialRecentsReady: Promise.resolve(),
       shellOpen: { ready },

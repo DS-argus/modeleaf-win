@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "../../../src/application/OpenAdoptionOwnership";
 import { readFileSync } from "node:fs";
@@ -118,6 +119,8 @@ describe("OpenAdoptionOwnership", () => {
       publishActivateAndAdoptPdfTab, rollbackOpenAdoptionOwnership,
       activateCurrentTab: async () => { await active().session.activate(); render(); },
       shellDisposing: false, reportOpenInvokeFailure: errors,
+      protectedOpenSession: undefined, dismissPasswordPrompt: vi.fn(),
+      cancelledOpenFocus: undefined,
     };
     const names = Object.keys(dependencies);
     const api = new Function(...names, code + ";return { adoptRequest, handleOpenTerminal, pendingOpenAdoptions };")(...Object.values(dependencies)) as {

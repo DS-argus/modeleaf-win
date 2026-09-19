@@ -60,7 +60,8 @@ const createProductionReaderHost = new Function(
 
 const productionFragments = [
   sourceFragment("function isNativeCompositionEvent(", "function isOverlayOwnedKey(", "native composition guard"),
-  sourceFragment('const SHELL_WINDOW_ID = "current-window";', "const applicationMenuOwner =", "overlay focus prelude"),
+  sourceFragment('const SHELL_WINDOW_ID = "current-window";', "let protectedOpenSession", "overlay focus prelude"),
+  sourceFragment("function focusTargetId(", "const applicationMenuOwner =", "overlay focus helpers"),
   sourceFragment("function claimOverlay(", "const paletteList =", "overlay open/close functions"),
   sourceFragment("function restoreOpenFocus(", "function handleOpenTerminal(", "native terminal focus restoration"),
   sourceFragment("const shellOpen = createShellOpenCoordinator({", 'emptyReaderOpen.addEventListener("click"', "shell open coordinator initializer"),
@@ -121,6 +122,7 @@ interface ChooserHarness {
   readonly reportFailure: ReturnType<typeof vi.fn>;
   readonly invoke: ReturnType<typeof vi.fn>;
   readonly nativeGates: Deferred<NativeDialogOutcome>[];
+  readonly setPasswordModalOpen: (open: boolean) => void;
   readonly boundaries: NativeBoundarySnapshot[];
   readonly openChooser: () => Promise<void>;
   readonly browseButton: () => HTMLButtonElement;
@@ -184,6 +186,8 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
   (hasDocument ? host : emptyOpen).focus();
 
   const nativeGates: Deferred<NativeDialogOutcome>[] = [];
+  let passwordOpen = false;
+  const passwordModalOpen = () => passwordOpen;
   const boundaries: NativeBoundarySnapshot[] = [];
   const invoke = vi.fn(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
     if (command === "list_pending_open_ingress") return [];
@@ -224,6 +228,7 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
     selectChooserIndex,
     adoptChooserSnapshot,
     retainChooserFailure,
+    passwordModalOpen,
     commandPaletteKeyAction,
     isPaletteClearShortcut,
     createOverlayOwner,
@@ -260,6 +265,7 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
     shellDisposing: false,
     reportOpenInvokeFailure: reportFailure,
     pendingOpenAdoptions: new Map(),
+    cancelledOpenFocus: undefined,
     adoptRequest: () => { throw new Error("Adoption is outside these native-terminal cases"); },
     handleOpenTerminal: vi.fn(),
     listen,
@@ -295,6 +301,7 @@ return {
     host,
     reportFailure,
     invoke,
+    setPasswordModalOpen: (open) => { passwordOpen = open; },
     nativeGates,
     boundaries,
     openChooser: async () => {
@@ -338,6 +345,24 @@ function keyboard(type: "keydown" | "keyup", options: KeyOptions): KeyboardEvent
 const CANCELLED: NativeDialogOutcome = { tag: "CANCELLED" };
 
 describe("Open chooser production input wiring", () => {
+  it("blocks chooser opening and dispatch while the password modal is active", async () => {
+    const subject = await createHarness();
+    try {
+      subject.setPasswordModalOpen(true);
+      await subject.api.openFileOpener();
+      expect(subject.dialog.hasAttribute("open")).toBe(false);
+      expect(subject.commandCalls("open_pdf_dialog")).toHaveLength(0);
+
+      subject.setPasswordModalOpen(false);
+      await subject.openChooser();
+      subject.setPasswordModalOpen(true);
+      subject.browseButton().click();
+      expect(subject.commandCalls("open_pdf_dialog")).toHaveLength(0);
+      expect(subject.dialog.hasAttribute("open")).toBe(true);
+    } finally {
+      await subject.cleanup();
+    }
+  });
   it("closes and restores empty-state focus before filter Enter invokes native exactly once, without waiting for keyup", async () => {
     const subject = await createHarness();
     try {

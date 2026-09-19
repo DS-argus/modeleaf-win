@@ -216,7 +216,7 @@ kbd {
 }
 
 /* Overlay surfaces consume the same semantic roles in every theme. */
-.prompt, #search-dialog, .mac-overlay {
+.prompt, #search-dialog, .mac-overlay, .password-prompt {
   --overlay-panel-alpha: 85%;
   --overlay-contrast: var(--theme-contrast);
   --overlay-text: color-mix(in srgb, var(--theme-foreground) 40%, var(--overlay-contrast));
@@ -260,6 +260,34 @@ dialog {
 dialog::backdrop { background: rgb(7 8 14 / 44%); }
 dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .dialog-hint { margin: 14px 0 0; color: var(--theme-muted-text); font-size: 12px; }
+.password-prompt {
+  width: min(280px, calc(100vw - 32px));
+  margin: auto;
+  padding: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--overlay-text);
+}
+.password-prompt form { display: grid; gap: 8px; margin: 0; }
+.password-prompt label { font-weight: 600; }
+.password-prompt input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 7px;
+  color: var(--overlay-text);
+  font: inherit;
+  background: var(--theme-active-tab);
+  border: 1px solid var(--theme-border);
+  border-radius: 4px;
+}
+.password-prompt input:focus-visible { outline: 2px solid var(--overlay-focus); outline-offset: 1px; }
+#password-input::-ms-reveal { display: none; }
+.password-prompt-error { margin: 0; color: var(--theme-error); font-size: 0.875rem; }
+.password-prompt-actions { display: flex; justify-content: flex-end; gap: 6px; margin: 2px 0 0; padding: 0; }
+.password-prompt-actions button { padding: 4px 6px; font: inherit; font-size: 0.75rem; line-height: 1.25; color: var(--overlay-text); background: transparent; border: 0; border-radius: 4px; }
+.password-prompt-actions button:not(:disabled):hover { background: color-mix(in srgb, var(--theme-accent) 12%, transparent); }
+.password-prompt-actions button:focus-visible { outline: 2px solid var(--overlay-focus); outline-offset: 2px; }
+.password-prompt-actions button:disabled { cursor: not-allowed; opacity: 0.65; }
 #search-dialog {
   position: fixed;
   background: color-mix(in srgb, var(--theme-inactive-tab) var(--overlay-panel-alpha), transparent);
@@ -586,7 +614,7 @@ kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
   .help-group h2 { border-color: CanvasText; }
   .command-palette-entry[aria-selected="true"] .command-palette-entry-label { color: HighlightText; }
   .command-palette-entry[aria-selected="true"] :is(.command-palette-entry-shortcut, .command-palette-entry-reason) { color: HighlightText; }
-  .prompt, #search-dialog, .mac-overlay { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-secondary-accent: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
+  .prompt, #search-dialog, .mac-overlay, .password-prompt { --overlay-text: CanvasText; --overlay-muted: CanvasText; --overlay-secondary-accent: CanvasText; --overlay-accent: CanvasText; --overlay-focus: Highlight; }
   .mac-overlay :is(.overlay-list-entry[aria-selected="true"], .theme-option[aria-checked="true"]) { color: HighlightText; background: Highlight; box-shadow: none; }
   .windows-menu summary:hover, .windows-menu details[open] > summary,
   .windows-menu-commands button:hover:not(:disabled), .windows-menu-commands button:focus-visible { background: Highlight; color: HighlightText; }
@@ -611,6 +639,11 @@ kbd { color: var(--theme-foreground); background: var(--theme-inactive-tab); }
   .theme-option, .workspace-tab, .workspace-tab-close, #theme-button { forced-color-adjust: auto; border: 1px solid CanvasText; }
   .workspace-tab:focus-visible, .workspace-tab-close:focus-visible, .theme-option:focus-visible, #theme-button:focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
   .mac-overlay { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; backdrop-filter: none; }
+  .password-prompt, .password-prompt input { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; }
+  .password-prompt-error { color: CanvasText; }
+  .password-prompt-actions button { color: ButtonText; background: transparent; }
+  .password-prompt-actions button:disabled { color: GrayText; opacity: 1; }
+  .password-prompt-actions button:not(:disabled):hover { color: HighlightText; background: Highlight; }
   #search-dialog { color: CanvasText; background: Canvas; border-color: CanvasText; box-shadow: none; forced-color-adjust: none; }
   #search-dialog input { color: CanvasText; }
   #search-dialog input::placeholder, .search-prefix, .search-footer, .search-footer kbd { color: CanvasText; }

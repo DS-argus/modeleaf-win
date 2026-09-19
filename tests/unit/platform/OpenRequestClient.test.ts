@@ -288,4 +288,142 @@ describe("OpenRequestClient", () => {
     expect(invoke).toHaveBeenCalledWith("reject_open_request", { requestId });
     expect(terminal).toHaveBeenCalledWith(requestId, { tag: "REJECTED", phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" });
   });
+  it("rejects new event ingress while admission is blocked without replaying it", async () => {
+    const events = listenerHarness();
+    const activeId = opaque("f");
+    const blockedId = opaque("0");
+    let pending: unknown[] = [];
+    let allowed = true;
+    let releaseAdoption!: () => void;
+    const adoption = new Promise<void>((resolve) => { releaseAdoption = resolve; });
+    const adopted: string[] = [];
+    const invoke = vi.fn(async (command: string, args: { requestId?: string }) => {
+      if (command === "list_pending_open_ingress") return pending;
+      if (command === "claim_open_request") return claim();
+      return undefined;
+    });
+    const adopt = vi.fn((entry: OpenRequestAdoption) => {
+      adopted.push(entry.requestId);
+      return entry.requestId === activeId ? adoption : undefined;
+    });
+    const client = createOpenRequestClient({ listen: events.listen, invoke, adopt, canAdmitOpen: () => allowed });
+    await client.ready;
+    pending = [request(activeId)];
+    client.admitNotice({ requestId: activeId });
+    await waitFor(() => adopted.includes(activeId));
+    allowed = false;
+    pending = [request(activeId), request(blockedId)];
+    events.emitRequest({ requestId: blockedId });
+    await waitFor(() => invoke.mock.calls.filter(([command, args]) => command === "reject_open_request" && args.requestId === blockedId).length === 1);
+    expect(adopted).toEqual([activeId]);
+    allowed = true;
+    releaseAdoption();
+    await waitFor(() => invoke.mock.calls.some(([command, args]) => command === "ack_open_request" && args.requestId === activeId));
+    events.emitRequest({ requestId: blockedId });
+    await settle();
+    expect(adopted).toEqual([activeId]);
+    expect(invoke.mock.calls.filter(([command, args]) => command === "reject_open_request" && args.requestId === blockedId)).toHaveLength(1);
+    client.dispose();
+  });
+
+  it("keeps event ingress flowing while admission is allowed", async () => {
+    const events = listenerHarness();
+    const requestId = opaque("1");
+    let pending: unknown[] = [];
+    const adopted: string[] = [];
+    const invoke = vi.fn(async (command: string) => {
+      if (command === "list_pending_open_ingress") return pending;
+      if (command === "claim_open_request") return claim();
+      return undefined;
+    });
+    const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: (entry) => { adopted.push(entry.requestId); }, canAdmitOpen: () => true });
+    await client.ready;
+    pending = [request(requestId)];
+    events.emitRequest({ requestId });
+    await waitFor(() => adopted.includes(requestId));
+    await waitFor(() => invoke.mock.calls.some(([command]) => command === "ack_open_request"));
+    expect(invoke.mock.calls.some(([command]) => command === "ack_open_request")).toBe(true);
+    pending = [];
+    client.dispose();
+  });
+  it.each(["event", "reconciliation"])("rejects new startup-modal ingress through %s without waiting for adoption", async (delivery) => {
+    const events = listenerHarness();
+    const activeId = opaque("2");
+    const blockedId = opaque("3");
+    let pending: unknown[] = [request(activeId)];
+    let allowed = true;
+    let releaseAdoption!: () => void;
+    const adoption = new Promise<void>((resolve) => { releaseAdoption = resolve; });
+    const adopted: string[] = [];
+    const invoke = vi.fn(async (command: string, _args: { requestId?: string; failureId?: string }) => {
+      if (command === "list_pending_open_ingress") return pending;
+      if (command === "claim_open_request") return claim();
+      return undefined;
+    });
+    const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: (entry) => { adopted.push(entry.requestId); return adoption; }, canAdmitOpen: () => allowed });
+    await waitFor(() => adopted.includes(activeId));
+    allowed = false;
+    pending = [request(activeId), request(blockedId)];
+    if (delivery === "event") events.emitRequest({ requestId: blockedId });
+    else await new Promise<void>((resolve) => setTimeout(resolve, 1_100));
+    await waitFor(() => invoke.mock.calls.filter(([command, args]) => command === "reject_open_request" && args.requestId === blockedId).length === 1);
+    expect(adopted).toEqual([activeId]);
+    allowed = true;
+    releaseAdoption();
+    client.dispose();
+  });
+
+  it("repeats a blocked enumeration after an event arrives during a slow snapshot", async () => {
+    const events = listenerHarness();
+    const firstEventId = opaque("4");
+    const blockedId = opaque("5");
+    let pending: unknown[] = [];
+    let allowed = true;
+    let releaseSnapshot!: (value: unknown) => void;
+    const slowSnapshot = new Promise<unknown>((resolve) => { releaseSnapshot = resolve; });
+    let listCalls = 0;
+    const invoke = vi.fn(async (command: string, _args: { requestId?: string; failureId?: string }) => {
+      if (command === "list_pending_open_ingress") {
+        listCalls += 1;
+        if (listCalls === 2) return slowSnapshot;
+        return pending;
+      }
+      return command === "claim_open_request" ? claim() : undefined;
+    });
+    const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: vi.fn(), canAdmitOpen: () => allowed });
+    await client.ready;
+    allowed = false;
+    events.emitRequest({ requestId: firstEventId });
+    await waitFor(() => listCalls === 2);
+    pending = [request(blockedId)];
+    events.emitRequest({ requestId: blockedId });
+    allowed = true;
+    releaseSnapshot([]);
+    await waitFor(() => invoke.mock.calls.filter(([command, args]) => command === "reject_open_request" && args.requestId === blockedId).length === 1);
+    expect(invoke.mock.calls.some(([command, args]) => command === "claim_open_request" && args.requestId === blockedId)).toBe(false);
+    client.dispose();
+  });
+
+  it("retries blocked rejection failures without adopting the retained request", async () => {
+    const events = listenerHarness();
+    const blockedId = opaque("6");
+    let allowed = false;
+    let pending: unknown[] = [];
+    let rejectAttempts = 0;
+    const terminal = vi.fn();
+    const invoke = vi.fn(async (command: string, args: { requestId?: string }) => {
+      if (command === "list_pending_open_ingress") return pending;
+      if (command === "reject_open_request" && args.requestId === blockedId && rejectAttempts++ === 0) throw new Error("TRANSIENT_REJECT");
+      return undefined;
+    });
+    const client = createOpenRequestClient({ listen: events.listen, invoke, adopt: vi.fn(), onTerminal: terminal, canAdmitOpen: () => allowed });
+    await client.ready;
+    pending = [request(blockedId)];
+    events.emitRequest({ requestId: blockedId });
+    await waitFor(() => rejectAttempts === 1);
+    client.retryPending();
+    await waitFor(() => rejectAttempts === 2);
+    expect(terminal).toHaveBeenCalledWith(blockedId, { tag: "REJECTED", phase: "REJECT", baseReason: "CLAIM_INVALID", cleanup: "NATIVE_COMPLETE" });
+    client.dispose();
+  });
 });

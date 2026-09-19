@@ -129,6 +129,11 @@ export interface ReaderNativeBoundary {
   closeSession(session: OpaquePdfSessionMetadata, barrierId: number, ownerGeneration: number): Promise<void>;
 }
 
+export interface PdfPasswordRequest {
+  readonly reason: "required" | "incorrect";
+  readonly signal: AbortSignal;
+}
+
 export interface PdfRenderTask { promise: Promise<void>; cancel(): void; }
 export interface PdfViewport extends PdfContentViewport {}
 export interface PdfPage extends PdfContentPage {
@@ -162,7 +167,6 @@ export type PdfCommitContext = {
   readonly opening: false;
 });
 
-
 export type PdfRequestCommitGuard = () => boolean;
 
 export interface PdfResidentAuthorityTransaction {
@@ -178,6 +182,7 @@ export interface PdfOpeningFitEvidence {
 export interface PdfReaderControllerOptions {
   readonly printNative?: (session: OpenPdfResult, ownerGeneration: number) => PdfPrintNative;
   readonly onPrintProgress?: (progress: PdfPrintProgress | undefined) => void;
+  readonly onPassword?: (request: PdfPasswordRequest) => Promise<string | null>;
   readonly native: ReaderNativeBoundary;
   readonly pdf: PdfBoundary;
   readonly resources: ResourceReservationManager;
@@ -232,6 +237,15 @@ export interface PdfViewportOffset {
 export type PdfPresentationTopology = "continuous" | "single-page";
 type PdfRenderViewportPolicy = "preserve-anchor" | "opening-top";
 
+interface PasswordPrompt {
+  readonly controller: AbortController;
+  updatePassword?: (password: string) => void;
+  active: boolean;
+}
+interface OpeningFailure {
+  readonly promise: Promise<never>;
+  reject(error: Error): void;
+}
 interface Candidate {
   readonly session: OpenPdfResult;
   readonly task: PdfLoadingTask;
@@ -245,6 +259,12 @@ interface Candidate {
   readonly ownerGeneration: number;
   transportFailure?: Error;
   closed: boolean;
+  readonly openingFailure: OpeningFailure;
+  passwordPrompt?: PasswordPrompt;
+  passwordChallengeActive: boolean;
+  passwordTerminal: boolean;
+  passwordPending: boolean;
+  passwordStageChanged?: () => void;
   cleanup?: Promise<void>;
   ownershipRetry?: Promise<void>;
   stagedTeardown?: () => Promise<void>;
@@ -310,7 +330,6 @@ const isRenderCancellation = (error: unknown): boolean =>
 
 const safeMessage = (error: unknown): string => {
   const tag = errorTag(error);
-  if (/LOCKED_DOCUMENT/i.test(tag)) return "Password-protected PDFs are not supported.";
   if (/PASSWORD_CANCELLED/i.test(tag)) return "Opening PDF cancelled.";
   if (/PASSWORD/i.test(tag)) return "The PDF password was not accepted.";
   if (/CANCEL|ABORT/i.test(tag)) return "Opening PDF cancelled.";
@@ -324,6 +343,21 @@ const safeMessage = (error: unknown): string => {
   return openFailureStatus("presentation");
 };
 
+const createOpeningFailure = (): OpeningFailure => {
+  let rejectFailure!: (error: Error) => void;
+  let settled = false;
+  const promise = new Promise<never>((_resolve, reject) => {
+    rejectFailure = reject;
+  });
+  return {
+    promise,
+    reject: (error) => {
+      if (settled) return;
+      settled = true;
+      rejectFailure(error);
+    },
+  };
+};
 /** Owns opaque sessions and PDFs. A candidate is invisible until its first page has rendered. */
 export class PdfReaderController {
   private current: Candidate | undefined;
@@ -349,6 +383,176 @@ export class PdfReaderController {
     devicePixelRatio: typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1),
   };
 
+  private notifyPasswordStage(candidate: Candidate): void {
+    candidate.passwordStageChanged?.();
+  }
+
+  private abortPasswordPrompt(candidate: Candidate): void {
+    const prompt = candidate.passwordPrompt;
+    if (prompt === undefined) return;
+    prompt.active = false;
+    delete prompt.updatePassword;
+    delete candidate.passwordPrompt;
+    prompt.controller.abort();
+    if (candidate.passwordPending) {
+      candidate.passwordPending = false;
+      this.notifyPasswordStage(candidate);
+    }
+  }
+
+  private finishPasswordLifecycle(candidate: Candidate, terminal = true): void {
+    candidate.passwordTerminal = true;
+    if (terminal) candidate.passwordChallengeActive = false;
+    delete candidate.task.onPassword;
+    this.abortPasswordPrompt(candidate);
+    if (candidate.passwordPending) {
+      candidate.passwordPending = false;
+      this.notifyPasswordStage(candidate);
+    }
+  }
+
+  private rejectOpening(candidate: Candidate, error: Error): void {
+    this.finishPasswordLifecycle(candidate);
+    candidate.openingFailure.reject(error);
+  }
+
+  private submitPasswordPrompt(
+    candidate: Candidate,
+    prompt: PasswordPrompt,
+    result: string | null | undefined,
+    error?: unknown,
+  ): void {
+    if (!prompt.active || candidate.passwordPrompt !== prompt) return;
+    prompt.active = false;
+    const updatePassword = prompt.updatePassword;
+    delete prompt.updatePassword;
+    delete candidate.passwordPrompt;
+    prompt.controller.abort();
+    candidate.passwordPending = false;
+    this.notifyPasswordStage(candidate);
+    if (candidate.closed || this.disposed || this.opening !== candidate) return;
+    if (error !== undefined) {
+      this.rejectOpening(candidate, error instanceof Error ? error : new Error("PDF_PASSWORD_PROMPT_FAILED"));
+      void this.disposeCandidate(candidate);
+      return;
+    }
+    if (result === null) {
+      this.rejectOpening(candidate, new Error("PASSWORD_CANCELLED"));
+      void this.disposeCandidate(candidate);
+      return;
+    }
+    if (typeof result !== "string") {
+      this.rejectOpening(candidate, new Error("PASSWORD_CANCELLED"));
+      void this.disposeCandidate(candidate);
+      return;
+    }
+    try {
+      if (!candidate.closed && !this.disposed && this.opening === candidate) updatePassword?.(result);
+    } catch (updateError) {
+      this.rejectOpening(candidate, updateError instanceof Error ? updateError : new Error("PDF_PASSWORD_UPDATE_FAILED"));
+      void this.disposeCandidate(candidate);
+    }
+  }
+
+  private handlePasswordRequest(
+    candidate: Candidate,
+    updatePassword: (password: string) => void,
+    rawReason: number,
+  ): void {
+    if (candidate.closed || this.disposed || this.opening !== candidate || candidate.passwordTerminal) return;
+    const reason = rawReason === 1 ? "required" : rawReason === 2 ? "incorrect" : undefined;
+    if (reason === undefined) {
+      this.rejectOpening(candidate, new Error("PDF_PASSWORD_REASON_INVALID"));
+      void this.disposeCandidate(candidate);
+      return;
+    }
+    this.abortPasswordPrompt(candidate);
+    candidate.passwordChallengeActive = true;
+    candidate.passwordPending = true;
+    this.notifyPasswordStage(candidate);
+    const prompt: PasswordPrompt = {
+      controller: new AbortController(),
+      updatePassword,
+      active: true,
+    };
+    candidate.passwordPrompt = prompt;
+    const request: PdfPasswordRequest = { reason, signal: prompt.controller.signal };
+    const callback = this.options.onPassword;
+    if (callback === undefined) {
+      this.submitPasswordPrompt(candidate, prompt, null);
+      return;
+    }
+    void Promise.resolve().then(() => {
+      if (!prompt.active || candidate.passwordPrompt !== prompt || candidate.closed || this.disposed || this.opening !== candidate) return undefined;
+      return callback(request);
+    }).then(
+      (password) => this.submitPasswordPrompt(candidate, prompt, password),
+      (error: unknown) => this.submitPasswordPrompt(candidate, prompt, null, error),
+    );
+  }
+
+  private async awaitOpeningDocument(candidate: Candidate, taskPromise: Promise<PdfDocument>, rangeFailure: Promise<never>): Promise<PdfDocument> {
+    type Result =
+      | { readonly kind: "document"; readonly document: PdfDocument }
+      | { readonly kind: "failure"; readonly error: unknown };
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let settled = false;
+    let settle!: (result: Result) => void;
+    const clearMetadataTimer = (): void => {
+      if (timeoutId === undefined) return;
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    };
+    const armMetadataTimer = (): void => {
+      if (settled || candidate.passwordPending || timeoutId !== undefined) return;
+      timeoutId = setTimeout(() => {
+        timeoutId = undefined;
+        settle({ kind: "failure", error: new Error("PDF_TIMEOUT") });
+      }, METADATA_DEADLINE_MS);
+    };
+    const result = await new Promise<Result>((resolve) => {
+      settle = (next) => {
+        if (settled) return;
+        settled = true;
+        clearMetadataTimer();
+        resolve(next);
+      };
+      candidate.passwordStageChanged = (): void => {
+        if (candidate.passwordPending) clearMetadataTimer();
+        else armMetadataTimer();
+      };
+      armMetadataTimer();
+      void taskPromise.then(
+        (document) => {
+          this.finishPasswordLifecycle(candidate, false);
+          settle({ kind: "document", document });
+        },
+        (error: unknown) => {
+          this.finishPasswordLifecycle(candidate);
+          settle({ kind: "failure", error });
+        },
+      );
+      void rangeFailure.then(
+        () => settle({ kind: "failure", error: new Error("PDF_RANGE_FAILED") }),
+        (error: unknown) => settle({ kind: "failure", error }),
+      );
+      void candidate.openingFailure.promise.then(
+        () => settle({ kind: "failure", error: new Error("Opening PDF cancelled") }),
+        (error: unknown) => settle({ kind: "failure", error }),
+      );
+    });
+    clearMetadataTimer();
+    if (candidate.passwordStageChanged !== undefined) delete candidate.passwordStageChanged;
+    if (result.kind === "document") return result.document;
+    throw result.error;
+  }
+
+  public cancelPasswordOpening(): void {
+    const candidate = this.opening;
+    if (candidate === undefined || candidate.closed || !candidate.passwordChallengeActive) return;
+    this.rejectOpening(candidate, new Error("PASSWORD_CANCELLED"));
+    void this.disposeCandidate(candidate);
+  }
   public constructor(private readonly options: PdfReaderControllerOptions) {}
 
   private evictedScrollAnchor: { readonly pageNumber: number; readonly anchor: PdfScrollAnchor } | undefined;
@@ -450,24 +654,19 @@ export class PdfReaderController {
       ownedPrintSettlements: new Set(),
       residentRasters: new Map(),
       topology: "continuous",
+      openingFailure: createOpeningFailure(),
+      passwordChallengeActive: false,
+      passwordTerminal: false,
+      passwordPending: false,
     };
     candidateRef = candidate;
-    let rejectDocumentPolicy!: (error: Error) => void;
-    const documentPolicyFailure = new Promise<never>((_resolve, reject) => {
-      rejectDocumentPolicy = reject;
-    });
     this.opening = candidate;
-    task.onPassword = () => {
-      rejectDocumentPolicy(new Error("LOCKED_DOCUMENT"));
-      void this.disposeCandidate(candidate);
+    task.onPassword = (updatePassword, reason) => {
+      this.handlePasswordRequest(candidate, updatePassword, reason);
     };
     this.options.onStatus(`Opening ${session.displayName}`);
     try {
-      const document = await withDeadline(
-        Promise.race([task.promise, documentPolicyFailure, rangeFailure]),
-        METADATA_DEADLINE_MS,
-        "PDF_TIMEOUT",
-      );
+      const document = await this.awaitOpeningDocument(candidate, task.promise, rangeFailure);
       candidate.document = document;
       if (document.numPages < 1) throw new Error("EMPTY_DOCUMENT");
       const firstPage = await this.getOwnedPage(candidate, 1);
@@ -541,6 +740,7 @@ export class PdfReaderController {
         const prior = this.current;
         this.current = candidate;
         this.opening = undefined;
+        this.finishPasswordLifecycle(candidate);
         this.options.canvasHost.classList.remove("pdf-reader-single-page");
         this.viewTransform = openingTransform;
         this.canvasReplace(rendered.canvas, accessory, undefined, true);
@@ -2040,6 +2240,7 @@ export class PdfReaderController {
     candidate?.rangeTransport?.abort();
     if (candidate !== undefined && this.activePrint?.owner === candidate) this.activePrint.abort.abort();
     if (candidate === undefined) return Promise.resolve();
+    this.rejectOpening(candidate, new Error(candidate.passwordChallengeActive ? "PASSWORD_CANCELLED" : "Opening PDF cancelled"));
     candidate.closed = true;
     if (candidate.cleanup !== undefined) return candidate.cleanup;
     if (this.opening === candidate) this.opening = undefined;

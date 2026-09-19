@@ -14,6 +14,7 @@ export interface ShellOpenCoordinatorOptions {
   readonly adopt: (request: OpenRequestAdoption) => Promise<void> | void;
   readonly onFailure: (tag: OpenFailureNotice["tag"]) => void;
   readonly onTerminal?: (terminal: InitiatedTerminal) => void;
+  readonly canAdmitOpen?: () => boolean;
 }
 export interface ShellOpenCoordinator {
   readonly ready: Promise<void>;
@@ -35,6 +36,7 @@ export function createShellOpenCoordinator(options: ShellOpenCoordinatorOptions)
   const release = (epoch: number, terminal: InitiatedTerminal): void => {
     flow.release(epoch, terminal);
   };
+  const admissionAllowed = (): boolean => { if (options.canAdmitOpen === undefined) return true; try { return options.canAdmitOpen(); } catch { return false; } };
   const rejectLateAdmission = (requestId: string): void => {
     void options.invoke("reject_open_request", { requestId }).then(
       () => options.onTerminal?.({ tag: "REJECTED", requestId, phase: "REJECT", baseReason: "REQUEST_EXPIRED", cleanup: "NATIVE_COMPLETE" }),
@@ -43,6 +45,7 @@ export function createShellOpenCoordinator(options: ShellOpenCoordinatorOptions)
   };
   const client = createOpenRequestClient({
     listen: options.listen,
+    ...(options.canAdmitOpen === undefined ? {} : { canAdmitOpen: options.canAdmitOpen }),
     invoke: options.invoke,
     adopt: options.adopt,
     onTerminal: (requestId, terminal) => options.onTerminal?.(projectTerminal(requestId, terminal)),
@@ -60,7 +63,7 @@ export function createShellOpenCoordinator(options: ShellOpenCoordinatorOptions)
     return true;
   };
   const requestOpen = (): void => {
-    if (disposed) return;
+    if (disposed || !admissionAllowed()) return;
     const epoch = flow.begin("empty");
     if (epoch === undefined || !flow.showDialog(epoch)) return;
     options.dialog.setPending(true);
@@ -88,6 +91,7 @@ export function createShellOpenCoordinator(options: ShellOpenCoordinatorOptions)
     admitOpen: (outcome) => {
       if (outcome.tag !== "ADMITTED") return false;
       if (disposed) { rejectLateAdmission(outcome.requestId); return false; }
+      if (!admissionAllowed()) { client.admitNotice({ requestId: outcome.requestId }); return false; }
       const epoch = flow.begin("reader");
       if (epoch === undefined) { rejectLateAdmission(outcome.requestId); return false; }
       options.dialog.setPending(true);

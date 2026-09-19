@@ -51,9 +51,12 @@ describe("application menu production-render/router integration", () => {
     const invoke = vi.fn(() => new Promise((resolve, reject) => { settle = () => outcome === "resolved" ? resolve({ tag: "CANCELLED" }) : reject(new Error("picker failed")); }));
     const binding = source.slice(source.indexOf("const applicationMenuOwner ="), source.indexOf("function claimOverlay("));
     const coordinator = source.slice(source.indexOf("const shellOpen = createShellOpenCoordinator("), source.indexOf('emptyReaderOpen.addEventListener("click"'));
+    let passwordOpen = false;
     const fragment = `let nativeOpenPending = false; let nativePickerOpen = false; const overlayOwner = {}; ${binding} ${coordinator}; return { applicationMenuOwner, shellOpen };`;
     const dependencies = {
+      passwordModalOpen: () => passwordOpen,
       windowsMenu: menu, bindApplicationMenuOwner, invoke,
+      shellDisposing: false,
       createShellOpenCoordinator: (options: unknown) => options,
       dispatchActionId: vi.fn(), cancelPendingShellInput: vi.fn(), listen: vi.fn(), render: vi.fn(),
       reportOpenInvokeFailure: vi.fn(), restoreOpenFocus: vi.fn(), adoptRequest: vi.fn(), handleOpenTerminal: vi.fn(),
@@ -68,11 +71,24 @@ describe("application menu production-render/router integration", () => {
     hover(summary);
     expect(summary.closest("details")!.open).toBe(true);
     const pending = api.shellOpen.invoke("open_pdf_dialog", {});
+    passwordOpen = true;
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(false);
+    passwordOpen = false;
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(false);
     const completion = outcome === "resolved" ? expect(pending).resolves.toEqual({ tag: "CANCELLED" }) : expect(pending).rejects.toThrow("picker failed");
     hover(summary);
     expect(summary.closest("details")!.open).toBe(false);
     settle();
     await completion;
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(true);
+    api.applicationMenuOwner.close();
+    passwordOpen = true;
+    hover(summary);
+    expect(summary.closest("details")!.open).toBe(false);
+    passwordOpen = false;
     hover(summary);
     expect(summary.closest("details")!.open).toBe(true);
   });
