@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "generator": "cargo-about 0.9.2",
   "target": "x86_64-pc-windows-msvc",
-  "cargoLockSha256": "a0da273626feca2c9eac20c610adf3621bd9099ae976be8934d926eedfc46263",
+  "cargoLockSha256": "3205f166769bb3d8e2db88ccdc00a799ea03e14ecf8ddd7d65ec6caa6c3ab26a",
   "packageCount": 229,
   "licenses": [
     {
