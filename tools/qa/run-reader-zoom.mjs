@@ -179,6 +179,111 @@ try {
     })()`);
     results.push({ scenario: `${scenario} anchor at DPR2`, result: anchorResult });
   }
+  for (const config of [
+    ...[1, 1.25, 1.5, 2].flatMap(dpr => ['wheel', 'keyboard'].map(input => ({ dpr, input, fixture: 'fixture-L-text-300.pdf' }))),
+    ...['wheel', 'keyboard'].map(input => ({ dpr: 1.25, input, fixture: 'print-mixed-rotation-4.pdf' })),
+    ...['fit-wheel', 'burst', 'reverse'].map(input => ({ dpr: 1.25, input, fixture: 'fixture-L-text-300.pdf' })),
+  ]) {
+    await call('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: config.dpr, mobile: false });
+    await open('?fixture=' + config.fixture);
+    const result = await evaluate(`(async()=>{
+      const config=${JSON.stringify(config)},h=window.readerHarness,s=h.session,c=s.pdfReader;
+      const samples=[];
+      const snap=()=>({...h.snapshot(),residents:c.residentPageNumbers(),visible:c.visiblePageNumbers,bytes:h.resources.snapshot().totals['canvas-bytes']});
+      const landing=await s.navigatePagePrompt(config.fixture.startsWith('fixture-L')?26:2);
+      if(landing.kind!=='verifiedLanding')throw Error('Initial page landing failed');
+      h.host.scrollTop+=137;await s.synchronizeViewport(h.host.scrollTop,h.host.clientHeight);
+      if(config.input==='fit-wheel'){s.apply({type:'view.fitPage'});if(!await s.renderCurrentView())throw Error('Fit Page setup failed');}
+      const rect=h.host.getBoundingClientRect();
+      const act=async(kind,direction)=>{try{
+        if(kind==='keyboard'){s.apply({type:'view.zoom',factor:direction>0?1.1:1/1.1});return await s.renderCurrentView();}
+        return await s.handleWheelInput({ctrlKey:true,deltaX:0,deltaY:direction>0?-100:100,deltaMode:0,timeStamp:performance.now(),clientX:rect.left+h.host.clientWidth/2,clientY:rect.top+h.host.clientHeight/2});
+      }catch(error){return String(error);}};
+      const before=snap();
+      for(let index=0;index<(config.input==='fit-wheel'?1:26);index++){
+        const outcome=config.input==='reverse'?await Promise.all([1,1,-1].map(direction=>act('wheel',direction))):config.input==='burst'?await Promise.all([1,2,3].map(()=>act('wheel',1))):await act(config.input,1);
+        const snapshot=snap();samples.push({index,outcome,snapshot});
+        if(snapshot.bytes>268435456)throw Error('Canvas budget exceeded');
+        if(outcome===true||Array.isArray(outcome)&&outcome.every(x=>x===true)){
+          if(!snapshot.visible.every(page=>snapshot.residents.includes(page)))throw Error('Successful zoom omitted visible pages');
+        }
+        if(typeof outcome==='string'||outcome===false||Array.isArray(outcome)&&outcome.some(x=>x!==true)||snapshot.scale>=4)break;
+      }
+      const after=snap(),recovery=[];
+      for(const kind of ['wheel','keyboard','wheel']){
+        const prior=s.snapshot.reader.customScale,outcome=await act(kind,-1),snapshot=snap();
+        if(outcome!==true||snapshot.scale>=prior)throw Error('Zoom-out recovery failed: '+JSON.stringify({config,kind,outcome,snapshot}));
+        recovery.push({kind,outcome,snapshot});
+      }
+      const statuses=[...h.statuses];await s.close();h.resources.assertEmpty();
+      return {config,before,after,samples,recovery,statuses,disposed:true};
+    })()`);
+    if (config.input === 'fit-wheel') {
+      assert.equal(result.samples[0].outcome, true);
+      assert.equal(result.after.mode, 'custom');
+      assert(Math.abs(result.after.scale - result.before.scale * 1.1) < 1e-9);
+    } else {
+      // The reader clamps user zoom to 4x; +,+,- saturates at 4/1.1.
+      const minimumScale = config.input === 'reverse' ? 4 / 1.1 : 4;
+      assert(result.after.scale >= minimumScale, JSON.stringify({ config, after: result.after, samples: result.samples }));
+    }
+    results.push({ scenario: 'budgeted zoom and recovery', result });
+  }
+  for (const scenario of ['shell-scroll', 'evicted-reactivation', 'resized-reactivation', 'overlapping-fit-width', 'deferred-user-scroll']) {
+    await call('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1.25, mobile: false });
+    await open();
+    const result = await evaluate(`(async()=>{
+      const scenario=${JSON.stringify(scenario)},h=window.readerHarness,s=h.session,c=s.pdfReader,failures=[],samples=[];
+      const code=await(await fetch('/src/main.ts')).text();
+      const a=code.indexOf('let viewportFrameRequest'),b=code.indexOf('let readerResizeFrame',a);
+      if(a<0||b<=a)throw Error('Production scroll scheduler missing');
+      const dispose=new Function('host','session','active','reportPresentationFailure','rootKeyboard','render','cancelLinkHints',code.slice(a,b)+';return ()=>{viewportDisposed=true;host.removeEventListener("scroll",onReaderScroll);if(viewportFrameRequest!==undefined)cancelAnimationFrame(viewportFrameRequest);};')(h.host,s,()=>({session:s}),(_session,error)=>failures.push(String(error)),{syncContext(){}},()=>{},()=>{});
+      const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+      const settle=async()=>{let previous,stable=0;for(let i=0;i<180;i++){await frame();const now=JSON.stringify(h.snapshot());stable=!s.pendingPresentationRenders&&!s.presentationSettlements&&!c.viewportSettlement&&h.resources.snapshot().totals.render===0&&now===previous?stable+1:0;previous=now;if(stable>=3)return;}throw Error('Presentation did not settle');};
+      const sample=label=>{if(!s.snapshot.active)throw Error('Tab became inactive: '+label);if(failures.length)throw Error(JSON.stringify(failures));samples.push({label,...h.snapshot(),active:s.snapshot.active,bytes:h.resources.snapshot().totals['canvas-bytes']});};
+      try{
+        if((await s.navigatePagePrompt(26)).kind!=='verifiedLanding')throw Error('Initial navigation failed');
+        await settle();
+        if(scenario.endsWith('reactivation')){
+          await s.deactivate();
+          if(scenario==='evicted-reactivation')s.evictInactiveHeavyResources();else h.host.style.width='640px';
+          await s.activate();await settle();sample('reactivated');
+        }
+        if(scenario==='overlapping-fit-width'){
+          let entered,release;const enter=new Promise(resolve=>entered=resolve),barrier=new Promise(resolve=>release=resolve);
+          const original=s.viewTransformFor.bind(s);let hold=true;
+          s.viewTransformFor=async(...args)=>{if(hold){hold=false;entered();await barrier;}return original(...args);};
+          s.apply({type:'view.zoom',factor:1.1});const old=s.renderCurrentView();await enter;
+          try{s.apply({type:'view.fitWidth'});if(!await s.renderCurrentView())throw Error('New fit-width was blocked by old metadata');}
+          finally{release();await old;s.viewTransformFor=original;}
+          await settle();sample('overlap settled');
+        }
+        if(scenario==='deferred-user-scroll'){
+          let entered,release;const enter=new Promise(resolve=>entered=resolve),barrier=new Promise(resolve=>release=resolve);
+          const original=c.synchronizeViewport.bind(c);let hold=true;
+          c.synchronizeViewport=async(...args)=>{const result=await original(...args);if(hold){hold=false;entered();await barrier;}return result;};
+          s.apply({type:'view.fitWidth'});const rendering=s.renderCurrentView();await enter;
+          h.host.scrollTop+=h.host.clientHeight*5;const requestedTop=h.host.scrollTop;
+          await frame();await frame();
+          release();if(!await rendering)throw Error('Owned render failed during user scroll');
+          await settle();c.synchronizeViewport=original;
+          const geometry=c.contentViewportGeometry(),range=c.current.window.visibleRangeForViewport(geometry.scrollTop,geometry.clientHeight);
+          const expected=Array.from({length:range.lastVisiblePage-range.firstVisiblePage+1},(_,i)=>range.firstVisiblePage+i);
+          if(Math.abs(h.host.scrollTop-requestedTop)>1||!expected.every(page=>c.residentPageNumbers().includes(page))||JSON.stringify(c.visiblePageNumbers)!==JSON.stringify(expected))throw Error('Deferred user scroll was not materialized automatically');
+          sample('latest user scroll replayed');
+        }
+        for(const action of [{type:'view.fitWidth'},{type:'view.fitWidth'},{type:'view.zoom',factor:1/1.1},{type:'view.zoom',factor:1.1},{type:'view.fitPage'},{type:'view.zoom',factor:1.1}]){
+          s.apply(action);if(!await s.renderCurrentView())throw Error('Keyboard action failed: '+JSON.stringify(action));await settle();sample(action.type);
+        }
+        await s.deactivate();await s.activate();await settle();sample('reactivated after keyboard actions');
+        if(h.statuses.some(status=>/failed|could not/i.test(status)))throw Error(JSON.stringify(h.statuses));
+        return {scenario,samples,statuses:[...h.statuses]};
+      }finally{dispose();await s.close();h.resources.assertEmpty();}
+    })()`);
+    results.push({ scenario: 'shell-owned presentation and activation', result });
+  }
+  await open();
+  results.push({ scenario: 'evicted tab restored after closing its successor', result: await evaluate('window.readerHarness.runTabClose()') });
   const afterHashes = await hashes();
   assert.deepEqual(afterHashes, beforeHashes);
   const report = { schemaVersion: 1, kind: "browser-automation-transcript", tool: "Chrome DevTools Protocol", status: "passed", browser: version.Browser, node: process.version, recordedAt: new Date().toISOString(), sourceHash: process.env.READER_QA_SOURCE_HASH ?? null, limitations: ["Headless Edge with real PDF.js and production wheel binding", "Native authority is mocked; not packaged WebView2 or physical device QA", "No native build or manual preview"], sourceHashesBefore: beforeHashes, sourceHashesAfter: afterHashes, results, transcript, actions: transcript.map(({ method, params }) => ({ type: method, params })), screenshot: "wheel-zoom.png"};

@@ -21,7 +21,7 @@ function consume(state: WheelZoomState, overrides: Partial<WheelZoomInput>): { s
 describe("consumeWheelZoom", () => {
   it("exposes the zoom factor and explicit initial/reset state", () => {
     expect(WHEEL_ZOOM_FACTOR).toBe(1.1);
-    expect(WHEEL_ZOOM_MAX_STEPS).toBe(46);
+    expect(WHEEL_ZOOM_MAX_STEPS).toBe(30);
     const initial = createWheelZoomState();
     expect(initial).toEqual({ residual: 0, lastTimestamp: undefined, lastDirection: undefined, lastDeltaMode: undefined });
 

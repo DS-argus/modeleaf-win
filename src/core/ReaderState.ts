@@ -1,9 +1,8 @@
+import { clampReaderScale } from "../domain/navigation/ZoomPolicy";
 import type { Action } from "./Action";
 
 export type ZoomMode = "continuous-fit" | "custom" | "fit-width" | "fit-page";
 const DEFAULT_SCALE = 1.25;
-const MIN_SCALE = 0.1;
-const MAX_SCALE = 8;
 
 export interface PendingScrollIntent {
   readonly horizontalCssPixels: number;
@@ -171,7 +170,7 @@ export class ReaderState {
     this.snapshotValue = {
       ...this.snapshotValue,
       zoomMode: view.zoomMode,
-      customScale: Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.customScale)),
+      customScale: clampReaderScale(view.customScale),
       fitPageReference,
       rotationQuarterTurns: ((view.rotationQuarterTurns % 4) + 4) % 4,
     };
@@ -254,7 +253,7 @@ export class ReaderState {
     if (!this.snapshotValue.hasDocument || !Number.isFinite(factor) || factor <= 0) {
       return;
     }
-    const customScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, this.snapshotValue.customScale * factor));
+    const customScale = clampReaderScale(this.snapshotValue.customScale * factor);
     this.snapshotValue = {
       ...this.snapshotValue,
       zoomMode: "custom",

@@ -183,9 +183,9 @@ export class ContinuousPageWindow {
   }
 
   /** Describes a prospective window without changing generation, ownership, or in-flight work. */
-  public previewPlan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
+  public previewPlan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage, overscanPages = this.overscanPages): PageWindowPlan {
     if (this.pageCount === 0) return this.emptyPlan(this.generation);
-    const pages = this.pagesForViewport(firstVisiblePage, lastVisiblePage);
+    const pages = this.pagesForViewport(firstVisiblePage, lastVisiblePage, overscanPages);
     const next = new Set(pages);
     const samePlan = setsEqual(next, this.planned);
     return this.describePlan(
@@ -196,7 +196,7 @@ export class ContinuousPageWindow {
     );
   }
 
-  public plan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage): PageWindowPlan {
+  public plan(firstVisiblePage: number, lastVisiblePage = firstVisiblePage, overscanPages = this.overscanPages): PageWindowPlan {
     if (this.pageCount === 0) {
       this.planned.clear();
       this.resident.clear();
@@ -204,7 +204,7 @@ export class ContinuousPageWindow {
       this.generation += 1;
       return this.emptyPlan(this.generation);
     }
-    const pages = this.pagesForViewport(firstVisiblePage, lastVisiblePage);
+    const pages = this.pagesForViewport(firstVisiblePage, lastVisiblePage, overscanPages);
     const next = new Set(pages);
     if (!setsEqual(next, this.planned)) {
       this.generation += 1;
@@ -311,13 +311,14 @@ export class ContinuousPageWindow {
     }
     return Math.max(0, offset);
   }
-  private pagesForViewport(firstVisiblePage: number, lastVisiblePage: number): number[] {
+  private pagesForViewport(firstVisiblePage: number, lastVisiblePage: number, overscanPages: number): number[] {
     this.assertPage(firstVisiblePage);
     this.assertPage(lastVisiblePage);
     const firstVisible = Math.min(firstVisiblePage, lastVisiblePage);
     const lastVisible = Math.max(firstVisiblePage, lastVisiblePage);
     const pages = Array.from({ length: lastVisible - firstVisible + 1 }, (_unused, index) => firstVisible + index);
-    for (let distance = 1; distance <= this.overscanPages; distance += 1) {
+    const overscan = Math.min(this.overscanPages, nonNegativeInteger(overscanPages, "overscanPages"));
+    for (let distance = 1; distance <= overscan; distance += 1) {
       if (firstVisible - distance >= 1) pages.unshift(firstVisible - distance);
       if (lastVisible + distance <= this.pageCount) pages.push(lastVisible + distance);
     }

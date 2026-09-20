@@ -3110,4 +3110,173 @@ describe("PdfReaderController", () => {
     expect(onPage.mock.calls.at(-1)?.[1]).toMatchObject({ scale: 1 });
     await controller.dispose(); resources.assertEmpty();
   });
+  it("bounds optional overscan by bytes and frees enough replacement headroom", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const statuses: string[] = [];
+    const render = vi.fn(() => ({ promise: Promise.resolve(), cancel: vi.fn() }));
+    const largePage: PdfPage = { ...page(1), render, getViewport: ({ scale }) => pdfViewport(1000 * scale, 1000 * scale, scale) };
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("byte-window", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(10, vi.fn(async () => largePage)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: status => statuses.push(status),
+    });
+    try {
+      await controller.open(1);
+      expect(await controller.renderPageWithTransform(3, { scale: 4, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      expect(await controller.synchronizeViewport(2 * 4012, 100)).toBe(true);
+      expect(controller.residentPageNumbers()).toEqual([2, 3, 4]);
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(192_000_000);
+      render.mockImplementationOnce(() => ({ promise: Promise.reject(new Error("replacement failed")), cancel: vi.fn() }));
+      expect(await controller.renderPageWithTransform(3, { scale: 6, rotation: 0, devicePixelRatio: 1 })).toBe(false);
+      expect(controller.residentPageNumbers()).toEqual([2, 3, 4]);
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(192_000_000);
+      expect(await controller.renderPageWithTransform(3, { scale: 6, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      expect(await controller.synchronizeViewport(2 * 6012, 100)).toBe(true);
+      expect(controller.residentPageNumbers()).toEqual([3]);
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(144_000_000);
+      expect(statuses.some(status => /resource limits|materialized/.test(status))).toBe(false);
+      expect(await controller.synchronizeViewport(2 * 6012, 6013)).toBe(false);
+      expect(controller.residentPageNumbers()).toEqual([3]);
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(144_000_000);
+      expect(statuses.at(-1)).toMatch(/resource limits/);
+      expect(await controller.renderPageWithTransform(3, { scale: 4, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      expect(await controller.synchronizeViewport(2 * 4012, 100)).toBe(true);
+      expect(controller.residentPageNumbers()).toEqual([2, 3, 4]);
+    } finally { await controller.dispose(); resources.assertEmpty(); }
+  });
+  it.each([1.1, 1 / 1.1])("leaves single-page topology through pointer zoom at factor %s", async factor => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-wheel", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    try {
+      await controller.open(1);
+      await controller.setPresentationTopology("single-page", 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      expect(await controller.setViewTransformAtPointer({ scale: factor, rotation: 0, devicePixelRatio: 1 }, { x: 0, y: 0 })).toBe(true);
+      expect(controller.presentationTopology).toBe("continuous");
+    } finally { await controller.dispose(); resources.assertEmpty(); }
+  });
+  it("restores single-page topology when pointer settlement fails after commit", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("fit-pointer-rollback", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    try {
+      await controller.open(1);
+      await controller.setPresentationTopology("single-page", 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+      const settle = vi.spyOn(controller as unknown as { settlePointerAnchor: () => Promise<boolean> }, "settlePointerAnchor")
+        .mockResolvedValueOnce(false);
+      expect(await controller.setViewTransformAtPointer({ scale: 1.1, rotation: 0, devicePixelRatio: 1 }, { x: 0, y: 0 })).toBe(false);
+      expect(settle).toHaveBeenCalledTimes(2);
+      expect(controller.presentationTopology).toBe("single-page");
+      expect(controller.residentPageNumbers()).toEqual([1]);
+      expect(publishedCanvas(host).dataset.scale).toBe("1");
+    } finally { await controller.dispose(); resources.assertEmpty(); }
+  });
+  it("reclaims inactive canvas bytes only when required visible pages need them", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    let inactive: ReturnType<ResourceReservationManager["reserve"]> | undefined;
+    const evict = vi.fn(() => { if (inactive?.ok) resources.release(inactive.reservation); });
+    const resources = new ResourceReservationManager(evict);
+    const host = document.createElement("div");
+    const source: PdfPage = { ...page(1), getViewport: ({ scale }) => pdfViewport(1000 * scale, 1000 * scale, scale) };
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("required-eviction", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(10, vi.fn(async () => source)))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    try {
+      await controller.open(1);
+      expect(await controller.renderPageWithTransform(1, { scale: 2, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      inactive = resources.reserve({ kind: "canvas-bytes", amount: 210_000_000, sessionId: "inactive-tab" });
+      expect(inactive.ok).toBe(true);
+      expect(await controller.synchronizeViewport(0, 5000)).toBe(true);
+      expect(controller.residentPageNumbers()).toEqual([1, 2, 3]);
+      expect(evict).not.toHaveBeenCalled();
+      expect(await controller.synchronizeViewport(0, 7000)).toBe(true);
+      expect(evict).toHaveBeenCalledOnce();
+      expect(controller.visiblePageNumbers).toEqual([1, 2, 3, 4]);
+      expect(controller.residentPageNumbers()).toEqual([1, 2, 3, 4, 5, 6]);
+    } finally {
+      if (inactive?.ok) resources.release(inactive.reservation);
+      await controller.dispose(); resources.assertEmpty();
+    }
+  });
+  it("admits a large single-page canvas before replacing it with continuous backing", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    const source = (pageNumber: number): PdfPage => ({
+      ...page(pageNumber),
+      getViewport: ({ scale, rotation }) => ({ ...pdfViewport(2000 * scale, 2000 * scale, scale), rotation }),
+    });
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("single-capacity-success", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, vi.fn(async pageNumber => source(pageNumber))))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    try {
+      await controller.open(1);
+      expect(await controller.setPresentationTopology("single-page", 1, { scale: 3.6, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      expect(publishedCanvas(host).dataset.scale).toBe("3.6");
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(2000 * 3.6 * 2000 * 3.6 * 4);
+      expect(await controller.setPresentationTopology("continuous", 1, { scale: 3.96, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      expect(controller.presentationTopology).toBe("continuous");
+      expect(publishedCanvas(host).dataset.scale).toBe("3.96");
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(Math.ceil(2000 * 3.96) ** 2 * 4);
+    } finally {
+      await controller.dispose();
+      resources.assertEmpty();
+    }
+  });
+  it("rolls back a rejected large single-page to continuous replacement without leaking resources", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const host = document.createElement("div");
+    const resources = new ResourceReservationManager();
+    let failedScale: number | undefined;
+    const source = (pageNumber: number): PdfPage => ({
+      ...page(pageNumber),
+      getViewport: ({ scale, rotation }) => ({ ...pdfViewport(2000 * scale, 2000 * scale, scale), rotation }),
+      render: ({ canvas, viewport }) => {
+        canvas.dataset.page = String(pageNumber);
+        const scale = (viewport as { readonly scale: number }).scale;
+        return { promise: failedScale === scale ? Promise.reject(new Error("replacement failed")) : Promise.resolve(), cancel: vi.fn() };
+      },
+    });
+    const authority = vi.fn(async () => ({ rollback: vi.fn(async () => undefined), finalize: vi.fn() }));
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("single-capacity-failure", 1))),
+      resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(3, vi.fn(async pageNumber => source(pageNumber))))), annotationMode: 0 },
+      canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: authority,
+    });
+    try {
+      await controller.open(1);
+      expect(await controller.setPresentationTopology("single-page", 1, { scale: 3.6, rotation: 0, devicePixelRatio: 1 })).toBe(true);
+      const priorBytes = resources.snapshot().totals["canvas-bytes"];
+      failedScale = 3.96;
+      expect(await controller.setPresentationTopology("continuous", 1, { scale: 3.96, rotation: 0, devicePixelRatio: 1 })).toBe(false);
+      expect(controller.presentationTopology).toBe("single-page");
+      expect(controller.residentPageNumbers()).toEqual([1]);
+      expect(publishedCanvas(host).dataset.scale).toBe("3.6");
+      expect(resources.snapshot().totals["canvas-bytes"]).toBe(priorBytes);
+      expect(authority).toHaveBeenCalledWith([1]);
+    } finally {
+      await controller.dispose();
+      resources.assertEmpty();
+    }
+  });
 });

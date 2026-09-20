@@ -197,4 +197,20 @@ describe("ContinuousPageWindow", () => {
     expect(model.documentGeometry().height).toBe(height);
     expect(model.pageGeometry(1).height).toBe(150);
   });
+  it("reduces only optional overscan and preserves planning generations", () => {
+    const model = windowModel();
+    const initial = model.plan(10, 11);
+    for (const page of initial.materializePages) { model.begin(page, initial.generation); model.publish(page, initial.generation); }
+    const preview = model.previewPlan(10, 11, 0);
+    expect(preview.plannedPages).toEqual([10, 11]);
+    expect(preview.evictPages).toEqual([8, 9, 12, 13]);
+    expect(model.checkpoint().plannedPages).toEqual([8, 9, 10, 11, 12, 13]);
+    const reduced = model.plan(10, 11, 0);
+    expect(reduced.generation).toBeGreaterThan(initial.generation);
+    expect(reduced.materializePages).toEqual([]);
+    expect(model.plan(10, 11, 0).generation).toBe(reduced.generation);
+    expect(model.previewPlan(10, 11, 1).plannedPages).toEqual([9, 10, 11, 12]);
+    expect(model.previewPlan(10, 11, 99).plannedPages).toEqual([8, 9, 10, 11, 12, 13]);
+    expect(() => model.plan(10, 11, -1)).toThrow("overscanPages");
+  });
 });

@@ -19,6 +19,12 @@ Native PDF access is scoped by window owner, owner generation, session identifie
 
 Normal native session closure is cancellation-barrier gated: drain reads, printing, and external-link work before removing the session. Window/application teardown is deadline-bounded and can defer unsettled cleanup; do not equate a timeout or a submitted print job with successful completion. Tests and the owning implementation, not a simplified diagram, define detailed transitions.
 
+## Bounded zoom presentation
+
+The reader controller admits actual DPR backing bytes for required visible pages before selecting up to two optional overscan pages on each side. It reduces only overscan under pressure and accounts for replacement peak bytes; process and per-canvas limits remain authoritative. Measured page metadata is reused by the admitted render, and resident/overlay authority remains transaction-owned through compensation.
+
+Pointer zoom can use a committed resident point without first rebuilding an inadmissible old window, including the single-page Fit Page topology. Failed pointer settlement restores the prior transform/topology. Keyboard presentation owns settlement through compensation: passive scroll synchronization cannot supersede it, and activation restoration uses the internal owner-guarded path rather than the public navigation guard. Blocked passive work is not evidence of render failure. Cancellation and newer explicit owner/navigation/viewport intent fence compensation. `ZoomPolicy` supplies the shared 25–400% bounds for keyboard, wheel, fitting and PDF destinations; those bounds do not replace resource admission.
+Passive scroll work arriving during presentation ownership is coalesced and replayed once the owner settles, using the live host geometry. Its awaiting caller receives the replay result or failure; document replacement, deactivation and close invalidate the deferred request. This preserves the latest user scroll without letting it cancel the owning render.
 ## PDF link hints
 
 `PdfContentController` supplies bounded, immutable snapshots of actionable annotation occurrences intersecting the reader viewport. Selection retains opaque identity and snapshot authority; `PdfTabSession` forwards selection through existing guarded navigation or the committed native external-link registry. No text URL inference, synthetic clicks, or alternate shell-launch path is used.

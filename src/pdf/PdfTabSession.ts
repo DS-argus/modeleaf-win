@@ -1,3 +1,4 @@
+import { clampReaderScale, MAX_READER_SCALE, MIN_READER_SCALE } from "../domain/navigation/ZoomPolicy";
 import { NavigationHistory, sameSnapshotWithinTolerance, type NavigationCause, type NavigationSnapshot, type NavigationTransaction } from "../domain/navigation/NavigationHistory";
 import { ReaderState, type ReaderSnapshot } from "../core/ReaderState";
 import {
@@ -130,6 +131,14 @@ export class PdfTabSession {
   private activityGeneration = 0;
   private renderIntent = 0;
   private pendingPresentationRenders = 0;
+  private presentationSettlements = 0;
+  private deferredViewportSynchronization: {
+    readonly promise: Promise<boolean>;
+    readonly resolve: (result: boolean) => void;
+    readonly reject: (error: unknown) => void;
+    readonly activityGeneration: number;
+    readonly documentGeneration: number;
+  } | undefined;
   private readerStatusVersion = 0;
   private navigationIntent = 0;
   private viewportGeometryRevision = 0;
@@ -306,6 +315,7 @@ export class PdfTabSession {
     if (this.closeSettlement !== undefined) return this.closeSettlement;
     this.cancelWheelZoom();
     this.closed = true;
+    this.flushDeferredViewportSynchronization();
     this.active = false;
     this.foregroundSuspended = false;
     this.activityGeneration += 1;
@@ -383,6 +393,7 @@ export class PdfTabSession {
       throw error;
     } finally {
       this.pendingPresentationRenders -= 1;
+      this.flushDeferredViewportSynchronization();
     }
   }
   public invalidateViewportSynchronization(): void {
@@ -393,9 +404,43 @@ export class PdfTabSession {
     this.cancelWheelZoom();
   }
   public async synchronizeViewport(scrollTop: number, clientHeight: number): Promise<boolean> {
-    if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
-    if (this.pendingPresentationRenders > 0) return false;
-    if (this.navigationLandingIntent !== undefined) return false;
+    if (this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0
+      || this.navigationLandingIntent !== undefined) return false;
+    if (this.hasViewportPresentationOwner()) {
+      if (this.deferredViewportSynchronization === undefined) {
+        let resolve!: (result: boolean) => void;
+        let reject!: (error: unknown) => void;
+        const promise = new Promise<boolean>((done, fail) => { resolve = done; reject = fail; });
+        this.deferredViewportSynchronization = { promise, resolve, reject,
+          activityGeneration: this.activityGeneration, documentGeneration: this.reader.snapshot.documentGeneration };
+      }
+      return this.deferredViewportSynchronization.promise;
+    }
+    const passiveCurrent = (): boolean => !this.hasViewportPresentationOwner() && this.navigationLandingIntent === undefined;
+    return this.synchronizeViewportForOwner(scrollTop, clientHeight, passiveCurrent);
+  }
+  private hasViewportPresentationOwner(): boolean {
+    return this.pendingPresentationRenders > 0 || this.presentationSettlements > 0 || this.wheelSettlement !== undefined;
+  }
+  private flushDeferredViewportSynchronization(): void {
+    const request = this.deferredViewportSynchronization;
+    if (request === undefined) return;
+    if (this.closed || !this.isForegroundActive() || request.activityGeneration !== this.activityGeneration
+      || request.documentGeneration !== this.reader.snapshot.documentGeneration) {
+      this.deferredViewportSynchronization = undefined;
+      request.resolve(false);
+      return;
+    }
+    if (this.hasViewportPresentationOwner()) return;
+    this.deferredViewportSynchronization = undefined;
+    // The last browser-applied position wins, not the geometry from the first
+    // scroll that arrived while presentation ownership was held.
+    const host = this.options.canvasHost;
+    void this.synchronizeViewport(host.scrollTop, host.clientHeight).then(request.resolve, request.reject);
+  }
+  /** Settles a presentation under its caller's lease, independently of passive scroll scheduling. */
+  private async synchronizeViewportForOwner(scrollTop: number, clientHeight: number, requestGuard: () => boolean): Promise<boolean> {
+    if (!requestGuard() || this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
     const documentGeneration = this.reader.snapshot.documentGeneration;
@@ -403,7 +448,8 @@ export class PdfTabSession {
     const renderIntent = this.renderIntent;
     const viewportIntent = ++this.viewportIntent;
     const guard = (): boolean => !this.closed && this.isForegroundActive() && this.activityGeneration === activityGeneration
-      && this.navigationIntent === navigationIntent && this.viewportIntent === viewportIntent;
+      && this.navigationIntent === navigationIntent && this.viewportIntent === viewportIntent
+      && this.reader.snapshot.documentGeneration === documentGeneration && requestGuard();
     try {
       const style = typeof getComputedStyle === "function" ? getComputedStyle(this.options.canvasHost) : undefined;
       const padding = (value: string | undefined): number => {
@@ -564,7 +610,7 @@ export class PdfTabSession {
     }
     if (action.type.startsWith("scroll.")) {
       this.invalidatePageStepQueue();
-      if (this.navigationLandingInProgress || this.pageStepActive) this.supersedeNavigation();
+      if (this.navigationLandingInProgress || this.pageStepActive || this.presentationSettlements > 0) this.supersedeNavigation();
       else this.content?.cancelDestination();
     }
     if (action.type.startsWith("page.") || action.type.startsWith("view.")) {
@@ -588,7 +634,7 @@ export class PdfTabSession {
     const committedScale = this.lastCommittedRender.customScale;
     const baseScale = this.wheelTargetScale ?? committedScale;
     const exponent = Math.max(-128, Math.min(128, steps));
-    const targetScale = Math.max(0.1, Math.min(8, baseScale * Math.pow(1.1, exponent)));
+    const targetScale = clampReaderScale(baseScale * Math.pow(1.1, exponent));
     if (targetScale === committedScale && this.wheelSettlement === undefined) {
       this.resetWheelZoom();
       if (this.reader.snapshot.zoomMode === "custom") return Promise.resolve(false);
@@ -644,7 +690,7 @@ export class PdfTabSession {
     }
     if (result.steps === 0) return Promise.resolve(false);
     const committedScale = this.wheelTargetScale ?? this.lastCommittedRender?.customScale ?? this.reader.snapshot.customScale;
-    if ((result.steps > 0 && committedScale >= 8) || (result.steps < 0 && committedScale <= 0.1)) {
+    if ((result.steps > 0 && committedScale >= MAX_READER_SCALE) || (result.steps < 0 && committedScale <= MIN_READER_SCALE)) {
       this.resetWheelZoom();
     }
     const host = this.options.canvasHost;
@@ -684,6 +730,7 @@ export class PdfTabSession {
     this.wheelReject = undefined;
     this.wheelSettlement = undefined;
     resolve?.(false);
+    this.flushDeferredViewportSynchronization();
   }
   private async drainWheelZoom(generation: number): Promise<void> {
     let outcome = false;
@@ -748,6 +795,7 @@ export class PdfTabSession {
         this.wheelAnchor = undefined;
         if (failure !== undefined) { this.resetWheelZoom(); reject?.(failure); }
         else resolve?.(outcome);
+        this.flushDeferredViewportSynchronization();
       }
     }
   }
@@ -788,12 +836,44 @@ export class PdfTabSession {
     return this.openingFitRenderPending ? this.renderOpeningFitPage() : this.renderCurrentViewPreservingAnchor();
   }
   private async renderCurrentViewPreservingAnchor(): Promise<boolean> {
+    this.presentationSettlements += 1;
+    try { return await this.settleCurrentView(); }
+    finally { this.presentationSettlements -= 1; this.flushDeferredViewportSynchronization(); }
+  }
+  private async settleCurrentView(): Promise<boolean> {
     const navigationIntent = this.navigationIntent;
+    const activityGeneration = this.activityGeneration;
+    const renderIntent = this.renderIntent;
+    const prior = this.lastCommittedRender;
+    const geometryRevision = this.viewportGeometryRevision;
+    const anchor = this.pdfReader.captureScrollAnchor();
+    const current = (): boolean => !this.closed && this.isForegroundActive()
+      && navigationIntent === this.navigationIntent && activityGeneration === this.activityGeneration
+      && renderIntent === this.renderIntent && geometryRevision === this.viewportGeometryRevision;
     const rendered = await this.renderPage(this.reader.snapshot.page);
-    if (rendered && navigationIntent === this.navigationIntent) {
-      await this.synchronizeViewport(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight);
+    if (!rendered || !current()) return false;
+    if (this.pdfReader.presentationTopology !== "continuous") return true;
+    const synchronized = await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current);
+    if (synchronized || !current() || prior === undefined || anchor === undefined) return synchronized && current();
+    const failureStatus = this.reader.snapshot.status;
+    const restored = await this.pdfReader.renderPageWithTransform(prior.page, {
+      scale: prior.customScale, rotation: prior.rotationQuarterTurns * 90, devicePixelRatio: prior.devicePixelRatio,
+    }, current, prior.zoomMode === "fit-page" ? "single-page" : "continuous", anchor);
+    if (!current()) return false;
+    if (!restored) {
+      this.setStatus("PDF viewport rollback failed after keyboard zoom.");
+      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     }
-    return rendered;
+    this.reader.restoreView(prior);
+    this.lastCommittedRender = prior;
+    if (prior.zoomMode !== "fit-page"
+      && !await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current)) {
+      if (!current()) return false;
+      this.setStatus("PDF viewport rollback failed after keyboard zoom.");
+      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    }
+    if (current()) this.setStatus(failureStatus);
+    return false;
   }
   public async resolveDestinationPage(reference: unknown): Promise<number | null> {
     if (this.closed || !this.isForegroundActive()) return null;
@@ -865,7 +945,7 @@ export class PdfTabSession {
       if (!guard()) return { kind: "stale" };
       const view = resolvePdfDestinationView(destination, snapshot.customScale, targetSize,
         this.availableContentSize(), snapshot.rotationQuarterTurns,
-        (scale) => Math.max(0.1, Math.min(8, scale)));
+        clampReaderScale);
       if (view === undefined) return { kind: "rejected" };
       if (!guard()) return { kind: "stale" };
       const mode = destination[1];
@@ -1131,7 +1211,7 @@ export class PdfTabSession {
       if (!Number.isFinite(available.width) || available.width <= 0 || !Number.isFinite(available.height) || available.height <= 0) return undefined;
       scale = snapshot.zoomMode === "fit-width" ? available.width / size.width : Math.min(available.width / size.width, available.height / size.height);
     }
-    return { scale: Math.max(0.1, Math.min(8, scale)), rotation, devicePixelRatio: this.devicePixelRatio() };
+    return { scale: clampReaderScale(scale), rotation, devicePixelRatio: this.devicePixelRatio() };
   }
   private devicePixelRatio(): number { return typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1); }
 
@@ -1193,6 +1273,7 @@ export class PdfTabSession {
       this.activitySettling = true;
       this.foregroundSuspended = false;
       this.activityGeneration += 1;
+      this.flushDeferredViewportSynchronization();
       this.content?.suspend();
       const suspend = Promise.resolve().then(async () => this.pdfReader.suspend());
       const revokeAuthority = Promise.resolve().then(async () => this.content?.synchronizeResidentPages([]));
@@ -1369,15 +1450,18 @@ export class PdfTabSession {
       const revision = this.openingFitRenderRevision;
       const documentGeneration = committed.documentGeneration;
       const fallbackOrigin = this.lastCommittedRender;
+      const geometryRevision = this.viewportGeometryRevision;
       void this.renderOpeningFitPage().then((rendered) => {
         const available = this.availableContentSize();
         if (!rendered && this.openingFitRenderPending && this.openingFitRenderRevision === revision
+          && this.viewportGeometryRevision === geometryRevision
           && this.reader.snapshot.documentGeneration === documentGeneration && this.lastCommittedRender === fallbackOrigin
           && available.width > 0 && available.height > 0) {
           this.setStatus("PDF presentation could not be updated.");
         }
       }, (error: unknown) => {
         if (!isAuthorityIncomplete(error) && this.openingFitRenderRevision === revision
+          && this.viewportGeometryRevision === geometryRevision
           && this.reader.snapshot.documentGeneration === documentGeneration && this.lastCommittedRender === fallbackOrigin) {
           this.setStatus("PDF presentation could not be updated.");
         }

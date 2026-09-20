@@ -1,6 +1,7 @@
+import { MAX_READER_SCALE, MIN_READER_SCALE } from "../domain/navigation/ZoomPolicy";
 export const WHEEL_ZOOM_FACTOR = 1.1;
 export const WHEEL_ZOOM_IDLE_MS = 250;
-export const WHEEL_ZOOM_MAX_STEPS = Math.ceil(Math.log(8 / 0.1) / Math.log(WHEEL_ZOOM_FACTOR));
+export const WHEEL_ZOOM_MAX_STEPS = Math.ceil(Math.log(MAX_READER_SCALE / MIN_READER_SCALE) / Math.log(WHEEL_ZOOM_FACTOR));
 
 export type WheelZoomDeltaMode = 0 | 1 | 2;
 
