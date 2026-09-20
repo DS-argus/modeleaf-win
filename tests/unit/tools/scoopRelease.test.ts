@@ -207,14 +207,17 @@ describe("Scoop release validation and notes", () => {
     expect(result.releaseNotes).not.toMatch(/initial experimental|owner accepted basic app use/iu);
     expect(result.releaseNotes).toMatch(/native behavior.*DPI scaling.*Narrator accessibility.*clean-machine installation.*signature checks are unverified/isu);
     expect(result.releaseNotes).toContain("Automated tests and package validation do not certify installed behavior.");
-    expect(result.releaseNotes).toContain("Changes since 0.1.4:");
-    expect(result.releaseNotes).toContain("rapid and held-key page navigation, boundary landings, and viewport settlement");
-    expect(result.releaseNotes).toContain("password-protected PDF support with modal password entry, incorrect-password retry, and cancellation");
     expect(result.releaseNotes).toContain("Passwords are not persisted.");
+    expect(result.releaseNotes).toContain("Changes since 0.1.5:");
+    expect(result.releaseNotes).toContain("Document actions are consolidated into File, and the empty-screen Open PDF banner is clickable.");
+    expect(result.releaseNotes).toContain("wheel/keyboard zoom, viewport settlement, and tab-presentation recovery within unchanged resource budgets");
+    expect(result.releaseNotes).toContain("Zoom is bounded to 25–400%.");
+    expect(result.releaseNotes).toContain("Password-protected PDF support was already available in 0.1.5; it is not new in this release.");
+    expect(result.releaseNotes).not.toContain("Added password-protected PDF support");
     expect(result.releaseNotes).toContain("CLI enhancements and update notifications are not included in this release.");
     expect(result.releaseNotes).toContain("The app does not download or install updates.");
-    expect(result.releaseNotes).toContain("PDF-provided links support keyboard hints with f, required external-URL confirmation, and transient internal destination-coordinate feedback.");
     expect(result.releaseNotes).toContain("Embedded table of contents (TOC) remains retired.");
+    expect(result.releaseNotes).toContain("PDF-provided links support keyboard hints with f, anchored external-URL confirmation with Enter/Escape, and transient internal destination-coordinate feedback.");
     expect(result.releaseNotes).toContain("Prerequisite: Install the Microsoft Edge WebView2 Runtime");
     expect(result.releaseNotes).toContain(
       `scoop install https://github.com/${REPOSITORY}/releases/download/${TAG}/modeleaf.json`,
