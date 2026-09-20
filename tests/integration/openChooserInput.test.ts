@@ -59,6 +59,9 @@ const createProductionReaderHost = new Function(
 ) as (documentValue: Document, tabHosts: HTMLElement) => HTMLElement;
 
 const productionFragments = [
+  sourceFragment("function dispatchActionId(", "function navigateAdjacentReaderPage(", "action ID dispatch"),
+  sourceFragment("function dispatch(action:", "const rootKeyboard =", "action dispatch"),
+  sourceLine('emptyReaderOpen.addEventListener("click"', "empty banner click listener"),
   sourceFragment("function isNativeCompositionEvent(", "function isOverlayOwnedKey(", "native composition guard"),
   sourceFragment('const SHELL_WINDOW_ID = "current-window";', "let protectedOpenSession", "overlay focus prelude"),
   sourceFragment("function focusTargetId(", "const applicationMenuOwner =", "overlay focus helpers"),
@@ -229,6 +232,8 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
     adoptChooserSnapshot,
     retainChooserFailure,
     passwordModalOpen,
+    cancelLinkHints: vi.fn(),
+    commandAvailabilityContext: () => ({ canOpenDocument: true }),
     commandPaletteKeyAction,
     isPaletteClearShortcut,
     createOverlayOwner,
@@ -345,6 +350,67 @@ function keyboard(type: "keydown" | "keyup", options: KeyOptions): KeyboardEvent
 const CANCELLED: NativeDialogOutcome = { tag: "CANCELLED" };
 
 describe("Open chooser production input wiring", () => {
+  it("removes the positioned host from the empty hit-test surface and restores it after opening", async () => {
+    const subject = await createHarness();
+    try {
+      const tabHosts = document.querySelector<HTMLElement>("#tab-hosts")!;
+      const emptyReader = document.querySelector<HTMLElement>("#empty-reader")!;
+      const publish = new Function("tabHosts", "emptyReader", "shell", sourceFragment(
+        "  tabHosts.hidden =", "  if (snapshot.reader.helpVisible", "empty/reader visibility publication",
+      ));
+      for (const emptyState of [{}, undefined, {}]) {
+        publish(tabHosts, emptyReader, { emptyState });
+        expect(tabHosts.hidden).toBe(emptyState !== undefined);
+        expect(emptyReader.hidden).toBe(emptyState === undefined);
+        expect(emptyReader.getAttribute("aria-hidden")).toBe(String(emptyState === undefined));
+      }
+    } finally { await subject.cleanup(); }
+  });
+  it.each(["button", "span", "kbd"])("routes a %s banner click once through the shared opener and restores cancel focus", async (target) => {
+    const subject = await createHarness();
+    try {
+      const element = target === "button" ? subject.emptyOpen : subject.emptyOpen.querySelector<HTMLElement>(target)!;
+      const generation = subject.api.fileOpenerModel.generation;
+      element.click();
+      await settleMicrotasks();
+      expect(subject.dialog.open).toBe(true);
+      expect(subject.api.fileOpenerModel.generation).toBe(generation + 1);
+      expect(document.activeElement).toBe(subject.input);
+      element.click();
+      await settleMicrotasks();
+      expect(subject.api.fileOpenerModel.generation).toBe(generation + 1);
+      expect(subject.commandCalls("open_pdf_dialog")).toHaveLength(0);
+      subject.input.dispatchEvent(keyboard("keydown", { key: "Escape" }));
+      expect(subject.dialog.open).toBe(false);
+      expect(document.activeElement).toBe(subject.emptyOpen);
+      subject.setPasswordModalOpen(true);
+      element.click();
+      await settleMicrotasks();
+      expect(subject.dialog.open).toBe(false);
+      expect(subject.api.fileOpenerModel.generation).toBe(generation + 1);
+    } finally { await subject.cleanup(); }
+  });
+
+  it.each(["cancel", "failure"])("guards banner reactivation while native is pending and restores %s focus", async (outcome) => {
+    const subject = await createHarness();
+    try {
+      subject.emptyOpen.click();
+      await settleMicrotasks();
+      subject.browseButton().click();
+      expect(subject.api.nativeOpenPending).toBe(true);
+      subject.emptyOpen.click();
+      await settleMicrotasks();
+      expect(subject.dialog.open).toBe(false);
+      expect(subject.commandCalls("open_pdf_dialog")).toHaveLength(1);
+      subject.nativeGates[0]!.resolve(outcome === "cancel" ? CANCELLED : { tag: "DIALOG_FAILED", reason: "PICKER_FAILED" });
+      await vi.waitFor(() => expect(subject.api.nativeOpenPending).toBe(false));
+      expect(document.activeElement).toBe(subject.emptyOpen);
+      expect(subject.reportFailure).toHaveBeenCalledTimes(outcome === "cancel" ? 0 : 1);
+      subject.emptyOpen.click();
+      await settleMicrotasks();
+      expect(subject.dialog.open).toBe(true);
+    } finally { await subject.cleanup(); }
+  });
   it("blocks chooser opening and dispatch while the password modal is active", async () => {
     const subject = await createHarness();
     try {
