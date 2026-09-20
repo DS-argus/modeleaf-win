@@ -27,12 +27,22 @@ Test edge values, failure paths, read-only invariants, ownership, cancellation, 
 
 The [publication workflow](../../.github/workflows/publish-scoop.yml) consumes exact reviewed preparation artifacts under explicit source/ZIP approval; it does not rebuild them. Release/source/ZIP/manifest and public-byte validation remain distinct from unit tests. See the maintained validators in [tools/releases](../../tools/releases) and [packaging script](../../tools/windows/package-scoop.ps1); do not invoke publication, signing, tags, or bucket promotion without owner authorization.
 
+## Headless reader zoom regression
+
+Run `node tools/qa/run-reader-zoom.mjs` from the assigned worktree with dependencies and pinned PDF.js assets available. This uses an isolated headless Edge profile, real PDF.js, and mocked native authority; it does not build Tauri or inject desktop input. Set `READER_QA_SOURCE_HASH` to the tested commit/working-tree identity and retain the evidence under `.internal/evidence/reader-zoom/`.
+
+The matrix covers the production Ctrl-wheel binding and scroll scheduler, pointer anchors, continuous/Fit Page, large and mixed-size fixtures, bounded wheel versus keyboard-equivalent session actions, bursts/reversal, DPR 1/1.25/1.5/2, dirty/evicted/resized tab restoration, overlapping metadata, tab close/reactivation, unchanged fixture hashes and empty reservations after disposal. It must assert `w`, `-`, and `=` with real session/controller ownership gates rather than mocking synchronization success. Resource-pressure and failed-compensation cases also remain covered by controller/session tests independently of the 25–400% user limits. This is not full shell keyboard routing, physical-device testing, packaged WebView2 or native/manual certification.
 ## Candidate-bound manual evidence
 
 [preview-worktree.ps1](../../tools/windows/preview-worktree.ps1) requires a named branch, installed worktree dependencies, and no running Modeleaf process, avoiding accidental single-instance routing into another binary. It uses `.internal/preview-target`, records source identity and executable SHA-256, and launches with a separate WebView2 profile. `-SkipBuild` validates its existing receipt; it is not permission to test stale output.
 
 Record the receipt/executable identity, tested inputs and actions, observed results, and untested limitations in the task handoff/PR. Do not launch `src-tauri/target/debug/modeleaf.exe` directly as standalone evidence. Printing submission is not proof of physical output or a completed Save As file. Native dialogs, multiple windows, persistence failures, associations, and printing require the corresponding real native scenarios when affected.
 
+## Native zoom and tab regression
+
+With exclusive build/preview ownership, launch the assigned candidate with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333` and `npm run preview:worktree -- -Pdf fixtures/pdf/print-mixed-rotation-4.pdf`. Then run `node tools/qa/run-reader-zoom-native.mjs <ProcessId-from-preview>`.
+
+The runner verifies the executable receipt, uses bundled WebView2 CDP keyboard/wheel/tab input through the real shell, opens the L300 public fixture through native second-instance forwarding, checks `w`, `-`, `=`, `F`, 25–400% bounds and repeated tab activation, and records transient failures and resource settlement. Debugger access only captures existing owners; it does not replace renderer/native implementations. It leaves the app open for owner review and writes evidence under `.internal/evidence/reader-zoom-native/`. This is native debug/CDP evidence, not physical human input or release certification.
 ## Native reader repeat regression
 
 Run in the assigned worktree with exclusive native build and desktop-input ownership:

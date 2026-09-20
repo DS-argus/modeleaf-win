@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { isValidPdfDestination, pdfDestinationNeedsPageSize, resolvePdfDestinationView } from "../../../src/pdf/PdfDestination";
 
-const clamp = (scale: number) => Math.max(0.1, Math.min(8, scale));
+import { clampReaderScale as clamp } from "../../../src/domain/navigation/ZoomPolicy";
 const mode = (name: string, ...operands: unknown[]) => [0, { name }, ...operands] as const;
 
 describe("PDF destination view resolution", () => {
@@ -53,5 +53,12 @@ describe("PDF destination view resolution", () => {
     expect(isValidPdfDestination([0, {}])).toBe(false);
     expect(isValidPdfDestination([0, { name: 1 }])).toBe(false);
     expect(isValidPdfDestination([0, { name: "Fit" }])).toBe(true);
+  });
+  it("bounds extreme destination zooms using the reader policy", () => {
+    const available = { width: 600, height: 400 };
+    expect(resolvePdfDestinationView(mode("XYZ", 0, 0, 100), 1, undefined, available, 0, clamp))
+      .toEqual({ zoomMode: "custom", scale: 4 });
+    expect(resolvePdfDestinationView(mode("XYZ", 0, 0, 0.01), 1, undefined, available, 0, clamp))
+      .toEqual({ zoomMode: "custom", scale: 0.25 });
   });
 });

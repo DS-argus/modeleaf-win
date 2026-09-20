@@ -166,12 +166,12 @@ describe("ReaderState", () => {
     for (let index = 0; index < 100; index += 1) {
       reader.apply({ type: "view.zoom", factor: 1.1 });
     }
-    expect(reader.snapshot.customScale).toBe(8);
+    expect(reader.snapshot.customScale).toBe(4);
 
     for (let index = 0; index < 100; index += 1) {
       reader.apply({ type: "view.zoom", factor: 1 / 1.1 });
     }
-    expect(reader.snapshot.customScale).toBe(0.1);
+    expect(reader.snapshot.customScale).toBe(0.25);
 
     reader.restoreView({ zoomMode: "fit-width", customScale: 1.25, fitPageReference: undefined, rotationQuarterTurns: -1 });
     expect(reader.snapshot).toMatchObject({

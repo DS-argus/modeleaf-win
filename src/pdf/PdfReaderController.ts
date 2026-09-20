@@ -1,3 +1,4 @@
+import { clampReaderScale } from "../domain/navigation/ZoomPolicy";
 import { PDFDataRangeTransport } from "pdfjs-dist";
 import { openFailureStatus } from "../domain/navigation/OpenFailureIdentifier";
 import type { OpaquePdfSessionMetadata } from "./PdfDataRangeAdapter";
@@ -148,6 +149,7 @@ export interface PdfLoadingTask {
   destroy(): Promise<void> | void;
   onPassword?: (updatePassword: (password: string) => void, reason: number) => void;
 }
+interface PreparedPdfPage { readonly page: PdfPage; readonly viewport: PdfViewport; }
 export interface PdfBoundary { getDocument(options: Record<string, unknown>): PdfLoadingTask; annotationMode: number; }
 export interface PdfRenderedPage {
   readonly pageNumber: number;
@@ -687,7 +689,7 @@ export class PdfReaderController {
         openingFitEvidence = {
           contentWidth,
           contentHeight,
-          scale: Math.max(0.1, Math.min(8, scale)),
+          scale: clampReaderScale(scale),
           complete,
         };
         openingTransform = this.normalizeViewTransform({
@@ -796,7 +798,7 @@ export class PdfReaderController {
         openingFitEvidence = {
           contentWidth,
           contentHeight,
-          scale: Math.max(0.1, Math.min(8, scale)),
+          scale: clampReaderScale(scale),
           complete,
         };
         openingTransform = this.normalizeViewTransform({
@@ -1037,6 +1039,23 @@ export class PdfReaderController {
       if (!this.disposed) this.options.onStatus("PDF viewport cancellation pending.");
     });
   }
+  private viewportCanvasBytes(viewport: PdfViewport, devicePixelRatio: number): number {
+    const bytes = checkedCanvasBytes(Math.max(1, Math.ceil(Math.max(1, viewport.width) * devicePixelRatio)),
+      Math.max(1, Math.ceil(Math.max(1, viewport.height) * devicePixelRatio)), 1);
+    return typeof bytes === "number" ? bytes : Number.POSITIVE_INFINITY;
+  }
+  private availableCanvasBytes(current: Candidate, requiredBytes: number): number {
+    const resources = this.options.resources;
+    const ownedBytes = [...current.residentRasters.values()].reduce((total, raster) => total + raster.reservation.amount, 0);
+    const available = (): number => RESOURCE_LIMITS.maxCanvasBytes - resources.snapshot().totals["canvas-bytes"] + ownedBytes;
+    if (requiredBytes > available() && requiredBytes <= RESOURCE_LIMITS.maxCanvasBytes) {
+      // Exercise the existing inactive-tab eviction authority for the required
+      // delta only. Optional overscan never forces another tab's eviction.
+      const admission = resources.reserve({ kind: "canvas-bytes", amount: requiredBytes - ownedBytes, sessionId: current.session.sessionId });
+      if (admission.ok) resources.release(admission.reservation);
+    }
+    return available();
+  }
   /** Synchronizes the bounded continuous resident window to finite host geometry. */
   public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     if (!Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
@@ -1054,11 +1073,38 @@ export class PdfReaderController {
       (_unused, index) => range.firstVisiblePage! + index,
     ));
 
+    const planningCurrent = (): boolean => requestSequence === this.presentationRequestSequence
+      && this.current === current && !this.disposed && (requestCommitGuard?.() ?? true);
+    const preparedPages = new Map<number, PreparedPdfPage>();
+    const pageBytes = new Map<number, number>();
+    try {
+      for (const pageNumber of window.previewPlan(range.firstVisiblePage, range.lastVisiblePage).plannedPages) {
+        const page = current.residentRasters.get(pageNumber)?.page ?? await this.getOwnedPage(current, pageNumber);
+        if (!planningCurrent()) return false;
+        const viewport = current.residentRasters.get(pageNumber)?.viewport
+          ?? page.getViewport({ scale: this.viewTransform.scale, rotation: this.viewTransform.rotation });
+        preparedPages.set(pageNumber, { page, viewport });
+        pageBytes.set(pageNumber, this.viewportCanvasBytes(viewport, this.viewTransform.devicePixelRatio));
+      }
+    } catch (error) {
+      if (planningCurrent()) this.options.onStatus(safeMessage(error));
+      return false;
+    }
+    let overscanPages = 2;
+    const requiredBytes = (overscan: number): number => window.previewPlan(range.firstVisiblePage!, range.lastVisiblePage!, overscan)
+      .plannedPages.reduce((total, page) => total + pageBytes.get(page)!, 0);
+    const availableBytes = this.availableCanvasBytes(current, requiredBytes(0));
+    if (!planningCurrent()) return false;
+    while (overscanPages > 0 && requiredBytes(overscanPages) > availableBytes) overscanPages -= 1;
+    if (requiredBytes(overscanPages) > availableBytes) {
+      this.options.onStatus(safeMessage(new Error("CANVAS_LIMIT")));
+      return false;
+    }
     const hostScrollTopAtStart = this.options.canvasHost.scrollTop;
     const checkpoint = window.checkpoint();
     const originalResidents = new Set(checkpoint.residentPages);
     const priorActivePage = current.activePageNumber;
-    const plan = window.plan(range.firstVisiblePage, range.lastVisiblePage);
+    const plan = window.plan(range.firstVisiblePage, range.lastVisiblePage, overscanPages);
     const activateViewportCenter = (viewportTop: number): number => {
       const center = window.pageNearestViewportCenter(
         plan.plannedPages.map((pageNumber) => {
@@ -1095,14 +1141,15 @@ export class PdfReaderController {
     try {
       for (const page of plan.materializePages) {
         if (!transactionCurrent()) return false;
-        while (!current.residentRasters.has(page) && current.residentRasters.size >= plan.plannedPages.length) {
+        while (!current.residentRasters.has(page) && (current.residentRasters.size >= plan.plannedPages.length
+          || this.options.resources.snapshot().totals["canvas-bytes"] + pageBytes.get(page)! > RESOURCE_LIMITS.maxCanvasBytes)) {
           const obsolete = plan.evictPages.find((candidate) => current.residentRasters.has(candidate) && candidate !== priorActivePage)
             ?? plan.evictPages.find((candidate) => current.residentRasters.has(candidate));
           if (obsolete === undefined) throw new Error("PDF_RESIDENT_TRANSITION_CAPACITY");
           this.evictResidentPage(current, obsolete, true);
         }
         window.begin(page, plan.generation);
-        const committed = await this.renderPageInternal(page, this.viewTransform, transactionCurrent);
+        const committed = await this.renderPageInternal(page, this.viewTransform, transactionCurrent, undefined, current.topology, "preserve-anchor", preparedPages.get(page));
         if (!committed) {
           if (transactionCurrent()) this.options.onStatus(`PDF viewport page ${page} could not be materialized.`);
           return false;
@@ -1119,7 +1166,7 @@ export class PdfReaderController {
       if (!transactionCurrent()) return false;
       window.updateMetrics(stagedMetrics);
       this.prunePageFrames(plan.plannedPages);
-      const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage);
+      const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage, overscanPages);
       this.applyWindowSpacers(current, finalPlan);
       const latestViewportTop = scrollTop + this.options.canvasHost.scrollTop - hostScrollTopAtStart;
       const center = activateViewportCenter(latestViewportTop);
@@ -1265,14 +1312,23 @@ export class PdfReaderController {
     const owner = this.current;
     const guard = (): boolean => owner !== undefined && this.current === owner && !this.disposed && (requestCommitGuard?.() ?? true);
     if (!guard()) return false;
-    let anchor: PdfScrollAnchor | undefined;
-    for (let attempt = 0; attempt < 4 && guard(); attempt += 1) {
+    // A resident pointer point remains usable even if the old high-scale window
+    // cannot materialize its neighbours. Do not make zoom-out depend on that work.
+    await this.awaitViewportIdle();
+    if (!guard()) return false;
+    const residentAnchor = this.capturePointerAnchor(viewportOffset);
+    let anchor = this.presentationTopology === "single-page"
+      || (residentAnchor !== undefined && residentAnchor.viewportOffset.x === viewportOffset.x
+        && residentAnchor.viewportOffset.y === viewportOffset.y)
+      ? residentAnchor : undefined;
+    for (let attempt = 0; anchor === undefined && attempt < 4 && guard(); attempt += 1) {
       const geometry = this.contentViewportGeometry();
       if (!await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, guard)) continue;
       anchor = this.capturePointerAnchor(viewportOffset);
       if (anchor !== undefined) break;
     }
     if (anchor === undefined || !guard()) return false;
+    const priorTopology = this.presentationTopology;
     const priorTransform = this.viewTransform;
     const priorAnchor = this.captureScrollAnchor();
     if (priorAnchor === undefined) return false;
@@ -1282,7 +1338,7 @@ export class PdfReaderController {
       if (committed && await this.settlePointerAnchor(anchor, guard)) return true;
     } catch (error) { failure = error; }
     if (!guard()) return false;
-    const restored = await this.renderPageWithTransform(priorAnchor.pageNumber, priorTransform, guard, "continuous", priorAnchor);
+    const restored = await this.renderPageWithTransform(priorAnchor.pageNumber, priorTransform, guard, priorTopology, priorAnchor);
     if (!guard()) return false;
     if (!restored || !await this.settlePointerAnchor(priorAnchor, guard)) {
       if (!guard()) return false;
@@ -1302,7 +1358,9 @@ export class PdfReaderController {
     for (let attempt = 0; attempt < 4 && guard(); attempt += 1) {
       this.restoreScrollAnchor(anchor);
       const geometry = this.contentViewportGeometry();
-      if (!await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, guard) || !guard()) continue;
+      if (this.current?.topology === "continuous"
+        && !await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, guard)) continue;
+      if (!guard()) return false;
       this.restoreScrollAnchor(anchor);
       const landing = this.captureViewportLandingAtOffset(anchor.pageNumber, anchor.viewportOffset);
       const reachable = this.resolveReachableViewportLanding(anchor);
@@ -1419,12 +1477,11 @@ export class PdfReaderController {
       { length: range.lastVisiblePage - range.firstVisiblePage + 1 },
       (_unused, index) => range.firstVisiblePage! + index,
     );
-    const plan = window.previewPlan(range.firstVisiblePage, range.lastVisiblePage);
+    // Overscan is optional and may have been reduced by byte admission. Verify
+    // the committed plan and every visible page, not a fresh full-overscan plan.
     const plannedPages = window.checkpoint().plannedPages;
-    const planUnchanged = plannedPages.length === plan.plannedPages.length
-      && plannedPages.every((page, index) => page === plan.plannedPages[index]);
-    if (!planUnchanged || plan.materializePages.length > 0 || plan.evictPages.length > 0
-      || !visiblePages.every((page) => current.residentRasters.has(page))) return false;
+    if (!plannedPages.every(page => current.residentRasters.has(page))
+      || !visiblePages.every(page => plannedPages.includes(page) && current.residentRasters.has(page))) return false;
     current.visiblePageNumbers = Object.freeze(visiblePages);
     return true;
   }
@@ -1607,7 +1664,7 @@ export class PdfReaderController {
     }
   }
 
-  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor, topology: PdfPresentationTopology = this.current?.topology ?? "continuous", viewportPolicy: PdfRenderViewportPolicy = "preserve-anchor"): Promise<boolean> {
+  private async renderPageInternal(page: number, transform = this.viewTransform, requestCommitGuard?: PdfRequestCommitGuard, preEvictionAnchor?: PdfScrollAnchor, topology: PdfPresentationTopology = this.current?.topology ?? "continuous", viewportPolicy: PdfRenderViewportPolicy = "preserve-anchor", prepared?: PreparedPdfPage): Promise<boolean> {
     const current = this.current;
     if (current === undefined || current.document === undefined || this.disposed) return false;
     const cssTransformChanged = transform.scale !== this.viewTransform.scale || transform.rotation !== this.viewTransform.rotation;
@@ -1622,7 +1679,7 @@ export class PdfReaderController {
     const directPreview = !presentationChanged && activePlan === undefined ? current.window?.previewPlan(page) : undefined;
     let directPlan: PageWindowPlan | undefined;
     try {
-      const rendered = await this.renderCandidatePage(current, page, transform);
+      const rendered = await this.renderCandidatePage(current, page, transform, prepared);
       const commitSequence = this.renderSequence;
       if (this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) { this.releaseRaster(rendered); return false; }
       const retainedPages = presentationChanged
@@ -1707,10 +1764,81 @@ export class PdfReaderController {
       if (directPlan?.materializePages.includes(page)) current.window?.fail(page, directPlan.generation);
     }
   }
-  private async renderPageWithinResidentCapacity(page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard, topology: PdfPresentationTopology, viewportPolicy: PdfRenderViewportPolicy, preEvictionAnchor?: PdfScrollAnchor): Promise<boolean> {
+  private async renderPageWithinSingleResidentCapacity(
+    page: number, transform: PdfViewTransform, guard: PdfRequestCommitGuard,
+    topology: PdfPresentationTopology, viewportPolicy: PdfRenderViewportPolicy,
+    preEvictionAnchor: PdfScrollAnchor | undefined, prepared: PreparedPdfPage,
+  ): Promise<boolean> {
+    const current = this.current;
+    if (current === undefined || current.document === undefined || current.closed || this.disposed || !guard()) return false;
+    const priorTransform = this.viewTransform;
+    const priorTopology = current.topology;
+    const priorActivePage = current.activePageNumber;
+    const priorVisiblePages = current.visiblePageNumbers;
+    const priorAnchor = this.captureScrollAnchor();
+    const priorPages = [...current.residentRasters.keys()];
+    const replacementBytes = this.viewportCanvasBytes(prepared.viewport, transform.devicePixelRatio);
+    const availableBytes = this.availableCanvasBytes(current, replacementBytes);
+    if (!guard() || this.current !== current || current.closed || this.disposed) return false;
+    if (replacementBytes > availableBytes) {
+      this.options.onStatus(safeMessage(new Error("CANVAS_LIMIT")));
+      return false;
+    }
+    const replacementAnchor = viewportPolicy === "preserve-anchor"
+      ? preEvictionAnchor ?? (page === priorActivePage ? priorAnchor : undefined) : undefined;
+    for (const resident of priorPages) this.evictResidentPage(current, resident);
+    const committed = await this.renderPageInternal(page, transform, guard, replacementAnchor, topology, viewportPolicy, prepared);
+    if (committed) return true;
+    if (this.current !== current || current.closed || this.disposed) return false;
+    this.viewportRollback = true;
+    try {
+      let rollbackIncomplete = false;
+      for (const resident of [...current.residentRasters.keys()]) this.evictResidentPage(current, resident);
+      for (const resident of priorPages) {
+        if (!await this.renderPageInternal(resident, priorTransform, undefined,
+          resident === priorActivePage ? priorAnchor : undefined, priorTopology, "preserve-anchor")) rollbackIncomplete = true;
+      }
+      const authorityResidents = [...current.residentRasters.keys()].filter(resident => priorPages.includes(resident)).sort((a, b) => a - b);
+      if (priorVisiblePages === undefined) delete current.visiblePageNumbers;
+      else current.visiblePageNumbers = priorVisiblePages;
+      const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage) ? priorActivePage : authorityResidents[0];
+      if (restoredActive === undefined) delete current.activePageNumber;
+      else current.activePageNumber = restoredActive;
+      for (const frame of this.options.canvasHost.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")) {
+        frame.dataset.activePage = String(restoredActive !== undefined && Number(frame.dataset.page) === restoredActive);
+      }
+      this.viewTransform = priorTransform;
+      if (this.options.onBeforeResidentCommit !== undefined) {
+        try {
+          const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
+          compensation?.finalize();
+        } catch (error) {
+          this.options.onStatus(`PDF direct authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+        }
+      }
+      if (rollbackIncomplete || authorityResidents.length !== priorPages.length || current.topology !== priorTopology || current.window !== undefined) {
+        this.options.onStatus("PDF direct rollback was incomplete.");
+        throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+      }
+      return false;
+    } finally { this.viewportRollback = false; }
+  }
+  private async renderPageWithinResidentCapacity(
+    page: number,
+    transform: PdfViewTransform,
+    guard: PdfRequestCommitGuard,
+    topology: PdfPresentationTopology,
+    viewportPolicy: PdfRenderViewportPolicy,
+    preEvictionAnchor: PdfScrollAnchor | undefined,
+    prepared: PreparedPdfPage,
+  ): Promise<boolean> {
     const current = this.current;
     const window = current?.window;
-    if (current === undefined || current.document === undefined || window === undefined || this.disposed) return false;
+    if (current === undefined || current.document === undefined || current.closed || this.disposed) return false;
+    if (window === undefined) {
+      return this.renderPageWithinSingleResidentCapacity(page, transform, guard, topology, viewportPolicy, preEvictionAnchor, prepared);
+    }
     const checkpoint = window.checkpoint();
     const priorActivePage = current.activePageNumber;
     const priorTransform = this.viewTransform;
@@ -1718,15 +1846,27 @@ export class PdfReaderController {
     const previewEvictions = topology === current.topology && transform.scale === priorTransform.scale && transform.rotation === priorTransform.rotation
       ? window.previewPlan(page).evictPages
       : checkpoint.residentPages;
-    const victim = current.residentRasters.has(page) && page !== priorActivePage
-      ? page
-      : previewEvictions.find((candidate) => candidate !== priorActivePage && current.residentRasters.has(candidate))
-        ?? [...current.residentRasters.keys()].find((candidate) => candidate !== priorActivePage)
-        ?? [...current.residentRasters.keys()][0];
-    if (victim === undefined) return this.renderPageInternal(page, transform, guard, retainedPreEvictionAnchor, topology, viewportPolicy);
-    this.evictResidentPage(current, victim);
+    if (!guard()) return false;
+    const replacementBytes = this.viewportCanvasBytes(prepared.viewport, transform.devicePixelRatio);
+    const availableBytes = this.availableCanvasBytes(current, replacementBytes);
+    if (!guard() || this.current !== current || current.closed || this.disposed) return false;
+    if (replacementBytes > availableBytes) {
+      this.options.onStatus(safeMessage(new Error("CANVAS_LIMIT")));
+      return false;
+    }
+    // Keep the active page until last, but release as many obsolete backings as
+    // the replacement needs. A single count-based victim is not a byte budget.
+    const victims = [...current.residentRasters.keys()].sort((left, right) =>
+      Number(left === priorActivePage) - Number(right === priorActivePage)
+      || Number(!previewEvictions.includes(left)) - Number(!previewEvictions.includes(right)));
+    for (const victim of victims) {
+      const countFull = current.residentRasters.size >= checkpoint.plannedPages.length;
+      const bytesFull = this.options.resources.snapshot().totals["canvas-bytes"] + replacementBytes > RESOURCE_LIMITS.maxCanvasBytes;
+      if (!countFull && !bytesFull) break;
+      this.evictResidentPage(current, victim);
+    }
     const committed = await this.renderPageInternal(page, transform, guard,
-      viewportPolicy === "preserve-anchor" ? retainedPreEvictionAnchor : undefined, topology, viewportPolicy);
+      viewportPolicy === "preserve-anchor" ? retainedPreEvictionAnchor : undefined, topology, viewportPolicy, prepared);
     if (committed) return true;
     this.viewportRollback = true;
     try {
@@ -1774,7 +1914,15 @@ export class PdfReaderController {
   private async rerenderResidentBackingsForDpr(transform: PdfViewTransform, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
     const current = this.current;
     const window = current?.window;
-    if (current === undefined || current.document === undefined || window === undefined || this.disposed) return false;
+    if (current === undefined || current.document === undefined || current.closed || this.disposed) return false;
+    if (window === undefined) {
+      const residentPage = current.activePageNumber ?? [...current.residentRasters.keys()][0];
+      const resident = residentPage === undefined ? undefined : current.residentRasters.get(residentPage);
+      if (residentPage === undefined || resident === undefined || current.residentRasters.size !== 1) return false;
+      return this.renderPageWithinSingleResidentCapacity(
+        residentPage, transform, requestCommitGuard ?? (() => true), current.topology,
+        "preserve-anchor", this.captureScrollAnchor(), { page: resident.page, viewport: resident.viewport });
+    }
     const pages = [...current.residentRasters.keys()].sort((a, b) => a - b);
     if (pages.length === 0) return false;
     const priorTransform = this.viewTransform;
@@ -1866,21 +2014,41 @@ export class PdfReaderController {
     if (requestSequence !== this.presentationRequestSequence) return false;
     const ownerCurrent = (): boolean => requestSequence === this.presentationRequestSequence
       && (requestCommitGuard?.() ?? true);
+    if (!ownerCurrent()) return false;
     const topologyChanged = topology !== this.current?.topology;
     const replacesResidentDpr = viewportPolicy === "preserve-anchor" && !topologyChanged && transform.scale === this.viewTransform.scale
       && transform.rotation === this.viewTransform.rotation
       && transform.devicePixelRatio !== this.viewTransform.devicePixelRatio
       && (this.current?.residentRasters.size ?? 0) > 1;
+    let prepared: PreparedPdfPage | undefined;
+    if (!replacesResidentDpr && this.current !== undefined) {
+      const candidate = this.current;
+      try {
+        const source = await this.getOwnedPage(candidate, page);
+        if (!ownerCurrent() || this.current !== candidate || this.disposed) return false;
+        prepared = { page: source, viewport: source.getViewport({ scale: transform.scale, rotation: transform.rotation }) };
+      } catch (error) {
+        if (ownerCurrent()) this.options.onStatus(safeMessage(error));
+        return false;
+      }
+    }
     const plannedWindowSize = this.current?.window?.checkpoint().plannedPages.length ?? 0;
-    const needsBoundedReplacement = plannedWindowSize > 0 && (this.current?.residentRasters.size ?? 0) >= plannedWindowSize;
-    if (!replacesResidentDpr && !needsBoundedReplacement) return this.renderPageInternal(page, transform, ownerCurrent, preEvictionAnchor, topology, viewportPolicy);
+    const residentCount = this.current?.residentRasters.size ?? 0;
+    const replacementNeedsEviction = residentCount > 0 && prepared !== undefined
+      && this.options.resources.snapshot().totals["canvas-bytes"]
+        + this.viewportCanvasBytes(prepared.viewport, transform.devicePixelRatio) > RESOURCE_LIMITS.maxCanvasBytes;
+    const needsBoundedReplacement = (plannedWindowSize > 0 && residentCount >= plannedWindowSize)
+      || replacementNeedsEviction;
+    if (!replacesResidentDpr && !needsBoundedReplacement) {
+      return this.renderPageInternal(page, transform, ownerCurrent, preEvictionAnchor, topology, viewportPolicy, prepared);
+    }
     let releaseSettlement!: () => void;
     const settlement = new Promise<void>((resolve) => { releaseSettlement = resolve; });
     this.viewportSettlement = settlement;
     try {
       return replacesResidentDpr
         ? await this.rerenderResidentBackingsForDpr(transform, ownerCurrent)
-        : await this.renderPageWithinResidentCapacity(page, transform, ownerCurrent, topology, viewportPolicy, preEvictionAnchor);
+        : await this.renderPageWithinResidentCapacity(page, transform, ownerCurrent, topology, viewportPolicy, preEvictionAnchor, prepared!);
     } finally {
       releaseSettlement();
       if (this.viewportSettlement === settlement) this.viewportSettlement = undefined;
@@ -1950,18 +2118,20 @@ export class PdfReaderController {
     candidate: Candidate,
     pageNumber: number,
     transform = this.viewTransform,
+    prepared?: PreparedPdfPage,
   ): Promise<RenderedCanvas> {
-    return this.renderPageUnchecked(candidate, pageNumber, transform);
+    return this.renderPageUnchecked(candidate, pageNumber, transform, prepared);
   }
 
   private async renderPageUnchecked(
     candidate: Candidate,
     pageNumber: number,
     transform: PdfViewTransform,
+    prepared?: PreparedPdfPage,
   ): Promise<RenderedCanvas> {
     if (candidate.document === undefined || candidate.closed) throw new Error("Render cancelled");
     const sequence = ++this.renderSequence;
-    const page = await this.getOwnedPage(candidate, pageNumber);
+    const page = prepared?.page ?? await this.getOwnedPage(candidate, pageNumber);
     if (candidate.closed || sequence !== this.renderSequence) throw new Error("Render cancelled");
     await this.cancelActiveRender();
     if (candidate.closed || sequence !== this.renderSequence) throw new Error("Render cancelled");
@@ -1977,7 +2147,7 @@ export class PdfReaderController {
     let raster: RenderedCanvas | undefined;
     let operation: ActiveRender | undefined;
     try {
-      const viewport = page.getViewport({ scale: transform.scale, rotation: transform.rotation });
+      const viewport = prepared?.viewport ?? page.getViewport({ scale: transform.scale, rotation: transform.rotation });
       const cssWidth = Math.max(1, viewport.width);
       const cssHeight = Math.max(1, viewport.height);
       const naturalWidth = cssWidth / transform.scale;

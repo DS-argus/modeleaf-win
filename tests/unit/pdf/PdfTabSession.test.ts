@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { PdfTabSession } from "../../../src/pdf/PdfTabSession";
-import type { PdfViewportRestoreOutcome } from "../../../src/pdf/PdfReaderController";
+import type { PdfReaderController, PdfViewportRestoreOutcome } from "../../../src/pdf/PdfReaderController";
 import type { PdfSearchResult } from "../../../src/pdf/PdfContentController";
 import { ResourceReservationManager } from "../../../src/pdf/ResourceBudget";
 function createSession(onStatus?: (status: string) => void): PdfTabSession {
@@ -1419,6 +1419,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
   });
   it("marks an interrupted render dirty and restores the current intent on reactivation", async () => {
     const session = createSession();
+    vi.spyOn((session as unknown as SessionInternals).pdfReader, "synchronizeViewport").mockResolvedValue(true);
     const internals = session as unknown as {
       onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
       pdfReader: {
@@ -1966,7 +1967,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
       const size = page === 1 ? { width: 100, height: 200 } : { width: 500, height: 50 };
       return rotation % 180 === 0 ? size : { width: size.height, height: size.width };
     });
-    vi.spyOn(internals.pdfReader, "synchronizeViewport").mockResolvedValue(false);
+    vi.spyOn(internals.pdfReader, "synchronizeViewport").mockResolvedValue(true);
     vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
       if (!guard()) return false;
       internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
@@ -1988,7 +1989,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.snapshot.reader).toMatchObject({ page: 2, fitPageReference: 1, customScale: 0.5 });
     session.apply({ type: "view.fitPage" });
     await expect(session.renderCurrentView()).resolves.toBe(true);
-    expect(session.snapshot.reader).toMatchObject({ page: 2, fitPageReference: 2, customScale: 0.12 });
+    expect(session.snapshot.reader).toMatchObject({ page: 2, fitPageReference: 2, customScale: 0.25 });
   });
   it.each([false, "exception", "after-commit"] as const)("clears a failed wheel target and restores its reference: %s", async (failure) => {
     const session = createSession();
@@ -2007,7 +2008,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(zoom.mock.calls[1]?.[0]).toMatchObject({ scale: 1.1 });
   });
 
-  it.each([{ scale: 8, steps: 1 }, { scale: 0.1, steps: -1 }])("switches fit mode at $scale without scheduling a boundary raster", async ({ scale, steps }) => {
+  it.each([{ scale: 4, steps: 1 }, { scale: 0.25, steps: -1 }])("switches fit mode at $scale without scheduling a boundary raster", async ({ scale, steps }) => {
     const session = createSession();
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
     session.reader.mountDocument(1);
@@ -2024,6 +2025,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     const session = createSession();
     const internals = session as unknown as SessionInternals & { options: { canvasHost: { clientWidth: number; clientHeight: number } } };
     session.reader.mountDocument(1);
+    vi.spyOn((session as unknown as SessionInternals).pdfReader, "synchronizeViewport").mockResolvedValue(true);
     await session.activate();
     const entered = deferred<void>();
     const release = deferred<void>();
@@ -2061,5 +2063,105 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(zoom).not.toHaveBeenCalled();
     await expect(session.handleWheelInput({ ...input, deltaY: -25, timeStamp: 3 })).resolves.toBe(true);
     expect(zoom).toHaveBeenCalledOnce();
+  });
+  it.each([true, false])("reports the required viewport settlement after keyboard rendering: %s", async settled => {
+    const session = createSession();
+    session.reader.mountDocument(2);
+    await session.activate();
+    vi.spyOn(session, "renderPage").mockResolvedValue(true);
+    const synchronize = vi.spyOn((session as unknown as SessionInternals).pdfReader, "synchronizeViewport").mockResolvedValue(settled);
+    await expect(session.renderCurrentView()).resolves.toBe(settled);
+    expect(synchronize).toHaveBeenCalledOnce();
+  });
+  it.each(["restored", "failed", "stale"] as const)("settles failed keyboard viewport publication without masking %s", async outcome => {
+    const session = createSession();
+    const internals = session as unknown as { pdfReader: PdfReaderController; onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
+    session.reader.mountDocument(2);
+    await session.activate();
+    session.reader.apply({ type: "view.zoom", factor: 1 });
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    const anchor = { pageNumber: 1, pagePoint: { x: 10, y: 20 }, viewportOffset: { x: 100, y: 50 } };
+    vi.spyOn(internals.pdfReader, "captureScrollAnchor").mockReturnValue(anchor);
+    vi.spyOn(session, "renderPage").mockImplementation(async () => {
+      internals.onPage(1, { scale: 1.1, rotation: 0, devicePixelRatio: 1 });
+      return true;
+    });
+    const synchronize = vi.spyOn((session as unknown as SessionInternals).pdfReader, "synchronizeViewport").mockImplementationOnce(async () => {
+      session.reader.setStatus("This PDF exceeds reader resource limits.");
+      if (outcome === "stale") session.apply({ type: "view.zoom", factor: 2 });
+      return false;
+    }).mockResolvedValue(true);
+    const restore = vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockResolvedValue(outcome !== "failed");
+    session.apply({ type: "view.zoom", factor: 1.1 });
+    if (outcome === "failed") {
+      await expect(session.renderCurrentView()).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+      expect(session.snapshot.reader.status).toBe("PDF viewport rollback failed after keyboard zoom.");
+    } else {
+      await expect(session.renderCurrentView()).resolves.toBe(false);
+      if (outcome === "stale") {
+        expect(restore).not.toHaveBeenCalled();
+        expect(session.snapshot.reader.customScale).toBe(2.2);
+      } else {
+        expect(restore).toHaveBeenCalledWith(1, { scale: 1, rotation: 0, devicePixelRatio: 1 }, expect.any(Function), "continuous", anchor);
+        expect(synchronize).toHaveBeenCalledTimes(2);
+        expect(session.snapshot.reader.customScale).toBe(1);
+        expect(session.snapshot.reader.status).toBe("This PDF exceeds reader resource limits.");
+      }
+    }
+  });
+  it.each(["current", "inactive", "replacement", "rejected"] as const)("replays one deferred passive viewport using live geometry: %s", async outcome => {
+    const session = createSession();
+    const reader = (session as unknown as SessionInternals).pdfReader;
+    const host = (session as unknown as { options: { canvasHost: { scrollTop: number; clientHeight: number } } }).options.canvasHost;
+    session.reader.mountDocument(2);
+    await session.activate();
+    session.apply({ type: "view.zoom", factor: 1.1 });
+    vi.spyOn(session, "renderPage").mockResolvedValue(true);
+    const entered = deferred<void>();
+    const release = deferred<boolean>();
+    const synchronize = vi.spyOn(reader, "synchronizeViewport").mockImplementationOnce(() => {
+      entered.resolve(); return release.promise;
+    }).mockResolvedValue(true);
+    if (outcome === "rejected") synchronize.mockRejectedValueOnce(new Error("passive failed"));
+    const rendering = session.renderCurrentView();
+    await entered.promise;
+    const replay = Promise.allSettled([session.synchronizeViewport(10, 100), session.synchronizeViewport(20, 100)]);
+    expect(synchronize).toHaveBeenCalledOnce();
+    host.scrollTop = 777;
+    host.clientHeight = 120;
+    if (outcome === "inactive") await session.deactivate();
+    if (outcome === "replacement") session.reader.mountDocument(3);
+    release.resolve(true);
+    await rendering;
+    const outcomes = await replay;
+    if (outcome === "inactive" || outcome === "replacement") {
+      expect(synchronize).toHaveBeenCalledOnce();
+      expect(outcomes).toEqual([{ status: "fulfilled", value: false }, { status: "fulfilled", value: false }]);
+    } else {
+      expect(synchronize).toHaveBeenCalledTimes(2);
+      expect(synchronize).toHaveBeenLastCalledWith(777, 120, expect.any(Function));
+      if (outcome === "rejected") {
+        expect(outcomes.every(result => result.status === "rejected" && result.reason.message === "passive failed")).toBe(true);
+      } else expect(outcomes).toEqual([{ status: "fulfilled", value: true }, { status: "fulfilled", value: true }]);
+    }
+  });
+  it.each([false, true])("reports opening-fit failure only while its viewport owner is current: resized=%s", async resized => {
+    const session = createSession();
+    session.reader.mountDocument(1);
+    await session.activate();
+    const internals = session as unknown as {
+      openingFitRenderPending: boolean;
+      renderOpeningFitPage: () => Promise<boolean>;
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    const fit = deferred<boolean>();
+    vi.spyOn(internals, "renderOpeningFitPage").mockReturnValue(fit.promise);
+    internals.openingFitRenderPending = true;
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    if (resized) session.invalidateViewportSynchronization();
+    fit.resolve(false);
+    await fit.promise;
+    await Promise.resolve();
+    expect(session.snapshot.reader.status === "PDF presentation could not be updated.").toBe(!resized);
   });
 });
