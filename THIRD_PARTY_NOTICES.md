@@ -73,7 +73,7 @@ The seven chrome palettes are copied from `DS-argus/modeleaf` at the recorded re
 ## Native runtime dependency licenses
 
 Inventory: cargo-about 0.9.2; x86_64-pc-windows-msvc; 229 resolved packages.
-Cargo.lock SHA-256: `3205f166769bb3d8e2db88ccdc00a799ea03e14ecf8ddd7d65ec6caa6c3ab26a`.
+Cargo.lock SHA-256: `eb61a2ca311afa78cb3342d66b563b80af1143b206e78ab4260abf5c3d54b8b1`.
 
 These dependencies retain their own terms; the product MIT license does not replace them.
 Unmodified source archives are available from the versioned links below. In particular, MPL-2.0 covered components remain available in Source Code Form under MPL-2.0 through those links; their source rights are not restricted by the product license.
