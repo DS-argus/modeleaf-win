@@ -2139,6 +2139,43 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     }
     expect(renderCalls).toBeGreaterThan(0);
   });
+  it("does not replace newer status when missing fit metadata rollback becomes stale", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientHeight: number } };
+    };
+    const reader = internals.pdfReader;
+    let topology: "continuous" | "single-page" = "continuous";
+    Object.defineProperty(reader, "presentationTopology", { configurable: true, get: () => topology });
+    const anchor = { pageNumber: 1, pagePoint: { x: 10, y: 20 }, viewportOffset: { x: 30, y: 40 } };
+    vi.spyOn(reader as unknown as { captureScrollAnchor: () => typeof anchor }, "captureScrollAnchor").mockReturnValue(anchor);
+    session.reader.mountDocument(2);
+    await session.activate();
+    let metadataCalls = 0;
+    vi.spyOn(reader, "getPageNaturalSize").mockImplementation(async () => ++metadataCalls === 3 ? undefined : { width: 100, height: 300 });
+    vi.spyOn(reader, "synchronizeViewport").mockResolvedValue(true);
+    vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (nextTopology, page, transform, guard) => {
+      if (!guard()) return false;
+      topology = nextTopology;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      if (nextTopology === "single-page") internals.options.canvasHost.clientHeight = 100;
+      return true;
+    });
+    const rollback = vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async () => {
+      session.apply({ type: "view.zoom", factor: 1.1 });
+      session.reader.setStatus("Newer presentation status");
+      return false;
+    });
+    session.apply({ type: "view.fitWidth" });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    internals.options.canvasHost.clientHeight = 85;
+    session.apply({ type: "view.fitPage" });
+    await expect(session.renderCurrentView()).resolves.toBe(false);
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(session.snapshot.reader.zoomMode).toBe("custom");
+    expect(session.snapshot.reader.status).toBe("Newer presentation status");
+  });
   it("reports bounded Fit Page geometry exhaustion after a second layout change", async () => {
     const session = createSession();
     const internals = (session as unknown as SessionInternals & {

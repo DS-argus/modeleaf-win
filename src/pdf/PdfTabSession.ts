@@ -887,7 +887,7 @@ export class PdfTabSession {
           const failureStatus = this.reader.snapshot.status;
           const statusChanged = this.readerStatusVersion !== statusVersionBeforeTransform;
           const restored = await restorePrior(failureStatus);
-          if (!restored || !statusChanged) this.setStatus("PDF presentation could not be updated.");
+          if (current() && (!restored || !statusChanged)) this.setStatus("PDF presentation could not be updated.");
           return false;
         }
         const committed = this.lastCommittedRender;
