@@ -8,7 +8,7 @@ describe("OpenError", () => {
   });
 
   it.each([
-    ["REMOTE_PATH", "unsupportedLocation"], ["PATH_REJECTED", "unsupportedLocation"],
+    ["PATH_REJECTED", "unsupportedLocation"],
     ["MISSING_FILE", "missingFile"], ["FILE_UNREADABLE", "unreadableFile"],
     ["PDF_INVALID", "malformedDocument"], ["DOCUMENT_TOO_LARGE", "malformedDocument"],
     ["SESSION_CAPACITY", undefined], ["future", undefined],

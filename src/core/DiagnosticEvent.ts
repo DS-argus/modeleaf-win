@@ -16,6 +16,7 @@ export const DIAGNOSTIC_TAGS = [
   "CONFLICT",
   "IO_FAILURE",
   "TIMEOUT",
+  "DEFERRED",
   "REDACTED",
 ] as const;
 

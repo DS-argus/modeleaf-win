@@ -19,7 +19,7 @@ impl LocalPathPolicy for PreopenUnprovable {
     }
 
     fn validate_preopen(&self, _: &Path) -> Result<(), PathPolicyError> {
-        Err(PathPolicyError::RemotePath)
+        Err(PathPolicyError::PathRejected)
     }
 }
 
@@ -88,33 +88,66 @@ fn cancel_returns_no_metadata_and_preserves_current_session() {
 }
 
 #[test]
-fn opening_rejects_network_like_candidates_before_retaining_a_session() {
+fn simulated_network_origins_are_admitted_without_path_reopen() {
     let file = fixture();
     let manager = PdfSessionManager::new();
-    assert_eq!(
-        manager.open_local(
+    let mapped = manager
+        .open_local(
             owner(),
             Path::new(r"Z:\network.pdf"),
             &Policy(DriveKind::Remote),
-            &Final(DriveKind::Fixed),
+            &Final(DriveKind::Remote),
             |_| File::open(&file),
-        ),
-        Err(PdfSessionError::RemotePath)
-    );
-    assert!(manager.assert_empty());
+        )
+        .unwrap();
+    assert_eq!(mapped.length, 8);
+    let barrier = manager
+        .cancel(&owner(), &mapped.session_id, mapped.document_generation)
+        .unwrap();
+    manager
+        .close(
+            &owner(),
+            &mapped.session_id,
+            mapped.document_generation,
+            barrier.barrier_id,
+        )
+        .unwrap();
 
-    let final_remote = PdfSessionManager::new();
+    let unc_manager = PdfSessionManager::new();
+    let unc = unc_manager
+        .open_local(
+            owner(),
+            Path::new(r"\\server\share\network.pdf"),
+            &Policy(DriveKind::Remote),
+            &Final(DriveKind::Remote),
+            |_| File::open(&file),
+        )
+        .unwrap();
+    let barrier = unc_manager
+        .cancel(&owner(), &unc.session_id, unc.document_generation)
+        .unwrap();
+    unc_manager
+        .close(
+            &owner(),
+            &unc.session_id,
+            unc.document_generation,
+            barrier.barrier_id,
+        )
+        .unwrap();
+    let local_to_remote = PdfSessionManager::new();
     assert_eq!(
-        final_remote.open_local(
+        local_to_remote.open_local(
             owner(),
             Path::new(r"C:\reparse.pdf"),
             &Policy(DriveKind::Fixed),
             &Final(DriveKind::Remote),
             |_| File::open(&file),
         ),
-        Err(PdfSessionError::RemotePath)
+        Err(PdfSessionError::PathRejected)
     );
-    assert!(final_remote.assert_empty());
+    assert!(local_to_remote.assert_empty());
+    assert!(manager.assert_empty());
+    assert!(unc_manager.assert_empty());
     fs::remove_file(file).unwrap();
 }
 
@@ -133,7 +166,7 @@ fn reparse_like_input_is_rejected_before_the_opener_runs() {
         },
     );
 
-    assert_eq!(result, Err(PdfSessionError::RemotePath));
+    assert_eq!(result, Err(PdfSessionError::PathRejected));
     assert_eq!(opener_calls, 0);
     assert!(manager.assert_empty());
 }

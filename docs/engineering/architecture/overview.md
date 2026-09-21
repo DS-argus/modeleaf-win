@@ -21,6 +21,17 @@ Normal native session closure is cancellation-barrier gated: drain reads, printi
 
 Tab-switch failures retain the failed transition phase and an exact allowlisted internal error tag in the existing status message. A failed prior-tab recovery retains its own tag without replacing the first target-activation failure. Unknown/native/PDF.js messages are classified as `UNKNOWN`; raw messages, causes, stacks, paths, document text, passwords and URLs are neither logged nor persisted by this seam. This distinguishes failure boundaries for internal reproduction; it does not establish a native tab defect or attribute one to remote-desktop latency.
 
+## Windows network PDF I/O
+
+Ordinary UNC shares and existing mapped network drives use the same native read-only retained-handle boundary as local PDFs. Direct device/verbatim input remains rejected; only a validated final handle may supply a normalized UNC identity. A fixed/removable input must not acquire network authority through a reparse redirection. Neither HTTP PDF loading nor full-document local staging is an alternate path.
+
+Native blocking work is admitted before scheduling: at most eight open operations, four protocol reads, two retained-handle metadata operations, and eight control operations. Permits belong to the actual worker, not its awaiting caller. Saturation fails explicitly; timing out or abandoning a renderer request does not free a blocked Windows operation's slot. Existing renderer range/loading deadlines remain in force.
+A single native handle-disposal worker has an eight-item bounded queue. Pending disposal still consumes the eight-session handle quota; owner/global settled checks include it. Close tombstones and successful rejection retries are published only after physical handle disposal, never merely after removing a session from the active map.
+
+Open reservations capture the native owner generation before dispatch, do not hold coordinator locks during filesystem work, and are invalidated on owner loss. Late completion cannot publish into a replacement owner. Recents load lexically without probing shares; reopen snapshots a native-owned path before releasing the store lock and doing network I/O. Only positively proven local absence may prune a recent entry. Remote failure or uncertain absence retains it.
+
+Range reads compare retained length and modification time before and after exact-length I/O; this detects observable changes, not an immutable snapshot against a concurrent writer. Window destruction invalidates authority without waiting. Immediate unsettled cleanup is logged as `DEFERRED`, not a timeout or success. Normal application quit gives cleanup its bounded drain deadline and reports remaining work before process exit; process termination is not reported as cancellation or physical settlement of a blocked call.
+
 ## Bounded zoom presentation
 
 The reader controller admits actual DPR backing bytes for required visible pages before selecting up to two optional overscan pages on each side. It reduces only overscan under pressure and accounts for replacement peak bytes; process and per-canvas limits remain authoritative. Measured page metadata is reused by the admitted render, and resident/overlay authority remains transaction-owned through compensation.

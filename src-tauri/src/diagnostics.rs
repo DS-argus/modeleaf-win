@@ -41,6 +41,7 @@ pub enum DiagnosticTag {
     Conflict,
     IoFailure,
     Timeout,
+    Deferred,
     Redacted,
 }
 
@@ -289,6 +290,7 @@ fn tag(value: DiagnosticTag) -> &'static str {
         DiagnosticTag::Conflict => "CONFLICT",
         DiagnosticTag::IoFailure => "IO_FAILURE",
         DiagnosticTag::Timeout => "TIMEOUT",
+        DiagnosticTag::Deferred => "DEFERRED",
         DiagnosticTag::Redacted => "REDACTED",
     }
 }

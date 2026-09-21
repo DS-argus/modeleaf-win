@@ -1983,11 +1983,11 @@ describe("PdfReaderController", () => {
     expect(native.cancelSession).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
   });
-  it("maps locality rejection without disturbing the committed canvas", async () => {
+  it("maps unreadable and unsafe-path failures without disturbing the committed canvas", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const native = nativeBoundary(vi.fn()
       .mockResolvedValueOnce(session("healthy", 1))
-      .mockRejectedValueOnce({ tag: "REMOTE_PATH" })
+      .mockRejectedValueOnce({ tag: "FILE_UNREADABLE" })
       .mockRejectedValueOnce({ tag: "PATH_REJECTED" }));
     const statuses: string[] = [];
     const host = document.createElement("div");
@@ -2005,7 +2005,7 @@ describe("PdfReaderController", () => {
     const canvas = publishedCanvas(host);
     await controller.open(2);
     expect(publishedCanvas(host)).toBe(canvas);
-    expect(statuses.at(-1)).toBe("Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.");
+    expect(statuses.at(-1)).toBe("Could not read this PDF.");
 
     await controller.open(3);
     expect(publishedCanvas(host)).toBe(canvas);
