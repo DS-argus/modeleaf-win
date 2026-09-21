@@ -32,6 +32,15 @@ export const MAX_DIAGNOSTIC_VERSION_LENGTH = 32;
 export const MAX_DIAGNOSTIC_PAGE = 1_000_000;
 export const MAX_DIAGNOSTIC_COUNT = 1_000_000;
 export const MAX_DIAGNOSTIC_DURATION_MS = 86_400_000;
+export const PDF_DIAGNOSTIC_STAGES = [
+  "OPEN", "OPEN_METADATA", "OPEN_MODIFIED", "OPEN_FILE_KIND", "OPEN_HEADER_READ", "OPEN_HEADER_VALIDATE", "OPEN_REWIND",
+  "RANGE_BEFORE_METADATA", "RANGE_BEFORE_MODIFIED", "RANGE_BEFORE_FILE_KIND", "RANGE_BEFORE_VALIDATE",
+  "RANGE_SEEK", "RANGE_READ", "RANGE_AFTER_METADATA", "RANGE_AFTER_MODIFIED", "RANGE_AFTER_FILE_KIND", "RANGE_AFTER_VALIDATE",
+] as const;
+export type PdfDiagnosticStage = (typeof PDF_DIAGNOSTIC_STAGES)[number];
+const PDF_REJECTION_STAGES = new Set<string>(["OPEN_FILE_KIND", "OPEN_HEADER_VALIDATE", "RANGE_BEFORE_FILE_KIND", "RANGE_AFTER_FILE_KIND"]);
+const PDF_CONFLICT_STAGES = new Set<string>(["RANGE_BEFORE_VALIDATE", "RANGE_AFTER_VALIDATE"]);
+const PDF_IO_STAGES = new Set<string>(PDF_DIAGNOSTIC_STAGES.filter((stage) => !PDF_REJECTION_STAGES.has(stage) && !PDF_CONFLICT_STAGES.has(stage)));
 export const MAX_DIAGNOSTIC_GENERATION = 9_007_199_254_740_991;
 export const MAX_DIAGNOSTIC_EPOCH_MS = 9_999_999_999_999;
 
@@ -50,6 +59,8 @@ export interface DiagnosticEvent {
   readonly count?: number;
   readonly durationMs?: number;
   readonly generation?: number;
+  readonly stage?: PdfDiagnosticStage;
+  readonly osCode?: number;
 }
 
 const EVENT_SET = new Set<string>(DIAGNOSTIC_EVENTS);
@@ -60,7 +71,7 @@ const ID_PATTERN = /^[a-f0-9]{32}$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-.][A-Za-z0-9]+)?$/;
 const KEYS = new Set<keyof DiagnosticEvent>([
   "event", "outcome", "tag", "storageClass", "epochMs", "appVersion", "runtimeVersion",
-  "traceId", "requestId", "sessionId", "page", "count", "durationMs", "generation",
+  "traceId", "requestId", "sessionId", "page", "count", "durationMs", "generation", "stage", "osCode",
 ]);
 
 /** Returns whether an untrusted value is exactly the finite native diagnostic DTO. */
@@ -84,6 +95,7 @@ export function isDiagnosticEvent(value: unknown): value is DiagnosticEvent {
     return false;
   }
   return (
+    isNativeObservation(candidate) &&
     isOptionalId(candidate.traceId) &&
     isOptionalId(candidate.requestId) &&
     isOptionalId(candidate.sessionId) &&
@@ -108,4 +120,22 @@ function isOptionalInteger(value: unknown, maximum: number): boolean {
 
 function isBoundedInteger(value: unknown, maximum: number): boolean {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+}
+
+/** Native observations are not renderer-authored diagnostics. */
+export function isRendererDiagnosticEvent(value: unknown): value is DiagnosticEvent {
+  return isDiagnosticEvent(value) && value.stage === undefined && value.osCode === undefined;
+}
+
+function isNativeObservation(candidate: Record<string, unknown>): boolean {
+  if (candidate.stage === undefined) return candidate.osCode === undefined;
+  if (candidate.event !== "PDF_SESSION" || typeof candidate.stage !== "string") return false;
+  if (PDF_IO_STAGES.has(candidate.stage)) {
+    return candidate.outcome === "FAILURE" && candidate.tag === "IO_FAILURE" &&
+      (candidate.osCode === undefined || (typeof candidate.osCode === "number" &&
+        Number.isInteger(candidate.osCode) && candidate.osCode >= -2_147_483_648 && candidate.osCode <= 2_147_483_647));
+  }
+  if (candidate.osCode !== undefined) return false;
+  if (PDF_REJECTION_STAGES.has(candidate.stage)) return candidate.outcome === "REJECTED" && candidate.tag === "VALIDATION_REJECTED";
+  return PDF_CONFLICT_STAGES.has(candidate.stage) && candidate.outcome === "FAILURE" && candidate.tag === "CONFLICT";
 }

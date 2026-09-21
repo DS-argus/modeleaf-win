@@ -48,6 +48,14 @@ Rust initializes config, state, and diagnostic services in app-local storage. Co
 
 The [native state store](../../../src-tauri/src/commands/state.rs) uses the shared persistence lock/atomic-write helpers and merges its fields while preserving unknown top-level siblings. Unknown data is not active feature authority. See [persistenceContract.test.ts](../../../tests/contract/persistenceContract.test.ts) and native persistence tests before widening state ownership. Theme commits and recent updates must surface native failures rather than reporting a durable success prematurely.
 
+## Native PDF failure observations
+
+`PdfSessionManager` captures finite operation stages and optional actual `io::Error::raw_os_error()` values before open/range error erasure. The existing public errors, protocol statuses/bodies and reader wording are unchanged. Snapshot validation compares retained length and modified time, not full file identity. An observed read failure remains evidence even when owner invalidation makes the final caller result `SESSION_CLOSING`.
+
+The existing local diagnostic DTO admits `stage` only for `PDF_SESSION`: OS-operation stages require `FAILURE`/`IO_FAILURE`; non-file/header validation stages require `REJECTED`/`VALIDATION_REJECTED`; snapshot mismatch stages require `FAILURE`/`CONFLICT`. Only OS-operation stages may carry signed i32 `osCode`; absence does not mean code zero. Renderer `record_diagnostic` ingress rejects both native-only fields. No new timeout or cancellation semantics are introduced.
+
+A scope-bound observation queues at most one failure after PDF admission/file/state locks are released. One dedicated worker drains a 32-entry nonblocking queue to the existing bounded local log (1 KiB/event, 8 KiB/file, three files). There is no success-per-range logging, network telemetry, private path/content field, or session-capability correlation. Worker creation failure, queue saturation/disconnection, sink errors and process exit can lose evidence; diagnostics are best effort, never a persistence acknowledgment or replacement PDF failure. Missing log entries are not proof of successful I/O.
+
 ## Generated inputs and durable sources
 
 - [package-lock.json](../../../package-lock.json) and [Cargo.lock](../../../src-tauri/Cargo.lock) lock dependencies; use the toolchain pins rather than inferring versions from minimum-version declarations.
