@@ -1443,7 +1443,13 @@ export class PdfReaderController {
     const quantum = 1 / (Number.isFinite(browserDpr) && browserDpr > 0 ? browserDpr : 1);
     if (Math.abs(scrollLeft - restored.scrollLeft) > quantum + 1e-6
       || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) {
-      if (owner?.topology !== "single-page") return undefined;
+      if (owner?.topology !== "single-page" || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) return undefined;
+      const style = getComputedStyle(host);
+      if (!(style.overflow === "hidden" || (style.overflowX === "hidden" && style.overflowY === "hidden"))
+        || !style.getPropertyValue("scrollbar-gutter").includes("stable")) return undefined;
+      const outerWidth = host.offsetWidth;
+      const paddingBoxWidth = outerWidth - (Number.parseFloat(style.borderLeftWidth) || 0) - (Number.parseFloat(style.borderRightWidth) || 0);
+      if (paddingBoxWidth <= geometry.clientWidth) return undefined;
       const layoutCurrent = (): boolean => !this.disposed && this.current === owner
         && owner.residentRasters.get(anchor.pageNumber) === raster
         && frame.isConnected === host.isConnected && frame.parentElement === host
@@ -1452,20 +1458,15 @@ export class PdfReaderController {
         && Math.max(host.clientHeight, host.scrollHeight) === geometry.scrollHeight
         && frame.offsetLeft + raster.canvas.offsetLeft === pageFrameOffset.x
         && frame.offsetTop + raster.canvas.offsetTop === pageFrameOffset.y;
-      for (const axis of ["scrollLeft", "scrollTop"] as const) {
-        const applied = axis === "scrollLeft" ? scrollLeft : scrollTop;
-        const requested = restored[axis];
-        if (Math.abs(applied - requested) <= quantum + 1e-6) continue;
-        if (requested < applied || applied < 0 || !layoutCurrent()) return undefined;
-        const otherAxis = axis === "scrollLeft" ? "scrollTop" : "scrollLeft";
-        const otherPosition = host[otherAxis];
-        host[axis] = axis === "scrollLeft" ? geometry.scrollWidth : geometry.scrollHeight;
-        const edge = host[axis];
-        const orthogonalUnchanged = host[otherAxis] === otherPosition;
-        host[axis] = requested;
-        if (!orthogonalUnchanged || host[otherAxis] !== otherPosition || edge !== applied
-          || host[axis] !== applied || !layoutCurrent()) return undefined;
-      }
+      if (restored.scrollLeft < scrollLeft || scrollLeft < 0 || !layoutCurrent()) return undefined;
+      host.scrollLeft = geometry.scrollWidth;
+      const edge = host.scrollLeft;
+      const orthogonalUnchanged = host.scrollTop === scrollTop;
+      host.scrollLeft = restored.scrollLeft;
+      const expectedEdge = Math.max(0, geometry.scrollWidth - paddingBoxWidth);
+      if (!orthogonalUnchanged || host.scrollTop !== scrollTop || edge !== scrollLeft
+        || host.scrollLeft !== scrollLeft || Math.abs(edge - expectedEdge) > quantum + 1e-6
+        || host.offsetWidth !== outerWidth || !layoutCurrent()) return undefined;
     }
     const landing = this.captureViewportLandingAtOffset(anchor.pageNumber, anchor.viewportOffset);
     return landing === undefined ? undefined : { scrollLeft, scrollTop, landing };

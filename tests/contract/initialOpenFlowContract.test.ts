@@ -93,7 +93,8 @@ describe("initial open flow contract", () => {
     expect(main).toContain('behavior: "instant"');
     const scroll = main.slice(main.indexOf('if (type.startsWith("scroll."))'), main.indexOf("const rootKeyboard ="));
     expect(scroll).not.toContain("wheelPageDirection");
-    expect(main).toContain('active().session.snapshot.reader.zoomMode === "fit-page"');
+    expect(main).toContain('active().session.committedPresentation ?? active().session.snapshot.reader');
+    expect(main).toContain('currentPresentation.zoomMode === "fit-page"');
     expect(main).not.toContain("turnFittedPage");
     expect(main).toContain("fitPageScrollDirection");
     expect(main).toContain('type === "scroll.byCssPixels" && action.axis === "vertical"');

@@ -1537,10 +1537,13 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
-  it.each(["edge", "ordinary", "interior", "orthogonal", "layout"] as const)("proves single-page browser edge without accepting %s discrepancies", async (behavior) => {
+  it.each(["edge", "ordinary", "interior", "orthogonal", "layout", "no-gutter", "wrong-edge"] as const)("proves single-page browser edge without accepting %s discrepancies", async (behavior) => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     vi.stubGlobal("devicePixelRatio", 1.25);
     const host = document.createElement("div");
+    host.style.overflow = "hidden";
+    host.style.setProperty("scrollbar-gutter", behavior === "no-gutter" ? "auto" : "stable");
+    Object.defineProperty(host, "offsetWidth", { configurable: true, value: 55 });
     let width = 40;
     Object.defineProperties(host, {
       clientWidth: { configurable: true, get: () => width }, clientHeight: { configurable: true, value: 80 },
@@ -1563,7 +1566,7 @@ describe("PdfReaderController", () => {
         writes.push(value);
         if (behavior === "ordinary") left = Math.min(24, Math.max(0, value));
         else if (behavior === "interior") left = value === 15 ? 9 : Math.min(24, Math.max(0, value));
-        else left = Math.min(9, Math.max(0, value));
+        else left = Math.min(behavior === "wrong-edge" ? 7 : 9, Math.max(0, value));
         if (value === 64 && behavior === "orthogonal") host.scrollTop = 1;
         if (value === 64 && behavior === "layout") width = 41;
       } });
@@ -1572,7 +1575,7 @@ describe("PdfReaderController", () => {
       if (behavior === "edge" || behavior === "ordinary") {
         expect(result).toMatchObject({ scrollLeft: behavior === "edge" ? 9 : 15, scrollTop: 0, landing: { pageIndex: 0 } });
       } else expect(result).toBeUndefined();
-      expect(writes).toEqual(behavior === "ordinary" ? [15] : [15, 64, 15]);
+      expect(writes).toEqual(behavior === "ordinary" || behavior === "no-gutter" ? [15] : [15, 64, 15]);
     } finally { await controller.dispose(); resources.assertEmpty(); vi.unstubAllGlobals(); }
   });
   it("restores a canonical PDF-space anchor within half a point through zoom and rotation", async () => {
