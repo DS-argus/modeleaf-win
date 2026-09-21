@@ -505,14 +505,16 @@ impl NativePdfDiagnostics {
             } else {
                 PdfDiagnosticWorker::Stopped
             },
-            dropped: self
-                .counters
-                .dropped
-                .load(std::sync::atomic::Ordering::Relaxed),
-            write_failures: self
-                .counters
-                .write_failures
-                .load(std::sync::atomic::Ordering::Relaxed),
+            dropped: Some(
+                self.counters
+                    .dropped
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
+            write_failures: Some(
+                self.counters
+                    .write_failures
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            ),
         }
     }
     pub(crate) fn report_renderer(
@@ -910,16 +912,18 @@ pub enum PdfDiagnosticWorker {
 pub struct PdfDiagnosticReceipt {
     pub delivery: PdfDiagnosticDelivery,
     pub worker: PdfDiagnosticWorker,
-    pub dropped: u32,
-    pub write_failures: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_failures: Option<u32>,
 }
 impl PdfDiagnosticReceipt {
     pub(crate) fn unavailable() -> Self {
         Self {
             delivery: PdfDiagnosticDelivery::Unavailable,
             worker: PdfDiagnosticWorker::Unavailable,
-            dropped: 0,
-            write_failures: 0,
+            dropped: None,
+            write_failures: None,
         }
     }
 }
@@ -958,6 +962,18 @@ mod renderer_failure_tests {
         }
     }
 
+    #[test]
+    fn unavailable_worker_omits_unobserved_counters() {
+        let receipt = PdfDiagnosticReceipt::unavailable();
+        assert_eq!(receipt.dropped, None);
+        assert_eq!(receipt.write_failures, None);
+        assert_eq!(
+            serde_json::to_value(receipt).unwrap(),
+            serde_json::json!({
+                "delivery": "UNAVAILABLE", "worker": "UNAVAILABLE"
+            })
+        );
+    }
     #[test]
     fn renderer_matrix_round_trips_without_native_provenance() {
         let matrix: Vec<(
@@ -1070,8 +1086,8 @@ mod renderer_failure_tests {
         assert_eq!(queued.worker, PdfDiagnosticWorker::Running);
         let dropped = sink.report_renderer(&request()).unwrap();
         assert_eq!(dropped.delivery, PdfDiagnosticDelivery::Dropped);
-        assert_eq!(dropped.dropped, 1);
-        assert_eq!(dropped.write_failures, 0);
+        assert_eq!(dropped.dropped, Some(1));
+        assert_eq!(dropped.write_failures, Some(0));
         assert_eq!(
             receiver.recv().unwrap().renderer_code,
             Some(PdfRendererCode::Load)
@@ -1084,7 +1100,10 @@ mod renderer_failure_tests {
         sink.counters
             .dropped
             .store(1_000_000, std::sync::atomic::Ordering::Relaxed);
-        assert_eq!(sink.report_renderer(&request()).unwrap().dropped, 1_000_000);
+        assert_eq!(
+            sink.report_renderer(&request()).unwrap().dropped,
+            Some(1_000_000)
+        );
         assert_eq!(
             PdfDiagnosticReceipt::unavailable().worker,
             PdfDiagnosticWorker::Unavailable
@@ -1106,7 +1125,10 @@ mod renderer_failure_tests {
             PdfDiagnosticDelivery::Queued
         );
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(sink.report_renderer(&request()).unwrap().write_failures, 0);
+        assert_eq!(
+            sink.report_renderer(&request()).unwrap().write_failures,
+            Some(0)
+        );
         release.send(()).unwrap();
         observed.recv_timeout(Duration::from_secs(5)).unwrap();
         // The second sink entry proves the first error has already been accounted for.

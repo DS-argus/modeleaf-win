@@ -6,11 +6,11 @@ export const PDF_FAILURE_CODES = [
 ] as const;
 export type PdfFailureCode = (typeof PDF_FAILURE_CODES)[number];
 export interface PdfFailureDiagnostic { readonly code: PdfFailureCode; readonly httpStatus?: number; }
-export interface PdfDiagnosticReceipt {
-  readonly delivery: "QUEUED" | "DROPPED" | "UNAVAILABLE";
-  readonly worker: "RUNNING" | "STOPPED" | "UNAVAILABLE";
-  readonly dropped: number;
-  readonly writeFailures: number;
+export type PdfDiagnosticReceipt =
+  | { readonly delivery: "UNAVAILABLE"; readonly worker: "UNAVAILABLE" }
+  | { readonly delivery: "QUEUED" | "DROPPED" | "UNAVAILABLE"; readonly worker: "RUNNING" | "STOPPED"; readonly dropped: number; readonly writeFailures: number };
+export class PdfDiagnosticBusyError extends Error {
+  public constructor() { super("PDF_DIAGNOSTIC_BUSY"); }
 }
 const codes = new Set<string>(PDF_FAILURE_CODES);
 export function isPdfFailureDiagnostic(value: unknown): value is PdfFailureDiagnostic {
@@ -45,6 +45,7 @@ export function pdfFailureStatus(message: string, failure: PdfFailureDiagnostic)
   return `${message} [${failure.code}${failure.httpStatus === undefined ? "" : `:${failure.httpStatus}`}]`;
 }
 export function diagnosticReceiptStatus(receipt: PdfDiagnosticReceipt): string {
+  if (receipt.worker === "UNAVAILABLE") return "diagnostic unavailable; worker unavailable";
   return `diagnostic ${receipt.delivery.toLowerCase()}; worker ${receipt.worker.toLowerCase()}; dropped ${receipt.dropped}; write failures ${receipt.writeFailures}`;
 }
 
@@ -61,14 +62,14 @@ export function presentPdfFailure(
   if (report === undefined) return;
   void Promise.resolve().then(() => report(failure)).then((receipt) => {
     if (isCurrent(initial)) publish(`${initial} (${diagnosticReceiptStatus(receipt)})`);
-  }, () => {
-    if (isCurrent(initial)) publish(`${initial} (diagnostic unavailable)`);
+  }, (error: unknown) => {
+    if (isCurrent(initial)) publish(`${initial} (${error instanceof PdfDiagnosticBusyError ? "diagnostic client busy" : "diagnostic unavailable"})`);
   }).catch(() => { /* An observer cannot replace the original PDF failure. */ });
 }
 
 /** Validate the entire displayed suffix before carrying it across a tab rollback. */
 export function isSafePdfFailureStatus(status: string, messages: ReadonlySet<string>): boolean {
-  const match = /^(.*?) \[(PDF_[A-Z_]+)(?::([0-9]{3}))?\](?: \((diagnostic unavailable|diagnostic (?:queued|dropped|unavailable); worker (?:running|stopped|unavailable); dropped ([0-9]{1,7}); write failures ([0-9]{1,7}))\))?$/.exec(status);
+  const match = /^(.*?) \[(PDF_[A-Z_]+)(?::([0-9]{3}))?\](?: \((diagnostic unavailable|diagnostic client busy|diagnostic unavailable; worker unavailable|diagnostic (?:queued|dropped|unavailable); worker (?:running|stopped); dropped ([0-9]{1,7}); write failures ([0-9]{1,7}))\))?$/.exec(status);
   if (match === null || !messages.has(match[1]!)) return false;
   const failure = { code: match[2], ...(match[3] === undefined ? {} : { httpStatus: Number(match[3]) }) };
   return isPdfFailureDiagnostic(failure) && (match[5] === undefined || Number(match[5]) <= 1_000_000) &&

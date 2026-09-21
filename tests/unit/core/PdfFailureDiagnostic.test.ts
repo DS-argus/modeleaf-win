@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { DIAGNOSTIC_EVENTS, DIAGNOSTIC_OUTCOMES, DIAGNOSTIC_TAGS, isDiagnosticEvent, isRendererDiagnosticEvent } from "../../../src/core/DiagnosticEvent";
-import { PDF_FAILURE_CODES, PdfFailureError, classifyPdfFailure, isPdfFailureDiagnostic, isSafePdfFailureStatus, pdfFailureStatus, presentPdfFailure, type PdfDiagnosticReceipt } from "../../../src/core/PdfFailureDiagnostic";
+import { PDF_FAILURE_CODES, PdfFailureError, PdfDiagnosticBusyError, classifyPdfFailure, isPdfFailureDiagnostic, isSafePdfFailureStatus, pdfFailureStatus, presentPdfFailure, type PdfDiagnosticReceipt } from "../../../src/core/PdfFailureDiagnostic";
 const matrix = JSON.parse(readFileSync("tests/fixtures/pdfRendererFailures.json", "utf8")) as [string, string, string, number | null][];
 const base = { storageClass: "LOCAL", epochMs: 1, appVersion: "0.2.0", runtimeVersion: "0.0.0" };
 const receipt: PdfDiagnosticReceipt = { delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 };
@@ -44,6 +44,22 @@ describe("renderer PDF diagnostics", () => {
     expect(status).toBe("Could not read this PDF. [PDF_LOAD]");
     await vi.waitFor(() => expect(status).toBe("Could not read this PDF. [PDF_LOAD] (diagnostic unavailable)"));
     expect(report).toHaveBeenCalledOnce();
+  });
+  it("omits unobserved startup counters from unavailable health", async () => {
+    let status = "";
+    presentPdfFailure("Could not read this PDF.", { code: "PDF_LOAD" }, (value) => { status = value; }, (initial) => status === initial,
+      async () => ({ delivery: "UNAVAILABLE", worker: "UNAVAILABLE" }));
+    await vi.waitFor(() => expect(status).toBe("Could not read this PDF. [PDF_LOAD] (diagnostic unavailable; worker unavailable)"));
+    expect(isSafePdfFailureStatus(status, new Set(["Could not read this PDF."]))).toBe(true);
+    expect(isSafePdfFailureStatus("Could not read this PDF. [PDF_LOAD] (diagnostic unavailable; worker unavailable; dropped 0; write failures 0)", new Set(["Could not read this PDF."]))).toBe(false);
+  });
+  it("does not publish a delayed local-capacity rejection over newer status", async () => {
+    let status = "";
+    presentPdfFailure("Could not read this PDF.", { code: "PDF_LOAD" }, (value) => { status = value; }, (initial) => status === initial,
+      async () => { throw new PdfDiagnosticBusyError(); });
+    status = "Newer status";
+    await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(status).toBe("Newer status");
   });
   it("cannot overwrite a newer status after delayed log delivery", async () => {
     let finish!: (receipt: PdfDiagnosticReceipt) => void;

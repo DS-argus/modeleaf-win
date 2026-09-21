@@ -455,6 +455,10 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
   render();
 }
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
+  "PDF viewport rollback was incomplete.",
+  "PDF viewport rollback failed after wheel zoom.",
+  "PDF direct rollback was incomplete.",
+  "PDF DPR rollback was incomplete.",
   openFailureStatus("presentation"),
   "PDF contains no pages.",
   "This PDF no longer exists.",

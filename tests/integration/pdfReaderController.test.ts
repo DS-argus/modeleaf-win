@@ -752,6 +752,7 @@ describe("PdfReaderController", () => {
     resources.assertEmpty();
   });
   it("reconciles the exact physical subset when viewport rollback rendering fails", async () => {
+    const onStatus = vi.fn(), onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
@@ -772,12 +773,14 @@ describe("PdfReaderController", () => {
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("authority-subset", 1))), resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(10, getPage))), annotationMode: 0 }, canvasHost: host,
-      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus, onDiagnostic, onBeforeResidentCommit: publishResidents,
     });
     await controller.open(1);
     expect(await controller.synchronizeViewport(84, 30)).toBe(true);
 
     await expect(controller.synchronizeViewport(300, 120, () => guardCurrent)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(onStatus).toHaveBeenCalledWith("PDF viewport rollback was incomplete. [PDF_PRESENTATION]");
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledWith({ code: "PDF_PRESENTATION" }));
     expect(publishResidents).toHaveBeenLastCalledWith([]);
     expect(compensationFinalize).toHaveBeenCalledOnce();
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")]).toHaveLength(0);
@@ -787,6 +790,7 @@ describe("PdfReaderController", () => {
   });
 
   it("reconciles the exact physical subset when bounded direct recovery also fails", async () => {
+    const onStatus = vi.fn(), onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
@@ -802,13 +806,15 @@ describe("PdfReaderController", () => {
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("direct-subset", 1))), resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(10, getPage))), annotationMode: 0 }, canvasHost: host,
-      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus, onDiagnostic, onBeforeResidentCommit: publishResidents,
     });
     await controller.open(1);
     expect(await controller.synchronizeViewport(84, 30)).toBe(true);
     failDirect = true;
 
     await expect(controller.renderPage(10)).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(onStatus).toHaveBeenCalledWith("PDF direct rollback was incomplete. [PDF_PRESENTATION]");
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledWith({ code: "PDF_PRESENTATION" }));
     expect(publishResidents).toHaveBeenLastCalledWith([2, 3, 4, 5]);
     expect(compensationFinalize).toHaveBeenCalledOnce();
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["2", "3", "4", "5"]);
@@ -1462,6 +1468,7 @@ describe("PdfReaderController", () => {
     resources.assertEmpty();
   });
   it("reconciles and rejects a partial DPR rollback before a truthful retry", async () => {
+    const onStatus = vi.fn(), onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
@@ -1483,13 +1490,15 @@ describe("PdfReaderController", () => {
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("dpr-subset", 1))), resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 }, canvasHost: host,
-      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onBeforeResidentCommit: publishResidents,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus, onDiagnostic, onBeforeResidentCommit: publishResidents,
     });
     await controller.open(1);
     expect(await controller.synchronizeViewport(84, 30)).toBe(true);
     failDpr = true;
 
     await expect(controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 })).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(onStatus).toHaveBeenCalledWith("PDF DPR rollback was incomplete. [PDF_PRESENTATION]");
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledWith({ code: "PDF_PRESENTATION" }));
     expect(publishResidents).toHaveBeenLastCalledWith([3, 4, 5]);
     expect(compensationFinalize).toHaveBeenCalledOnce();
     expect(controller.activePageNumber).toBe(3);
@@ -3368,6 +3377,77 @@ describe("PdfReaderController", () => {
 });
 
 describe("PDF failure diagnostic delivery", () => {
+  it("reports failed wheel compensation with its precise safe message and sentinel", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const resources = new ResourceReservationManager(), onStatus = vi.fn();
+    const onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
+    const controller = new PdfReaderController({ native: nativeBoundary(vi.fn().mockResolvedValue(session("wheel-rollback", 1))), resources,
+      canvasHost: document.createElement("div"), pdf: { getDocument: () => task(documentWith(3)), annotationMode: 0 }, onCommitted: vi.fn(), onPage: vi.fn(), onStatus, onDiagnostic });
+    await controller.open(1);
+    await controller.setPresentationTopology("single-page", 1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    vi.spyOn(controller as unknown as { settlePointerAnchor: () => Promise<boolean> }, "settlePointerAnchor").mockResolvedValue(false);
+    await expect(controller.setViewTransformAtPointer({ scale: 1.1, rotation: 0, devicePixelRatio: 1 }, { x: 0, y: 0 })).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    expect(onStatus).toHaveBeenCalledWith("PDF viewport rollback failed after wheel zoom. [PDF_PRESENTATION]");
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledWith({ code: "PDF_PRESENTATION" }));
+    await controller.dispose(); resources.assertEmpty();
+  });
+  it("reports an old range failure once and cannot overwrite a replacement after delayed teardown", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("range failed"));
+    const old = { ...session("old-opening", 1), length: 2 * 1_048_576 + 1 };
+    const native = nativeBoundary(vi.fn().mockResolvedValueOnce(old).mockResolvedValueOnce(session("replacement", 2)));
+    const first = documentWith(1), second = documentWith(1);
+    const destroyEntered = deferred<void>(), destroyRelease = deferred<void>();
+    first.destroyWorker = vi.fn(() => { destroyEntered.resolve(); return destroyRelease.promise; });
+    const getDocument = vi.fn((_options: Record<string, unknown>) => task(first)).mockReturnValueOnce(task(first)).mockReturnValue(task(second));
+    const precommitEntered = deferred<void>(), precommitRelease = deferred<void>();
+    const diagnosticRelease = deferred<{ delivery: "QUEUED"; worker: "RUNNING"; dropped: number; writeFailures: number }>();
+    const onDiagnostic = vi.fn(() => diagnosticRelease.promise);
+    const statuses: string[] = [], resources = new ResourceReservationManager(), committed = vi.fn();
+    const controller = new PdfReaderController({ native, resources, canvasHost: document.createElement("div"), pdf: { getDocument, annotationMode: 0 },
+      onCommitted: committed, onPage: vi.fn(), onDiagnostic, onStatus: (status) => statuses.push(status),
+      onBeforeCommit: async (_page, commit, context) => {
+        if (context.session.sessionId === "old-opening") { precommitEntered.resolve(); await precommitRelease.promise; }
+        commit();
+      } });
+    const opening = controller.open(1);
+    await precommitEntered.promise;
+    const range = getDocument.mock.calls[0]![0]!.range as PdfProtocolRangeTransport;
+    range.requestDataRange(0, 4);
+    await Promise.all(range.settlements());
+    precommitRelease.resolve();
+    await destroyEntered.promise;
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledOnce());
+    await controller.open(1);
+    expect(committed).toHaveBeenCalledOnce();
+    expect(committed.mock.calls[0]![3]).toMatchObject({ sessionId: "replacement" });
+    const replacementStatuses = [...statuses];
+    diagnosticRelease.resolve({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
+    destroyRelease.resolve();
+    await opening;
+    expect(statuses).toEqual(replacementStatuses);
+    expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith({ code: "PDF_RANGE_FETCH" });
+    await controller.dispose();
+    expect(native.closeSession).toHaveBeenCalledTimes(2);
+    resources.assertEmpty();
+  });
+
+  it("does not suppress unrelated current render failures that reuse an Error object", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const error = new Error("invalid render");
+    const badPage = page(2);
+    badPage.render = () => ({ promise: Promise.reject(error), cancel: vi.fn() });
+    const doc = documentWith(2, vi.fn(async (number: number) => number === 1 ? page(1) : badPage));
+    const onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({ native: nativeBoundary(vi.fn().mockResolvedValue(session("current", 1))), resources,
+      canvasHost: document.createElement("div"), pdf: { getDocument: () => task(doc), annotationMode: 0 }, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(), onDiagnostic });
+    await controller.open(1);
+    expect(await controller.renderPage(2)).toBe(false);
+    expect(await controller.renderPage(2)).toBe(false);
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledTimes(2));
+    await controller.dispose(); resources.assertEmpty();
+  });
   it.each(["fetch", "status", "headers", "body", "length"] as const)("distinguishes protocol %s failure without leaking response details", async (kind) => {
     const onFailure = vi.fn();
     const response = new Response(new Uint8Array(kind === "length" ? 3 : 4), {

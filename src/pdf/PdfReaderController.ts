@@ -255,6 +255,7 @@ interface OpeningFailure {
   reject(error: Error): void;
 }
 interface Candidate {
+  readonly reportedFailures: WeakSet<object>;
   readonly session: OpenPdfResult;
   readonly task: PdfLoadingTask;
   readonly transport: { destroy(): Promise<void> };
@@ -369,21 +370,22 @@ const createOpeningFailure = (): OpeningFailure => {
 export class PdfReaderController {
   private statusRevision = 0;
   private lastStatus = "";
-  private reportedFailures = new WeakSet<object>();
   private publishStatus(message: string): void {
     this.statusRevision += 1;
     this.lastStatus = message;
     this.options.onStatus(message);
   }
-  private reportFailure(error: unknown, fallback: PdfFailureCode, message = safeMessage(error)): void {
+  private reportFailure(error: unknown, fallback: PdfFailureCode, message = safeMessage(error), reported?: WeakSet<object>): void {
+    if (this.disposed) return;
     if (typeof error === "object" && error !== null) {
-      if (this.reportedFailures.has(error)) return;
-      this.reportedFailures.add(error);
+      if (reported?.has(error)) return;
+      reported?.add(error);
     }
     const revision = this.statusRevision + 1;
+    const openSequence = this.openSequence;
     presentPdfFailure(message, classifyPdfFailure(error, fallback),
       (message) => this.publishStatus(message),
-      (initial) => !this.disposed && this.statusRevision === revision &&
+      (initial) => !this.disposed && openSequence === this.openSequence && this.statusRevision === revision &&
         (this.options.currentStatus?.() ?? this.lastStatus) === initial,
       this.options.onDiagnostic);
   }
@@ -586,7 +588,6 @@ export class PdfReaderController {
 
   private evictedScrollAnchor: { readonly pageNumber: number; readonly anchor: PdfScrollAnchor } | undefined;
   public async open(ownerGeneration: number, adoptedSession?: OpenPdfResult): Promise<void> {
-    this.reportedFailures = new WeakSet<object>();
     if (this.disposed) return;
     if (!(await this.retryPendingCleanups())) {
       if (adoptedSession !== undefined) await this.closeUnloadedSession(adoptedSession, ownerGeneration);
@@ -611,7 +612,7 @@ export class PdfReaderController {
       try {
         session = await this.options.native.openPdfDialog({ ownerGeneration });
       } catch (error) {
-        this.reportFailure(error, "PDF_OPEN_REQUEST");
+        if (!this.disposed && openSequence === this.openSequence) this.reportFailure(error, "PDF_OPEN_REQUEST");
         return;
       }
     }
@@ -626,7 +627,7 @@ export class PdfReaderController {
     }
     if (validateDocumentBytes(session.length) !== undefined) {
       await this.closeUnloadedSession(session, ownerGeneration);
-      this.reportFailure(new Error("DOCUMENT_TOO_LARGE"), "PDF_RESOURCE_LIMIT");
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(new Error("DOCUMENT_TOO_LARGE"), "PDF_RESOURCE_LIMIT");
       return;
     }
 
@@ -650,7 +651,7 @@ export class PdfReaderController {
               && (this.current === candidateRef || this.opening === candidateRef)
               && !candidateRef.closed) {
               candidateRef.transportFailure = error;
-              this.reportFailure(error, "PDF_RENDER");
+              this.reportFailure(error, "PDF_RENDER", safeMessage(error), candidateRef.reportedFailures);
               void this.disposeCandidate(candidateRef);
             }
           })
@@ -669,10 +670,11 @@ export class PdfReaderController {
     } catch (error) {
       rangeTransport?.abort();
       await this.closeUnloadedSession(session, ownerGeneration);
-      if (!this.disposed) this.reportFailure(error, "PDF_SOURCE");
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(error, "PDF_SOURCE");
       return;
     }
     const candidate: Candidate = {
+      reportedFailures: new WeakSet<object>(),
       session,
       transport,
       task,
@@ -859,8 +861,8 @@ export class PdfReaderController {
       this.options.onOpenAborted?.(session, ownerGeneration);
       if (this.opening === candidate) this.opening = undefined;
       await this.disposeCandidate(candidate);
-      if (!this.disposed) {
-        this.reportFailure(candidate.transportFailure ?? error, openingPhase);
+      if (!this.disposed && openSequence === this.openSequence) {
+        this.reportFailure(candidate.transportFailure ?? error, openingPhase, safeMessage(candidate.transportFailure ?? error), candidate.reportedFailures);
       }
     }
   }
@@ -1310,7 +1312,7 @@ export class PdfReaderController {
           }
           if (!physicalRestored && rollbackAuthorityError === undefined) {
             rollbackAuthorityError = physicalRollbackError ?? new Error("PDF_VIEWPORT_ROLLBACK_INCOMPLETE");
-            this.publishStatus("PDF viewport rollback was incomplete.");
+            this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF viewport rollback was incomplete.");
           }
         } finally {
           this.viewportRollback = false;
@@ -1422,7 +1424,7 @@ export class PdfReaderController {
     if (!guard()) return false;
     if (!restored || !await this.settlePointerAnchor(priorAnchor, guard)) {
       if (!guard()) return false;
-      this.publishStatus("PDF viewport rollback failed after wheel zoom.");
+      this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF viewport rollback failed after wheel zoom.");
       throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     }
     if (failure !== undefined) throw failure;
@@ -1927,7 +1929,7 @@ export class PdfReaderController {
         }
       }
       if (rollbackIncomplete || authorityResidents.length !== priorPages.length || current.topology !== priorTopology || current.window !== undefined) {
-        this.publishStatus("PDF direct rollback was incomplete.");
+        this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF direct rollback was incomplete.");
         throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
       }
       return false;
@@ -2011,7 +2013,7 @@ export class PdfReaderController {
         }
       }
       if (rollbackIncomplete || authorityResidents.length !== checkpoint.residentPages.length) {
-        this.publishStatus("PDF direct rollback was incomplete.");
+        this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF direct rollback was incomplete.");
         throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
       }
       return false;
@@ -2100,7 +2102,7 @@ export class PdfReaderController {
               }
             }
             if (!rollbackComplete || authorityResidents.length !== checkpoint.residentPages.length) {
-              this.publishStatus("PDF DPR rollback was incomplete.");
+              this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF DPR rollback was incomplete.");
               throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
             }
           } finally {
