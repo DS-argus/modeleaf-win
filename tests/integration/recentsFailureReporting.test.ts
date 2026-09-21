@@ -1,3 +1,5 @@
+import { classifyPdfFailure, presentPdfFailure } from "../../src/core/PdfFailureDiagnostic";
+import { createPdfFailureReporter } from "../../src/platform/PdfFailureDiagnostics";
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import ts from "typescript";
@@ -103,6 +105,7 @@ type OpenFailureHarness = {
 function createOpenFailureHarness(rejection: unknown) {
   let activeStatus = "Page 4 of 12.";
   const setStatus = vi.fn((status: string) => { activeStatus = status; });
+  const session = { reader: { setStatus }, get snapshot() { return { closed: false, status: activeStatus, reader: { documentGeneration: 1 } }; } };
   const accessibility = { announce: vi.fn() };
   const render = vi.fn();
   const renderFileOpener = vi.fn();
@@ -115,7 +118,8 @@ function createOpenFailureHarness(rejection: unknown) {
     + productionSlice("function dispatchFileOpenerEntry", "async function openFileOpener");
   const api = evaluate<OpenFailureHarness>(fragment, {
     nativeOpenError,
-    active: () => ({ session: { reader: { setStatus } } }),
+    classifyPdfFailure, presentPdfFailure, createPdfFailureReporter,
+    active: () => ({ session }),
     accessibility,
     render,
     openFailureAccessibilityError,
@@ -245,7 +249,7 @@ describe("recent failure reporting", () => {
     expect(harness.invoke).toHaveBeenCalledWith("open_recent", { recentId: entry.recentId });
     expect(harness.getModel().diagnostic).toBe(RECENT_OPEN_FAILED);
     expect(chooserRows(harness.getModel())).toHaveLength(2);
-    expect(harness.getActiveStatus()).toBe(RECENT_OPEN_FAILED);
+    expect(harness.getActiveStatus().split(" (diagnostic ")[0]).toBe(`${RECENT_OPEN_FAILED} [PDF_OPEN_REQUEST]`);
     expect(harness.setStatus).not.toHaveBeenCalledWith("The PDF could not be opened.");
     expect(harness.accessibility.announce).toHaveBeenCalledWith({ kind: "error", error: "open-unknown" });
     expect(harness.renderFileOpener).toHaveBeenCalledOnce();
@@ -259,7 +263,7 @@ describe("recent failure reporting", () => {
   ])("preserves the known picker rejection reason %s without exposing unknown text", (reason, expected) => {
     const harness = createOpenFailureHarness(new Error("unused"));
     harness.reportOpenInvokeFailure({ tag: "SELECTION_REJECTED", reason });
-    expect(harness.getActiveStatus()).toBe(expected);
+    expect(harness.getActiveStatus()).toBe(`${expected} [PDF_OPEN_REQUEST]`);
   });
   it("still applies a precise known native classification and the generic default elsewhere", async () => {
     const harness = createOpenFailureHarness({ tag: "MISSING_FILE" });
@@ -267,11 +271,11 @@ describe("recent failure reporting", () => {
     harness.dispatchFileOpenerEntry();
     await vi.waitFor(() => expect(harness.isNativeOpenPending()).toBe(false));
 
-    expect(harness.getActiveStatus()).toBe("This PDF no longer exists.");
+    expect(harness.getActiveStatus().split(" (diagnostic ")[0]).toBe("This PDF no longer exists. [PDF_OPEN_REQUEST]");
     expect(harness.accessibility.announce).toHaveBeenLastCalledWith({ kind: "error", error: "document-invalid" });
 
     harness.reportOpenInvokeFailure(new Error("unclassified"));
-    expect(harness.getActiveStatus()).toBe("Could not open PDF. [OPEN_UNKNOWN]");
-    expect(harness.setStatus).toHaveBeenLastCalledWith("Could not open PDF. [OPEN_UNKNOWN]");
+    expect(harness.getActiveStatus()).toBe("Could not open PDF. [OPEN_UNKNOWN] [PDF_OPEN_REQUEST]");
+    expect(harness.setStatus).toHaveBeenLastCalledWith("Could not open PDF. [OPEN_UNKNOWN] [PDF_OPEN_REQUEST]");
   });
 });

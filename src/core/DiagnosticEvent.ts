@@ -1,3 +1,4 @@
+import { isPdfFailureDiagnostic, type PdfFailureCode } from "./PdfFailureDiagnostic";
 export const DIAGNOSTIC_EVENTS = [
   "APPLICATION",
   "PDF_SESSION",
@@ -61,6 +62,8 @@ export interface DiagnosticEvent {
   readonly generation?: number;
   readonly stage?: PdfDiagnosticStage;
   readonly osCode?: number;
+  readonly rendererCode?: PdfFailureCode;
+  readonly httpStatus?: number;
 }
 
 const EVENT_SET = new Set<string>(DIAGNOSTIC_EVENTS);
@@ -71,7 +74,7 @@ const ID_PATTERN = /^[a-f0-9]{32}$/;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-.][A-Za-z0-9]+)?$/;
 const KEYS = new Set<keyof DiagnosticEvent>([
   "event", "outcome", "tag", "storageClass", "epochMs", "appVersion", "runtimeVersion",
-  "traceId", "requestId", "sessionId", "page", "count", "durationMs", "generation", "stage", "osCode",
+  "traceId", "requestId", "sessionId", "page", "count", "durationMs", "generation", "stage", "osCode", "rendererCode", "httpStatus",
 ]);
 
 /** Returns whether an untrusted value is exactly the finite native diagnostic DTO. */
@@ -124,10 +127,17 @@ function isBoundedInteger(value: unknown, maximum: number): boolean {
 
 /** Native observations are not renderer-authored diagnostics. */
 export function isRendererDiagnosticEvent(value: unknown): value is DiagnosticEvent {
-  return isDiagnosticEvent(value) && value.stage === undefined && value.osCode === undefined;
+  return isDiagnosticEvent(value) && value.stage === undefined && value.osCode === undefined && value.rendererCode === undefined && value.httpStatus === undefined;
 }
 
 function isNativeObservation(candidate: Record<string, unknown>): boolean {
+  if (candidate.rendererCode !== undefined) {
+    const failure = { code: candidate.rendererCode, ...(candidate.httpStatus === undefined ? {} : { httpStatus: candidate.httpStatus }) };
+    return isPdfFailureDiagnostic(failure) && candidate.event === "PDF_RENDER" && candidate.stage === undefined && candidate.osCode === undefined &&
+      candidate.outcome === (failure.code === "PDF_CANCELLED" ? "CANCELLED" : "FAILURE") &&
+      candidate.tag === (failure.code === "PDF_CANCELLED" ? "NONE" : failure.code === "PDF_TIMEOUT" ? "TIMEOUT" : "REDACTED");
+  }
+  if (candidate.httpStatus !== undefined) return false;
   if (candidate.stage === undefined) return candidate.osCode === undefined;
   if (candidate.event !== "PDF_SESSION" || typeof candidate.stage !== "string") return false;
   if (PDF_IO_STAGES.has(candidate.stage)) {

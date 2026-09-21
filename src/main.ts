@@ -1,3 +1,5 @@
+import { classifyPdfFailure, isSafePdfFailureStatus, presentPdfFailure, type PdfFailureCode } from "./core/PdfFailureDiagnostic";
+import { createPdfFailureReporter } from "./platform/PdfFailureDiagnostics";
 import "./styles/app.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -423,10 +425,22 @@ function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   const tag = value.tag === "SELECTION_REJECTED" && "reason" in value ? value.reason : value.tag;
   return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
+const reportPdfFailure = createPdfFailureReporter(invoke);
+const failureRevisions = new WeakMap<PdfTabSession, number>();
+function showPdfFailure(session: PdfTabSession, error: unknown, phase: PdfFailureCode, message: string): void {
+  const revision = (failureRevisions.get(session) ?? 0) + 1;
+  failureRevisions.set(session, revision);
+  const generation = session.snapshot.reader.documentGeneration;
+  presentPdfFailure(message, classifyPdfFailure(error, phase),
+    (status) => { session.reader.setStatus(status); render(); },
+    (initial) => !session.snapshot.closed && failureRevisions.get(session) === revision &&
+      session.snapshot.reader.documentGeneration === generation && session.snapshot.status === initial,
+    reportPdfFailure);
+}
 function reportOpenInvokeFailure(error?: unknown, fallbackStatus = openFailureStatus("unknown"), fallbackPhase: OpenFailurePhase = "unknown"): void {
   const tag = openFailureTag(error);
   const phase = openFailurePhase(error) ?? fallbackPhase;
-  active().session.reader.setStatus(tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
+  showPdfFailure(active().session, error, "PDF_OPEN_REQUEST", tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
   const openError = tag === undefined ? undefined : nativeOpenError(tag);
   const accessibleError = openError === "unsupportedLocation" ? "document-locality-denied"
     : openError === "malformedDocument" || openError === "unreadableFile" || openError === "missingFile" ? "document-invalid"
@@ -441,6 +455,14 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
   render();
 }
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
+  openFailureStatus("presentation"),
+  "PDF contains no pages.",
+  "This PDF no longer exists.",
+  "PDF resident authority rollback failed.",
+  "PDF viewport rollback failed.",
+  "PDF resident authority restore failed.",
+  "PDF direct authority restore failed.",
+  "PDF DPR authority restore failed.",
   "PDF presentation could not be updated.",
   "Could not read this PDF.",
   "This PDF path cannot be opened safely.",
@@ -451,7 +473,7 @@ const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
   "The PDF operation timed out.",
 ]);
 function safeAdoptionFailureStatus(status: string, fallbackPhase: OpenFailurePhase = "adoption"): string {
-  return SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : openFailureStatus(fallbackPhase);
+  return SAFE_ADOPTION_FAILURE_STATUSES.has(status) || isSafePdfFailureStatus(status, SAFE_ADOPTION_FAILURE_STATUSES) ? status : openFailureStatus(fallbackPhase);
 }
 let paletteActiveIndex = 0;
 let fileOpenerModel: OpenChooserModel = createOpenChooser({ tag: "READY", snapshot: { revision: "0", entries: [] } }, 0);
@@ -599,7 +621,7 @@ function renderHelpRows(): void {
 }
 function reportPresentationFailure(session: PdfTabSession, error: unknown): void {
   if (!(error instanceof Error && error.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE")) {
-    session.reader.setStatus("PDF presentation could not be updated.");
+    showPdfFailure(session, error, "PDF_PRESENTATION", "PDF presentation could not be updated.");
   }
   render();
 }
@@ -661,6 +683,7 @@ function createTab(): TabPayload {
   let announcedGeneration = -1;
   let viewportSyncDocumentGeneration = -1;
   session = new PdfTabSession({
+    onDiagnostic: reportPdfFailure,
     native,
     onPassword: (request) => {
       if (shellDisposing || request.signal.aborted) return Promise.resolve(null);
@@ -1042,7 +1065,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         await activateCurrentTab();
         active().session.reader.setStatus(candidateStatus);
         render();
-        if (candidateStatus === "Opening PDF cancelled.") {
+        if (candidateStatus === "Opening PDF cancelled." || candidateStatus.startsWith("Opening PDF cancelled. [PDF_CANCELLED]")) {
           const element = priorFocus?.isConnected && priorFocus !== document.body && !priorFocus.closest("[hidden], [inert]")
             ? priorFocus : active().session.snapshot.reader.hasDocument ? active().host : emptyReaderOpen;
           element.focus({ preventScroll: true });

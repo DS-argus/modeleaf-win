@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { openFailureStatus } from "../../../src/domain/navigation/OpenFailureIdentifier";
+import { isSafePdfFailureStatus } from "../../../src/core/PdfFailureDiagnostic";
 import { describe, expect, it, vi } from "vitest";
 import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "../../../src/application/OpenAdoptionOwnership";
 import { readFileSync } from "node:fs";
@@ -74,7 +76,7 @@ describe("OpenAdoptionOwnership", () => {
     expect(present).toHaveBeenCalledOnce();
   });
 
-  it("retains a committed empty-tab candidate until terminal rollback closes it", async () => {
+  it.each(["PDF presentation could not be updated.", "Could not open PDF. [OPEN_PRESENTATION] [PDF_LOAD]", "PDF contains no pages. [PDF_LOAD_INVALID]"])("retains a committed candidate and its safe failure through rollback: %s", async (failureStatus) => {
     const main = readFileSync("src/main.ts", "utf8");
     const fragments = main.slice(main.indexOf("const SAFE_ADOPTION_FAILURE_STATUSES"), main.indexOf("let paletteActiveIndex"))
       + main.slice(main.indexOf("const pendingOpenAdoptions"), main.indexOf("function restoreOpenFocus"))
@@ -97,7 +99,7 @@ describe("OpenAdoptionOwnership", () => {
     const candidate = makePayload();
     candidate.session.activate.mockImplementation(async () => {
       if (candidate.session.snapshot.reader.hasDocument) {
-        candidate.session.snapshot.status = "PDF presentation could not be updated.";
+        candidate.session.snapshot.status = failureStatus;
         throw failure;
       }
     });
@@ -117,6 +119,7 @@ describe("OpenAdoptionOwnership", () => {
       queueWorkspaceOwnership: queue.enqueueOwnership, cancelPagePromptOwnership: vi.fn(),
       withOpenAdoptionOwnership, adoptWithCommittedPresentation, OpenAdoptionPresentationError,
       publishActivateAndAdoptPdfTab, rollbackOpenAdoptionOwnership,
+      openFailureStatus, isSafePdfFailureStatus,
       activateCurrentTab: async () => { await active().session.activate(); render(); },
       shellDisposing: false, reportOpenInvokeFailure: errors,
       protectedOpenSession: undefined, dismissPasswordPrompt: vi.fn(),
@@ -131,7 +134,7 @@ describe("OpenAdoptionOwnership", () => {
     await expect(api.adoptRequest({ requestId: "post-commit", ownerGeneration: 1 })).rejects.toBeInstanceOf(OpenAdoptionPresentationError);
     expect(candidate.session.adopt).toHaveBeenCalledOnce();
     expect(candidate.session.close).not.toHaveBeenCalled();
-    expect(api.pendingOpenAdoptions.get("post-commit")?.failureStatus).toBe("PDF presentation could not be updated.");
+    expect(api.pendingOpenAdoptions.get("post-commit")?.failureStatus).toBe(failureStatus);
 
     api.handleOpenTerminal({ tag: "REJECTED", requestId: "post-commit", phase: "REJECT", baseReason: "ADOPTION_FAILED", cleanup: "NATIVE_COMPLETE" });
     await queue.enqueueOwnership(() => undefined);
@@ -139,7 +142,7 @@ describe("OpenAdoptionOwnership", () => {
     expect(workspace.getPayload(originalId)).toBeUndefined();
     expect(api.pendingOpenAdoptions.has("post-commit")).toBe(false);
     expect(active().session.snapshot.reader.hasDocument).toBe(false);
-    expect(active().session.snapshot.status).toBe("PDF presentation could not be updated.");
+    expect(active().session.snapshot.status).toBe(failureStatus);
     expect(errors).not.toHaveBeenCalled();
   });
 });

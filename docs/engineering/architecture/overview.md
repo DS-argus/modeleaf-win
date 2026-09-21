@@ -62,6 +62,14 @@ The existing local diagnostic DTO admits `stage` only for `PDF_SESSION`: OS-oper
 
 A scope-bound observation queues at most one failure after PDF admission/file/state locks are released. One dedicated worker drains a 32-entry nonblocking queue to the existing bounded local log (1 KiB/event, 8 KiB/file, three files). There is no success-per-range logging, network telemetry, private path/content field, or session-capability correlation. Worker creation failure, queue saturation/disconnection, sink errors and process exit can lose evidence; diagnostics are best effort, never a persistence acknowledgment or replacement PDF failure. Missing log entries are not proof of successful I/O.
 
+### Renderer failure evidence
+
+Displayed PDF failures also carry a finite `PDF_*` code. Explicit large-document transport distinguishes fetch, HTTP status, headers, body and exact length; small-document PDF.js URL loading retains structured HTTP status when PDF.js provides it. Load, metadata, first render and later presentation boundaries report separately. Original raw exceptions, URLs, source paths and document content never enter diagnostic DTOs. Rollback carries only a validated safe message/code suffix; delayed diagnostic responses cannot replace a newer status or disposed reader.
+
+The narrow `report_pdf_failure` command accepts only `{code,httpStatus?}`. HTTP codes require a 100–599 status; other codes prohibit it. Native composition creates `PDF_RENDER` events with `rendererCode`/`httpStatus`, never native `stage`/`osCode`. Cancellation is `CANCELLED`/`NONE`, timeout is `FAILURE`/`TIMEOUT`, other renderer evidence is `FAILURE`/`REDACTED`. Generic `record_diagnostic` rejects these new fields as well as native-only fields. Rust and TS share regression vectors, not generated schemas.
+
+Renderer reports share the 32-entry worker queue with native observations; at most four renderer invokes are outstanding. Receipts distinguish `QUEUED`, `DROPPED` and `UNAVAILABLE`, worker running/stopped/unavailable, and process-local drop/write-failure counters saturating at 1,000,000. These are snapshots: queued is **not persisted**, counters may change after the reply, and unavailable startup cannot reconstruct lost events. Neither diagnostics nor receipts alter PDF deadlines, retries, teardown or ownership. The visible code survives IPC/logging failure and is retained in the status tooltip when space is constrained. Normal PDF success is intentionally not logged.
+
 ## Generated inputs and durable sources
 
 - [package-lock.json](../../../package-lock.json) and [Cargo.lock](../../../src-tauri/Cargo.lock) lock dependencies; use the toolchain pins rather than inferring versions from minimum-version declarations.

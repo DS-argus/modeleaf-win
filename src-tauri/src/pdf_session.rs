@@ -546,6 +546,16 @@ impl PdfSessionManager {
             }
         }
     }
+    pub(crate) fn report_renderer_failure(
+        &self,
+        failure: &crate::diagnostics::PdfRendererFailure,
+    ) -> Result<crate::diagnostics::PdfDiagnosticReceipt, crate::diagnostics::DiagnosticError> {
+        failure.validate()?;
+        match self.diagnostics.get() {
+            Some(sink) => sink.report_renderer(failure),
+            None => Ok(crate::diagnostics::PdfDiagnosticReceipt::unavailable()),
+        }
+    }
     pub(crate) fn install_diagnostics(&self, sink: NativePdfDiagnostics) {
         assert!(
             self.diagnostics.set(sink).is_ok(),

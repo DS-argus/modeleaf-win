@@ -46,6 +46,7 @@ export interface PdfTabSnapshot {
 }
 
 export interface PdfTabSessionOptions {
+  readonly onDiagnostic?: PdfReaderControllerOptions["onDiagnostic"];
   readonly printNative?: PdfReaderControllerOptions["printNative"];
   readonly onPassword?: PdfReaderControllerOptions["onPassword"];
   readonly onPrintProgress?: (progress: PdfPrintProgress | undefined) => void;
@@ -175,6 +176,8 @@ export class PdfTabSession {
   public constructor(private readonly options: PdfTabSessionOptions) {
     this.pdfReader = new PdfReaderController({
       native: options.native,
+      ...(options.onDiagnostic === undefined ? {} : { onDiagnostic: options.onDiagnostic }),
+      currentStatus: () => this.reader.snapshot.status,
       ...(options.printNative === undefined ? {} : { printNative: options.printNative }),
       ...(options.onPrintProgress === undefined ? {} : { onPrintProgress: options.onPrintProgress }),
       ...(options.onPassword === undefined ? {} : { onPassword: options.onPassword }),

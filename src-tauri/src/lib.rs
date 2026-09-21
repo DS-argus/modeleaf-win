@@ -177,6 +177,8 @@ fn record_native_diagnostic<R: tauri::Runtime>(
         generation: None,
         stage: None,
         os_code: None,
+        renderer_code: None,
+        http_status: None,
     };
     let _ = log.record(&event);
 }
@@ -323,6 +325,13 @@ fn record_diagnostic(
     diagnostics.record(&event)
 }
 
+#[tauri::command]
+fn report_pdf_failure(
+    sessions: State<'_, PdfSessionManager>,
+    failure: diagnostics::PdfRendererFailure,
+) -> Result<diagnostics::PdfDiagnosticReceipt, diagnostics::DiagnosticError> {
+    sessions.report_renderer_failure(&failure)
+}
 const MAX_PENDING_SECOND_INSTANCE_PATHS: usize = 8;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1602,6 +1611,7 @@ pub fn run() {
             read_theme_state,
             commit_theme_state,
             record_diagnostic,
+            report_pdf_failure,
             create_app_window,
             window_close_ready,
             close_current_window,

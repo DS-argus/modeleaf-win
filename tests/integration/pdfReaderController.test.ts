@@ -151,7 +151,7 @@ describe("PdfReaderController", () => {
     await controller.open(1);
     expect(native.cancelSession).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
-    expect(statuses).toContain("Could not read this PDF.");
+    expect(statuses).toContain("Could not read this PDF. [PDF_SOURCE]");
     resources.assertEmpty();
   });
 
@@ -179,7 +179,7 @@ describe("PdfReaderController", () => {
     await Promise.all(range.settlements());
     await vi.waitFor(() => expect(native.closeSession).toHaveBeenCalledOnce());
     expect(native.cancelSession).toHaveBeenCalledOnce();
-    expect(statuses).toContain("Could not read this PDF.");
+    expect(statuses).toContain("Could not read this PDF. [PDF_RANGE_FETCH]");
     resources.assertEmpty();
   });
   it("prevents commit when the Range transport fails during opening precommit", async () => {
@@ -221,7 +221,7 @@ describe("PdfReaderController", () => {
     expect(committed).not.toHaveBeenCalled();
     expect(native.cancelSession).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
-    expect(statuses.at(-1)).toBe("Could not read this PDF.");
+    expect(statuses.at(-1)).toBe("Could not read this PDF. [PDF_RANGE_FETCH]");
     resources.assertEmpty();
   });
   it("commits only after page one renders, preserves a healthy document, and closes with each captured owner", async () => {
@@ -611,7 +611,7 @@ describe("PdfReaderController", () => {
     expect(visited).toEqual([1, 3]);
     expect(latestResult).toBe(true);
     expect(staleResult).toBe(false);
-    expect(statuses).not.toContain("Opening PDF cancelled.");
+    expect(statuses.some((status) => status.startsWith("Opening PDF cancelled."))).toBe(false);
     await controller.dispose();
     expect(native.closeSession).toHaveBeenCalledOnce();
   });
@@ -1823,7 +1823,7 @@ describe("PdfReaderController", () => {
       onStatus: (message) => statuses.push(message),
     });
     await controller.open(1);
-    expect(statuses.at(-1)).toBe("PDF contains no pages.");
+    expect(statuses.at(-1)).toBe("PDF contains no pages. [PDF_LOAD_INVALID]");
     expect(committed).not.toHaveBeenCalled();
     expect(native.closeSession).toHaveBeenCalledOnce();
     await controller.dispose();
@@ -1929,7 +1929,7 @@ describe("PdfReaderController", () => {
     protectedTask.onPassword!(vi.fn(), 1);
     await opening;
 
-    expect(statuses.at(-1)).toBe("Opening PDF cancelled.");
+    expect(statuses.at(-1)).toBe("Opening PDF cancelled. [PDF_CANCELLED]");
     expect(protectedTask.destroy).toHaveBeenCalledOnce();
     expect(native.cancelSession).toHaveBeenCalledOnce();
     expect(native.closeSession).toHaveBeenCalledOnce();
@@ -2091,11 +2091,11 @@ describe("PdfReaderController", () => {
     const canvas = publishedCanvas(host);
     await controller.open(2);
     expect(publishedCanvas(host)).toBe(canvas);
-    expect(statuses.at(-1)).toBe("Could not read this PDF.");
+    expect(statuses.at(-1)).toBe("Could not read this PDF. [PDF_OPEN_REQUEST]");
 
     await controller.open(3);
     expect(publishedCanvas(host)).toBe(canvas);
-    expect(statuses.at(-1)).toBe("This PDF path cannot be opened safely.");
+    expect(statuses.at(-1)).toBe("This PDF path cannot be opened safely. [PDF_OPEN_REQUEST]");
     await controller.dispose();
   });
   it("enforces aggregate canvas reservations while preserving the healthy document", async () => {
@@ -2159,7 +2159,7 @@ describe("PdfReaderController", () => {
       await vi.advanceTimersByTimeAsync(15_000);
       await opening;
 
-      expect(statuses.at(-1)).toBe("The PDF operation timed out.");
+      expect(statuses.at(-1)).toBe("The PDF operation timed out. [PDF_TIMEOUT]");
       expect(loadingTask.destroy).toHaveBeenCalledOnce();
       expect(native.closeSession).toHaveBeenCalledOnce();
     } finally {
@@ -3364,5 +3364,61 @@ describe("PdfReaderController", () => {
       await controller.dispose();
       resources.assertEmpty();
     }
+  });
+});
+
+describe("PDF failure diagnostic delivery", () => {
+  it.each(["fetch", "status", "headers", "body", "length"] as const)("distinguishes protocol %s failure without leaking response details", async (kind) => {
+    const onFailure = vi.fn();
+    const response = new Response(new Uint8Array(kind === "length" ? 3 : 4), {
+      status: kind === "status" ? 500 : 206,
+      headers: { "Content-Range": kind === "headers" ? "private" : "bytes 0-3/10", "Content-Length": "4" },
+    });
+    if (kind === "body") vi.spyOn(response, "arrayBuffer").mockRejectedValue(new Error("private body error"));
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    if (kind === "fetch") fetchMock.mockRejectedValue(new Error("private URL"));
+    else fetchMock.mockResolvedValue(response);
+    const transport = new PdfProtocolRangeTransport(10, "http://modeleaf-pdf.localhost/opaque/1", onFailure);
+    transport.requestDataRange(0, 4);
+    await Promise.all(transport.settlements());
+    expect(onFailure).toHaveBeenCalledOnce();
+    const error = onFailure.mock.calls[0]![0] as { diagnostic: unknown; message: string };
+    expect(error.diagnostic).toEqual({ code: `PDF_RANGE_${kind.toUpperCase()}`, ...(kind === "status" ? { httpStatus: 500 } : {}) });
+    expect(error.message).not.toContain("private");
+  });
+
+  it.each([64, 2 * 1_048_576 + 1])("reports PDF.js rejection for document length %i even when native reads did not fail", async (length) => {
+    const native = nativeBoundary(vi.fn().mockResolvedValue({ ...session("safe-case", 1), length }));
+    const statuses: string[] = [];
+    const onDiagnostic = vi.fn().mockRejectedValue(new Error("private log path"));
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({ native, resources, canvasHost: document.createElement("div"),
+      pdf: { getDocument: () => ({ promise: Promise.reject(Object.assign(new Error("invalid private PDF"), { name: "InvalidPDFException" })), destroy: vi.fn() }), annotationMode: 0 },
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (status) => statuses.push(status), onDiagnostic });
+    await controller.open(1);
+    await vi.waitFor(() => expect(statuses.at(-1)).toBe("Could not read this PDF. [PDF_LOAD_INVALID] (diagnostic unavailable)"));
+    expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith({ code: "PDF_LOAD_INVALID" });
+    expect(native.cancelSession).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toContain("private");
+    resources.assertEmpty();
+  });
+
+  it.each(["metadata", "first-render"] as const)("captures %s failure once with native cleanup intact", async (phase) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const native = nativeBoundary(vi.fn().mockResolvedValue(session("phase-case", 1)));
+    const resources = new ResourceReservationManager();
+    const onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 1 });
+    const sourcePage = page(1);
+    sourcePage.render = () => ({ promise: Promise.reject(new Error("invalid private render")), cancel: vi.fn() });
+    const doc = documentWith(1, vi.fn(async () => { if (phase === "metadata") throw new Error("invalid private metadata"); return sourcePage; }));
+    const statuses: string[] = [];
+    const controller = new PdfReaderController({ native, resources, canvasHost: document.createElement("div"), pdf: { getDocument: () => task(doc), annotationMode: 0 }, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (status) => statuses.push(status), onDiagnostic });
+    await controller.open(1);
+    const code = phase === "metadata" ? "PDF_METADATA" : "PDF_FIRST_RENDER";
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith({ code }));
+    expect(statuses.some((status) => status.includes(`[${code}]`))).toBe(true);
+    expect(native.closeSession).toHaveBeenCalledOnce();
+    resources.assertEmpty();
   });
 });
