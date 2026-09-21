@@ -12,6 +12,7 @@ pub mod persistence;
 pub mod print_job;
 #[cfg(windows)]
 mod print_windows;
+pub mod recent_display_aliases;
 pub mod recent;
 pub mod theme_state;
 pub mod workspace;
@@ -1602,6 +1603,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            recent_display_aliases::list_recent_display_aliases,
             begin_quit,
             renderer_ready,
             finish_quit,

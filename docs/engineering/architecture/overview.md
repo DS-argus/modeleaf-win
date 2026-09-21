@@ -21,6 +21,11 @@ Normal native session closure is cancellation-barrier gated: drain reads, printi
 
 Tab-switch failures retain the failed transition phase and an exact allowlisted internal error tag in the existing status message. A failed prior-tab recovery retains its own tag without replacing the first target-activation failure. Unknown/native/PDF.js messages are classified as `UNKNOWN`; raw messages, causes, stacks, paths, document text, passwords and URLs are neither logged nor persisted by this seam. This distinguishes failure boundaries for internal reproduction; it does not establish a native tab defect or attribute one to remote-desktop latency.
 
+## Recent chooser presentation
+
+`RecentChooserRenderer` retains keyed rows while selection moves, updates only selection/accessibility state and owned vertical scrolling, and fits changed content before scrolling it into view. Font size stays fixed; directory and, when necessary, filename middle truncation preserve graphemes and the PDF extension. Width/font changes invalidate fitting without rebuilding the rows. Canonical full paths remain tooltips; labels never become opening authority.
+
+`list_recent_display_aliases` snapshots at most fifteen native recent entries, releases the store lock, then queries existing current-user drive mappings in a control-gated blocking worker. It does not enumerate shares, open files, change credentials/mappings or mutate durable recents. Only aliases for that revision's recent IDs are returned; stale/open-generation-mismatched responses are ignored, and missing/unavailable mappings retain canonical display. Longest component-boundary Windows-ordinal root match wins, with lexical drive-letter tie-breaking. Display aliases are not persisted.
 ## Windows network PDF I/O
 
 Ordinary UNC shares and existing mapped network drives use the same native read-only retained-handle boundary as local PDFs. Direct device/verbatim input remains rejected; only a validated final handle may supply a normalized UNC identity. A fixed/removable input must not acquire network authority through a reparse redirection. Neither HTTP PDF loading nor full-document local staging is an alternate path.

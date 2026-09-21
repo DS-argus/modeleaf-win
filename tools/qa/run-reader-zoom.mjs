@@ -299,7 +299,7 @@ try {
   results.push({ scenario: 'evicted tab restored after closing its successor', result: await evaluate('window.readerHarness.runTabClose()') });
   }
   const requestedFitMode = process.env.READER_QA_FIT_ONLY;
-  assert([undefined, "all", "fit-width", "fit-page", "edge", "keyboard", "geometry"].includes(requestedFitMode), "Unknown READER_QA_FIT_ONLY mode");
+  assert([undefined, "all", "fit-width", "fit-page", "edge", "keyboard", "geometry", "history"].includes(requestedFitMode), "Unknown READER_QA_FIT_ONLY mode");
   if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "edge") {
     for (const dpr of [1, 1.25, 1.3, 1.5]) {
       await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 1000, deviceScaleFactor: dpr, mobile: false });
@@ -328,7 +328,16 @@ try {
       }
     }
   }
-  const fitModes = ["edge", "keyboard", "geometry"].includes(requestedFitMode) ? [] : requestedFitMode === "fit-width" || requestedFitMode === "fit-page" ? [requestedFitMode] : ["fit-width", "fit-page"];
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "history") {
+    for (const config of [{ width: 878, dpr: 1, forcedColors: false }, { width: 480, dpr: 1.25, forcedColors: false }, { width: 878, dpr: 1.5, forcedColors: true }]) {
+      await call("Emulation.setDeviceMetricsOverride", { width: config.width, height: 896, deviceScaleFactor: config.dpr, mobile: false });
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "forced-colors", value: config.forcedColors ? "active" : "none" }] });
+      await open("?fixture=print-mixed-rotation-4.pdf");
+      results.push({ scenario: "retained fixed-font Browse history", config, result: await evaluate("window.readerHarness.runChrome()") });
+    }
+    await call("Emulation.setEmulatedMedia", { features: [] });
+  }
+  const fitModes = ["edge", "keyboard", "geometry", "history"].includes(requestedFitMode) ? [] : requestedFitMode === "fit-width" || requestedFitMode === "fit-page" ? [requestedFitMode] : ["fit-width", "fit-page"];
   for (const fixture of [...fixtures].reverse()) {
     for (const dpr of [1, 1.25, 1.5]) {
       for (const renderDelay of [0, 120]) {
