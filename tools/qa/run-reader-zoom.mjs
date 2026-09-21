@@ -286,14 +286,25 @@ try {
   await open();
   results.push({ scenario: 'evicted tab restored after closing its successor', result: await evaluate('window.readerHarness.runTabClose()') });
   }
-  for (const dpr of [1, 1.25, 1.3, 1.5]) {
-    await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 1000, deviceScaleFactor: dpr, mobile: false });
-    await open("?fixture=print-mixed-rotation-4.pdf&tall=true");
-    results.push({ scenario: "narrow-to-wide fixed Fit Page edge", dpr, result: await evaluate("window.readerHarness.runFitPageEdge()") });
-  }
   const requestedFitMode = process.env.READER_QA_FIT_ONLY;
-  assert([undefined, "all", "fit-width", "fit-page", "edge"].includes(requestedFitMode), "Unknown READER_QA_FIT_ONLY mode");
-  const fitModes = requestedFitMode === "edge" ? [] : requestedFitMode === "fit-width" || requestedFitMode === "fit-page" ? [requestedFitMode] : ["fit-width", "fit-page"];
+  assert([undefined, "all", "fit-width", "fit-page", "edge", "keyboard"].includes(requestedFitMode), "Unknown READER_QA_FIT_ONLY mode");
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "edge") {
+    for (const dpr of [1, 1.25, 1.3, 1.5]) {
+      await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 1000, deviceScaleFactor: dpr, mobile: false });
+      await open("?fixture=print-mixed-rotation-4.pdf&tall=true");
+      results.push({ scenario: "narrow-to-wide fixed Fit Page edge", dpr, result: await evaluate("window.readerHarness.runFitPageEdge()") });
+    }
+  }
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "keyboard") {
+    for (const dpr of [1, 1.25, 1.5]) {
+      for (const renderDelay of [0, 120]) {
+        await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 800, deviceScaleFactor: dpr, mobile: false });
+        await open(`?fixture=print-mixed-rotation-4.pdf&fitDelay=${renderDelay}`);
+        results.push({ scenario: "bounded keyboard view intent", dpr, renderDelay, result: await evaluate("window.readerHarness.runKeyboardView()") });
+      }
+    }
+  }
+  const fitModes = requestedFitMode === "edge" || requestedFitMode === "keyboard" ? [] : requestedFitMode === "fit-width" || requestedFitMode === "fit-page" ? [requestedFitMode] : ["fit-width", "fit-page"];
   for (const fixture of [...fixtures].reverse()) {
     for (const dpr of [1, 1.25, 1.5]) {
       for (const renderDelay of [0, 120]) {

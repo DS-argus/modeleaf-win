@@ -35,7 +35,7 @@ import { createTabStripRenderer } from "./ui/shell/TabStripRenderer";
 import { loadInstalledVersion } from "./platform/InstalledVersion";
 import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
-import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
+import { PdfTabSession, publishActivateAndAdoptPdfTab, type PdfTabViewAction } from "./pdf/PdfTabSession";
 import { createPasswordPrompt } from "./ui/PasswordPrompt";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { LinkHints, type LinkHintHostContext } from "./ui/LinkHints";
@@ -119,18 +119,20 @@ const status = required<HTMLElement>("#status");
 const shellStatus = createShellStatusRenderer(status, () => {
   const session = active().session;
   const reader = session.reader.snapshot;
+  const presentation = session.committedPresentation ?? reader;
   return {
     hasDocument: reader.hasDocument,
-    zoomMode: reader.zoomMode,
+    zoomMode: presentation.zoomMode,
     searchPromptOpen: overlayOwner.active?.id === "search",
     query: session.query,
     status: reader.status,
-    page: reader.page,
+    page: presentation.page,
     pageCount: reader.pageCount,
-    ...(reader.zoomMode === "custom" ? { zoom: reader.customScale } : {}),
+    ...(presentation.zoomMode === "custom" ? { zoom: presentation.customScale } : {}),
   };
 }, { onHelp: () => dispatch({ type: "help.toggle" }) });
 void loadInstalledVersion().then((version) => shellStatus.setVersion(version));
+const observedKeyboardViewSettlements = new WeakSet<Promise<boolean>>();
 const printProgressOwner = new PrintProgressOwner<PdfTabSession>();
 const printProgressControl = createPrintProgress(shellStatus.printHost, () => printProgressOwner.cancel());
 let printFocusOwner: { readonly session: PdfTabSession; readonly element?: HTMLElement } | undefined;
@@ -718,14 +720,15 @@ function createTab(): TabPayload {
       if (workspace === undefined || active().session !== session) return;
       const snapshot = session.snapshot;
       const reader = snapshot.reader;
+      const presentation = session.committedPresentation ?? reader;
       if (reader.hasDocument && reader.documentGeneration !== viewportSyncDocumentGeneration) {
         viewportSyncDocumentGeneration = reader.documentGeneration;
         queueMicrotask(scheduleViewportSync);
       }
       accessibility.activateTab(String(workspace.activeTabId), reader.documentGeneration);
       if (reader.hasDocument && reader.pageCount > 0) {
-        accessibility.announce({ kind: "page", generation: reader.documentGeneration, page: reader.page, pageCount: reader.pageCount });
-        if (reader.zoomMode === "custom") accessibility.announce({ kind: "zoom", generation: reader.documentGeneration, zoomPercent: Math.round(reader.customScale * 100) });
+        accessibility.announce({ kind: "page", generation: reader.documentGeneration, page: presentation.page, pageCount: reader.pageCount });
+        if (presentation.zoomMode === "custom") accessibility.announce({ kind: "zoom", generation: reader.documentGeneration, zoomPercent: Math.round(presentation.customScale * 100) });
         if (announcedGeneration !== reader.documentGeneration) {
           announcedGeneration = reader.documentGeneration;
           accessibility.announce({ kind: "loading-complete", generation: reader.documentGeneration, pageCount: reader.pageCount });
@@ -1633,11 +1636,12 @@ function dispatch(action: Action): void {
     navigateAdjacentReaderPage(active(), type === "page.next" ? 1 : -1);
     return;
   }
+  const currentPresentation = active().session.committedPresentation ?? active().session.snapshot.reader;
   const fitPageScrollDirection: -1 | 1 | undefined = type === "scroll.byCssPixels" && action.axis === "vertical"
     ? action.delta > 0 ? 1 : action.delta < 0 ? -1 : undefined
     : type === "scroll.byViewport" ? action.factor > 0 ? 1 : action.factor < 0 ? -1 : undefined
     : undefined;
-  if (fitPageScrollDirection !== undefined && active().session.snapshot.reader.zoomMode === "fit-page") {
+  if (fitPageScrollDirection !== undefined && currentPresentation.zoomMode === "fit-page") {
     navigateAdjacentReaderPage(active(), fitPageScrollDirection);
     return;
   }
@@ -1655,8 +1659,22 @@ function dispatch(action: Action): void {
   if (type === "config.reload") { void reloadConfiguration(); return; }
   if (type === "update.show") { void showUpdateNotice(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
+  if (type.startsWith("view.")) {
+    const payload = active();
+    const settlement = payload.session.requestKeyboardView(action as PdfTabViewAction);
+    if (!observedKeyboardViewSettlements.has(settlement)) {
+      observedKeyboardViewSettlements.add(settlement);
+      void settlement.then((committed) => {
+        if (committed && active().session === payload.session) {
+          rootKeyboard.syncContext();
+          render();
+        }
+      }, (error: unknown) => reportPresentationFailure(payload.session, error));
+    }
+    return;
+  }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
-  if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
+  if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchInput.focus(); }
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();

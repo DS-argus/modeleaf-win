@@ -922,6 +922,53 @@ Object.assign(window, { readerHarness: {
     await finish();
     return { before, restored, active: true, disposed: true };
   },
+  async runKeyboardView() {
+    const samples: { label: string; requested: number; committed: number; raster: number }[] = [];
+    const sample = (label: string) => {
+      const committed = session.committedPresentation;
+      const canvas = host.querySelector<HTMLCanvasElement>('.pdf-page-frame[data-active-page="true"] canvas');
+      requireInvariant(committed !== undefined && canvas !== null, "Keyboard view requires committed presentation");
+      const value = { label, requested: session.snapshot.reader.customScale, committed: committed!.customScale, raster: Number(canvas!.dataset.scale) };
+      requireInvariant(Math.abs(value.committed - value.raster) < 1e-10, `Badge projection led the raster: ${JSON.stringify(value)}`);
+      samples.push(value);
+      return value;
+    };
+    try {
+      requireInvariant((await session.navigatePagePrompt(3)).kind === "verifiedLanding", "Keyboard fixture navigation failed");
+      requireInvariant(await session.requestKeyboardView({ type: "view.actualSize" }), "Actual-size setup failed");
+      requireInvariant(await session.requestKeyboardView({ type: "view.zoom", factor: 2 }), "200% setup failed");
+      const padding = getComputedStyle(host);
+      const availableWidth = host.clientWidth - Number.parseFloat(padding.paddingLeft) - Number.parseFloat(padding.paddingRight);
+      const naturalWidth = Number(host.querySelector<HTMLCanvasElement>('.pdf-page-frame[data-active-page="true"] canvas')?.dataset.naturalWidth);
+      requireInvariant(Number.isFinite(naturalWidth) && naturalWidth > 0, "Missing fitted reference width");
+      const expectedFit = clampReaderScale(availableWidth / naturalWidth);
+      const fitting = session.requestKeyboardView({ type: "view.fitWidth" });
+      const zooming = session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+      requireInvariant(fitting === zooming, "Queued relative zoom must share one owner settlement");
+      sample("fit-minus-requested");
+      requireInvariant(await zooming, "Fit-minus composition failed");
+      const composed = sample("fit-minus-committed");
+      requireInvariant(Math.abs(composed.committed - clampReaderScale(expectedFit / 1.1)) < 1e-10,
+        `Minus used pre-fit scale: ${JSON.stringify({ expectedFit, composed })}`);
+      requireInvariant(await session.requestKeyboardView({ type: "view.fitWidth" }), "Burst fit setup failed");
+      const before = sample("burst-start").committed;
+      let expected = before;
+      let pending: Promise<boolean> | undefined;
+      let progressedDuringInput = false;
+      for (let index = 0; index < 12; index += 1) {
+        expected = clampReaderScale(expected / 1.1);
+        pending = session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+        const observed = sample(`minus-${index}`);
+        if (index < 11 && observed.committed < before) progressedDuringInput = true;
+        await new Promise<void>(resolve => setTimeout(resolve, 120));
+      }
+      requireInvariant(pending !== undefined && await pending, "Keyboard burst did not settle successfully");
+      const after = sample("burst-settled");
+      requireInvariant(progressedDuringInput, "Keyboard producer starved all intermediate commits");
+      requireInvariant(Math.abs(after.committed - expected) < 1e-10, `Queued steps lost intent: ${JSON.stringify({ after, expected })}`);
+      return { delayMilliseconds: fitRenderDelayMilliseconds, dpr: devicePixelRatio, samples, progressedDuringInput, expected, statuses: [...statuses] };
+    } finally { await finish(); }
+  },
   async runFitPageEdge() {
     try {
       requireInvariant(fixture === "print-mixed-rotation-4.pdf" && host.clientHeight === 800, "Edge fixture requires an 800px-tall host");

@@ -1,6 +1,7 @@
-import { clampReaderScale, MAX_READER_SCALE, MIN_READER_SCALE } from "../domain/navigation/ZoomPolicy";
+import { appendZoomIntent, clampReaderScale, MAX_READER_SCALE, MIN_READER_SCALE, resolveZoomIntent, type PendingZoomIntent } from "../domain/navigation/ZoomPolicy";
 import { NavigationHistory, sameSnapshotWithinTolerance, type NavigationCause, type NavigationSnapshot, type NavigationTransaction } from "../domain/navigation/NavigationHistory";
 import { ReaderState, type ReaderSnapshot } from "../core/ReaderState";
+import type { Action } from "../core/Action";
 import {
   consumeWheelZoom,
   createWheelZoomState,
@@ -61,6 +62,7 @@ export interface PdfTabSessionOptions {
 }
 export type PdfTabNavigationDecision = { readonly kind: "verifiedLanding" | "preflightRejected" | "compensatedFailure" | "uncompensatedInvariantFailure" | "unavailable" | "noOp" | "stale" | "failed-verification" | "excluded" | "search-epoch-recorded" | "invalid" | "rolled-back" };
 
+export type PdfTabViewAction = Extract<Action, { readonly type: `view.${string}` }>;
 export type PdfTabSearchDecision =
   | { readonly kind: "ignore" }
   | { readonly kind: "cycle"; readonly reverse: boolean }
@@ -128,7 +130,10 @@ export class PdfTabSession {
   private wheelReject: ((error: unknown) => void) | undefined;
   private wheelInputState: WheelZoomState = createWheelZoomState();
   private wheelOperationGeneration = 0;
+  private keyboardApplyExemption = false;
+  private keyboardViewOwner: KeyboardViewOwner | undefined;
   private activityGeneration = 0;
+  private keyboardViewRevision = 0;
   private renderIntent = 0;
   private pendingPresentationRenders = 0;
   private presentationSettlements = 0;
@@ -182,6 +187,7 @@ export class PdfTabSession {
       onEvictPage: (page) => { this.content?.evictPage(page); },
       onBeforeResidentCommit: async (pages) => this.content?.beginResidentPageAuthority(pages),
       onCommitted: (pageCount, displayName, _document, _session, _ownerGeneration, openingFit) => {
+        this.cancelKeyboardView();
         this.cancelWheelZoom();
         this.title = displayName;
         this.lastCommittedRender = undefined;
@@ -239,9 +245,22 @@ export class PdfTabSession {
     };
   }
 
+  public get committedPresentation(): Pick<ReaderSnapshot, "page" | "zoomMode" | "customScale" | "fitPageReference" | "rotationQuarterTurns"> | undefined {
+    const committed = this.lastCommittedRender;
+    if (committed === undefined || committed.documentGeneration !== this.reader.snapshot.documentGeneration) return undefined;
+    return {
+      page: committed.page,
+      zoomMode: committed.zoomMode,
+      customScale: committed.customScale,
+      fitPageReference: committed.fitPageReference,
+      rotationQuarterTurns: committed.rotationQuarterTurns,
+    };
+  }
+
   public cancelPasswordOpening(): void { this.pdfReader.cancelPasswordOpening(); }
   public async adopt(session: OpenPdfResult, ownerGeneration: number): Promise<true> {
     if (this.closed || this.activityQuarantined) throw new Error("PDF_ADOPTION_NOT_COMMITTED");
+    this.cancelKeyboardView();
     this.cancelWheelZoom();
     return this.pdfReader.adopt(session, ownerGeneration);
   }
@@ -301,6 +320,7 @@ export class PdfTabSession {
     return !this.openingFitRenderPending;
   }
   public async deactivate(): Promise<void> {
+    this.cancelKeyboardView();
     this.cancelWheelZoom();
     if (this.closed) return;
     await this.settleInactiveAuthority();
@@ -313,6 +333,7 @@ export class PdfTabSession {
   }
   public async close(): Promise<void> {
     if (this.closeSettlement !== undefined) return this.closeSettlement;
+    this.cancelKeyboardView();
     this.cancelWheelZoom();
     this.closed = true;
     this.flushDeferredViewportSynchronization();
@@ -397,6 +418,7 @@ export class PdfTabSession {
     }
   }
   public invalidateViewportSynchronization(): void {
+    if (!this.keyboardApplyExemption) this.cancelKeyboardView();
     this.content?.clearVisibleLinkAuthority();
     this.viewportGeometryRevision += 1;
     if (this.navigationLandingIntent !== undefined) return;
@@ -420,7 +442,8 @@ export class PdfTabSession {
     return this.synchronizeViewportForOwner(scrollTop, clientHeight, passiveCurrent);
   }
   private hasViewportPresentationOwner(): boolean {
-    return this.pendingPresentationRenders > 0 || this.presentationSettlements > 0 || this.wheelSettlement !== undefined;
+    return this.pendingPresentationRenders > 0 || this.presentationSettlements > 0
+      || this.wheelSettlement !== undefined || this.keyboardViewOwner !== undefined;
   }
   private flushDeferredViewportSynchronization(): void {
     const request = this.deferredViewportSynchronization;
@@ -599,6 +622,7 @@ export class PdfTabSession {
     return this.navigateHistoryTraversal("forward");
   }
   public apply(action: Parameters<ReaderState["apply"]>[0]): void {
+    if (!this.keyboardApplyExemption) this.cancelKeyboardView();
     if (this.closed || !this.isForegroundActive()) return;
     const movement = action.type.startsWith("scroll.") || action.type.startsWith("page.") || action.type.startsWith("view.");
     if (movement) {
@@ -624,9 +648,150 @@ export class PdfTabSession {
     }
     this.reader.apply(action);
   }
+  public requestKeyboardView(action: PdfTabViewAction): Promise<boolean> {
+    const owner = this.keyboardViewOwner;
+    if (this.closed || !this.isForegroundActive() || !this.reader.snapshot.hasDocument) {
+      this.cancelKeyboardView();
+      return Promise.resolve(false);
+    }
+    if (action.type === "view.zoom") {
+      if (!Number.isFinite(action.factor) || action.factor <= 0) return Promise.resolve(false);
+      if (owner !== undefined) {
+        owner.pendingZoom = appendZoomIntent(owner.pendingZoom, action.factor);
+        return owner.settlement;
+      }
+    } else if (owner !== undefined) {
+      this.cancelKeyboardView();
+    }
+    const fastPath = this.keyboardZoomFastPath(action);
+    if (fastPath !== undefined) return Promise.resolve(fastPath === "committed");
+    return this.startKeyboardView(action);
+  }
+
+  private startKeyboardView(action: PdfTabViewAction): Promise<boolean> {
+    let resolve!: (committed: boolean) => void;
+    let reject!: (error: unknown) => void;
+    const settlement = new Promise<boolean>((done, fail) => { resolve = done; reject = fail; });
+    const owner: KeyboardViewOwner = {
+      revision: ++this.keyboardViewRevision,
+      pendingZoom: undefined,
+      settlement,
+      resolve,
+      reject,
+    };
+    this.keyboardViewOwner = owner;
+    void this.drainKeyboardView(owner, owner.revision, action);
+    return settlement;
+  }
+
+  private ownsKeyboardView(owner: KeyboardViewOwner, revision: number): boolean {
+    return this.keyboardViewOwner === owner && owner.revision === revision;
+  }
+
+  private async drainKeyboardView(owner: KeyboardViewOwner, revision: number, first: PdfTabViewAction): Promise<void> {
+    let action = first;
+    let committed = false;
+    try {
+      for (;;) {
+        if (!this.ownsKeyboardView(owner, revision)) return;
+        const fastPath = this.keyboardZoomFastPath(action);
+        if (fastPath === "committed") committed = true;
+        else if (fastPath === undefined) {
+          this.applyKeyboardAction(action);
+          const rendered = await this.renderCurrentView();
+          if (!this.ownsKeyboardView(owner, revision) || !rendered) {
+            this.settleKeyboardView(owner, revision, false);
+            return;
+          }
+          committed = true;
+        }
+        if (!this.ownsKeyboardView(owner, revision)) return;
+        const pending = owner.pendingZoom;
+        owner.pendingZoom = undefined;
+        if (pending === undefined) {
+          this.settleKeyboardView(owner, revision, committed);
+          return;
+        }
+        const base = this.lastCommittedRender;
+        if (base === undefined || base.documentGeneration !== this.reader.snapshot.documentGeneration
+          || !Number.isFinite(base.customScale) || base.customScale <= 0) {
+          this.settleKeyboardView(owner, revision, false);
+          return;
+        }
+        const target = resolveZoomIntent(base.customScale, pending);
+        if (!Number.isFinite(target) || target <= 0) {
+          this.settleKeyboardView(owner, revision, false);
+          return;
+        }
+        action = { type: "view.zoom", factor: target / base.customScale };
+      }
+    } catch (error) {
+      this.rejectKeyboardView(owner, revision, error);
+    }
+  }
+
+  private keyboardZoomFastPath(action: PdfTabViewAction): "committed" | "noop" | undefined {
+    if (action.type !== "view.zoom" || !Number.isFinite(action.factor) || action.factor <= 0) return undefined;
+    const committed = this.lastCommittedRender;
+    if (committed === undefined || committed.documentGeneration !== this.reader.snapshot.documentGeneration) return undefined;
+    const target = clampReaderScale(committed.customScale * action.factor);
+    if (target !== committed.customScale) return undefined;
+    if (committed.zoomMode === "custom") return "noop";
+    if (committed.zoomMode === "fit-page") return undefined;
+    this.applyKeyboardAction(action);
+    this.lastCommittedRender = {
+      ...committed,
+      zoomMode: "custom",
+      customScale: target,
+      fitPageReference: undefined,
+    };
+    this.pendingRenderRollback = undefined;
+    this.options.onStatus?.(this.reader.snapshot.status);
+    return "committed";
+  }
+
+  private applyKeyboardAction(action: PdfTabViewAction): void {
+    let effectiveAction = action;
+    if (action.type === "view.zoom") {
+      const committed = this.lastCommittedRender;
+      const liveScale = this.reader.snapshot.customScale;
+      if (committed !== undefined && committed.documentGeneration === this.reader.snapshot.documentGeneration
+        && Number.isFinite(liveScale) && liveScale > 0 && liveScale !== committed.customScale) {
+        const target = clampReaderScale(committed.customScale * action.factor);
+        effectiveAction = { type: "view.zoom", factor: target / liveScale };
+      }
+    }
+    const prior = this.keyboardApplyExemption;
+    this.keyboardApplyExemption = true;
+    try {
+      this.apply(effectiveAction);
+    } finally {
+      this.keyboardApplyExemption = prior;
+    }
+  }
+
+  private settleKeyboardView(owner: KeyboardViewOwner, revision: number, committed: boolean): void {
+    if (!this.ownsKeyboardView(owner, revision)) return;
+    owner.pendingZoom = undefined;
+    this.keyboardViewOwner = undefined;
+    owner.revision += 1;
+    this.flushDeferredViewportSynchronization();
+    owner.resolve(committed);
+  }
+
+  private rejectKeyboardView(owner: KeyboardViewOwner, revision: number, error: unknown): void {
+    if (!this.ownsKeyboardView(owner, revision)) return;
+    owner.pendingZoom = undefined;
+    this.keyboardViewOwner = undefined;
+    owner.revision += 1;
+    this.flushDeferredViewportSynchronization();
+    owner.reject(error);
+  }
+
   public nextMatch(reverse: boolean): void { this.cycleSearch(reverse); }
   /** Applies decoded Ctrl-wheel steps at a host-local CSS pointer offset. */
   public zoomAt(steps: number, viewportOffset: PdfViewportOffset): Promise<boolean> {
+    if (!this.keyboardApplyExemption) this.cancelKeyboardView();
     if (this.closed || !this.isForegroundActive() || !this.reader.snapshot.hasDocument
       || !Number.isSafeInteger(steps) || steps === 0
       || !Number.isFinite(viewportOffset.x) || !Number.isFinite(viewportOffset.y)) return Promise.resolve(false);
@@ -707,8 +872,29 @@ export class PdfTabSession {
     this.wheelInputState = resetWheelZoomState();
   }
 
+  /** Cancels pending keyboard-view work without changing the last committed presentation. */
+  private cancelKeyboardView(): void {
+    const owner = this.keyboardViewOwner;
+    if (owner === undefined) return;
+    const committed = this.lastCommittedRender;
+    const snapshot = this.reader.snapshot;
+    if (committed !== undefined && committed.documentGeneration === snapshot.documentGeneration && snapshot.hasDocument) {
+      const status = snapshot.status;
+      this.reader.restoreView({ zoomMode: committed.zoomMode, customScale: committed.customScale,
+        fitPageReference: committed.fitPageReference, rotationQuarterTurns: committed.rotationQuarterTurns });
+      if (this.reader.snapshot.status !== status) this.reader.setStatus(status);
+    }
+    owner.pendingZoom = undefined;
+    this.keyboardViewOwner = undefined;
+    owner.revision += 1;
+    this.renderIntent += 1;
+    this.flushDeferredViewportSynchronization();
+    owner.resolve(false);
+  }
+
   /** Cancels pending wheel work without changing the last committed presentation. */
   public cancelWheelZoom(): void {
+    if (!this.keyboardApplyExemption) this.cancelKeyboardView();
     this.resetWheelZoom();
     this.invalidateWheelZoom();
   }
@@ -1392,6 +1578,7 @@ export class PdfTabSession {
   }
 
   private supersedeNavigation(preserveCancellation = false, preserveLinkActivation = false): number {
+    if (!this.keyboardApplyExemption) this.cancelKeyboardView();
     this.invalidateOpeningFitRender();
     if (!preserveCancellation) this.cancelledNavigation = undefined;
     this.content?.cancelDestination(undefined, preserveLinkActivation);
@@ -1529,4 +1716,12 @@ export class PdfTabSession {
     this.setStatus(status);
   }
   private setStatus(status: string, source?: "search"): void { this.reader.setStatus(status, source); this.options.onStatus?.(status); }
+}
+
+interface KeyboardViewOwner {
+  revision: number;
+  pendingZoom: PendingZoomIntent | undefined;
+  readonly settlement: Promise<boolean>;
+  readonly resolve: (committed: boolean) => void;
+  readonly reject: (error: unknown) => void;
 }

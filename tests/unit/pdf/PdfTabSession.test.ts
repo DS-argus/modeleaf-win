@@ -2405,3 +2405,130 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     expect(session.snapshot.reader.status === "PDF presentation could not be updated.").toBe(!resized);
   });
 });
+
+describe("bounded keyboard view ownership", () => {
+  async function harness(scale = 2) {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(3);
+    await session.activate();
+    session.reader.restoreView({ zoomMode: "custom", customScale: scale, fitPageReference: undefined, rotationQuarterTurns: 0 });
+    internals.onPage(1, { scale, rotation: 0, devicePixelRatio: 1 });
+    let topology: "single-page" | "continuous" = "continuous";
+    Object.defineProperty(internals.pdfReader, "presentationTopology", { configurable: true, get: () => topology });
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    vi.spyOn(internals.pdfReader, "synchronizeViewport").mockResolvedValue(true);
+    const holds: ReturnType<typeof deferred<void>>[] = [];
+    const render = vi.mocked(internals.pdfReader.setPresentationTopology).mockImplementation(async (next, page, transform, guard) => {
+      const hold = holds.shift();
+      if (hold !== undefined) await hold.promise;
+      if (!guard()) return false;
+      topology = next;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    return { session, internals, render, holds, setTopology: (next: typeof topology) => { topology = next; }, topology: () => topology };
+  }
+
+  it.each(["view.fitWidth", "view.fitPage"] as const)("composes queued minus from resolved %s, not pre-fit zoom", async type => {
+    const h = await harness(3);
+    const first = deferred<void>(); h.holds.push(first);
+    const fitting = h.session.requestKeyboardView({ type });
+    const minus = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    expect(minus).toBe(fitting);
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    expect(h.render.mock.calls[0]![3]()).toBe(true);
+    expect(h.session.committedPresentation?.customScale).toBe(3);
+    first.resolve();
+    await expect(minus).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledTimes(2);
+    expect(h.session.committedPresentation?.customScale).toBeCloseTo((type === "view.fitWidth" ? 2 : 1) / 1.1, 12);
+  });
+
+  it("lets active raster commit while more zoom input waits in one bounded summary", async () => {
+    const h = await harness(2);
+    const first = deferred<void>(), second = deferred<void>(); h.holds.push(first, second);
+    const work = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    for (let index = 0; index < 1_000; index += 1) expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 })).toBe(work);
+    expect(h.render.mock.calls[0]![3]()).toBe(true);
+    first.resolve();
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledTimes(2));
+    expect(h.session.committedPresentation?.customScale).toBeCloseTo(2 / 1.1, 12);
+    expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 })).toBe(work);
+    const owner = (h.session as unknown as { keyboardViewOwner: { pendingZoom: unknown } }).keyboardViewOwner;
+    expect(Object.keys(owner.pendingZoom as object).sort()).toEqual(["factor", "lower", "upper"]);
+    second.resolve();
+    await expect(work).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledTimes(3);
+    expect(h.session.committedPresentation?.customScale).toBeCloseTo(0.275, 12);
+  });
+
+  it.each(["navigation", "deactivate", "close", "replacement", "resize"] as const)("fences queued work on %s and leaves no delayed zoom", async reason => {
+    const h = await harness(2);
+    const first = deferred<void>(); h.holds.push(first);
+    const work = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 })).toBe(work);
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    if (reason === "navigation") h.session.apply({ type: "page.goTo", page: 2 });
+    else if (reason === "deactivate") await h.session.deactivate();
+    else if (reason === "close") await h.session.close();
+    else if (reason === "resize") h.session.invalidateViewportSynchronization();
+    else (h.internals.pdfReader as unknown as { options: { onCommitted: (count: number, name: string) => void } }).options.onCommitted(5, "replacement.pdf");
+    await expect(work).resolves.toBe(false);
+    expect(h.render.mock.calls[0]![3]()).toBe(false);
+    first.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(h.render).toHaveBeenCalledOnce();
+    if (reason === "navigation" || reason === "resize") expect(h.session.snapshot.reader.customScale).toBe(2);
+    if (reason === "replacement") expect(h.session.snapshot.reader.pageCount).toBe(5);
+  });
+
+  it("supersedes an active fit and its queued zoom with a newer fit command", async () => {
+    const h = await harness(3);
+    const first = deferred<void>(); h.holds.push(first);
+    const old = h.session.requestKeyboardView({ type: "view.fitWidth" });
+    h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 });
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    const current = h.session.requestKeyboardView({ type: "view.fitPage" });
+    await expect(old).resolves.toBe(false);
+    await expect(current).resolves.toBe(true);
+    first.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(h.render).toHaveBeenCalledTimes(2);
+    expect(h.session.committedPresentation).toMatchObject({ zoomMode: "fit-page", customScale: 1 });
+  });
+
+  it("rejects current render failure without draining queued input or hiding its cause", async () => {
+    const h = await harness(2);
+    const failure = new Error("controlled raster failure");
+    h.render.mockRejectedValueOnce(failure);
+    const work = h.session.requestKeyboardView({ type: "view.fitWidth" });
+    expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 })).toBe(work);
+    await expect(work).rejects.toBe(failure);
+    expect(h.render).toHaveBeenCalledOnce();
+    expect(h.session.committedPresentation?.customScale).toBe(2);
+    await expect(h.session.requestKeyboardView({ type: "view.actualSize" })).resolves.toBe(true);
+  });
+
+  it("converts clamped Fit Page to continuous custom topology instead of relabeling the canvas", async () => {
+    const h = await harness(0.25);
+    h.session.reader.restoreView({ zoomMode: "fit-page", customScale: 0.25, fitPageReference: 1, rotationQuarterTurns: 0 });
+    h.internals.onPage(1, { scale: 0.25, rotation: 0, devicePixelRatio: 1 }); h.setTopology("single-page");
+    await expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 })).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledOnce();
+    expect(h.topology()).toBe("continuous");
+    expect(h.session.committedPresentation).toMatchObject({ zoomMode: "custom", customScale: 0.25 });
+  });
+
+  it("ignores invalid factors independently and keeps clamped custom fast path raster-free", async () => {
+    const h = await harness(4);
+    await expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 })).resolves.toBe(false);
+    expect(h.render).not.toHaveBeenCalled();
+    const first = deferred<void>(); h.holds.push(first);
+    const work = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    await expect(h.session.requestKeyboardView({ type: "view.zoom", factor: NaN })).resolves.toBe(false);
+    first.resolve(); await expect(work).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledOnce();
+  });
+});
