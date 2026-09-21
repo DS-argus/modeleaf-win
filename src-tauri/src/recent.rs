@@ -2,7 +2,7 @@ use crate::commands::state::{
     format_recent_timestamp, RecentFile, StateFileError, StateFileStore, SystemClock,
     MAX_RECENT_FILES,
 };
-use crate::local_path::{DriveKind, LocalPathPolicy, PathPolicyError};
+use crate::local_path::{LocalPathPolicy, PathPolicyError};
 use crate::pdf_session::TrustedRecentIdentity;
 use serde::Serialize;
 use std::io;
@@ -115,7 +115,6 @@ pub enum RecentOpenOutcome {
 
 #[derive(Debug)]
 pub enum RecentStoreError {
-    RemotePath,
     PathRejected,
     NotPdf,
     MissingRecentId,
@@ -125,7 +124,6 @@ pub enum RecentStoreError {
 impl std::fmt::Display for RecentStoreError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
-            Self::RemotePath => "REMOTE_PATH",
             Self::PathRejected => "PATH_REJECTED",
             Self::NotPdf => "PDF_INVALID",
             Self::MissingRecentId => "RECENT_NOT_FOUND",
@@ -327,6 +325,18 @@ impl RecentStore {
         self.committed();
         Ok(true)
     }
+    /// Snapshots the trusted native path for a recent entry without filesystem I/O.
+    ///
+    /// Callers must release their recent-store lock before performing any open, metadata,
+    /// or network work on the returned path.
+    pub fn path_for_open(&self, recent_id: &str) -> Result<PathBuf, RecentStoreError> {
+        self.ensure_writable()?;
+        self.records
+            .iter()
+            .find(|record| record.recent_id == recent_id)
+            .map(|record| record.canonical_path.clone())
+            .ok_or(RecentStoreError::MissingRecentId)
+    }
     pub fn resolve_for_open<L: LocalPathPolicy>(
         &self,
         recent_id: &str,
@@ -341,13 +351,9 @@ impl RecentStore {
         policy
             .validate_syntax(&record.canonical_path)
             .map_err(map_policy_error)?;
-        match policy
+        policy
             .classify_syntax(&record.canonical_path)
-            .map_err(map_policy_error)?
-        {
-            DriveKind::Fixed | DriveKind::Removable => {}
-            DriveKind::Remote => return Err(RecentStoreError::RemotePath),
-        }
+            .map_err(map_policy_error)?;
         policy
             .validate_existing_ancestors(&record.canonical_path)
             .map_err(map_policy_error)?;
@@ -364,10 +370,6 @@ fn valid_persisted_recent<L: LocalPathPolicy>(value: &RecentFile, policy: &L) ->
         && safe_display_name(path).is_some()
         && safe_display_path(path).is_some()
         && policy.validate_syntax(path).is_ok()
-        && matches!(
-            policy.classify_syntax(path),
-            Ok(DriveKind::Fixed | DriveKind::Removable)
-        )
 }
 fn records_from_state(values: Vec<RecentFile>, previous: &[StoredRecent]) -> Vec<StoredRecent> {
     values
@@ -433,10 +435,7 @@ fn validate_and_canonicalize<L: LocalPathPolicy>(
     path: &Path,
     policy: &L,
 ) -> Result<PathBuf, RecentStoreError> {
-    match policy.classify(path).map_err(map_policy_error)? {
-        DriveKind::Fixed | DriveKind::Removable => {}
-        DriveKind::Remote => return Err(RecentStoreError::RemotePath),
-    }
+    let _ = policy.classify(path).map_err(map_policy_error)?;
     policy.validate_preopen(path).map_err(map_policy_error)?;
     if !is_pdf(path) {
         return Err(RecentStoreError::NotPdf);
@@ -460,7 +459,6 @@ fn normalize_canonical_path(path: PathBuf) -> Result<PathBuf, RecentStoreError> 
 }
 fn map_policy_error(error: PathPolicyError) -> RecentStoreError {
     match error {
-        PathPolicyError::RemotePath => RecentStoreError::RemotePath,
         PathPolicyError::PathRejected => RecentStoreError::PathRejected,
     }
 }

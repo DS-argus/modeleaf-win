@@ -26,6 +26,10 @@ describe("DiagnosticEvent", () => {
     expect(isDiagnosticEvent(valid)).toBe(true);
   });
 
+  it("distinguishes deferred cleanup from a timeout or successful settlement", () => {
+    expect(isDiagnosticEvent({ ...valid, event: "QUIT", outcome: "CANCELLED", tag: "DEFERRED" })).toBe(true);
+    expect(isDiagnosticEvent({ ...valid, tag: "DEFERRED", path: "\\\\server\\share\\private.pdf" })).toBe(false);
+  });
   it("rejects arbitrary fields and out-of-range metadata", () => {
     expect(isDiagnosticEvent({ ...valid, message: "not allowed" })).toBe(false);
     expect(isDiagnosticEvent({ ...valid, page: 1_000_001 })).toBe(false);

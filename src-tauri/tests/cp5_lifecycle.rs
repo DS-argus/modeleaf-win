@@ -35,6 +35,7 @@ fn native_quit_is_idempotent_and_drains_open_request_and_pdf_ownership() {
     drain_owner_for_lifecycle(&requests, &workspace, &sessions, &owner);
     assert_eq!(workspace.budget().windows, 0);
     assert_eq!(workspace.budget().sessions, 0);
+    sessions.drain_owned(&owner);
     assert!(sessions.assert_empty());
 
     assert!(requests.pending_ingress("reader").is_err());
@@ -42,6 +43,7 @@ fn native_quit_is_idempotent_and_drains_open_request_and_pdf_ownership() {
     drain_owner_for_lifecycle(&requests, &workspace, &sessions, &owner);
     assert_eq!(workspace.budget().windows, 0);
     assert_eq!(workspace.budget().sessions, 0);
+    sessions.drain_owned(&owner);
     assert!(sessions.assert_empty());
 
     fs::remove_dir_all(directory).unwrap();

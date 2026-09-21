@@ -887,6 +887,7 @@ fn lifecycle_drain_timeout_defers_cleanup_until_external_admissions_release() {
         } else {
             held.join().unwrap().unwrap();
         }
+        manager.drain_owned(&owner);
         assert!(manager.assert_empty());
         std::fs::remove_file(path).unwrap();
     }

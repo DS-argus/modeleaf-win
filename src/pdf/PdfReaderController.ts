@@ -337,7 +337,6 @@ const safeMessage = (error: unknown): string => {
   if (/CANCEL|ABORT/i.test(tag)) return "Opening PDF cancelled.";
   if (/WORKER|ASSET/i.test(tag)) return "The local PDF renderer could not start.";
   if (/TIMEOUT/i.test(tag)) return "The PDF operation timed out.";
-  if (/REMOTE_PATH/i.test(tag)) return "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.";
   if (/PATH_REJECTED/i.test(tag)) return "This PDF path cannot be opened safely.";
   if (/DOCUMENT_TOO_LARGE|_LIMIT|_CAPACITY|large|resource|canvas|memory/i.test(tag)) return "This PDF exceeds reader resource limits.";
   if (/EMPTY_DOCUMENT|PDF_EMPTY/i.test(tag)) return "PDF contains no pages.";

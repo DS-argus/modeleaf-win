@@ -344,7 +344,7 @@ fn failure_notices_are_owner_scoped_and_preserve_ingestion_order() {
     let reader_first = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
     let other_first = coordinator
@@ -424,7 +424,7 @@ fn saturation_preserves_merged_a_failure_b_request_c_distinct_failure_order() {
     let overflow_summary = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
 
@@ -482,7 +482,7 @@ fn failure_capacity_is_globally_bounded_across_all_owner_partitions() {
     let replacement = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
     assert_eq!(replacement.tag, OpenFailureTag::SessionCapacity);
@@ -522,7 +522,7 @@ fn failure_acknowledgement_is_idempotent_until_its_bounded_tombstone_expires() {
     let first = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
     coordinator
@@ -578,10 +578,10 @@ fn failure_notice_serializes_only_opaque_id_and_tag() {
     let notice = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
-    assert_eq!(notice.tag, OpenFailureTag::RemotePath);
+    assert_eq!(notice.tag, OpenFailureTag::FileUnreadable);
 
     let failure_id = match notice.failure_id.clone().body().unwrap() {
         InvokeResponseBody::Json(json) => json,
@@ -593,7 +593,7 @@ fn failure_notice_serializes_only_opaque_id_and_tag() {
     };
     assert_eq!(
         serialized,
-        format!(r#"{{"failureId":{failure_id},"tag":"REMOTE_PATH"}}"#)
+        format!(r#"{{"failureId":{failure_id},"tag":"FILE_UNREADABLE"}}"#)
     );
     assert!(!serialized.contains(r"C:\private\document.pdf"));
 }
@@ -638,12 +638,12 @@ fn chooser_and_remote_failures_replay_with_safe_tags_until_acknowledged() {
     let remote = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
 
     assert_eq!(chooser.tag, OpenFailureTag::PathRejected);
-    assert_eq!(remote.tag, OpenFailureTag::RemotePath);
+    assert_eq!(remote.tag, OpenFailureTag::FileUnreadable);
     assert_eq!(
         coordinator.pending_failures("reader").unwrap(),
         vec![chooser.clone(), remote.clone()]
@@ -682,7 +682,7 @@ fn saturated_failures_replace_a_terminalized_id_with_a_fresh_capacity_summary() 
     let summary = coordinator
         .ingest_failure(
             "reader",
-            OpenRequestError::Session(PdfSessionError::RemotePath),
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
         )
         .unwrap();
 
@@ -695,6 +695,104 @@ fn saturated_failures_replace_a_terminalized_id_with_a_fresh_capacity_summary() 
     coordinator
         .acknowledge_failure("reader", first.failure_id)
         .unwrap();
+}
+
+#[test]
+fn reservation_capacity_counts_pending_work_and_raii_release() {
+    let (coordinator, workspace, _) = coordinator();
+    let owner = workspace.active_owner("reader").unwrap();
+    let mut admissions = Vec::new();
+    for _ in 0..MAX_OPEN_REQUESTS {
+        admissions.push(coordinator.reserve_open("reader").unwrap());
+    }
+    assert!(coordinator.has_pending_for_owner(&owner));
+    assert!(matches!(
+        coordinator.reserve_open("reader"),
+        Err(OpenRequestError::Capacity)
+    ));
+
+    drop(admissions.pop().unwrap());
+    let replacement = coordinator.reserve_open("reader").unwrap();
+    drop(replacement);
+    drop(admissions);
+    assert!(!coordinator.has_pending_for_owner(&owner));
+}
+
+#[test]
+fn failed_reserved_open_releases_its_capacity() {
+    let (coordinator, workspace, _) = coordinator();
+    let owner = workspace.active_owner("reader").unwrap();
+    let admission = coordinator.reserve_open("reader").unwrap();
+    let invalid = fixture(31);
+    std::fs::write(&invalid, b"not a PDF").unwrap();
+    assert_eq!(
+        coordinator.ingest_reserved(admission, &invalid),
+        Err(OpenRequestError::Session(PdfSessionError::PdfInvalid))
+    );
+    assert!(!coordinator.has_pending_for_owner(&owner));
+    let replacement = coordinator.reserve_open("reader").unwrap();
+    drop(replacement);
+    std::fs::remove_file(invalid).unwrap();
+}
+
+#[test]
+fn invalidated_reservation_counts_until_settlement_and_cannot_publish_after_recreate() {
+    let (coordinator, workspace, sessions) = coordinator();
+    let owner = workspace.active_owner("reader").unwrap();
+    let admission = coordinator.reserve_open("reader").unwrap();
+    coordinator.target_lost_for_lifecycle(&owner);
+    assert!(coordinator.has_pending_for_owner(&owner));
+
+    workspace.destroy_window(&owner).unwrap();
+    let recreated = workspace.claim_window("reader").unwrap();
+    assert_ne!(recreated.generation, owner.generation);
+    let path = fixture(31);
+    assert_eq!(
+        coordinator.ingest_reserved(admission, &path),
+        Err(OpenRequestError::Cancelled)
+    );
+    assert!(!coordinator.has_pending_for_owner(&owner));
+    assert!(coordinator.pending_notices("reader").unwrap().is_empty());
+    assert!(sessions.assert_empty());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn target_lost_invalidates_pending_without_waiting_for_reserved_result() {
+    let (coordinator, workspace, sessions) = coordinator();
+    let owner = workspace.active_owner("reader").unwrap();
+    let admission = coordinator.reserve_open("reader").unwrap();
+    coordinator.target_lost(&owner);
+    assert!(coordinator.has_pending_for_owner(&owner));
+
+    let path = fixture(32);
+    assert_eq!(
+        coordinator.ingest_reserved(admission, &path),
+        Err(OpenRequestError::Cancelled)
+    );
+    assert!(!coordinator.has_pending_for_owner(&owner));
+    assert!(coordinator.pending_notices("reader").unwrap().is_empty());
+    assert!(sessions.assert_empty());
+    std::fs::remove_file(path).unwrap();
+    workspace.destroy_window(&owner).unwrap();
+}
+
+#[test]
+fn owned_failure_does_not_retarget_a_recreated_window() {
+    let (coordinator, workspace, _) = coordinator();
+    let owner = workspace.active_owner("reader").unwrap();
+    coordinator.target_lost_for_lifecycle(&owner);
+    workspace.destroy_window(&owner).unwrap();
+    workspace.claim_window("reader").unwrap();
+
+    assert_eq!(
+        coordinator.ingest_failure_owned(
+            &owner,
+            OpenRequestError::Session(PdfSessionError::FileUnreadable),
+        ),
+        Err(OpenRequestError::OwnerMismatch)
+    );
+    assert!(coordinator.pending_failures("reader").unwrap().is_empty());
 }
 
 #[test]
@@ -889,39 +987,72 @@ fn deferred_cleanup_after_external_activation(reject: bool) {
     started_rx.recv().unwrap();
 
     if reject {
-        coordinator
-            .reject("reader", notice.request_id.clone())
-            .unwrap();
-        coordinator.reject("reader", notice.request_id).unwrap();
-    } else {
-        coordinator.target_lost_for_lifecycle(&owner);
-        assert_eq!(
-            coordinator.claim("reader", notice.request_id),
-            Err(OpenRequestError::Cancelled)
-        );
-        workspace.destroy_window(&owner).unwrap();
-        assert_eq!(workspace.budget().sessions, 0);
-        assert!(!sessions.assert_empty());
-        let lifecycle_sessions = sessions.clone();
-        let lifecycle_owner = owner.clone();
-        let lifecycle = thread::spawn(move || lifecycle_sessions.drain_owned(&lifecycle_owner));
-
+        let rejecting = coordinator.clone();
+        let rejecting_id = notice.request_id.clone();
+        let first_reject = thread::spawn(move || rejecting.reject("reader", rejecting_id));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while sessions
+            .session_length(&owner, &claimed.session_id, claimed.document_generation)
+            .is_ok()
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rejection did not start"
+            );
+            thread::yield_now();
+        }
+        // A terminal marker alone must not acknowledge unfinished physical cleanup.
+        assert!(matches!(
+            coordinator.reject("reader", notice.request_id.clone()),
+            Err(OpenRequestError::Session(
+                PdfSessionError::ExternalLinkDrainTimeout | PdfSessionError::SessionClosing
+            ))
+        ));
+        assert!(matches!(
+            first_reject.join().unwrap(),
+            Err(OpenRequestError::Session(
+                PdfSessionError::ExternalLinkDrainTimeout | PdfSessionError::SessionClosing
+            ))
+        ));
+        assert_eq!(workspace.budget().sessions, 1);
         settle_tx.send(()).unwrap();
         activation.join().unwrap();
-        lifecycle.join().unwrap();
-        assert!(sessions.assert_empty());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !sessions.owner_is_empty(&owner) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "physical cleanup did not settle"
+            );
+            thread::yield_now();
+        }
+        coordinator.reject("reader", notice.request_id).unwrap();
+        assert!(coordinator.pending_ingress("reader").unwrap().is_empty());
+        assert_eq!(workspace.budget().sessions, 0);
+        let reopened = coordinator.ingest_path("reader", &path).unwrap();
+        coordinator.reject("reader", reopened.request_id).unwrap();
+        assert_eq!(workspace.budget().sessions, 0);
         std::fs::remove_file(path).unwrap();
+        assert!(sessions.assert_empty());
         return;
     }
-    assert_eq!(workspace.budget().sessions, 1);
+
+    coordinator.target_lost_for_lifecycle(&owner);
+    assert_eq!(
+        coordinator.claim("reader", notice.request_id),
+        Err(OpenRequestError::Cancelled)
+    );
+    workspace.destroy_window(&owner).unwrap();
+    assert_eq!(workspace.budget().sessions, 0);
     assert!(!sessions.assert_empty());
+    let lifecycle_sessions = sessions.clone();
+    let lifecycle_owner = owner.clone();
+    let lifecycle = thread::spawn(move || lifecycle_sessions.drain_owned(&lifecycle_owner));
 
     settle_tx.send(()).unwrap();
     activation.join().unwrap();
-    assert!(coordinator.pending_ingress("reader").unwrap().is_empty());
-    assert_eq!(workspace.budget().sessions, 0);
-    std::fs::remove_file(path).unwrap();
+    lifecycle.join().unwrap();
     assert!(sessions.assert_empty());
+    std::fs::remove_file(path).unwrap();
 }
 
 #[test]

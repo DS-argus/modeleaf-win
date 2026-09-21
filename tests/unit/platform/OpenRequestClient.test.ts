@@ -3,7 +3,7 @@ import { OPEN_FAILURE_EVENT, OPEN_REQUEST_EVENT, createOpenRequestClient, type O
 
 const opaque = (character: string) => character.repeat(64);
 const request = (requestId: string) => ({ tag: "OPEN_REQUEST", requestId });
-const failure = (failureId: string, failureTag: "PDF_INVALID" | "REMOTE_PATH" | "MISSING_FILE" = "PDF_INVALID") => ({ tag: "OPEN_FAILURE", failureId, failureTag });
+const failure = (failureId: string, failureTag: "PDF_INVALID" | "FILE_UNREADABLE" | "MISSING_FILE" = "PDF_INVALID") => ({ tag: "OPEN_FAILURE", failureId, failureTag });
 const claim = () => ({ sessionId: opaque("b"), documentGeneration: 1, ownerGeneration: 7, length: 42, displayName: "Safe document.pdf" });
 const settle = async () => { await new Promise<void>((resolve) => setTimeout(resolve, 0)); };
 async function waitFor(predicate: () => boolean): Promise<void> { for (let attempt = 0; attempt < 128; attempt += 1) { if (predicate()) return; await settle(); } throw new Error("Timed out waiting for open ingress."); }

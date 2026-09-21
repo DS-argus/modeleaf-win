@@ -93,6 +93,10 @@ impl StateFileStore {
     pub fn load(&self) -> Result<StateSnapshot, StateFileError> {
         Ok(decode_snapshot(&self.read_root()?))
     }
+    /// Loads persisted recent records without interpreting or probing their paths.
+    ///
+    /// RecentStore applies lexical path-policy validation after this structural decode; drive
+    /// classification and filesystem checks must stay out of startup state loading.
     pub fn load_recents_strict(&self) -> Result<Vec<RecentFile>, StateFileError> {
         decode_recents_strict(self.read_root()?.get("recent_files"))
     }

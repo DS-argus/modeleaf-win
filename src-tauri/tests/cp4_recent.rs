@@ -1,4 +1,6 @@
-use modeleaf_lib::local_path::{DriveKind, LocalPathPolicy, PathPolicyError};
+use modeleaf_lib::local_path::{
+    DriveKind, LocalPathPolicy, PathPolicyError, SystemLocalPathPolicy,
+};
 use modeleaf_lib::persistence::lock::lock_path;
 use modeleaf_lib::recent::{
     RecentListOutcome, RecentStateReason, RecentStore, RecentStoreError, MAX_RECENT_DOCUMENTS,
@@ -329,16 +331,92 @@ fn confirmed_missing_recent_is_pruned_but_other_failures_are_retained() {
     assert!(root["recent_files"].as_array().unwrap().is_empty());
     fs::remove_dir_all(directory).unwrap();
 }
+#[cfg(windows)]
 #[test]
-fn remote_and_non_pdf_paths_are_rejected_without_state_mutation() {
+fn persisted_unc_and_mapped_recents_load_without_classification_or_io() {
+    struct NoClassification;
+    impl LocalPathPolicy for NoClassification {
+        fn classify(&self, _: &Path) -> Result<DriveKind, PathPolicyError> {
+            panic!("persisted recent load must not classify drives")
+        }
+        fn validate_syntax(&self, _: &Path) -> Result<(), PathPolicyError> {
+            Ok(())
+        }
+        fn classify_syntax(&self, _: &Path) -> Result<DriveKind, PathPolicyError> {
+            panic!("persisted recent load must not classify drives")
+        }
+    }
+
+    let directory = temp_dir("network-load");
+    let state = directory.join("state.json");
+    let unc = r"\\offline-server\shared\book.pdf";
+    let mapped = r"Z:\offline-cache\mapped.pdf";
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "future": {"keep": true},
+        "recent_files": [
+            {"absolute_path": unc, "last_opened_at": "1"},
+            {"absolute_path": mapped, "last_opened_at": "2"}
+        ]
+    }))
+    .unwrap();
+    fs::write(&state, &bytes).unwrap();
+
+    let store = RecentStore::load(&state, &NoClassification).unwrap();
+    let documents = store.documents();
+    assert_eq!(documents.len(), 2);
+    for (document, expected) in documents.iter().zip([unc, mapped]) {
+        assert_eq!(document.display_path(), expected);
+        assert_eq!(
+            store.path_for_open(document.recent_id()).unwrap(),
+            PathBuf::from(expected)
+        );
+    }
+    assert_eq!(fs::read(&state).unwrap(), bytes);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn persisted_device_and_malformed_network_paths_are_rejected_without_mutation() {
+    let directory = temp_dir("network-invalid");
+    let invalid_paths = [
+        ("device", r"\\.\C:\device.pdf"),
+        ("device-prefix", r"\\?\C:\device.pdf"),
+        ("malformed-unc", r"\\server\\share\book.pdf"),
+    ];
+    for (label, absolute_path) in invalid_paths {
+        let state = directory.join(format!("{label}.json"));
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "future": {"keep": true},
+            "recent_files": [{"absolute_path": absolute_path, "last_opened_at": "1"}]
+        }))
+        .unwrap();
+        fs::write(&state, &bytes).unwrap();
+        let store = RecentStore::load(&state, &SystemLocalPathPolicy).unwrap();
+        assert_eq!(
+            store.list_outcome(),
+            RecentListOutcome::StateUnavailable {
+                reason: RecentStateReason::RecentFieldInvalid
+            }
+        );
+        assert_eq!(fs::read(&state).unwrap(), bytes);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn network_paths_are_admitted_and_non_pdf_paths_are_rejected() {
     let directory = temp_dir("policy");
     let state = directory.join("state.json");
     let path = pdf(&directory, 0);
     let mut remote = RecentStore::load(&state, &Policy(DriveKind::Remote)).unwrap();
-    assert!(matches!(
-        remote.debug_record_opened_and_save(&path, &Policy(DriveKind::Remote)),
-        Err(RecentStoreError::RemotePath)
-    ));
+    let document = remote
+        .debug_record_opened_and_save(&path, &Policy(DriveKind::Remote))
+        .unwrap();
+    assert_eq!(
+        remote.path_for_open(document.recent_id()).unwrap(),
+        PathBuf::from(document.display_path())
+    );
     let text = directory.join("notes.txt");
     fs::write(&text, b"x").unwrap();
     let mut local = RecentStore::load(&state, &Policy(DriveKind::Fixed)).unwrap();
@@ -346,7 +424,8 @@ fn remote_and_non_pdf_paths_are_rejected_without_state_mutation() {
         local.debug_record_opened_and_save(&text, &Policy(DriveKind::Fixed)),
         Err(RecentStoreError::NotPdf)
     ));
-    assert!(!state.exists());
+    let root: Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
+    assert_eq!(root["recent_files"].as_array().unwrap().len(), 1);
     fs::remove_dir_all(directory).unwrap();
 }
 
