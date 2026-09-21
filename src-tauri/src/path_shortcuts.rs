@@ -1,5 +1,5 @@
 use crate::pdf_session::{PdfSessionError, PdfSessionManager, SessionId};
-use tauri::{State, Window};
+use tauri::{Manager, Window};
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(
@@ -34,43 +34,55 @@ fn resolve(
 }
 
 #[tauri::command]
-pub fn path_shortcut(
+pub async fn path_shortcut(
     window: Window,
-    sessions: State<'_, PdfSessionManager>,
     action: String,
     session_id: String,
     document_generation: u64,
     owner_generation: u64,
 ) -> PathShortcutOutcome {
-    let path = match resolve(
-        &window,
-        &sessions,
-        session_id,
-        document_generation,
-        owner_generation,
-    ) {
-        Ok(p) => p,
-        Err(e) => {
-            return PathShortcutOutcome::Rejected {
-                reason: format!("{e:?}"),
-            }
-        }
+    let Some(permit) = crate::native_io::NativeIo::global().metadata.try_acquire() else {
+        return PathShortcutOutcome::Rejected {
+            reason: "SESSION_CAPACITY".into(),
+        };
     };
-    match action.as_str() {
-        "y" => PathShortcutOutcome::Shown {
-            text: path.to_string_lossy().into_owned(),
-        },
-        "yy" => {
-            let text = path.to_string_lossy().into_owned();
-            match copy_clipboard(&text) {
-                Ok(()) => PathShortcutOutcome::Copied { text },
-                Err(reason) => PathShortcutOutcome::Rejected { reason },
+    let sessions = window.state::<PdfSessionManager>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        let path = match resolve(
+            &window,
+            &sessions,
+            session_id,
+            document_generation,
+            owner_generation,
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                return PathShortcutOutcome::Rejected {
+                    reason: format!("{e:?}"),
+                }
             }
+        };
+        match action.as_str() {
+            "y" => PathShortcutOutcome::Shown {
+                text: path.to_string_lossy().into_owned(),
+            },
+            "yy" => {
+                let text = path.to_string_lossy().into_owned();
+                match copy_clipboard(&text) {
+                    Ok(()) => PathShortcutOutcome::Copied { text },
+                    Err(reason) => PathShortcutOutcome::Rejected { reason },
+                }
+            }
+            _ => PathShortcutOutcome::Rejected {
+                reason: "UNKNOWN_ACTION".into(),
+            },
         }
-        _ => PathShortcutOutcome::Rejected {
-            reason: "UNKNOWN_ACTION".into(),
-        },
-    }
+    })
+    .await
+    .unwrap_or(PathShortcutOutcome::Rejected {
+        reason: "FILE_UNREADABLE".into(),
+    })
 }
 
 #[cfg(windows)]

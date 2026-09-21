@@ -411,8 +411,7 @@ let nativePickerOpen = false;
 const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = {
   DOCUMENT_TOO_LARGE: "This PDF exceeds reader resource limits.",
   MISSING_FILE: "This PDF no longer exists.",
-  REMOTE_PATH: "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
-  PATH_REJECTED: "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
+  PATH_REJECTED: "This PDF path cannot be opened safely.",
   PDF_INVALID: "Could not read this PDF.",
   FILE_UNREADABLE: "Could not read this PDF.",
   SESSION_CAPACITY: "This PDF exceeds reader resource limits.",
@@ -420,7 +419,7 @@ const OPEN_FAILURE_STATUS: Readonly<Record<OpenFailureNotice["tag"], string>> = 
 function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !("tag" in value)) return undefined;
   const tag = value.tag === "SELECTION_REJECTED" && "reason" in value ? value.reason : value.tag;
-  return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "REMOTE_PATH" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
+  return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
 function reportOpenInvokeFailure(error?: unknown, fallbackStatus = openFailureStatus("unknown"), fallbackPhase: OpenFailurePhase = "unknown"): void {
   const tag = openFailureTag(error);
@@ -442,7 +441,6 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
   "PDF presentation could not be updated.",
   "Could not read this PDF.",
-  "Network PDFs are not supported. Copy the PDF to a local drive and open the local copy.",
   "This PDF path cannot be opened safely.",
   "This PDF exceeds reader resource limits.",
   "Opening PDF cancelled.",

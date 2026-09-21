@@ -101,3 +101,20 @@ fn prohibited_values_are_rejected_before_any_output() {
     }
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn deferred_cleanup_is_not_serialized_as_timeout_or_success() {
+    let directory = temp_dir("deferred");
+    let log = DiagnosticLog::open(&directory).unwrap();
+    let mut deferred = event();
+    deferred.event = DiagnosticEventName::Quit;
+    deferred.outcome = DiagnosticOutcome::Cancelled;
+    deferred.tag = DiagnosticTag::Deferred;
+    log.record(&deferred).unwrap();
+    let output = fs::read_to_string(directory.join("diagnostics.jsonl")).unwrap();
+    assert!(output.contains("\"tag\":\"DEFERRED\""));
+    assert!(output.contains("\"outcome\":\"CANCELLED\""));
+    assert!(!output.contains("TIMEOUT"));
+    assert!(!output.contains("SUCCESS"));
+    fs::remove_dir_all(directory).unwrap();
+}

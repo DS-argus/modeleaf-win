@@ -88,6 +88,12 @@ Remove-Item Env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
 
 The runner validates the preview source/executable receipt and fixture hashes, exercises annotation-only labels, duplicate occurrences, URL selection/repeated Enter/Escape, viewport cancellation, internal landing coordinates and indicator expiration, and retained `F` behavior. Evidence stays under `.internal/evidence/link-hints/`; the runner closes the owned preview. It checks the CDP `autoRepeat` event before sending repeated Enter to an external confirmation. It deliberately does not confirm a valid external URL with non-repeat Enter, so successful OS/browser launch remains unverified by this runner. Native registry authorization is covered separately by the Rust gate tests. This is bundled WebView2 debug QA with CDP-injected input, not physical human input, installed-release certification, or an accessibility narration test.
 
+## Network PDF verification
+
+Automated path-policy, injected I/O, and local-file tests are not SMB evidence. Run the native suites `cp0_native`, `cp1_open_boundary`, `cp4_open_request`, `cp4_recent`, and `cp5_lifecycle`, plus the session and native-I/O unit tests and the canonical gate. Verify fixture SHA-256 before and after reading.
+
+Real-network QA requires an owner-provided accessible UNC PDF, an existing mapped-drive equivalent, and disposable test data for interrupted access, permission-denied, removed/changed files, and reconnect scenarios. Do not map drives, change credentials/ACLs/firewalls, or alter production documents. Keep server names and credentials out of public evidence. Launch only with `npm run preview:worktree` and record its source/executable receipt. Exercise chooser, argv/Open With, drop, recent reopen, bounded paging, cancel/close/window exit, stale completion, and unaffected local/password/link/print flows. Report absent resources as BLOCKED; never substitute local or mocked passes for real-network/native QA.
+
 ## Documentation-only changes
 
 Validate local links, documented commands, source-backed claims, ignore/tracking behavior, and `git diff --check`. Run relevant contract tests where guidance relies on their boundaries. A native rebuild/manual QA is unnecessary when only documentation changes; explicitly report those layers as NOT RUN. Never suppress warnings or label an unexecuted gate as passed.

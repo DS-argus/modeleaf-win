@@ -9,7 +9,7 @@ A keyboard-first, read-only PDF viewer for Windows 11 x64.
 
 - **Read-only.** No annotation editing, saving, or changes to the source PDF.
 - **Keyboard-first.** Vim-style navigation with a command palette and shortcut help.
-- **Focused on reading.** Local PDFs, tabs, and a minimal interface.
+- **Focused on reading.** Local and Windows network PDFs, tabs, and a minimal interface.
 
 ## Key features
 
@@ -68,6 +68,12 @@ Use **Ctrl+wheel** to zoom around the pointer in 10% multiplicative steps (25–
 Press `f` to label visible links supplied by the PDF, then type a label to select it. Internal links navigate directly and briefly mark an explicit destination coordinate; page-only destinations have no marker. External `http(s)` and `mailto:` links show their URL near the source and require `Enter` confirmation before one launch through the registered Windows handler; safely encoded `subject`/`body` query text is supported. `Escape` cancels, `Backspace` corrects the label, and moving the viewport or changing focus cancels pending hints and URL confirmation. Ordinary mouse clicks are unchanged; text that merely looks like a URL is not a link.
 
 Password-protected PDFs open with a modal prompt. Enter submits; Escape or Cancel returns to the previous document (or start screen). Incorrect attempts clear the input and can be retried without a limit. While prompted, document and tab actions are blocked; closing the window remains available. Passwords are never saved.
+
+## Windows network PDFs
+
+Open PDFs directly from ordinary UNC paths (`\\server\share\document.pdf`) or an existing mapped network drive through the file chooser, Explorer/Open With, drag/drop, or recents. Modeleaf uses your current Windows access context and reads bounded ranges from the retained read-only handle; it does not stage a complete local copy. HTTP/HTTPS PDF opening, device paths, and custom credential prompts are not supported.
+
+An unavailable share or changed document can fail opening or paging. Restore access and reopen the PDF; network failures do not automatically remove its recent entry. Cancelling loading stops adoption, not necessarily an already-blocked Windows network call. Native work stays bounded and remains accounted for until it settles; a teardown timeout is not successful cleanup.
 
 ## Build from source
 

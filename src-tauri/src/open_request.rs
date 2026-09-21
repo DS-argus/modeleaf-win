@@ -68,7 +68,6 @@ pub enum OpenFailureTag {
     FileUnreadable,
     SessionCapacity,
     DocumentTooLarge,
-    RemotePath,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +144,39 @@ enum Terminal {
     Cancelled,
     Rejected,
 }
+struct PendingReservation {
+    owner: PdfOwner,
+    insertion_order: u64,
+    valid: bool,
+}
+
+/// RAII admission for one bounded native open operation.
+///
+/// The admission owns the reservation until `ingest_reserved` settles it. Dropping it before
+/// settlement releases the reservation, while owner invalidation deliberately leaves the pending
+/// work counted until the worker settles.
+pub struct OpenAdmission {
+    coordinator: OpenRequestCoordinator,
+    owner: PdfOwner,
+    reservation_id: u64,
+    settled: bool,
+}
+
+impl OpenAdmission {
+    /// Returns the exact native owner captured before dispatch.
+    pub fn owner(&self) -> &PdfOwner {
+        &self.owner
+    }
+}
+
+impl Drop for OpenAdmission {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.coordinator.release_reservation(self.reservation_id);
+    }
+}
 struct LiveRequest {
     owner: PdfOwner,
     response: ClaimedOpenRequest,
@@ -154,8 +186,10 @@ struct LiveRequest {
 struct DeferredCleanup {
     owner: PdfOwner,
     generation: u64,
+    request_id: Option<OpenRequestId>,
 }
 struct Requests {
+    pending: HashMap<u64, PendingReservation>,
     live: HashMap<OpenRequestId, LiveRequest>,
     terminal: HashMap<OpenRequestId, Terminal>,
     terminal_order: VecDeque<OpenRequestId>,
@@ -200,6 +234,7 @@ impl OpenRequestCoordinator {
             workspace,
             requests: Arc::new(Mutex::new(Requests {
                 live: HashMap::new(),
+                pending: HashMap::new(),
                 terminal: HashMap::new(),
                 terminal_order: VecDeque::new(),
             })),
@@ -213,63 +248,163 @@ impl OpenRequestCoordinator {
         }
     }
 
-    /// Validates and opens exactly one session for the current native owner before publishing an ID.
-    pub fn ingest_path(
-        &self,
-        window_label: &str,
-        path: &Path,
-    ) -> Result<OpenRequestNotice, OpenRequestError> {
+    /// Reserves bounded open capacity and captures the exact native owner before dispatch.
+    pub fn reserve_open(&self, window_label: &str) -> Result<OpenAdmission, OpenRequestError> {
         self.reap_deferred();
         let mut ingress = self.ingress.lock().expect("open ingress order poisoned");
         let owner = self
             .workspace
             .active_owner(window_label)
             .ok_or(OpenRequestError::OwnerMismatch)?;
-        let mut requests = self.requests.lock().expect("open request state poisoned");
-        if requests.live.len() >= MAX_OPEN_REQUESTS {
-            return Err(OpenRequestError::Capacity);
-        }
-        let current_order = ingress.next;
-        let next_order = current_order
+        let insertion_order = ingress.next;
+        let next_order = insertion_order
             .checked_add(1)
             .ok_or(OpenRequestError::Capacity)?;
-        let metadata = self.sessions.open_local_file(owner.clone(), path)?;
-        if let Err(error) = self
-            .workspace
-            .admit_session(&owner, metadata.session_id.clone())
-        {
-            if let Ok(barrier) =
-                self.sessions
-                    .cancel(&owner, &metadata.session_id, metadata.document_generation)
-            {
-                let _ = self.sessions.close(
-                    &owner,
-                    &metadata.session_id,
-                    metadata.document_generation,
-                    barrier.barrier_id,
-                );
-            }
-            return Err(workspace_error(error));
+        let mut requests = self.requests.lock().expect("open request state poisoned");
+        if requests.live.len().saturating_add(requests.pending.len()) >= MAX_OPEN_REQUESTS {
+            return Err(OpenRequestError::Capacity);
         }
-        let request_id = OpenRequestId::random();
-        let response = ClaimedOpenRequest {
-            session_id: metadata.session_id,
-            owner_generation: owner.generation,
-            document_generation: metadata.document_generation,
-            length: metadata.length,
-            display_name: display_name(path),
-        };
-        requests.live.insert(
-            request_id.clone(),
-            LiveRequest {
-                owner,
-                response,
-                insertion_order: current_order,
-                claimed: false,
+        requests.pending.insert(
+            insertion_order,
+            PendingReservation {
+                owner: owner.clone(),
+                insertion_order,
+                valid: true,
             },
         );
         ingress.next = next_order;
-        Ok(OpenRequestNotice { request_id })
+        Ok(OpenAdmission {
+            coordinator: self.clone(),
+            owner,
+            reservation_id: insertion_order,
+            settled: false,
+        })
+    }
+
+    /// Opens a reserved path without holding coordinator or workspace locks across I/O, then
+    /// publishes only if the reservation and its captured owner are still current.
+    pub fn ingest_reserved(
+        &self,
+        mut admission: OpenAdmission,
+        path: &Path,
+    ) -> Result<OpenRequestNotice, OpenRequestError> {
+        let owner = admission.owner.clone();
+        let coordinator = admission.coordinator.clone();
+        coordinator.ensure_reservation_current(&owner, admission.reservation_id)?;
+        let metadata = match coordinator.sessions.open_local_file(owner.clone(), path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return Err(error.into());
+            }
+        };
+        let result = coordinator.commit_reserved(&owner, admission.reservation_id, metadata, path);
+        admission.settled = true;
+        result
+    }
+
+    /// Convenience path for callers that do not need to dispatch the blocking open themselves.
+    pub fn ingest_path(
+        &self,
+        window_label: &str,
+        path: &Path,
+    ) -> Result<OpenRequestNotice, OpenRequestError> {
+        let admission = self.reserve_open(window_label)?;
+        self.ingest_reserved(admission, path)
+    }
+
+    fn ensure_reservation_current(
+        &self,
+        owner: &PdfOwner,
+        reservation_id: u64,
+    ) -> Result<(), OpenRequestError> {
+        let _ingress = self.ingress.lock().expect("open ingress order poisoned");
+        let requests = self.requests.lock().expect("open request state poisoned");
+        let current = requests
+            .pending
+            .get(&reservation_id)
+            .is_some_and(|reservation| reservation.owner == *owner && reservation.valid);
+        if !current {
+            return Err(OpenRequestError::Cancelled);
+        }
+        self.workspace.check_owner(owner).map_err(workspace_error)
+    }
+
+    fn commit_reserved(
+        &self,
+        owner: &PdfOwner,
+        reservation_id: u64,
+        metadata: crate::pdf_session::PdfSessionMetadata,
+        path: &Path,
+    ) -> Result<OpenRequestNotice, OpenRequestError> {
+        let unadopted = (metadata.session_id.clone(), metadata.document_generation);
+        let mut rejection = None;
+        let mut notice = None;
+        {
+            let _ingress = self.ingress.lock().expect("open ingress order poisoned");
+            let mut requests = self.requests.lock().expect("open request state poisoned");
+            let reservation = requests.pending.get(&reservation_id);
+            let current = reservation
+                .is_some_and(|reservation| reservation.owner == *owner && reservation.valid);
+            if !current {
+                requests.pending.remove(&reservation_id);
+                rejection = Some(OpenRequestError::Cancelled);
+            } else if let Err(error) = self.workspace.check_owner(owner) {
+                requests.pending.remove(&reservation_id);
+                rejection = Some(workspace_error(error));
+            } else if let Err(error) = self
+                .workspace
+                .admit_session(owner, metadata.session_id.clone())
+            {
+                requests.pending.remove(&reservation_id);
+                rejection = Some(workspace_error(error));
+            } else {
+                let reservation = requests
+                    .pending
+                    .remove(&reservation_id)
+                    .expect("reserved open disappeared after validation");
+                let request_id = OpenRequestId::random();
+                let response = ClaimedOpenRequest {
+                    session_id: metadata.session_id.clone(),
+                    owner_generation: owner.generation,
+                    document_generation: metadata.document_generation,
+                    length: metadata.length,
+                    display_name: display_name(path),
+                };
+                requests.live.insert(
+                    request_id.clone(),
+                    LiveRequest {
+                        owner: owner.clone(),
+                        response,
+                        insertion_order: reservation.insertion_order,
+                        claimed: false,
+                    },
+                );
+                notice = Some(OpenRequestNotice { request_id });
+            }
+        }
+        if let Some(error) = rejection {
+            let _ = self.drain(owner, &unadopted.0, unadopted.1);
+            return Err(error);
+        }
+        Ok(notice.expect("reserved open must publish or reject"))
+    }
+
+    fn release_reservation(&self, reservation_id: u64) {
+        self.requests
+            .lock()
+            .expect("open request state poisoned")
+            .pending
+            .remove(&reservation_id);
+    }
+
+    /// Reports whether unsettled open work remains for this exact owner.
+    pub fn has_pending_for_owner(&self, owner: &PdfOwner) -> bool {
+        self.requests
+            .lock()
+            .expect("open request state poisoned")
+            .pending
+            .values()
+            .any(|reservation| reservation.owner == *owner)
     }
 
     /// Lists IDs still awaiting terminal acknowledgement for the current native owner without
@@ -312,6 +447,26 @@ impl OpenRequestCoordinator {
             .workspace
             .active_owner(window_label)
             .ok_or(OpenRequestError::OwnerMismatch)?;
+        self.ingest_failure_locked(&mut ingress, owner, error)
+    }
+
+    /// Queues a failure for the exact owner captured before asynchronous dispatch.
+    pub fn ingest_failure_owned(
+        &self,
+        owner: &PdfOwner,
+        error: OpenRequestError,
+    ) -> Result<OpenFailureNotice, OpenRequestError> {
+        let mut ingress = self.ingress.lock().expect("open ingress order poisoned");
+        self.workspace.check_owner(owner).map_err(workspace_error)?;
+        self.ingest_failure_locked(&mut ingress, owner.clone(), error)
+    }
+
+    fn ingest_failure_locked(
+        &self,
+        ingress: &mut IngressOrder,
+        owner: PdfOwner,
+        error: OpenRequestError,
+    ) -> Result<OpenFailureNotice, OpenRequestError> {
         let insertion_order = ingress.next;
         let next_order = insertion_order
             .checked_add(1)
@@ -502,6 +657,11 @@ impl OpenRequestCoordinator {
             }
         }
         let mut state = self.requests.lock().expect("open request state poisoned");
+        for reservation in state.pending.values_mut() {
+            if reservation.owner == *owner {
+                reservation.valid = false;
+            }
+        }
         let ids: Vec<_> = state
             .live
             .iter()
@@ -532,6 +692,11 @@ impl OpenRequestCoordinator {
         }
         let sessions = {
             let mut state = self.requests.lock().expect("open request state poisoned");
+            for reservation in state.pending.values_mut() {
+                if reservation.owner == *owner {
+                    reservation.valid = false;
+                }
+            }
             let ids: Vec<_> = state
                 .live
                 .iter()
@@ -549,8 +714,9 @@ impl OpenRequestCoordinator {
                 })
                 .collect::<Vec<_>>()
         };
+        drop(_ingress);
         for (id, generation) in sessions {
-            self.drain(owner, &id, generation);
+            let _ = self.drain(owner, &id, generation);
         }
         self.reap_deferred();
     }
@@ -569,6 +735,18 @@ impl OpenRequestCoordinator {
             .ok_or(OpenRequestError::OwnerMismatch)?;
         let request = {
             let mut state = self.requests.lock().expect("open request state poisoned");
+            if !state.live.contains_key(&request_id) {
+                let outcome = terminal_result(&state, &request_id, terminal);
+                let retry = terminal == Terminal::Rejected && outcome.is_ok();
+                drop(state);
+                drop(_ingress);
+                if terminal == Terminal::Rejected
+                    && (retry || self.has_deferred_request(&request_id))
+                {
+                    return self.retry_rejected(&owner, &request_id);
+                }
+                return outcome;
+            }
             match state.live.get(&request_id) {
                 Some(request) if request.owner != owner => {
                     return Err(OpenRequestError::OwnerMismatch)
@@ -577,54 +755,222 @@ impl OpenRequestCoordinator {
                     return Err(OpenRequestError::NotClaimed)
                 }
                 Some(_) => {}
-                None => return terminal_result(&state, &request_id, terminal),
+                None => unreachable!("request existence checked above"),
+            }
+            if drain {
+                let response = &state
+                    .live
+                    .get(&request_id)
+                    .expect("validated request missing")
+                    .response;
+                // A duplicate reject must observe in-progress cleanup, never an early terminal success.
+                self.remember_deferred(
+                    &owner,
+                    &response.session_id,
+                    response.document_generation,
+                    Some(&request_id),
+                )?;
             }
             let request = state
                 .live
                 .remove(&request_id)
                 .expect("request checked present");
-            insert_terminal(&mut state, request_id, terminal);
+            insert_terminal(&mut state, request_id.clone(), terminal);
             request
         };
+        drop(_ingress);
         if drain {
-            self.drain(
+            self.drain_for_request(
                 &owner,
                 &request.response.session_id,
                 request.response.document_generation,
-            );
+                Some(&request_id),
+            )
+        } else {
+            Ok(())
         }
-        Ok(())
     }
-    fn drain(&self, owner: &PdfOwner, id: &SessionId, generation: u64) {
+
+    fn retry_rejected(
+        &self,
+        owner: &PdfOwner,
+        request_id: &OpenRequestId,
+    ) -> Result<(), OpenRequestError> {
+        self.reap_deferred_for_owner(owner);
+        let deferred = self
+            .deferred
+            .lock()
+            .expect("open request deferred cleanup poisoned")
+            .iter()
+            .find_map(|(id, cleanup)| {
+                (cleanup.request_id.as_ref() == Some(request_id))
+                    .then(|| (id.clone(), cleanup.owner.clone(), cleanup.generation))
+            });
+        let Some((id, cleanup_owner, generation)) = deferred else {
+            let requests = self.requests.lock().expect("open request state poisoned");
+            return terminal_result(&requests, request_id, Terminal::Rejected);
+        };
+        if cleanup_owner != *owner {
+            return Err(OpenRequestError::OwnerMismatch);
+        }
+        self.drain_for_request(owner, &id, generation, Some(request_id))
+    }
+
+    fn drain(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<(), OpenRequestError> {
+        self.drain_for_request(owner, id, generation, None)
+    }
+
+    fn drain_for_request(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        request_id: Option<&OpenRequestId>,
+    ) -> Result<(), OpenRequestError> {
         match self.sessions.cancel(owner, id, generation) {
-            Ok(barrier) => {
-                if self
-                    .sessions
-                    .close(owner, id, generation, barrier.barrier_id)
-                    .is_ok()
-                {
-                    let _ = self.workspace.release_session(owner, id);
+            Ok(barrier) => match self
+                .sessions
+                .close(owner, id, generation, barrier.barrier_id)
+            {
+                Ok(()) => self.release_workspace_session(owner, id, generation, request_id),
+                Err(PdfSessionError::SessionNotFound) => {
+                    self.settle_missing(owner, id, generation, request_id)
                 }
+                Err(error) => self.unresolved_cleanup(owner, id, generation, request_id, error),
+            },
+            Err(PdfSessionError::SessionNotFound) => {
+                self.settle_missing(owner, id, generation, request_id)
             }
             Err(PdfSessionError::ExternalLinkDrainTimeout) => {
-                if self
+                let error = match self
                     .sessions
                     .defer_command_cancellation(owner, id, generation)
-                    .is_ok()
                 {
-                    self.deferred
-                        .lock()
-                        .expect("open request deferred cleanup poisoned")
-                        .entry(id.clone())
-                        .or_insert_with(|| DeferredCleanup {
-                            owner: owner.clone(),
-                            generation,
-                        });
-                    self.reap_deferred();
-                }
+                    Ok(()) => PdfSessionError::ExternalLinkDrainTimeout,
+                    Err(error) => error,
+                };
+                self.unresolved_cleanup(owner, id, generation, request_id, error)
             }
-            Err(_) => {}
+            Err(error) => self.unresolved_cleanup(owner, id, generation, request_id, error),
         }
+    }
+
+    fn settle_missing(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        request_id: Option<&OpenRequestId>,
+    ) -> Result<(), OpenRequestError> {
+        match self
+            .sessions
+            .reap_deferred_cancellation(owner, id, generation)
+        {
+            Ok(true) => self.release_workspace_session(owner, id, generation, request_id),
+            Ok(false) => self.unresolved_cleanup(
+                owner,
+                id,
+                generation,
+                request_id,
+                PdfSessionError::SessionNotFound,
+            ),
+            Err(error) => self.unresolved_cleanup(owner, id, generation, request_id, error),
+        }
+    }
+
+    fn release_workspace_session(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        request_id: Option<&OpenRequestId>,
+    ) -> Result<(), OpenRequestError> {
+        match self.workspace.release_session(owner, id) {
+            Ok(()) => {
+                self.deferred
+                    .lock()
+                    .expect("open request deferred cleanup poisoned")
+                    .remove(id);
+                Ok(())
+            }
+            Err(error) => {
+                let result = workspace_error(error);
+                if let Some(request_id) = request_id {
+                    self.remember_deferred(owner, id, generation, Some(request_id))?;
+                }
+                Err(result)
+            }
+        }
+    }
+
+    fn unresolved_cleanup(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        request_id: Option<&OpenRequestId>,
+        error: PdfSessionError,
+    ) -> Result<(), OpenRequestError> {
+        self.remember_deferred(owner, id, generation, request_id)?;
+        self.reap_deferred();
+        if self.has_deferred_session(id) {
+            Err(OpenRequestError::Session(error))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn remember_deferred(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        request_id: Option<&OpenRequestId>,
+    ) -> Result<(), OpenRequestError> {
+        let mut deferred = self
+            .deferred
+            .lock()
+            .expect("open request deferred cleanup poisoned");
+        if let Some(existing) = deferred.get_mut(id) {
+            if existing.owner != *owner || existing.generation != generation {
+                return Err(OpenRequestError::OwnerMismatch);
+            }
+            if request_id.is_some() {
+                existing.request_id = request_id.cloned();
+            }
+            return Ok(());
+        }
+        if deferred.len() >= MAX_OPEN_REQUEST_TOMBSTONES {
+            return Err(OpenRequestError::Capacity);
+        }
+        deferred.insert(
+            id.clone(),
+            DeferredCleanup {
+                owner: owner.clone(),
+                generation,
+                request_id: request_id.cloned(),
+            },
+        );
+        Ok(())
+    }
+
+    fn has_deferred_session(&self, id: &SessionId) -> bool {
+        self.deferred
+            .lock()
+            .expect("open request deferred cleanup poisoned")
+            .contains_key(id)
+    }
+    fn has_deferred_request(&self, request_id: &OpenRequestId) -> bool {
+        self.deferred
+            .lock()
+            .expect("open request deferred cleanup poisoned")
+            .values()
+            .any(|cleanup| cleanup.request_id.as_ref() == Some(request_id))
     }
 
     fn reap_deferred(&self) {
@@ -659,7 +1005,6 @@ impl OpenRequestCoordinator {
         }
     }
 }
-
 fn insert_terminal(state: &mut Requests, id: OpenRequestId, terminal: Terminal) {
     state.terminal.insert(id.clone(), terminal);
     state.terminal_order.push_back(id);
@@ -707,7 +1052,6 @@ fn failure_tag(error: OpenRequestError) -> Result<OpenFailureTag, OpenRequestErr
         OpenRequestError::Session(PdfSessionError::DocumentTooLarge) => {
             OpenFailureTag::DocumentTooLarge
         }
-        OpenRequestError::Session(PdfSessionError::RemotePath) => OpenFailureTag::RemotePath,
         // Route provenance is not trustworthy enough to expose. All rejected, dialog, and
         // otherwise unclassifiable ingress failures use the one approved opaque tag.
         _ => OpenFailureTag::PathRejected,

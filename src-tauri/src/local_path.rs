@@ -13,7 +13,6 @@ pub enum DriveKind {
 #[serde(tag = "tag", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PathPolicyError {
     PathRejected,
-    RemotePath,
 }
 
 pub trait LocalPathPolicy: Send + Sync {
@@ -37,20 +36,124 @@ pub trait VolumeRootResolver: Send + Sync {
     fn volume_root(&self, path: &Path) -> Result<PathBuf, PathPolicyError>;
 }
 
-/// Classifies a resolved volume root. Implementations must reject non-local roots.
+/// Classifies a resolved volume root, including remote roots.
 pub trait DriveTypeClassifier: Send + Sync {
     fn classify_root(&self, root: &Path) -> Result<DriveKind, PathPolicyError>;
 }
 
-fn reject_unsafe_input(path: &Path) -> Result<(), PathPolicyError> {
-    let text = path.to_string_lossy();
-    let lower = text.to_ascii_lowercase();
-    if lower.starts_with(r"\\.\") || lower.starts_with(r"\\?\") {
+fn path_text(path: &Path) -> Result<&str, PathPolicyError> {
+    path.to_str().ok_or(PathPolicyError::PathRejected)
+}
+
+fn is_separator(character: char) -> bool {
+    character == '\\' || character == '/'
+}
+
+fn is_unc_path(text: &str) -> bool {
+    text.len() >= 2
+        && text
+            .as_bytes()
+            .first()
+            .is_some_and(|byte| *byte == b'\\' || *byte == b'/')
+        && text
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b'\\' || *byte == b'/')
+}
+
+fn is_device_prefix(text: &str) -> bool {
+    let normalized = text.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("//./")
+        || normalized.starts_with("//?/")
+        || normalized.starts_with("/??/")
+        || normalized.starts_with("/device/")
+        || normalized.starts_with("/globalroot/")
+        || normalized.starts_with("/dosdevices/")
+}
+
+fn is_reserved_dos_device(component: &str) -> bool {
+    let stem = component.split(['.', ' ']).next().unwrap_or(component);
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "CONIN$"
+            | "CONOUT$"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+            | "CLOCK$"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
+}
+
+fn validate_unc_authority_component(component: &str, share: bool) -> Result<(), PathPolicyError> {
+    if component.is_empty()
+        || component == "."
+        || component == ".."
+        || component.ends_with('.')
+        || component.ends_with(' ')
+        || component.chars().any(|character| {
+            character.is_control() || matches!(character, ':' | '?' | '*' | '"' | '<' | '>' | '|')
+        })
+    {
         return Err(PathPolicyError::PathRejected);
     }
-    if lower.starts_with(r"\\") || lower.starts_with("//") {
-        return Err(PathPolicyError::RemotePath);
+    if share
+        && matches!(
+            component.to_ascii_lowercase().as_str(),
+            "pipe" | "ipc$" | "device" | "globalroot" | "dosdevices"
+        )
+    {
+        return Err(PathPolicyError::PathRejected);
     }
+    Ok(())
+}
+
+fn unc_authority(text: &str) -> Result<(&str, &str), PathPolicyError> {
+    let mut components = text[2..].split(is_separator);
+    let server = components.next().ok_or(PathPolicyError::PathRejected)?;
+    let share = components.next().ok_or(PathPolicyError::PathRejected)?;
+    validate_unc_authority_component(server, false)?;
+    validate_unc_authority_component(share, true)?;
+    Ok((server, share))
+}
+
+fn reject_unsafe_input(path: &Path) -> Result<(), PathPolicyError> {
+    let text = path_text(path)?;
+    if text.contains('\0') || is_device_prefix(text) {
+        return Err(PathPolicyError::PathRejected);
+    }
+    if is_unc_path(text) {
+        unc_authority(text)?;
+        if text.contains(':') {
+            return Err(PathPolicyError::PathRejected);
+        }
+        return Ok(());
+    }
+
     let bytes = text.as_bytes();
     if bytes.len() < 3
         || !bytes[0].is_ascii_alphabetic()
@@ -60,7 +163,15 @@ fn reject_unsafe_input(path: &Path) -> Result<(), PathPolicyError> {
     {
         return Err(PathPolicyError::PathRejected);
     }
+    if text[3..].split(is_separator).any(is_reserved_dos_device) {
+        return Err(PathPolicyError::PathRejected);
+    }
     Ok(())
+}
+
+fn unc_volume_root(text: &str) -> Result<PathBuf, PathPolicyError> {
+    let (server, share) = unc_authority(text)?;
+    Ok(PathBuf::from(format!("\\\\{}\\{}\\", server, share)))
 }
 
 fn classify_input_drive<C: DriveTypeClassifier>(
@@ -68,7 +179,10 @@ fn classify_input_drive<C: DriveTypeClassifier>(
     classifier: &C,
 ) -> Result<DriveKind, PathPolicyError> {
     reject_unsafe_input(path)?;
-    let text = path.to_string_lossy();
+    let text = path_text(path)?;
+    if is_unc_path(text) {
+        return classifier.classify_root(&unc_volume_root(text)?);
+    }
     classifier.classify_root(Path::new(&text[..3]))
 }
 
@@ -84,7 +198,8 @@ pub fn classify_with_root_resolver<R: VolumeRootResolver, C: DriveTypeClassifier
 
 #[cfg(windows)]
 fn validate_reparse_components(path: &Path) -> Result<(), PathPolicyError> {
-    validate_reparse_components_inner(path, 0, false)
+    let origin_kind = classify_input_drive(path, &SystemDriveTypeClassifier)?;
+    validate_reparse_components_inner_with_origin(path, 0, false, origin_kind)
 }
 
 #[cfg(windows)]
@@ -92,6 +207,17 @@ fn validate_reparse_components_inner(
     path: &Path,
     depth: usize,
     allow_missing: bool,
+) -> Result<(), PathPolicyError> {
+    let origin_kind = classify_input_drive(path, &SystemDriveTypeClassifier)?;
+    validate_reparse_components_inner_with_origin(path, depth, allow_missing, origin_kind)
+}
+
+#[cfg(windows)]
+fn validate_reparse_components_inner_with_origin(
+    path: &Path,
+    depth: usize,
+    allow_missing: bool,
+    origin_kind: DriveKind,
 ) -> Result<(), PathPolicyError> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
@@ -109,7 +235,7 @@ fn validate_reparse_components_inner(
         .collect();
     components.reverse();
 
-    for component_path in components {
+    for (index, component_path) in components.iter().enumerate() {
         let wide: Vec<u16> = component_path
             .as_os_str()
             .encode_wide()
@@ -117,21 +243,19 @@ fn validate_reparse_components_inner(
             .collect();
         let attributes = unsafe { GetFileAttributesW(PCWSTR(wide.as_ptr())) };
         if attributes == INVALID_FILE_ATTRIBUTES {
-            if allow_missing {
+            if allow_missing && index + 1 == components.len() {
                 break;
             }
             return Err(PathPolicyError::PathRejected);
         }
         if attributes & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-            let target =
-                read_reparse_target(component_path).map_err(|_| PathPolicyError::RemotePath)?;
+            let target = read_reparse_target(component_path)?;
             reject_unsafe_input(&target)?;
-            match classify_input_drive(&target, &SystemDriveTypeClassifier)? {
-                DriveKind::Fixed | DriveKind::Removable => {
-                    validate_reparse_components_inner(&target, depth + 1, false)?;
-                }
-                DriveKind::Remote => return Err(PathPolicyError::RemotePath),
+            let target_kind = classify_input_drive(&target, &SystemDriveTypeClassifier)?;
+            if target_kind == DriveKind::Remote && origin_kind != DriveKind::Remote {
+                return Err(PathPolicyError::PathRejected);
             }
+            validate_reparse_components_inner_with_origin(&target, depth + 1, false, origin_kind)?;
         }
     }
     Ok(())
@@ -281,7 +405,7 @@ impl DriveTypeClassifier for SystemDriveTypeClassifier {
         match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
             2 => Ok(DriveKind::Removable),
             3 => Ok(DriveKind::Fixed),
-            4 => Err(PathPolicyError::RemotePath),
+            4 => Ok(DriveKind::Remote),
             _ => Err(PathPolicyError::PathRejected),
         }
     }
@@ -292,7 +416,7 @@ impl DriveTypeClassifier for SystemDriveTypeClassifier {
     fn classify_root(&self, root: &Path) -> Result<DriveKind, PathPolicyError> {
         let text = root.to_string_lossy();
         if text.eq_ignore_ascii_case("REMOTE") {
-            Err(PathPolicyError::RemotePath)
+            Ok(DriveKind::Remote)
         } else if text.eq_ignore_ascii_case("REMOVABLE") {
             Ok(DriveKind::Removable)
         } else if text.eq_ignore_ascii_case("FIXED") {
@@ -358,13 +482,71 @@ impl LocalPathPolicy for SystemLocalPathPolicy {
         validate_reparse_components_inner(path, 0, true)
     }
 }
+#[cfg(windows)]
+fn normalize_existing_path(path: &Path) -> Result<PathBuf, PathPolicyError> {
+    let text = path_text(path)?;
+    if strip_prefix_ascii_case_insensitive(text, r"\\?\").is_some() {
+        normalize_final_handle_path(text)
+    } else {
+        reject_unsafe_input(path)?;
+        Ok(path.to_path_buf())
+    }
+}
+
+#[cfg(windows)]
+/// Conservatively confirms that a missing target is local and absent.
+///
+/// This performs blocking native filesystem checks; callers must invoke it off the event loop.
+pub fn confirmed_local_missing(path: &Path) -> bool {
+    let text = match path_text(path) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    if is_unc_path(text) {
+        return false;
+    }
+    match classify_input_drive(path, &SystemDriveTypeClassifier) {
+        Ok(DriveKind::Fixed | DriveKind::Removable) => {}
+        Ok(DriveKind::Remote) | Err(_) => return false,
+    }
+    if validate_reparse_components_inner(path, 0, true).is_err() {
+        return false;
+    }
+    let parent = match path.parent() {
+        Some(parent) => parent,
+        None => return false,
+    };
+    let canonical_parent = match std::fs::canonicalize(parent)
+        .ok()
+        .and_then(|parent| normalize_existing_path(&parent).ok())
+    {
+        Some(parent) => parent,
+        None => return false,
+    };
+    if !matches!(
+        SystemLocalPathPolicy.classify(&canonical_parent),
+        Ok(DriveKind::Fixed | DriveKind::Removable)
+    ) {
+        return false;
+    }
+    matches!(
+        std::fs::metadata(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+#[cfg(not(windows))]
+pub fn confirmed_local_missing(_: &Path) -> bool {
+    false
+}
+
 /// Classifies and resolves the final path of an already-open handle. This is required after
 /// pre-open policy validation so a local reparse point cannot redirect the retained handle to a
 /// remote location.
 pub trait FinalHandlePolicy: Send + Sync {
     fn classify_final(&self, file: &std::fs::File) -> Result<DriveKind, PathPolicyError>;
 
-    /// Returns the local canonical identity of the retained handle. Production callers must use
+    /// Returns the canonical identity of the retained handle. Production callers must use
     /// this instead of resolving the mutable input path after opening it.
     fn canonical_path(&self, _: &std::fs::File) -> Result<PathBuf, PathPolicyError> {
         Err(PathPolicyError::PathRejected)
@@ -411,18 +593,26 @@ fn final_handle_canonical_path(file: &std::fs::File) -> Result<PathBuf, PathPoli
 }
 
 #[cfg(windows)]
+fn strip_prefix_ascii_case_insensitive<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    value
+        .get(..prefix.len())
+        .filter(|candidate| candidate.eq_ignore_ascii_case(prefix))
+        .map(|_| &value[prefix.len()..])
+}
+
+#[cfg(windows)]
 fn normalize_final_handle_path(final_path: &str) -> Result<PathBuf, PathPolicyError> {
-    if final_path.starts_with(r"\\?\UNC\") {
-        return Err(PathPolicyError::RemotePath);
+    if let Some(unc) = strip_prefix_ascii_case_insensitive(final_path, r"\\?\UNC\") {
+        let path = PathBuf::from(format!(r"\\{unc}"));
+        reject_unsafe_input(&path)?;
+        return Ok(path);
     }
-    let local = final_path
-        .strip_prefix(r"\\?\")
+    let local = strip_prefix_ascii_case_insensitive(final_path, r"\\?\")
         .ok_or(PathPolicyError::PathRejected)?;
     let path = PathBuf::from(local);
     reject_unsafe_input(&path)?;
     Ok(path)
 }
-
 #[cfg(not(windows))]
 impl FinalHandlePolicy for SystemFinalHandlePolicy {
     fn classify_final(&self, _: &std::fs::File) -> Result<DriveKind, PathPolicyError> {
@@ -476,7 +666,7 @@ mod reparse_tests {
     struct Remote;
     impl DriveTypeClassifier for Remote {
         fn classify_root(&self, _: &Path) -> Result<DriveKind, PathPolicyError> {
-            Err(PathPolicyError::RemotePath)
+            Ok(DriveKind::Remote)
         }
     }
 
@@ -501,23 +691,35 @@ mod reparse_tests {
     }
 
     #[test]
-    fn remote_and_unprovable_targets_fail_closed() {
+    fn direct_remote_targets_are_valid_but_unprovable_targets_fail_closed() {
         let remote = reparse_buffer(MOUNT_POINT, r"\??\UNC\server\share", false);
         let target = decode_reparse_target(Path::new(r"C:\links\remote"), &remote, remote.len())
             .expect("decoded remote target");
         assert_eq!(target, PathBuf::from(r"\\server\share"));
-        assert_eq!(
-            reject_unsafe_input(&target),
-            Err(PathPolicyError::RemotePath)
-        );
+        assert_eq!(reject_unsafe_input(&target), Ok(()));
         assert_eq!(
             classify_input_drive(Path::new(r"Z:\remote.pdf"), &Remote),
-            Err(PathPolicyError::RemotePath)
+            Ok(DriveKind::Remote)
         );
 
         let unknown = reparse_buffer(0x8000_001B, r"\??\C:\unknown", false);
         assert_eq!(
             decode_reparse_target(Path::new(r"C:\links\unknown"), &unknown, unknown.len()),
+            Err(PathPolicyError::PathRejected)
+        );
+    }
+    #[test]
+    fn retained_unc_paths_are_normalized_without_admitting_devices() {
+        assert_eq!(
+            normalize_final_handle_path(r"\\?\UNC\server\share\book.pdf"),
+            Ok(PathBuf::from(r"\\server\share\book.pdf"))
+        );
+        assert_eq!(
+            normalize_final_handle_path(r"\\?\UNC\server\IPC$\book.pdf"),
+            Err(PathPolicyError::PathRejected)
+        );
+        assert_eq!(
+            normalize_final_handle_path(r"\\?\Volume{1234}\book.pdf"),
             Err(PathPolicyError::PathRejected)
         );
     }
