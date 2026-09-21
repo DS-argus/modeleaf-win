@@ -129,6 +129,8 @@ try {
   assert.equal(initial.tabs, 1, "Start this verification with a fresh one-tab preview");
   for (const value of ["w", "w", "-", "=", "F", "-", "=", "w"]) { await key(value); await settled(`key ${value}`); }
   // Exercise the narrow/wide boundary using shell keys and WebView input only.
+  await key("g"); await key("g");
+  assert.equal((await settled("mixed first-page precondition")).reader.page, 1);
   await key("n"); assert.equal((await settled("mixed page 2")).reader.page, 2);
   await key("n"); assert.equal((await settled("mixed page 3")).reader.page, 3);
   await key("w");
