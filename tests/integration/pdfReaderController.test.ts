@@ -1492,6 +1492,44 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
+  it.each(["edge", "ordinary", "interior", "orthogonal", "layout"] as const)("proves single-page browser edge without accepting %s discrepancies", async (behavior) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    vi.stubGlobal("devicePixelRatio", 1.25);
+    const host = document.createElement("div");
+    let width = 40;
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, get: () => width }, clientHeight: { configurable: true, value: 80 },
+      scrollWidth: { configurable: true, value: 64 }, scrollHeight: { configurable: true, value: 80 },
+    });
+    const resources = new ResourceReservationManager();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("edge-clamp", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(1))), annotationMode: 0 }, canvasHost: host,
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+    try {
+      await controller.open(1);
+      await controller.setPresentationTopology("single-page", 1, { scale: 1, rotation: 0, devicePixelRatio: 1.25 }, () => true);
+      const frame = host.querySelector<HTMLElement>(".pdf-page-frame")!;
+      Object.defineProperty(frame, "offsetLeft", { configurable: true, value: 20 });
+      let left = 0;
+      const writes: number[] = [];
+      Object.defineProperty(host, "scrollLeft", { configurable: true, get: () => left, set: (value: number) => {
+        writes.push(value);
+        if (behavior === "ordinary") left = Math.min(24, Math.max(0, value));
+        else if (behavior === "interior") left = value === 15 ? 9 : Math.min(24, Math.max(0, value));
+        else left = Math.min(9, Math.max(0, value));
+        if (value === 64 && behavior === "orthogonal") host.scrollTop = 1;
+        if (value === 64 && behavior === "layout") width = 41;
+      } });
+      const anchor = { pageNumber: 1, pagePoint: { x: 10, y: 5 }, viewportOffset: { x: 15, y: 0 } };
+      const result = controller.restoreScrollAnchor(anchor);
+      if (behavior === "edge" || behavior === "ordinary") {
+        expect(result).toMatchObject({ scrollLeft: behavior === "edge" ? 9 : 15, scrollTop: 0, landing: { pageIndex: 0 } });
+      } else expect(result).toBeUndefined();
+      expect(writes).toEqual(behavior === "ordinary" ? [15] : [15, 64, 15]);
+    } finally { await controller.dispose(); resources.assertEmpty(); vi.unstubAllGlobals(); }
+  });
   it("restores a canonical PDF-space anchor within half a point through zoom and rotation", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");

@@ -48,6 +48,7 @@ const wrapPdfLoadingTaskForQaDelay = (task: PdfLoadingTask): PdfLoadingTask => {
 };
 GlobalWorkerOptions.workerSrc = new URL(PDFJS_POLICY.assets.workerSrc, `${location.origin}/`).href;
 const host = document.querySelector<HTMLElement>("#host")!;
+if (new URLSearchParams(location.search).get("tall") === "true") host.style.height = "800px";
 const hiddenOpening = new URLSearchParams(location.search).get("hidden") === "true";
 host.hidden = hiddenOpening;
 if (hiddenOpening && (host.clientWidth !== 0 || host.clientHeight !== 0)) throw new Error("Hidden opening fixture must have zero layout size");
@@ -920,6 +921,24 @@ Object.assign(window, { readerHarness: {
     requireInvariant(restored.page === before.page && restored.mode === before.mode && Math.abs(restored.scale - before.scale) < 0.000001 && Math.abs(restored.top - before.top) <= 1, "Tab restoration changed its page, zoom, or position");
     await finish();
     return { before, restored, active: true, disposed: true };
+  },
+  async runFitPageEdge() {
+    try {
+      requireInvariant(fixture === "print-mixed-rotation-4.pdf" && host.clientHeight === 800, "Edge fixture requires an 800px-tall host");
+      requireInvariant((await session.navigatePagePrompt(3)).kind === "verifiedLanding", "Could not establish narrow reference page");
+      session.apply({ type: "view.fitPage" });
+      requireInvariant(await session.renderCurrentView(), "Fit Page setup failed");
+      const before = snapshot();
+      const reference = session.snapshot.reader.fitPageReference;
+      const outcome = await session.navigateAdjacentPage(1);
+      const after = snapshot();
+      requireInvariant(outcome.kind === "verifiedLanding", `Wide target must land at its browser-reachable edge: ${JSON.stringify({ outcome, before, after, width: host.clientWidth, scrollWidth: host.scrollWidth, left: host.scrollLeft })}`);
+      requireInvariant(after.page === 4 && after.mode === "fit-page" && after.scale === before.scale && session.snapshot.reader.fitPageReference === reference,
+        `Edge navigation changed fixed fit reference: ${JSON.stringify({ before, after, reference })}`);
+      requireInvariant((await session.navigateAdjacentPage(-1)).kind === "verifiedLanding", "Reverse edge navigation failed");
+      requireInvariant(session.snapshot.reader.page === 3, "Reverse edge navigation missed the reference page");
+      return { before, after, outcome, reference, dpr: devicePixelRatio, statuses: [...statuses] };
+    } finally { await finish(); }
   },
   async runFitGeometry(mode: "fit-width" | "fit-page") {
     const state = session as unknown as {

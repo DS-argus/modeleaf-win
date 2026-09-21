@@ -1369,33 +1369,54 @@ export class PdfReaderController {
     return false;
   }
   public restoreScrollAnchor(anchor: PdfScrollAnchor): { readonly scrollLeft: number; readonly scrollTop: number; readonly landing: PdfViewportLanding } | undefined {
-    const raster = this.current?.residentRasters.get(anchor.pageNumber);
+    const owner = this.current;
+    const raster = owner?.residentRasters.get(anchor.pageNumber);
     const frame = this.options.canvasHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${anchor.pageNumber}']`);
     if (raster === undefined || frame === null) return;
     const host = this.options.canvasHost;
-    const restored = restorePdfViewportAnchor(anchor, {
-      viewport: raster.viewport,
-      pageFrameOffset: { x: frame.offsetLeft + raster.canvas.offsetLeft, y: frame.offsetTop + raster.canvas.offsetTop },
-      host: {
-        scrollLeft: host.scrollLeft,
-        scrollTop: host.scrollTop,
-        clientWidth: host.clientWidth,
-        clientHeight: host.clientHeight,
-        scrollWidth: Math.max(host.clientWidth, host.scrollWidth),
-        scrollHeight: Math.max(host.clientHeight, host.scrollHeight),
-      },
-    });
+    const pageFrameOffset = { x: frame.offsetLeft + raster.canvas.offsetLeft, y: frame.offsetTop + raster.canvas.offsetTop };
+    const geometry = {
+      scrollLeft: host.scrollLeft, scrollTop: host.scrollTop,
+      clientWidth: host.clientWidth, clientHeight: host.clientHeight,
+      scrollWidth: Math.max(host.clientWidth, host.scrollWidth),
+      scrollHeight: Math.max(host.clientHeight, host.scrollHeight),
+    };
+    const restored = restorePdfViewportAnchor(anchor, { viewport: raster.viewport, pageFrameOffset, host: geometry });
     host.scrollLeft = restored.scrollLeft;
     host.scrollTop = restored.scrollTop;
     const scrollLeft = host.scrollLeft;
     const scrollTop = host.scrollTop;
-    // CSSOM extents are integers, but WebView2 applies scrolling on its physical
-    // pixel grid. Retain that immediate, bounded result before yielding; it is
-    // not permission to accept a later raw scroll as a successful landing.
+    // Ordinary CSSOM rounding remains limited to one physical pixel. Hidden
+    // single-page overflow with a stable gutter can report a larger range than
+    // the browser permits; prove that exceptional clamp synchronously at its edge.
     const browserDpr = typeof window === "undefined" ? 1 : window.devicePixelRatio;
     const quantum = 1 / (Number.isFinite(browserDpr) && browserDpr > 0 ? browserDpr : 1);
     if (Math.abs(scrollLeft - restored.scrollLeft) > quantum + 1e-6
-      || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) return undefined;
+      || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) {
+      if (owner?.topology !== "single-page") return undefined;
+      const layoutCurrent = (): boolean => !this.disposed && this.current === owner
+        && owner.residentRasters.get(anchor.pageNumber) === raster
+        && frame.isConnected === host.isConnected && frame.parentElement === host
+        && host.clientWidth === geometry.clientWidth && host.clientHeight === geometry.clientHeight
+        && Math.max(host.clientWidth, host.scrollWidth) === geometry.scrollWidth
+        && Math.max(host.clientHeight, host.scrollHeight) === geometry.scrollHeight
+        && frame.offsetLeft + raster.canvas.offsetLeft === pageFrameOffset.x
+        && frame.offsetTop + raster.canvas.offsetTop === pageFrameOffset.y;
+      for (const axis of ["scrollLeft", "scrollTop"] as const) {
+        const applied = axis === "scrollLeft" ? scrollLeft : scrollTop;
+        const requested = restored[axis];
+        if (Math.abs(applied - requested) <= quantum + 1e-6) continue;
+        if (requested < applied || applied < 0 || !layoutCurrent()) return undefined;
+        const otherAxis = axis === "scrollLeft" ? "scrollTop" : "scrollLeft";
+        const otherPosition = host[otherAxis];
+        host[axis] = axis === "scrollLeft" ? geometry.scrollWidth : geometry.scrollHeight;
+        const edge = host[axis];
+        const orthogonalUnchanged = host[otherAxis] === otherPosition;
+        host[axis] = requested;
+        if (!orthogonalUnchanged || host[otherAxis] !== otherPosition || edge !== applied
+          || host[axis] !== applied || !layoutCurrent()) return undefined;
+      }
+    }
     const landing = this.captureViewportLandingAtOffset(anchor.pageNumber, anchor.viewportOffset);
     return landing === undefined ? undefined : { scrollLeft, scrollTop, landing };
   }
