@@ -462,7 +462,7 @@ export class PdfTabSession {
     void this.synchronizeViewport(host.scrollTop, host.clientHeight).then(request.resolve, request.reject);
   }
   /** Settles a presentation under its caller's lease, independently of passive scroll scheduling. */
-  private async synchronizeViewportForOwner(scrollTop: number, clientHeight: number, requestGuard: () => boolean): Promise<boolean> {
+  private async synchronizeViewportForOwner(scrollTop: number, clientHeight: number, requestGuard: () => boolean, permitFitRefit = false): Promise<boolean> {
     if (!requestGuard() || this.closed || !this.isForegroundActive() || !Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
     const statusVersion = this.readerStatusVersion;
     const activityGeneration = this.activityGeneration;
@@ -484,7 +484,7 @@ export class PdfTabSession {
       const contentHeight = Math.max(0, clientHeight - paddingTop - padding(style?.paddingBottom));
       let committed = await this.pdfReader.synchronizeViewport(contentScrollTop, contentHeight, guard);
       const snapshot = this.reader.snapshot;
-      if (committed && guard() && snapshot.zoomMode !== "custom" && snapshot.zoomMode !== "fit-width") {
+      if (committed && guard() && permitFitRefit && snapshot.zoomMode !== "custom" && snapshot.zoomMode !== "fit-width") {
         const stableTransform = await this.viewTransformFor(snapshot.page, guard);
         if (stableTransform !== undefined && Math.abs(stableTransform.scale - snapshot.customScale) > Number.EPSILON) {
           committed = await this.pdfReader.renderPageWithTransform(snapshot.page, stableTransform, guard);
@@ -884,6 +884,7 @@ export class PdfTabSession {
         fitPageReference: committed.fitPageReference, rotationQuarterTurns: committed.rotationQuarterTurns });
       if (this.reader.snapshot.status !== status) this.reader.setStatus(status);
     }
+    this.pendingRenderRollback = undefined;
     owner.pendingZoom = undefined;
     this.keyboardViewOwner = undefined;
     owner.revision += 1;
@@ -1050,7 +1051,7 @@ export class PdfTabSession {
       this.reader.restoreView(prior);
       this.lastCommittedRender = prior;
       if (prior.zoomMode !== "fit-page"
-        && !await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current)) {
+        && !await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current, true)) {
         if (!current()) return false;
         this.setStatus("PDF viewport rollback failed after keyboard zoom.");
         throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
@@ -1110,7 +1111,7 @@ export class PdfTabSession {
       }
       return false;
     }
-    const synchronized = await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current);
+    const synchronized = await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current, true);
     if (synchronized || !current() || prior === undefined || anchor === undefined) return synchronized && current();
     const failureStatus = this.reader.snapshot.status;
     await restorePrior(failureStatus);

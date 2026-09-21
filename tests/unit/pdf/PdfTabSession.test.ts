@@ -1991,7 +1991,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await expect(session.renderCurrentView()).resolves.toBe(true);
     expect(session.snapshot.reader).toMatchObject({ page: 2, fitPageReference: 2, customScale: 0.25 });
   });
-  it("keeps passive Fit Width scale stable when the active page changes size", async () => {
+  it.each(["fit-width", "continuous-fit"] as const)("keeps passive %s scale stable when the active page changes size", async zoomMode => {
     const session = createSession();
     const internals = (session as unknown as SessionInternals & {
       onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
@@ -1999,7 +1999,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     const reader = internals.pdfReader;
     session.reader.mountDocument(2);
     await session.activate();
-    session.apply({ type: "view.fitWidth" });
+    if (zoomMode === "fit-width") session.apply({ type: "view.fitWidth" });
     internals.onPage(1, { scale: 2, rotation: 0, devicePixelRatio: 1 });
     const sizes = vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 400, height: 100 });
     const render = vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
@@ -2017,7 +2017,7 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
 
     expect(sizes).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
-    expect(session.snapshot.reader).toMatchObject({ page: 2, zoomMode: "fit-width", customScale: 2 });
+    expect(session.snapshot.reader).toMatchObject({ page: 2, zoomMode, customScale: 2 });
   });
   it.each([
     { geometryChanged: true, pageWidth: 150, pageHeight: 300, expectedRenders: 2, expectedScale: 1 / 3, finalHeight: 100 },
@@ -2406,6 +2406,32 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
   });
 });
 
+describe("explicit continuous fit geometry ownership", () => {
+  it("refits the fixed reference for an explicit presentation owner after geometry changes", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientHeight: number } };
+    };
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    const sizes = vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const render = vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    vi.spyOn(internals.pdfReader, "synchronizeViewport").mockImplementation(async () => {
+      internals.options.canvasHost.clientHeight = 85;
+      return true;
+    });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    expect(render.mock.calls.at(-1)?.[1]).toMatchObject({ scale: 0.85 });
+    expect(sizes.mock.calls.every(([page]) => page === 1)).toBe(true);
+    expect(session.snapshot.reader).toMatchObject({ zoomMode: "continuous-fit", fitPageReference: 1, customScale: 0.85 });
+  });
+});
 describe("bounded keyboard view ownership", () => {
   async function harness(scale = 2) {
     const session = createSession();

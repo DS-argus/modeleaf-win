@@ -8,7 +8,7 @@ import type {
   PdfContentViewport,
 } from "./PdfContentController";
 import { PDFJS_POLICY } from "./PdfJsPolicy";
-import { ContinuousPageWindow, type PageWindowPlan } from "./ContinuousPageWindow";
+import { ContinuousPageWindow, type PageWindowPlan, type PageGeometryProjection } from "./ContinuousPageWindow";
 import {
   capturePdfViewportAnchor,
   restorePdfViewportAnchor,
@@ -373,7 +373,9 @@ export class PdfReaderController {
   private readonly quarantinedCandidates = new Set<Candidate>();
   private readonly pendingCleanups = new Map<string, PendingCleanup>();
   private readonly teardownSessions = new Map<string, Promise<void>>();
-  private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan } | undefined;
+  private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan;
+    readonly publishLayout?: (page: number, raster: RenderedCanvas, anchor: PdfScrollAnchor | undefined, publish: () => void) => boolean;
+  } | undefined;
   private viewportEpoch = 0;
   private viewportSettlement: Promise<void> | undefined;
   private presentationRequestSequence = 0;
@@ -1056,8 +1058,22 @@ export class PdfReaderController {
     return available();
   }
   /** Synchronizes the bounded continuous resident window to finite host geometry. */
-  public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+  public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard, anchorPolicy: "preserve-visible" | "caller-owned" = "preserve-visible"): Promise<boolean> {
     if (!Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    const host = this.options.canvasHost;
+    const position = () => ({ left: host.scrollLeft, top: host.scrollTop,
+      maxLeft: Math.max(0, host.scrollWidth - host.clientWidth), maxTop: Math.max(0, host.scrollHeight - host.clientHeight) });
+    let ownedPosition = position();
+    const positionCurrent = (): boolean => host.scrollLeft === ownedPosition.left && host.scrollTop === ownedPosition.top;
+    const acceptOwnedLayoutClamp = (): boolean => {
+      const now = position();
+      const ownedAxis = (old: number, oldMax: number, value: number, max: number): boolean =>
+        value === old || (max < oldMax && old > max && value === max);
+      if (!ownedAxis(ownedPosition.left, ownedPosition.maxLeft, now.left, now.maxLeft)
+        || !ownedAxis(ownedPosition.top, ownedPosition.maxTop, now.top, now.maxTop)) return false;
+      ownedPosition = now;
+      return true;
+    };
     const requestSequence = ++this.presentationRequestSequence;
     await this.awaitViewportIdle();
     if (requestSequence !== this.presentationRequestSequence || !(requestCommitGuard?.() ?? true)) return false;
@@ -1067,13 +1083,13 @@ export class PdfReaderController {
     if (window === undefined) return false;
     const range = window.visibleRangeForViewport(scrollTop, clientHeight);
     if (range.firstVisiblePage === undefined || range.lastVisiblePage === undefined) return false;
-    current.visiblePageNumbers = Object.freeze(Array.from(
+    const requestedVisiblePages = Object.freeze(Array.from(
       { length: range.lastVisiblePage - range.firstVisiblePage + 1 },
       (_unused, index) => range.firstVisiblePage! + index,
     ));
 
     const planningCurrent = (): boolean => requestSequence === this.presentationRequestSequence
-      && this.current === current && !this.disposed && (requestCommitGuard?.() ?? true);
+      && this.current === current && !this.disposed && positionCurrent() && (requestCommitGuard?.() ?? true);
     const preparedPages = new Map<number, PreparedPdfPage>();
     const pageBytes = new Map<number, number>();
     try {
@@ -1100,6 +1116,7 @@ export class PdfReaderController {
       return false;
     }
     const hostScrollTopAtStart = this.options.canvasHost.scrollTop;
+    const hostClientHeightAtStart = host.clientHeight;
     const checkpoint = window.checkpoint();
     const originalResidents = new Set(checkpoint.residentPages);
     const priorActivePage = current.activePageNumber;
@@ -1119,6 +1136,7 @@ export class PdfReaderController {
       return center;
     };
     if (plan.materializePages.length === 0 && plan.evictPages.length === 0) {
+      current.visiblePageNumbers = requestedVisiblePages;
       const center = activateViewportCenter(scrollTop);
       if (center !== priorActivePage) this.notifyObserver(() => this.options.onPage(center, this.viewTransform));
       return true;
@@ -1131,9 +1149,19 @@ export class PdfReaderController {
     const transactionCurrent = (): boolean => this.viewportEpoch === epoch
       && this.current === current
       && !this.disposed
-      && (requestCommitGuard?.() ?? true);
-    this.activeViewportPlan = { candidate: current, plan };
+      && positionCurrent() && (requestCommitGuard?.() ?? true);
     const stagedMetrics: { readonly pageNumber: number; readonly metric: { readonly width: number; readonly height: number } }[] = [];
+    this.activeViewportPlan = { candidate: current, plan, publishLayout: (pageNumber, raster, anchor, publish) => {
+      if (!transactionCurrent()) return false;
+      stagedMetrics.push({ pageNumber, metric: { width: raster.viewport.width, height: raster.viewport.height } });
+      const projected = window.projectMetrics(stagedMetrics);
+      publish();
+      this.applyWindowSpacers(current, plan, projected);
+      if (!acceptOwnedLayoutClamp()) return false;
+      if (anchorPolicy === "preserve-visible" && anchor !== undefined && this.restoreScrollAnchor(anchor) === undefined) return false;
+      ownedPosition = position();
+      return transactionCurrent();
+    } };
     let succeeded = false;
     let residentAuthority: PdfResidentAuthorityTransaction | void = undefined;
     let rollbackAuthorityError: unknown;
@@ -1154,19 +1182,25 @@ export class PdfReaderController {
           return false;
         }
         if (!transactionCurrent()) return false;
-        const raster = current.residentRasters.get(page);
-        if (raster !== undefined) {
-          stagedMetrics.push({ pageNumber: page, metric: { width: raster.viewport.width, height: raster.viewport.height } });
-        }
       }
       residentAuthority = await this.options.onBeforeResidentCommit?.(plan.plannedPages);
       if (!transactionCurrent()) return false;
       for (const page of plan.evictPages) this.evictResidentPage(current, page);
       if (!transactionCurrent()) return false;
+      const finalAnchor = anchorPolicy === "preserve-visible" ? this.captureVisibleScrollAnchor() : undefined;
       window.updateMetrics(stagedMetrics);
       this.prunePageFrames(plan.plannedPages);
       const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage, overscanPages);
       this.applyWindowSpacers(current, finalPlan);
+      if (!acceptOwnedLayoutClamp()) return false;
+      if (finalAnchor !== undefined && this.restoreScrollAnchor(finalAnchor) === undefined) return false;
+      ownedPosition = position();
+      const finalRange = window.visibleRangeForViewport(scrollTop + host.scrollTop - hostScrollTopAtStart,
+        Math.max(0, clientHeight + host.clientHeight - hostClientHeightAtStart));
+      if (finalRange.firstVisiblePage === undefined || finalRange.lastVisiblePage === undefined) return false;
+      const finalVisiblePages = Array.from({ length: finalRange.lastVisiblePage - finalRange.firstVisiblePage + 1 }, (_, index) => finalRange.firstVisiblePage! + index);
+      if (!finalVisiblePages.every(page => current.residentRasters.has(page))) return false;
+      current.visiblePageNumbers = Object.freeze(finalVisiblePages);
       const latestViewportTop = scrollTop + this.options.canvasHost.scrollTop - hostScrollTopAtStart;
       const center = activateViewportCenter(latestViewportTop);
       residentAuthority?.finalize();
@@ -1176,6 +1210,7 @@ export class PdfReaderController {
     } finally {
       for (const page of plan.materializePages) window.fail(page, plan.generation);
       if (!succeeded && this.current === current && !this.disposed) {
+        const rollbackAnchor = anchorPolicy === "preserve-visible" && transactionCurrent() ? this.captureVisibleScrollAnchor() : undefined;
         this.viewportRollback = true;
         let physicalRestored = false;
         let authorityResidents: number[] = [];
@@ -1214,6 +1249,10 @@ export class PdfReaderController {
               const restoredPlan = window.restore(checkpoint, authorityResidents);
               this.prunePageFrames(authorityResidents);
               this.applyWindowSpacers(current, restoredPlan);
+              if (rollbackAnchor !== undefined && acceptOwnedLayoutClamp()) {
+                this.restoreScrollAnchor(rollbackAnchor);
+                ownedPosition = position();
+              }
               const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
                 ? priorActivePage
                 : authorityResidents[0];
@@ -1275,6 +1314,15 @@ export class PdfReaderController {
 
   /** Captures the PDF point under a host-local pointer, clamping to the nearest page edge. */
   public capturePointerAnchor(viewportOffset: PdfViewportOffset): PdfScrollAnchor | undefined {
+    return this.captureResidentAnchor(viewportOffset, false);
+  }
+
+  private captureVisibleScrollAnchor(): PdfScrollAnchor | undefined {
+    const host = this.options.canvasHost;
+    return this.captureResidentAnchor({ x: host.clientWidth / 2, y: host.clientHeight / 2 }, true);
+  }
+
+  private captureResidentAnchor(viewportOffset: PdfViewportOffset, visibleOnly: boolean): PdfScrollAnchor | undefined {
     const current = this.current;
     const host = this.options.canvasHost;
     if (current === undefined || this.disposed || !Number.isFinite(viewportOffset.x) || !Number.isFinite(viewportOffset.y)) return undefined;
@@ -1286,6 +1334,8 @@ export class PdfReaderController {
       if (frame === null) continue;
       const left = frame.offsetLeft + raster.canvas.offsetLeft;
       const top = frame.offsetTop + raster.canvas.offsetTop;
+      if (visibleOnly && (left + raster.viewport.width <= host.scrollLeft || left >= host.scrollLeft + host.clientWidth
+        || top + raster.viewport.height <= host.scrollTop || top >= host.scrollTop + host.clientHeight)) continue;
       const x = Math.max(left, Math.min(left + raster.viewport.width, point.x));
       const y = Math.max(top, Math.min(top + raster.viewport.height, point.y));
       const distance = (point.x - x) ** 2 + (point.y - y) ** 2;
@@ -1550,7 +1600,7 @@ export class PdfReaderController {
       let committed = true;
       const synchronizeTargetWindow = async (offset: number): Promise<boolean> => {
         for (let attempt = 0; attempt < 4; attempt += 1) {
-          if (await this.synchronizeViewport(offset, this.contentViewportGeometry().clientHeight, prePlacementGuard)) return true;
+          if (await this.synchronizeViewport(offset, this.contentViewportGeometry().clientHeight, prePlacementGuard, "caller-owned")) return true;
           if (!prePlacementGuard()) return false;
           await this.awaitViewportIdle();
         }
@@ -1643,7 +1693,7 @@ export class PdfReaderController {
         const materializationGuard = (): boolean => (requestCommitGuard?.() ?? true) && acceptOwnedLayoutClamp();
         let synchronized: boolean;
         try {
-          synchronized = await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, materializationGuard);
+          synchronized = await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, materializationGuard, "caller-owned");
         } catch (error) {
           if (requestCurrent() && !acceptOwnedLayoutClamp()) onViewportOwnershipLost?.();
           throw error;
@@ -1709,9 +1759,12 @@ export class PdfReaderController {
           page,
         ])].sort((a, b) => a - b));
       let committed = false;
+      let layoutFailed = false;
       const commitCanvas = (accessory?: HTMLElement): boolean => {
         if (committed || commitSequence !== this.renderSequence || this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) return false;
         const prior = current.residentRasters.get(page);
+        const publishLayout = activePlan === undefined ? undefined : this.activeViewportPlan?.publishLayout;
+        const visibleAnchor = publishLayout === undefined ? undefined : this.captureVisibleScrollAnchor();
         let plan = activePlan;
         if (!cssTransformChanged && directPreview !== undefined) {
           directPlan = current.window?.plan(page);
@@ -1739,7 +1792,7 @@ export class PdfReaderController {
           if (topology === "single-page") { current.topSpacer?.remove(); current.bottomSpacer?.remove(); delete current.topSpacer; delete current.bottomSpacer; this.options.canvasHost.classList.add("pdf-reader-single-page"); } else this.options.canvasHost.classList.remove("pdf-reader-single-page");
         } else if (plan !== undefined) {
           if (activePlan === undefined) for (const evicted of plan.evictPages) current.window?.unpublish(evicted);
-          current.window?.updateMetric(page, { width: rendered.viewport.width, height: rendered.viewport.height });
+          if (publishLayout === undefined) current.window?.updateMetric(page, { width: rendered.viewport.width, height: rendered.viewport.height });
           if (plan.materializePages.includes(page)) {
             try { current.window?.publish(page, plan.generation); } catch { return false; }
           }
@@ -1750,8 +1803,12 @@ export class PdfReaderController {
         if (this.activeViewportPlan === undefined) current.visiblePageNumbers = Object.freeze([page]);
         this.viewTransform = transform;
         if (prior !== undefined) this.releaseRaster(prior);
-        this.canvasReplace(rendered.canvas, accessory, undefined, false, activePlan === undefined);
-        if (plan !== undefined && topology === "continuous") this.applyWindowSpacers(current, plan);
+        const publish = (): void => { this.canvasReplace(rendered.canvas, accessory, undefined, false, activePlan === undefined); };
+        if (publishLayout !== undefined) {
+          committed = true;
+          layoutFailed = !publishLayout(page, rendered, visibleAnchor, publish);
+        } else publish();
+        if (publishLayout === undefined && plan !== undefined && topology === "continuous") this.applyWindowSpacers(current, plan);
         if (viewportPolicy === "opening-top") {
           this.options.canvasHost.scrollLeft = 0;
           this.options.canvasHost.scrollTop = 0;
@@ -1764,7 +1821,7 @@ export class PdfReaderController {
         if (retainedAnchor !== undefined) this.evictedScrollAnchor = undefined;
         committed = true;
         if (activePlan === undefined) this.notifyObserver(() => this.options.onPage(current.activePageNumber ?? page, transform));
-        return true;
+        return !layoutFailed;
       };
       try {
       if (this.options.onBeforeCommit === undefined) commitCanvas();
@@ -1774,7 +1831,7 @@ export class PdfReaderController {
         throw error;
       }
       if (!committed) { this.releaseRaster(rendered); return false; }
-      return true;
+      return !layoutFailed;
     } catch (error) {
       if (isRenderCancellation(error)) return false;
       if (!this.disposed && this.current === current) this.options.onStatus(safeMessage(error));
@@ -2369,8 +2426,8 @@ export class PdfReaderController {
     }
   }
 
-  private applyWindowSpacers(candidate: Candidate, _plan: PageWindowPlan): void {
-    const layout = candidate.window;
+  private applyWindowSpacers(candidate: Candidate, _plan: PageWindowPlan, projected?: PageGeometryProjection): void {
+    const layout = projected ?? candidate.window;
     if (layout === undefined || candidate.topology !== "continuous") return;
     const host = this.options.canvasHost;
     const geometry = layout.documentGeometry();

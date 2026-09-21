@@ -1,6 +1,7 @@
 import { getDocument, GlobalWorkerOptions, AnnotationMode } from "pdfjs-dist";
 import { clampReaderScale } from "../../src/domain/navigation/ZoomPolicy";
 import { PDFJS_POLICY } from "../../src/pdf/PdfJsPolicy";
+import type { PdfViewportAnchor } from "../../src/pdf/PdfViewportAnchor";
 import { type PdfLoadingTask, type PdfPage, type PdfRenderTask } from "../../src/pdf/PdfReaderController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "../../src/pdf/PdfTabSession";
 import { ResourceReservationManager } from "../../src/pdf/ResourceBudget";
@@ -53,7 +54,7 @@ const hiddenOpening = new URLSearchParams(location.search).get("hidden") === "tr
 host.hidden = hiddenOpening;
 if (hiddenOpening && (host.clientWidth !== 0 || host.clientHeight !== 0)) throw new Error("Hidden opening fixture must have zero layout size");
 const fixture = new URLSearchParams(location.search).get("fixture") ?? "fixture-L-text-300.pdf";
-if (!["fixture-L-text-300.pdf", "print-mixed-rotation-4.pdf"].includes(fixture)) throw new Error("Unsupported reader QA fixture");
+if (!["fixture-L-text-300.pdf", "print-mixed-rotation-4.pdf", "mixed-geometry-40.pdf"].includes(fixture)) throw new Error("Unsupported reader QA fixture");
 const response = await fetch(`/fixtures/pdf/${fixture}`);
 if (!response.ok) throw new Error(`Fixture load failed: ${response.status}`);
 const bytes = new Uint8Array(await response.arrayBuffer());
@@ -922,6 +923,76 @@ Object.assign(window, { readerHarness: {
     await finish();
     return { before, restored, active: true, disposed: true };
   },
+  async runLazyGeometry(mode: "continuous-fit" | "custom") {
+    requireInvariant(fixture === "mixed-geometry-40.pdf", "Lazy geometry needs the long mixed fixture");
+    const state = session as unknown as { pendingPresentationRenders: number; presentationSettlements: number;
+      pdfReader: { viewportSettlement?: unknown; current: { residentRasters: Map<number, { viewport: { convertToViewportPoint(x: number, y: number): readonly [number, number] } }> };
+        capturePointerAnchor(offset: { x: number; y: number }): { pageNumber: number; pagePoint: { x: number; y: number }; viewportOffset: { x: number; y: number } } | undefined;
+        captureVisibleScrollAnchor?: () => PdfViewportAnchor | undefined;
+        applyWindowSpacers: (...args: unknown[]) => void;
+      } };
+    const controller = state.pdfReader;
+    const code = await (await fetch("/src/main.ts")).text();
+    const start = code.indexOf("let viewportFrameRequest"), end = code.indexOf("let readerResizeFrame", start);
+    requireInvariant(start >= 0 && end > start, "Production viewport scheduler missing");
+    const failures: string[] = [];
+    const dispose = new Function("host", "session", "active", "reportPresentationFailure", "rootKeyboard", "render", "cancelLinkHints",
+      code.slice(start, end) + ';return ()=>{viewportDisposed=true;host.removeEventListener("scroll",onReaderScroll);if(viewportFrameRequest!==undefined)cancelAnimationFrame(viewportFrameRequest);};')(
+      host, session, () => ({ session }), (_session: unknown, error: unknown) => failures.push(String(error)), { syncContext() {} }, () => undefined, () => undefined,
+    ) as () => void;
+    const observed = new Set<number>();
+    const shifts: { page: number; dx: number; dy: number; beforeWidth: number; afterWidth: number }[] = [];
+    const samples: unknown[] = [];
+    const originalLayout = controller.applyWindowSpacers;
+    controller.applyWindowSpacers = function (...args) {
+      const anchor = this.captureVisibleScrollAnchor?.() ?? this.capturePointerAnchor({ x: host.clientWidth / 2, y: host.clientHeight / 2 });
+      const canvas = anchor === undefined ? null : host.querySelector<HTMLCanvasElement>(`.pdf-page-frame[data-page="${anchor.pageNumber}"] canvas`);
+      const raster = anchor === undefined ? undefined : this.current.residentRasters.get(anchor.pageNumber);
+      const measured = anchor !== undefined && observed.has(anchor.pageNumber) && canvas !== null && raster !== undefined
+        && anchor.viewportOffset.x > 0 && anchor.viewportOffset.x < host.clientWidth && anchor.viewportOffset.y > 0 && anchor.viewportOffset.y < host.clientHeight;
+      const point = measured ? raster!.viewport.convertToViewportPoint(anchor!.pagePoint.x, anchor!.pagePoint.y) : undefined;
+      const before = canvas?.getBoundingClientRect();
+      const beforeWidth = host.scrollWidth;
+      originalLayout.apply(this, args);
+      if (point !== undefined && before !== undefined && canvas !== null) queueMicrotask(() => {
+        if (!canvas.isConnected) return;
+        const after = canvas.getBoundingClientRect();
+        shifts.push({ page: anchor!.pageNumber, dx: after.left + point[0] - (before.left + point[0]), dy: after.top + point[1] - (before.top + point[1]), beforeWidth, afterWidth: host.scrollWidth });
+      });
+    };
+    const settle = async () => {
+      let previous = "", stable = 0;
+      for (let index = 0; index < 400; index += 1) {
+        await frame();
+        for (const canvas of host.querySelectorAll<HTMLCanvasElement>("canvas")) observed.add(Number(canvas.dataset.page));
+        const key = JSON.stringify({ ...snapshot(), left: host.scrollLeft, width: host.scrollWidth, clientHeight: host.clientHeight });
+        stable = !state.pendingPresentationRenders && !state.presentationSettlements && !controller.viewportSettlement && resources.snapshot().totals.render === 0 && key === previous ? stable + 1 : 0;
+        previous = key;
+        if (stable >= 4) return;
+      }
+      throw new Error("Lazy viewport did not settle");
+    };
+    try {
+      if (mode === "custom") requireInvariant(await session.requestKeyboardView({ type: "view.zoom", factor: 1 }), "Custom-mode setup failed");
+      await settle();
+      const scale = session.snapshot.reader.customScale;
+      const initialWidth = host.scrollWidth;
+      let sawWidePage = false;
+      for (let step = 0; step < 30; step += 1) {
+        host.scrollTop += host.clientHeight * 0.45;
+        await settle();
+        const sample = { step, ...snapshot(), width: host.scrollWidth, clientHeight: host.clientHeight, left: host.scrollLeft };
+        samples.push(sample);
+        requireInvariant(Math.abs(sample.scale - scale) < 1e-10, `Passive geometry changed fit scale: ${JSON.stringify({ expected: scale, sample })}`);
+        const jump = shifts.find(value => Math.abs(value.dx) > 1 + 1e-6 || Math.abs(value.dy) > 1 + 1e-6);
+        requireInvariant(jump === undefined, `Lazy layout moved the visible PDF point: ${JSON.stringify(jump)}`);
+        if (host.scrollWidth > initialWidth + 1) { sawWidePage = true; break; }
+      }
+      requireInvariant(sawWidePage, "Stress fixture did not discover a wider overscan page");
+      requireInvariant(failures.length === 0, `Viewport failures: ${JSON.stringify(failures)}`);
+      return { mode, dpr: devicePixelRatio, delayMilliseconds: fitRenderDelayMilliseconds, initialWidth, samples, shifts, failures };
+    } finally { controller.applyWindowSpacers = originalLayout; dispose(); await finish(); }
+  },
   async runKeyboardView() {
     const samples: { label: string; requested: number; committed: number; raster: number }[] = [];
     const sample = (label: string) => {
@@ -972,7 +1043,8 @@ Object.assign(window, { readerHarness: {
   async runFitPageEdge() {
     try {
       requireInvariant(fixture === "print-mixed-rotation-4.pdf" && host.clientHeight === 800, "Edge fixture requires an 800px-tall host");
-      requireInvariant((await session.navigatePagePrompt(3)).kind === "verifiedLanding", "Could not establish narrow reference page");
+      const initialLanding = await session.navigatePagePrompt(3);
+      requireInvariant(initialLanding.kind === "verifiedLanding", `Could not establish narrow reference page: ${JSON.stringify({ initialLanding, snapshot: snapshot(), statuses })}`);
       session.apply({ type: "view.fitPage" });
       requireInvariant(await session.renderCurrentView(), "Fit Page setup failed");
       const before = snapshot();

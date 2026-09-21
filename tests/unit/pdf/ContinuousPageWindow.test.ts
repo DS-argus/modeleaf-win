@@ -13,6 +13,33 @@ function windowModel(overrides: Partial<ConstructorParameters<typeof ContinuousP
 }
 
 describe("ContinuousPageWindow", () => {
+  it("projects staged mixed geometry without changing authoritative metrics or ownership", () => {
+    const model = windowModel({ estimatedPageWidth: 80 });
+    const plan = model.plan(3);
+    model.begin(3, plan.generation); model.publish(3, plan.generation);
+    model.updateMetric(2, { width: 90, height: 110 });
+    const before = model.checkpoint();
+    const updates = [{ pageNumber: 2, metric: { width: 200, height: 180 } }, { pageNumber: 4, metric: { width: 240, height: 60 } }, { pageNumber: 2, metric: { width: 210, height: 150 } }];
+    const projected = model.projectMetrics(updates);
+    expect(projected.pageGeometry(3)).toEqual({ pageNumber: 3, top: 270, width: 80, height: 100 });
+    expect(projected.documentGeometry()).toEqual({ width: 240, height: 2_200 });
+    expect(model.checkpoint()).toEqual(before);
+    expect(model.previewPlan(3).generation).toBe(plan.generation);
+    expect(model.pageGeometry(3).top).toBe(230);
+    model.updateMetrics(updates);
+    expect(model.documentGeometry()).toEqual(projected.documentGeometry());
+    expect(model.pageGeometry(3)).toEqual(projected.pageGeometry(3));
+    model.updateMetric(2, { width: 300, height: 300 });
+    expect(projected.documentGeometry()).toEqual({ width: 240, height: 2_200 });
+  });
+
+  it("rejects invalid projected metrics without publishing partial updates", () => {
+    const model = windowModel();
+    const before = model.checkpoint();
+    expect(() => model.projectMetrics([{ pageNumber: 1, metric: { width: 40, height: 50 } }, { pageNumber: 2, metric: { width: NaN, height: 20 } }])).toThrow();
+    expect(() => model.projectMetrics([{ pageNumber: 21, metric: { width: 40, height: 50 } }])).toThrow();
+    expect(model.checkpoint()).toEqual(before);
+  });
   it("plans a visible range with at most two pages of overscan on either side", () => {
     const model = windowModel();
 

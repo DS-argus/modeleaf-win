@@ -815,6 +815,51 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
+  it.each(["commit", "failure", "raw-scroll"] as const)("keeps measured geometry staged until viewport authority settles: %s", async outcome => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const held = deferred<void>();
+    const resources = new ResourceReservationManager();
+    const host = document.createElement("div");
+    Object.defineProperties(host, {
+      clientWidth: { configurable: true, value: 20 }, clientHeight: { configurable: true, value: 30 },
+      scrollWidth: { configurable: true, value: 2_000 }, scrollHeight: { configurable: true, value: 2_000 },
+    });
+    const getPage = vi.fn(async (number: number): Promise<PdfPage> => ({
+      ...page(number, number === 3 ? held.promise : Promise.resolve()),
+      getViewport: () => pdfViewport(number === 2 ? 60 : 20, 30),
+    }));
+    const onPage = vi.fn();
+    const controller = new PdfReaderController({
+      native: nativeBoundary(vi.fn().mockResolvedValue(session("staged-geometry", 1))), resources,
+      pdf: { getDocument: vi.fn(() => task(documentWith(8, getPage))), annotationMode: 0 },
+      canvasHost: host, onCommitted: vi.fn(), onPage, onStatus: vi.fn(),
+    });
+    try {
+      await controller.open(1);
+      const window = (controller as unknown as { current: { window: import("../../src/pdf/ContinuousPageWindow").ContinuousPageWindow } }).current.window;
+      const checkpoint = window.checkpoint();
+      onPage.mockClear();
+      const work = controller.synchronizeViewport(84, 30);
+      await vi.waitFor(() => expect(host.querySelector('.pdf-page-frame[data-page="2"] canvas')).not.toBeNull());
+      expect(window.checkpoint().measuredMetrics).toEqual(checkpoint.measuredMetrics);
+      expect(window.documentGeometry().width).toBe(20);
+      expect(host.querySelector<HTMLElement>('[data-page-spacer="bottom"]')?.style.width).toBe("60px");
+      if (outcome === "raw-scroll") { host.scrollLeft = 321; host.scrollTop = 654; }
+      if (outcome === "failure") held.reject(new Error("controlled later page failure")); else held.resolve();
+      await expect(work).resolves.toBe(outcome === "commit");
+      if (outcome === "commit") {
+        expect(window.documentGeometry().width).toBe(60);
+        expect(controller.visiblePageNumbers).toEqual([3]);
+        expect(onPage).toHaveBeenCalledOnce();
+      } else {
+        expect(window.checkpoint().measuredMetrics).toEqual(checkpoint.measuredMetrics);
+        expect(host.querySelector<HTMLElement>('[data-page-spacer="bottom"]')?.style.width).toBe("20px");
+        expect(controller.residentPageNumbers()).toEqual(checkpoint.residentPages);
+        expect(onPage).not.toHaveBeenCalled();
+        if (outcome === "raw-scroll") expect({ left: host.scrollLeft, top: host.scrollTop }).toEqual({ left: 321, top: 654 });
+      }
+    } finally { held.resolve(); await controller.dispose(); resources.assertEmpty(); }
+  });
   it("rolls back newly published residents when a later viewport page fails", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const canvases = new Map<number, HTMLCanvasElement>();
