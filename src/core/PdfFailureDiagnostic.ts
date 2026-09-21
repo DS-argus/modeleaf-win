@@ -70,7 +70,9 @@ export function presentPdfFailure(
 /** Validate the entire displayed suffix before carrying it across a tab rollback. */
 export function isSafePdfFailureStatus(status: string, messages: ReadonlySet<string>): boolean {
   const match = /^(.*?) \[(PDF_[A-Z_]+)(?::([0-9]{3}))?\](?: \((diagnostic unavailable|diagnostic client busy|diagnostic unavailable; worker unavailable|diagnostic (?:queued|dropped|unavailable); worker (?:running|stopped); dropped ([0-9]{1,7}); write failures ([0-9]{1,7}))\))?$/.exec(status);
-  if (match === null || !messages.has(match[1]!)) return false;
+  if (match === null) return false;
+  const materialization = /^PDF viewport page ([1-9][0-9]{0,6}) could not be materialized\.$/.exec(match[1]!);
+  if (!messages.has(match[1]!) && !(messages.has("PDF viewport could not be materialized.") && materialization !== null && Number(materialization[1]) <= 1_000_000)) return false;
   const failure = { code: match[2], ...(match[3] === undefined ? {} : { httpStatus: Number(match[3]) }) };
   return isPdfFailureDiagnostic(failure) && (match[5] === undefined || Number(match[5]) <= 1_000_000) &&
     (match[6] === undefined || Number(match[6]) <= 1_000_000);

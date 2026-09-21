@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { openFailureStatus } from "../../../src/domain/navigation/OpenFailureIdentifier";
-import { isSafePdfFailureStatus } from "../../../src/core/PdfFailureDiagnostic";
+import { isSafePdfFailureStatus, classifyPdfFailure, presentPdfFailure } from "../../../src/core/PdfFailureDiagnostic";
+import { createPdfFailureReporter } from "../../../src/platform/PdfFailureDiagnostics";
 import { describe, expect, it, vi } from "vitest";
 import { adoptWithCommittedPresentation, OpenAdoptionPresentationError, rollbackOpenAdoptionOwnership, withOpenAdoptionOwnership } from "../../../src/application/OpenAdoptionOwnership";
 import { readFileSync } from "node:fs";
@@ -76,9 +77,10 @@ describe("OpenAdoptionOwnership", () => {
     expect(present).toHaveBeenCalledOnce();
   });
 
-  it.each(["PDF presentation could not be updated.", "Could not open PDF. [OPEN_PRESENTATION] [PDF_LOAD]", "PDF contains no pages. [PDF_LOAD_INVALID]"])("retains a committed candidate and its safe failure through rollback: %s", async (failureStatus) => {
+  it.each(["PDF presentation could not be updated.", "Could not open PDF. [OPEN_PRESENTATION] [PDF_LOAD]", "PDF contains no pages. [PDF_LOAD_INVALID]", "private unknown failure text", "Opening PDF cancelled.", "The PDF operation timed out.", "PDF viewport page 17 could not be materialized. [PDF_PRESENTATION]"])("retains a committed candidate and its safe failure through rollback: %s", async (failureStatus) => {
     const main = readFileSync("src/main.ts", "utf8");
-    const fragments = main.slice(main.indexOf("const SAFE_ADOPTION_FAILURE_STATUSES"), main.indexOf("let paletteActiveIndex"))
+    const fragments = main.slice(main.indexOf("const reportPdfFailure"), main.indexOf("function reportOpenInvokeFailure"))
+      + main.slice(main.indexOf("const SAFE_ADOPTION_FAILURE_STATUSES"), main.indexOf("let paletteActiveIndex"))
       + main.slice(main.indexOf("const pendingOpenAdoptions"), main.indexOf("function restoreOpenFocus"))
       + main.slice(main.indexOf("function handleOpenTerminal"), main.indexOf("const shellOpen ="));
     const code = transpileModule(fragments, { compilerOptions: { target: ScriptTarget.ES2022 } }).outputText;
@@ -114,7 +116,9 @@ describe("OpenAdoptionOwnership", () => {
     const render = () => { for (const tab of workspace.snapshot.tabs) tab.payload.host.hidden = tab.id !== workspace.activeTabId || !tab.payload.session.snapshot.reader.hasDocument; };
     const errors = vi.fn();
     const queue = createWorkspaceTransitionQueue(() => { throw new Error("Unexpected overflow"); });
+    const invoke = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
     const dependencies = {
+      invoke, createPdfFailureReporter, classifyPdfFailure, presentPdfFailure,
       workspace, active, render, createTab: makePayload, disposeWorkspaceTab: dispose,
       queueWorkspaceOwnership: queue.enqueueOwnership, cancelPagePromptOwnership: vi.fn(),
       withOpenAdoptionOwnership, adoptWithCommittedPresentation, OpenAdoptionPresentationError,
@@ -125,6 +129,9 @@ describe("OpenAdoptionOwnership", () => {
       protectedOpenSession: undefined, dismissPasswordPrompt: vi.fn(),
       cancelledOpenFocus: undefined,
     };
+    const expectedCode = failureStatus === "Opening PDF cancelled." ? "PDF_CANCELLED" : failureStatus === "The PDF operation timed out." ? "PDF_TIMEOUT" : "PDF_PRESENTATION";
+    const plainStatus = failureStatus === "private unknown failure text" ? "Could not open PDF. [OPEN_PRESENTATION]" : failureStatus;
+    const expectedStatus = failureStatus.includes("[PDF_") ? failureStatus : `${plainStatus} [${expectedCode}]`;
     const names = Object.keys(dependencies);
     const api = new Function(...names, code + ";return { adoptRequest, handleOpenTerminal, pendingOpenAdoptions };")(...Object.values(dependencies)) as {
       adoptRequest: (request: { requestId: string; ownerGeneration: number }) => Promise<void>;
@@ -134,7 +141,10 @@ describe("OpenAdoptionOwnership", () => {
     await expect(api.adoptRequest({ requestId: "post-commit", ownerGeneration: 1 })).rejects.toBeInstanceOf(OpenAdoptionPresentationError);
     expect(candidate.session.adopt).toHaveBeenCalledOnce();
     expect(candidate.session.close).not.toHaveBeenCalled();
-    expect(api.pendingOpenAdoptions.get("post-commit")?.failureStatus).toBe(failureStatus);
+    expect(api.pendingOpenAdoptions.get("post-commit")?.failureStatus).toBe(expectedStatus);
+    if (failureStatus.includes("[PDF_")) expect(invoke).not.toHaveBeenCalled();
+    else expect(invoke).toHaveBeenCalledWith("report_pdf_failure", { failure: { code: expectedCode } });
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain("private unknown failure text");
 
     api.handleOpenTerminal({ tag: "REJECTED", requestId: "post-commit", phase: "REJECT", baseReason: "ADOPTION_FAILED", cleanup: "NATIVE_COMPLETE" });
     await queue.enqueueOwnership(() => undefined);
@@ -142,7 +152,7 @@ describe("OpenAdoptionOwnership", () => {
     expect(workspace.getPayload(originalId)).toBeUndefined();
     expect(api.pendingOpenAdoptions.has("post-commit")).toBe(false);
     expect(active().session.snapshot.reader.hasDocument).toBe(false);
-    expect(active().session.snapshot.status).toBe(failureStatus);
+    expect(active().session.snapshot.status).toBe(expectedStatus);
     expect(errors).not.toHaveBeenCalled();
   });
 });

@@ -369,6 +369,7 @@ const createOpeningFailure = (): OpeningFailure => {
 /** Owns opaque sessions and PDFs. A candidate is invisible until its first page has rendered. */
 export class PdfReaderController {
   private statusRevision = 0;
+  private failureRevision = 0;
   private lastStatus = "";
   private publishStatus(message: string): void {
     this.statusRevision += 1;
@@ -381,6 +382,7 @@ export class PdfReaderController {
       if (reported?.has(error)) return;
       reported?.add(error);
     }
+    this.failureRevision += 1;
     const revision = this.statusRevision + 1;
     const openSequence = this.openSequence;
     presentPdfFailure(message, classifyPdfFailure(error, fallback),
@@ -1209,9 +1211,10 @@ export class PdfReaderController {
           this.evictResidentPage(current, obsolete, true);
         }
         window.begin(page, plan.generation);
+        const failureRevision = this.failureRevision;
         const committed = await this.renderPageInternal(page, this.viewTransform, transactionCurrent, undefined, current.topology, "preserve-anchor", preparedPages.get(page));
         if (!committed) {
-          if (transactionCurrent()) this.publishStatus(`PDF viewport page ${page} could not be materialized.`);
+          if (transactionCurrent() && this.failureRevision === failureRevision) this.reportFailure(new Error("PDF_VIEWPORT_MATERIALIZATION_FAILED"), "PDF_PRESENTATION", `PDF viewport page ${page} could not be materialized.`);
           return false;
         }
         if (!transactionCurrent()) return false;
@@ -1627,6 +1630,7 @@ export class PdfReaderController {
       return { kind: "staleOrCancelled" };
     }
     const pageNumber = target.pageIndex + 1;
+    const failureRevision = this.failureRevision;
     try {
       const transformUnchanged = targetTransform.scale === this.viewTransform.scale
         && targetTransform.rotation === this.viewTransform.rotation
@@ -1763,8 +1767,9 @@ export class PdfReaderController {
       this.notifyObserver(() => this.options.onPage(pageNumber, this.viewTransform));
       return exact ? { kind: "verified", landing } : { kind: "constrainedEdgeVerified", landing, expected };
     } catch (error) {
-      this.publishStatus(`PDF viewport landing failed: ${error instanceof Error ? error.message : String(error)}`);
-      return !(requestCommitGuard?.() ?? true) ? { kind: "staleOrCancelled" } : { kind: "failed" };
+      if (!requestCurrent()) return { kind: "staleOrCancelled" };
+      if (this.failureRevision === failureRevision) this.reportFailure(error, "PDF_PRESENTATION", "PDF viewport landing failed.");
+      return { kind: "failed" };
     }
   }
 
@@ -1868,7 +1873,7 @@ export class PdfReaderController {
       return !layoutFailed;
     } catch (error) {
       if (isRenderCancellation(error)) return false;
-      if (!this.disposed && this.current === current) this.reportFailure(error, "PDF_RENDER");
+      if (!this.disposed && this.current === current && (requestCommitGuard?.() ?? true)) this.reportFailure(error, "PDF_RENDER");
       return false;
     }
     finally {

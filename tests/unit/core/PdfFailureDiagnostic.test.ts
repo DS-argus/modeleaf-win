@@ -7,6 +7,11 @@ const base = { storageClass: "LOCAL", epochMs: 1, appVersion: "0.2.0", runtimeVe
 const receipt: PdfDiagnosticReceipt = { delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 };
 
 describe("renderer PDF diagnostics", () => {
+  it("retains only bounded numeric page details in materialization fallback", () => {
+    const messages = new Set(["PDF viewport could not be materialized."]);
+    for (const page of [1, 17, 1_000_000]) expect(isSafePdfFailureStatus(`PDF viewport page ${page} could not be materialized. [PDF_PRESENTATION]`, messages)).toBe(true);
+    for (const page of [0, -1, 1_000_001, "private", "007"]) expect(isSafePdfFailureStatus(`PDF viewport page ${page} could not be materialized. [PDF_PRESENTATION]`, messages)).toBe(false);
+  });
   it("retains existing timeout error messages while recording the actual deadline cause", () => {
     const error = new PdfFailureError({ code: "PDF_TIMEOUT" }, "RENDER_FAILED");
     expect(error.message).toBe("RENDER_FAILED");

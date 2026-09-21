@@ -459,6 +459,8 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
   render();
 }
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
+  "PDF viewport could not be materialized.",
+  "PDF viewport landing failed.",
   "PDF viewport rollback was incomplete.",
   "PDF viewport rollback failed after wheel zoom.",
   "PDF direct rollback was incomplete.",
@@ -480,8 +482,12 @@ const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
   "The local PDF renderer could not start.",
   "The PDF operation timed out.",
 ]);
-function safeAdoptionFailureStatus(status: string, fallbackPhase: OpenFailurePhase = "adoption"): string {
-  return SAFE_ADOPTION_FAILURE_STATUSES.has(status) || isSafePdfFailureStatus(status, SAFE_ADOPTION_FAILURE_STATUSES) ? status : openFailureStatus(fallbackPhase);
+function safeAdoptionFailureStatus(session: PdfTabSession, error: unknown, fallbackPhase: OpenFailurePhase): string {
+  const status = session.snapshot.status;
+  if (isSafePdfFailureStatus(status, SAFE_ADOPTION_FAILURE_STATUSES)) return status;
+  const code: PdfFailureCode = status === "Opening PDF cancelled." ? "PDF_CANCELLED" : status === "The PDF operation timed out." ? "PDF_TIMEOUT" : "PDF_PRESENTATION";
+  showPdfFailure(session, error, code, SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : openFailureStatus(fallbackPhase));
+  return session.snapshot.status;
 }
 let paletteActiveIndex = 0;
 let fileOpenerModel: OpenChooserModel = createOpenChooser({ tag: "READY", snapshot: { revision: "0", entries: [] } }, 0);
@@ -1057,7 +1063,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         );
       } catch (error) {
         if (shellDisposing) throw error;
-        const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status, error instanceof OpenAdoptionPresentationError ? "presentation" : "adoption");
+        const candidateStatus = safeAdoptionFailureStatus(payload.session, error, error instanceof OpenAdoptionPresentationError ? "presentation" : "adoption");
         if (error instanceof OpenAdoptionPresentationError) {
           const pending = pendingOpenAdoptions.get(request.requestId);
           if (pending !== undefined) pendingOpenAdoptions.set(request.requestId, { ...pending, failureStatus: candidateStatus });

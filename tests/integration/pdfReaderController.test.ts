@@ -867,6 +867,8 @@ describe("PdfReaderController", () => {
     } finally { held.resolve(); await controller.dispose(); resources.assertEmpty(); }
   });
   it("rolls back newly published residents when a later viewport page fails", async () => {
+    let status = "";
+    const onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const canvases = new Map<number, HTMLCanvasElement>();
     const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => ({
@@ -883,11 +885,15 @@ describe("PdfReaderController", () => {
       resources,
       pdf: { getDocument: vi.fn(() => task(documentWith(5, getPage))), annotationMode: 0 },
       canvasHost: host,
-      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (value) => { status = value; }, onDiagnostic,
     });
 
     await controller.open(1);
     expect(await controller.synchronizeViewport(84, 30)).toBe(false);
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith({ code: "PDF_RENDER" }));
+    expect(status).toContain("[PDF_RENDER]");
+    expect(status).not.toContain("could not be materialized");
+    expect(status).not.toContain("page three failed");
     expect([...host.querySelectorAll<HTMLElement>(":scope > .pdf-page-frame")].map((frame) => frame.dataset.page)).toEqual(["1"]);
     expect(canvases.get(2)?.width).toBe(0);
     expect(canvases.get(2)?.height).toBe(0);
@@ -1467,25 +1473,27 @@ describe("PdfReaderController", () => {
     await controller.dispose();
     resources.assertEmpty();
   });
-  it("reconciles and rejects a partial DPR rollback before a truthful retry", async () => {
+  it.each(["direct", "landing"])("reconciles and rejects partial DPR rollback without overwriting its diagnostic through %s", async (entry) => {
     const onStatus = vi.fn(), onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const host = document.createElement("div");
     const resources = new ResourceReservationManager();
     let failDpr = false;
-    let failedPageOneCalls = 0;
+    let failedPageOneRenders = 0;
     const compensationFinalize = vi.fn();
     const publishResidents = vi.fn()
       .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: vi.fn() })
       .mockResolvedValueOnce({ rollback: vi.fn(async () => undefined), finalize: compensationFinalize });
     const getPage = vi.fn(async (pageNumber: number): Promise<PdfPage> => {
-      let rendering = Promise.resolve();
-      if (failDpr && pageNumber === 1) {
-        failedPageOneCalls += 1;
-        if (failedPageOneCalls === 2) rendering = Promise.reject(new Error("DPR rollback failed"));
-      }
-      if (failDpr && pageNumber === 2) rendering = Promise.reject(new Error("DPR forward failed"));
-      return page(pageNumber, rendering);
+      const source = page(pageNumber);
+      return { ...source, render: (options) => {
+        const rendering = source.render(options);
+        if (failDpr && pageNumber === 1) {
+          failedPageOneRenders += 1;
+          if (failedPageOneRenders === 2) return { ...rendering, promise: Promise.reject(new Error("DPR rollback failed")) };
+        }
+        return failDpr && pageNumber === 2 ? { ...rendering, promise: Promise.reject(new Error("DPR forward failed")) } : rendering;
+      } };
     });
     const controller = new PdfReaderController({
       native: nativeBoundary(vi.fn().mockResolvedValue(session("dpr-subset", 1))), resources,
@@ -1496,7 +1504,10 @@ describe("PdfReaderController", () => {
     expect(await controller.synchronizeViewport(84, 30)).toBe(true);
     failDpr = true;
 
-    await expect(controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 })).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    if (entry === "direct") await expect(controller.setViewTransform({ scale: 1, rotation: 0, devicePixelRatio: 2 })).rejects.toThrow("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+    else await expect(controller.restoreViewportLanding({ pageIndex: 0, x: 0, y: 0 }, undefined, { scale: 1, rotation: 0, devicePixelRatio: 2 })).resolves.toEqual({ kind: "failed" });
+    expect(onStatus.mock.calls.at(-1)![0]).toContain("PDF DPR rollback was incomplete. [PDF_PRESENTATION]");
+    expect(onStatus.mock.calls.some(([message]) => message.includes("PDF viewport landing failed"))).toBe(false);
     expect(onStatus).toHaveBeenCalledWith("PDF DPR rollback was incomplete. [PDF_PRESENTATION]");
     await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledWith({ code: "PDF_PRESENTATION" }));
     expect(publishResidents).toHaveBeenLastCalledWith([3, 4, 5]);
@@ -3377,6 +3388,48 @@ describe("PdfReaderController", () => {
 });
 
 describe("PDF failure diagnostic delivery", () => {
+  it("does not publish a same-candidate render rejection after its request guard becomes stale", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const entered = deferred<void>(), held = deferred<void>(), statuses: string[] = [];
+    const resources = new ResourceReservationManager(), host = document.createElement("div");
+    const onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
+    let current = true;
+    const doc = documentWith(2, vi.fn(async (number: number) => number === 1 ? page(1) : {
+      ...page(2), render: () => { entered.resolve(); return { promise: held.promise, cancel: vi.fn() }; },
+    }));
+    const controller = new PdfReaderController({ native: nativeBoundary(vi.fn().mockResolvedValue(session("stale-render", 1))), resources, canvasHost: host,
+      pdf: { getDocument: () => task(doc), annotationMode: 0 }, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (status) => statuses.push(status), onDiagnostic });
+    await controller.open(1);
+    const original = publishedCanvas(host);
+    statuses.length = 0;
+    const rendering = controller.renderPage(2, undefined, () => current);
+    await entered.promise; current = false; held.reject(new Error("private obsolete render"));
+    expect(await rendering).toBe(false);
+    expect(statuses).toEqual([]); expect(onDiagnostic).not.toHaveBeenCalled();
+    expect(publishedCanvas(host)).toBe(original);
+    current = true;
+    expect(await controller.renderPage(2, undefined, () => current)).toBe(false);
+    await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith({ code: "PDF_RENDER" }));
+    await controller.dispose(); resources.assertEmpty();
+  });
+
+  it.each([true, false])("redacts landing exceptions and respects current ownership=%s", async (currentAtFailure) => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const resources = new ResourceReservationManager(), statuses: string[] = [];
+    const onDiagnostic = vi.fn().mockResolvedValue({ delivery: "QUEUED", worker: "RUNNING", dropped: 0, writeFailures: 0 });
+    let current = true;
+    const controller = new PdfReaderController({ native: nativeBoundary(vi.fn().mockResolvedValue(session("landing-error", 1))), resources, canvasHost: document.createElement("div"),
+      pdf: { getDocument: () => task(documentWith(1)), annotationMode: 0 }, onCommitted: vi.fn(), onPage: vi.fn(), onStatus: (status) => statuses.push(status), onDiagnostic });
+    await controller.open(1); statuses.length = 0;
+    vi.spyOn(controller, "restoreScrollAnchor").mockImplementation(() => { current = currentAtFailure; throw new Error("private landing path"); });
+    expect(await controller.restoreViewportLanding({ pageIndex: 0, x: 0, y: 0 }, () => current)).toEqual({ kind: currentAtFailure ? "failed" : "staleOrCancelled" });
+    if (currentAtFailure) {
+      expect(statuses).toContain("PDF viewport landing failed. [PDF_PRESENTATION]");
+      await vi.waitFor(() => expect(onDiagnostic).toHaveBeenCalledExactlyOnceWith({ code: "PDF_PRESENTATION" }));
+    } else { expect(statuses).toEqual([]); expect(onDiagnostic).not.toHaveBeenCalled(); }
+    expect(JSON.stringify(statuses)).not.toContain("private");
+    await controller.dispose(); resources.assertEmpty();
+  });
   it("reports failed wheel compensation with its precise safe message and sentinel", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const resources = new ResourceReservationManager(), onStatus = vi.fn();
