@@ -153,7 +153,7 @@ fn record_native_diagnostic<R: tauri::Runtime>(
     outcome: diagnostics::DiagnosticOutcome,
     tag: diagnostics::DiagnosticTag,
 ) {
-    let Some(log) = app.try_state::<diagnostics::DiagnosticLog>() else {
+    let Some(log) = app.try_state::<std::sync::Arc<diagnostics::DiagnosticLog>>() else {
         return;
     };
     let epoch_ms = std::time::SystemTime::now()
@@ -175,6 +175,8 @@ fn record_native_diagnostic<R: tauri::Runtime>(
         count: None,
         duration_ms: None,
         generation: None,
+        stage: None,
+        os_code: None,
     };
     let _ = log.record(&event);
 }
@@ -314,9 +316,10 @@ fn commit_theme_state(
 }
 #[tauri::command]
 fn record_diagnostic(
-    diagnostics: State<'_, diagnostics::DiagnosticLog>,
+    diagnostics: State<'_, std::sync::Arc<diagnostics::DiagnosticLog>>,
     event: diagnostics::DiagnosticEvent,
 ) -> Result<(), diagnostics::DiagnosticError> {
+    diagnostics::validate_renderer_event(&event)?;
     diagnostics.record(&event)
 }
 
@@ -1448,9 +1451,16 @@ pub fn run() {
             let themes = ThemeStateManager::load(state_path);
             let theme_recovery_needed = themes.take_startup_recovery_needed();
             app.manage(themes);
-            app.manage(diagnostics::DiagnosticLog::open(
+            let log = std::sync::Arc::new(diagnostics::DiagnosticLog::open(
                 app_local_data_directory.join("diagnostics"),
             )?);
+            let sink_log = std::sync::Arc::clone(&log);
+            if let Ok(sink) =
+                diagnostics::NativePdfDiagnostics::new(move |event| sink_log.record(event))
+            {
+                app.state::<PdfSessionManager>().install_diagnostics(sink);
+            }
+            app.manage(log);
             if theme_recovery_needed {
                 record_native_diagnostic(
                     app.handle(),

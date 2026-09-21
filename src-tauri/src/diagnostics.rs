@@ -77,6 +77,12 @@ pub struct DiagnosticEvent {
     pub duration_ms: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub generation: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub stage: Option<PdfDiagnosticStage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub os_code: Option<i32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -172,6 +178,9 @@ impl DiagnosticLog {
 }
 
 fn validate(event: &DiagnosticEvent) -> Result<(), DiagnosticError> {
+    if !valid_native_observation(event) {
+        return Err(DiagnosticError::InvalidEvent);
+    }
     if event.epoch_ms > 9_999_999_999_999
         || event.page.is_some_and(|value| value > 1_000_000)
         || event.count.is_some_and(|value| value > 1_000_000)
@@ -242,6 +251,13 @@ fn encode(event: &DiagnosticEvent) -> String {
     optional_number(&mut output, "count", event.count.map(u64::from));
     optional_number(&mut output, "durationMs", event.duration_ms.map(u64::from));
     optional_number(&mut output, "generation", event.generation);
+    if let Some(stage) = event.stage {
+        output.push_str(",\"stage\":");
+        output.push_str(&serde_json::to_string(&stage).expect("finite diagnostic stage"));
+    }
+    if let Some(code) = event.os_code {
+        output.push_str(&format!(",\"osCode\":{code}"));
+    }
     output.push_str("}\n");
     output
 }
@@ -303,4 +319,383 @@ fn sync_directory(path: &Path) -> Result<(), DiagnosticError> {
 #[cfg(not(unix))]
 fn sync_directory(_: &Path) -> Result<(), DiagnosticError> {
     Ok(())
+}
+
+/// Native observed operation, never a path or caller-controlled message.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum PdfDiagnosticStage {
+    Open,
+    OpenMetadata,
+    OpenModified,
+    OpenFileKind,
+    OpenHeaderRead,
+    OpenHeaderValidate,
+    OpenRewind,
+    RangeBeforeMetadata,
+    RangeBeforeModified,
+    RangeBeforeFileKind,
+    RangeBeforeValidate,
+    RangeSeek,
+    RangeRead,
+    RangeAfterMetadata,
+    RangeAfterModified,
+    RangeAfterFileKind,
+    RangeAfterValidate,
+}
+
+impl PdfDiagnosticStage {
+    fn classification(self) -> (DiagnosticOutcome, DiagnosticTag) {
+        use PdfDiagnosticStage::*;
+        match self {
+            OpenFileKind | OpenHeaderValidate | RangeBeforeFileKind | RangeAfterFileKind => (
+                DiagnosticOutcome::Rejected,
+                DiagnosticTag::ValidationRejected,
+            ),
+            RangeBeforeValidate | RangeAfterValidate => {
+                (DiagnosticOutcome::Failure, DiagnosticTag::Conflict)
+            }
+            _ => (DiagnosticOutcome::Failure, DiagnosticTag::IoFailure),
+        }
+    }
+}
+
+fn valid_native_observation(event: &DiagnosticEvent) -> bool {
+    let Some(stage) = event.stage else {
+        return event.os_code.is_none();
+    };
+    let (outcome, tag) = stage.classification();
+    event.event == DiagnosticEventName::PdfSession
+        && event.outcome == outcome
+        && event.tag == tag
+        && (tag == DiagnosticTag::IoFailure || event.os_code.is_none())
+}
+
+/// Renderer ingress cannot claim native evidence, even if the serialized event is valid.
+pub fn validate_renderer_event(event: &DiagnosticEvent) -> Result<(), DiagnosticError> {
+    if event.stage.is_some() || event.os_code.is_some() {
+        return Err(DiagnosticError::InvalidEvent);
+    }
+    validate(event)
+}
+
+const MAX_PDF_FAILURE_QUEUE: usize = 32;
+
+#[derive(Clone, Copy)]
+struct PdfFailure {
+    stage: PdfDiagnosticStage,
+    os_code: Option<i32>,
+    epoch_ms: u64,
+}
+
+impl PdfFailure {
+    fn event(self) -> DiagnosticEvent {
+        let (outcome, tag) = self.stage.classification();
+        DiagnosticEvent {
+            event: DiagnosticEventName::PdfSession,
+            outcome,
+            tag,
+            storage_class: DiagnosticStorageClass::Local,
+            epoch_ms: self.epoch_ms,
+            app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            runtime_version: "0.0.0".to_owned(),
+            trace_id: None,
+            request_id: None,
+            session_id: None,
+            page: None,
+            count: None,
+            duration_ms: None,
+            generation: None,
+            stage: Some(self.stage),
+            os_code: self.os_code,
+        }
+    }
+}
+
+/// One worker, at most 32 pending failures. Full/disconnected queues drop evidence, not PDF work.
+/// No persistence guarantee: sink errors and shutdown may lose observations.
+pub(crate) struct NativePdfDiagnostics {
+    sender: std::sync::mpsc::SyncSender<PdfFailure>,
+}
+
+impl NativePdfDiagnostics {
+    pub(crate) fn new(
+        sink: impl Fn(&DiagnosticEvent) -> Result<(), DiagnosticError> + Send + 'static,
+    ) -> io::Result<Self> {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<PdfFailure>(MAX_PDF_FAILURE_QUEUE);
+        std::thread::Builder::new()
+            .name("modeleaf-pdf-diagnostics".into())
+            .spawn(move || {
+                while let Ok(failure) = receiver.recv() {
+                    // Best effort only. Never replace the original operation result or recurse on failure.
+                    let _ = sink(&failure.event());
+                }
+            })?;
+        Ok(Self { sender })
+    }
+}
+
+/// Declare before PDF admission/locks so drop queues the observation after their release.
+/// It records an observed operation failure even if owner invalidation replaces its public result.
+pub(crate) struct PdfFailureObservation<'a> {
+    sink: Option<&'a NativePdfDiagnostics>,
+    failure: std::cell::Cell<Option<PdfFailure>>,
+}
+
+impl<'a> PdfFailureObservation<'a> {
+    pub(crate) fn new(sink: Option<&'a NativePdfDiagnostics>) -> Self {
+        Self {
+            sink,
+            failure: std::cell::Cell::new(None),
+        }
+    }
+
+    pub(crate) fn capture(&self, stage: PdfDiagnosticStage, error: Option<&io::Error>) {
+        if self.failure.get().is_some() {
+            return;
+        }
+        let os_code = if stage.classification().1 == DiagnosticTag::IoFailure {
+            error.and_then(io::Error::raw_os_error)
+        } else {
+            None
+        };
+        let epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        self.failure.set(Some(PdfFailure {
+            stage,
+            os_code,
+            epoch_ms,
+        }));
+    }
+}
+
+impl Drop for PdfFailureObservation<'_> {
+    fn drop(&mut self) {
+        if let (Some(sink), Some(failure)) = (self.sink, self.failure.get()) {
+            let _ = sink.sender.try_send(failure);
+        }
+    }
+}
+
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod pdf_failure_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn failure() -> PdfFailure {
+        PdfFailure {
+            stage: PdfDiagnosticStage::RangeRead,
+            os_code: Some(5),
+            epoch_ms: 1,
+        }
+    }
+
+    #[test]
+    fn shared_stage_matrix_round_trips_and_rejects_incompatible_combinations() {
+        let matrix: Vec<(PdfDiagnosticStage, DiagnosticOutcome, DiagnosticTag)> =
+            serde_json::from_str(include_str!(
+                "../../tests/fixtures/pdfDiagnosticStages.json"
+            ))
+            .unwrap();
+        let outcomes = [
+            DiagnosticOutcome::Success,
+            DiagnosticOutcome::Rejected,
+            DiagnosticOutcome::Failure,
+            DiagnosticOutcome::Cancelled,
+        ];
+        let tags = [
+            DiagnosticTag::None,
+            DiagnosticTag::ValidationRejected,
+            DiagnosticTag::LocalityRejected,
+            DiagnosticTag::Conflict,
+            DiagnosticTag::IoFailure,
+            DiagnosticTag::Timeout,
+            DiagnosticTag::Deferred,
+            DiagnosticTag::Redacted,
+        ];
+        let events = [
+            DiagnosticEventName::Application,
+            DiagnosticEventName::PdfSession,
+            DiagnosticEventName::PdfRender,
+            DiagnosticEventName::ExternalLink,
+            DiagnosticEventName::ThemeState,
+            DiagnosticEventName::Quit,
+        ];
+        for (stage, outcome, tag) in matrix {
+            let event = PdfFailure {
+                stage,
+                os_code: None,
+                ..failure()
+            }
+            .event();
+            assert_eq!((event.outcome, event.tag), (outcome, tag));
+            assert!(validate(&event).is_ok());
+            assert!(validate_renderer_event(&event).is_err());
+            for code in [
+                None,
+                Some(i32::MIN),
+                Some(-1),
+                Some(0),
+                Some(5),
+                Some(i32::MAX),
+            ] {
+                let mut candidate = event.clone();
+                candidate.os_code = code;
+                assert_eq!(
+                    validate(&candidate).is_ok(),
+                    code.is_none() || tag == DiagnosticTag::IoFailure
+                );
+                if validate(&candidate).is_ok() {
+                    let encoded = encode(&candidate);
+                    assert!(encoded.len() <= MAX_DIAGNOSTIC_BYTES);
+                    assert_eq!(
+                        serde_json::from_str::<DiagnosticEvent>(&encoded).unwrap(),
+                        candidate
+                    );
+                    assert_eq!(
+                        serde_json::from_str::<serde_json::Value>(&encoded).unwrap(),
+                        serde_json::to_value(&candidate).unwrap()
+                    );
+                }
+            }
+            for other_event in events {
+                let mut candidate = event.clone();
+                candidate.event = other_event;
+                assert_eq!(
+                    validate(&candidate).is_ok(),
+                    other_event == DiagnosticEventName::PdfSession
+                );
+            }
+            for other_outcome in outcomes {
+                for other_tag in tags {
+                    let mut candidate = event.clone();
+                    candidate.outcome = other_outcome;
+                    candidate.tag = other_tag;
+                    assert_eq!(
+                        validate(&candidate).is_ok(),
+                        other_outcome == outcome && other_tag == tag
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_fields_are_strict_and_renderer_cannot_forge_them() {
+        let event = failure().event();
+        assert!(validate_renderer_event(&event).is_err());
+        let mut absent = event.clone();
+        absent.stage = None;
+        absent.os_code = None;
+        assert!(validate_renderer_event(&absent).is_ok());
+        absent.os_code = Some(5);
+        assert!(validate(&absent).is_err());
+        assert!(validate_renderer_event(&absent).is_err());
+        for code in [
+            serde_json::json!(-2147483649_i64),
+            serde_json::json!(2147483648_i64),
+            serde_json::json!(1.5),
+            serde_json::json!("5"),
+            serde_json::Value::Null,
+        ] {
+            let mut value = serde_json::to_value(&event).unwrap();
+            value["osCode"] = code;
+            assert!(serde_json::from_value::<DiagnosticEvent>(value).is_err());
+        }
+        for stage in [
+            serde_json::json!("POLICY"),
+            serde_json::json!("unknown"),
+            serde_json::json!(0),
+            serde_json::Value::Null,
+        ] {
+            let mut value = serde_json::to_value(&event).unwrap();
+            value["stage"] = stage;
+            assert!(serde_json::from_value::<DiagnosticEvent>(value).is_err());
+        }
+        let mut value = serde_json::to_value(&event).unwrap();
+        value["message"] = serde_json::json!("private");
+        assert!(serde_json::from_value::<DiagnosticEvent>(value).is_err());
+    }
+
+    #[test]
+    fn observation_captures_only_first_failure_and_only_actual_raw_code() {
+        let (sender, receiver) = mpsc::sync_channel(4);
+        let sink = NativePdfDiagnostics { sender };
+        for code in [None, Some(i32::MIN), Some(i32::MAX)] {
+            let observation = PdfFailureObservation::new(Some(&sink));
+            let error = code
+                .map(io::Error::from_raw_os_error)
+                .unwrap_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof));
+            observation.capture(PdfDiagnosticStage::RangeRead, Some(&error));
+            observation.capture(PdfDiagnosticStage::RangeAfterValidate, None);
+            assert!(receiver.try_recv().is_err());
+            drop(observation);
+            let event = receiver.try_recv().unwrap().event();
+            assert_eq!(event.stage, Some(PdfDiagnosticStage::RangeRead));
+            assert_eq!(event.os_code, code);
+            assert!(receiver.try_recv().is_err());
+        }
+        drop(PdfFailureObservation::new(Some(&sink)));
+        assert!(receiver.try_recv().is_err()); // No success events.
+        let observation = PdfFailureObservation::new(Some(&sink));
+        observation.capture(PdfDiagnosticStage::RangeBeforeValidate, None);
+        drop(observation);
+        let event = receiver.try_recv().unwrap().event();
+        assert_eq!(event.tag, DiagnosticTag::Conflict);
+        assert_eq!(event.os_code, None);
+    }
+
+    #[test]
+    fn blocked_sink_has_bounded_nonblocking_queue_and_failure_does_not_recurse() {
+        let (entered, started) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let sink = NativePdfDiagnostics::new(move |_| {
+            entered.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            finished.send(()).unwrap();
+            Err(DiagnosticError::Io)
+        })
+        .unwrap();
+        assert!(sink.sender.try_send(failure()).is_ok());
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        for _ in 0..MAX_PDF_FAILURE_QUEUE {
+            assert!(sink.sender.try_send(failure()).is_ok());
+        }
+        assert!(matches!(
+            sink.sender.try_send(failure()),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        // Dropping an observed failure while full must not wait for the blocked sink.
+        let observation = PdfFailureObservation::new(Some(&sink));
+        observation.capture(
+            PdfDiagnosticStage::Open,
+            Some(&io::Error::from_raw_os_error(5)),
+        );
+        drop(observation);
+        drop(sink);
+        for _ in 0..=MAX_PDF_FAILURE_QUEUE {
+            release.send(()).unwrap();
+            done.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        assert!(started.try_iter().count() == MAX_PDF_FAILURE_QUEUE);
+        assert!(done.recv_timeout(Duration::from_secs(5)).is_err());
+        let (sender, receiver) = mpsc::sync_channel(1);
+        drop(receiver);
+        let disconnected = NativePdfDiagnostics { sender };
+        let observation = PdfFailureObservation::new(Some(&disconnected));
+        observation.capture(PdfDiagnosticStage::OpenHeaderValidate, None);
+        drop(observation); // A disconnected sink cannot replace a PDF result either.
+    }
 }

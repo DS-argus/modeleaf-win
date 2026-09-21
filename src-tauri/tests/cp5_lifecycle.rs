@@ -76,6 +76,8 @@ fn native_state_commands_have_finite_stale_and_diagnostic_rejections() {
         count: None,
         duration_ms: None,
         generation: None,
+        stage: None,
+        os_code: None,
     };
     assert!(diagnostics.record(&invalid).is_err());
     assert!(!directory
