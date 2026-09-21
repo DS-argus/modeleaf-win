@@ -54,8 +54,8 @@ async function wait(predicate, label) {
   throw new Error(`Timeout: ${label}`);
 }
 async function key(value) {
-  const vk = value === "-" ? 189 : value === "=" ? 187 : value.toUpperCase().charCodeAt(0);
-  const code = value === "-" ? "Minus" : value === "=" ? "Equal" : value === "0" ? "Digit0" : `Key${value.toUpperCase()}`;
+  const vk = value === "Enter" ? 13 : value === "-" ? 189 : value === "=" ? 187 : value.toUpperCase().charCodeAt(0);
+  const code = value === "Enter" ? "Enter" : value === "-" ? "Minus" : value === "=" ? "Equal" : /^\d$/.test(value) ? `Digit${value}` : `Key${value.toUpperCase()}`;
   const params = { key: value, code, windowsVirtualKeyCode: vk, modifiers: value === "F" ? 8 : 0 };
   actions.push({ key: value });
   await call("Input.dispatchKeyEvent", { type: "keyDown", ...params });
@@ -129,10 +129,8 @@ try {
   assert.equal(initial.tabs, 1, "Start this verification with a fresh one-tab preview");
   for (const value of ["w", "w", "-", "=", "F", "-", "=", "w"]) { await key(value); await settled(`key ${value}`); }
   // Exercise the narrow/wide boundary using shell keys and WebView input only.
-  await key("g"); await key("g");
-  assert.equal((await settled("mixed first-page precondition")).reader.page, 1);
-  await key("n"); assert.equal((await settled("mixed page 2")).reader.page, 2);
-  await key("n"); assert.equal((await settled("mixed page 3")).reader.page, 3);
+  await key("g"); await key("3"); await key("Enter");
+  assert.equal((await settled("mixed page 3 prompt landing")).reader.page, 3);
   await key("w");
   const fittedWidth = await settled("mixed narrow page fit width");
   const position = await evaluate("(()=>{const h=nativeZoomQA.controller.options.canvasHost,r=h.getBoundingClientRect();return {x:r.left+h.clientWidth/2,y:r.top+h.clientHeight/2,delta:h.clientHeight*0.4};})()");
