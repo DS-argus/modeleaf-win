@@ -12,8 +12,8 @@ pub mod persistence;
 pub mod print_job;
 #[cfg(windows)]
 mod print_windows;
-pub mod recent_display_aliases;
 pub mod recent;
+pub mod recent_display_aliases;
 pub mod theme_state;
 pub mod workspace;
 use crate::commands::config::{
