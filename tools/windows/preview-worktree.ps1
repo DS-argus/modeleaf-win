@@ -2,7 +2,8 @@
 param(
     [string]$Pdf,
     [string]$Worktree,
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [switch]$Release
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,7 +41,9 @@ $branch = (& git -C $root branch --show-current).Trim()
 if ([string]::IsNullOrWhiteSpace($branch)) { throw 'Preview requires a named worktree branch.' }
 $target = Join-Path $root '.internal\preview-target'
 $receiptPath = Join-Path $target 'preview-receipt.json'
-$executable = Join-Path $target 'debug\modeleaf.exe'
+$configuration = if ($Release) { 'release' } else { 'debug' }
+$candidateKind = if ($Release) { 'standalone-tauri-release-no-bundle' } else { 'standalone-tauri-debug-no-bundle' }
+$executable = Join-Path $target "$configuration\modeleaf.exe"
 $identity = SourceIdentity
 
 if (-not $SkipBuild) {
@@ -50,7 +53,11 @@ if (-not $SkipBuild) {
         $env:CARGO_TARGET_DIR = $target
         $env:CARGO_BUILD_JOBS = '1'
         Push-Location $root
-        try { & npm run tauri:build-debug } finally { Pop-Location }
+        $savedCi = $env:CI
+        try {
+            if ($Release) { $env:CI = 'true'; & npm run tauri -- build --no-bundle }
+            else { & npm run tauri:build-debug }
+        } finally { $env:CI = $savedCi; Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'Standalone preview build failed.' }
     } finally {
         $env:CARGO_TARGET_DIR = $savedTarget
@@ -58,7 +65,7 @@ if (-not $SkipBuild) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Standalone preview build produced no isolated executable.' }
     $identity = SourceIdentity
     [ordered]@{
-        kind = 'standalone-tauri-debug-no-bundle'
+        kind = $candidateKind
         branch = $branch
         source = $identity
         executableSha256 = FileSha256 $executable
@@ -67,7 +74,7 @@ if (-not $SkipBuild) {
     if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'No standalone preview receipt exists. Run without -SkipBuild.' }
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) { throw 'Receipt has no isolated executable. Run without -SkipBuild.' }
     $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-    if ($receipt.kind -ne 'standalone-tauri-debug-no-bundle' -or $receipt.branch -ne $branch -or $receipt.source.head -ne $identity.head -or $receipt.source.statusSha256 -ne $identity.statusSha256 -or $receipt.source.diffSha256 -ne $identity.diffSha256) {
+    if ($receipt.kind -ne $candidateKind -or $receipt.branch -ne $branch -or $receipt.source.head -ne $identity.head -or $receipt.source.statusSha256 -ne $identity.statusSha256 -or $receipt.source.diffSha256 -ne $identity.diffSha256) {
         throw 'Preview receipt is stale for this worktree. Rebuild without -SkipBuild.'
     }
     $actual = FileSha256 $executable

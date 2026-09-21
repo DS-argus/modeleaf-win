@@ -12,8 +12,10 @@ assert(Number.isSafeInteger(pid) && pid > 0 && Number.isSafeInteger(port) && por
 const evidence = resolve(".internal/evidence/reader-zoom-native", new Date().toISOString().replaceAll(":", "-"));
 await mkdir(evidence, { recursive: true });
 const hash = async path => createHash("sha256").update(await readFile(path)).digest("hex");
-const executable = resolve(".internal/preview-target/debug/modeleaf.exe");
 const receipt = JSON.parse((await readFile(".internal/preview-target/preview-receipt.json", "utf8")).replace(/^\uFEFF/, ""));
+assert(["standalone-tauri-debug-no-bundle", "standalone-tauri-release-no-bundle"].includes(receipt.kind), "Unknown preview candidate kind");
+const configuration = receipt.kind === "standalone-tauri-release-no-bundle" ? "release" : "debug";
+const executable = resolve(".internal/preview-target", configuration, "modeleaf.exe");
 assert.equal(await hash(executable), receipt.executableSha256);
 const processPath = execFileSync("powershell.exe", ["-NoProfile", "-Command", `(Get-Process -Id ${pid}).Path`], { encoding: "utf8", timeout: 30000 }).trim();
 assert.equal(processPath.toLowerCase(), executable.toLowerCase());
@@ -92,7 +94,7 @@ async function captureCurrentSession() {
 async function settled(label) {
   let previous, stable = 0, snapshot;
   await wait(async () => {
-    snapshot = await evaluate(`(()=>{const q=nativeZoomQA,s=q.session,c=q.controller,h=c.options.canvasHost;return {reader:s.snapshot.reader,active:s.snapshot.active,top:h.scrollTop,frames:h.querySelectorAll('.pdf-page-frame').length,tabs:document.querySelectorAll('[role=tab]').length,selected:[...document.querySelectorAll('[role=tab]')].findIndex(t=>t.getAttribute('aria-selected')==='true'),busy:s.pendingPresentationRenders>0||s.presentationSettlements>0||s.wheelSettlement!==undefined||s.navigationLandingInProgress||c.viewportSettlement!==undefined,resources:s.options.resources.snapshot(),failures:q.failures};})()`);
+    snapshot = await evaluate(`(()=>{const q=nativeZoomQA,s=q.session,c=q.controller,h=c.options.canvasHost;return {reader:s.snapshot.reader,active:s.snapshot.active,top:h.scrollTop,frames:h.querySelectorAll('.pdf-page-frame').length,tabs:document.querySelectorAll('[role=tab]').length,selected:[...document.querySelectorAll('[role=tab]')].findIndex(t=>t.getAttribute('aria-selected')==='true'),busy:s.pendingPresentationRenders>0||s.presentationSettlements>0||s.wheelSettlement!==undefined||s.keyboardViewOwner!==undefined||s.navigationLandingInProgress||c.viewportSettlement!==undefined,resources:s.options.resources.snapshot(),failures:q.failures};})()`);
     const signature = JSON.stringify(snapshot);
     stable = !snapshot.busy && snapshot.resources.totals.render === 0 && signature === previous ? stable + 1 : 0;
     previous = signature; return stable >= 4;
@@ -157,6 +159,32 @@ try {
   assert.equal(fitGeometry.renderedScale, fitGeometry.scale);
   results.push({ label: "final single-page geometry", geometry: fitGeometry });
   await key("w"); await settled("fit width after geometry regression");
+  await key("g"); await key("3"); await key("Enter"); await settled("edge reference page");
+  await key("F"); const edgeReference = await settled("edge reference fit");
+  await key("n"); const edgeTarget = await settled("wide next-page edge");
+  assert.equal(edgeTarget.reader.page, 4);
+  assert.equal(edgeTarget.reader.customScale, edgeReference.reader.customScale);
+  assert.equal(edgeTarget.reader.fitPageReference, edgeReference.reader.fitPageReference);
+  await key("p"); assert.equal((await settled("reverse edge landing")).reader.page, 3);
+  await key("w"); const burstStart = await settled("keyboard burst start");
+  let expectedBurstScale = burstStart.reader.customScale;
+  const burstSamples = [];
+  for (const value of ["-", "-", "-", "=", "-", "=", "-", "-", "=", "-", "-", "="]) {
+    expectedBurstScale = Math.max(0.25, Math.min(4, expectedBurstScale * (value === "-" ? 1 / 1.1 : 1.1)));
+    await key(value);
+    const sample = await evaluate(`(()=>{const s=nativeZoomQA.session,c=nativeZoomQA.controller,p=s.committedPresentation,
+      canvas=c.options.canvasHost.querySelector('.pdf-page-frame[data-active-page="true"] canvas'),badge=document.querySelector('.status-zoom');
+      return {committed:p,rendered:Number(canvas.dataset.scale),badge:badge.textContent,badgeHidden:badge.hidden};})()`);
+    assert(Math.abs(sample.committed.customScale - sample.rendered) < 1e-10, JSON.stringify(sample));
+    if (sample.committed.zoomMode === "custom") {
+      assert.equal(sample.badgeHidden, false);
+      assert.equal(sample.badge, `${Math.round(sample.rendered * 100)}%`);
+    }
+    burstSamples.push(sample);
+  }
+  const burstFinal = await settled("unawaited keyboard burst settled");
+  assert(Math.abs(burstFinal.reader.customScale - expectedBurstScale) < 1e-10);
+  results.push({ label: "committed badge during unawaited native keyboard burst", samples: burstSamples, expectedBurstScale });
   await wheel(-100000);
   assert.equal((await settled("wheel upper bound")).reader.customScale, 4);
   await wheel(100000);
