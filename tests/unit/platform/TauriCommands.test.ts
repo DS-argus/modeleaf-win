@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CANONICAL_DEFAULT_CONFIG_TOML } from "../../../src/domain/config/ConfigFile";
-import { clearRecentDocuments, listRecentDocuments, recordRecentDocument, openNativePdfDialog, openRecentDocument, readProductConfig, resetProductConfig, writeDefaultProductConfig, type NativeInvoke } from "../../../src/platform/tauri-commands";
+import { clearRecentDocuments, listRecentDocuments, listRecentDisplayAliases, recordRecentDocument, openNativePdfDialog, openRecentDocument, readProductConfig, resetProductConfig, writeDefaultProductConfig, type NativeInvoke } from "../../../src/platform/tauri-commands";
 
 const invoke = (value: unknown): NativeInvoke => vi.fn(async () => value) as unknown as NativeInvoke;
 
@@ -74,5 +74,28 @@ describe("tauri-commands", () => {
   it("rejects extra or unknown write outcomes", async () => {
     await expect(writeDefaultProductConfig(invoke({ tag: "CREATED", path: "C:/secret" }))).rejects.toThrow("NATIVE_CONTRACT_INVALID");
     await expect(resetProductConfig(invoke({ tag: "UNKNOWN" }))).rejects.toThrow("NATIVE_CONTRACT_INVALID");
+  });
+});
+
+describe("recent display aliases", () => {
+  const alias = { recentId: `recent-${"a".repeat(32)}`, displayPath: "V:\\자료\\report.pdf" };
+  it("requests native-owned display aliases without renderer path arguments", async () => {
+    const native = invoke({ tag: "READY", revision: "9", aliases: [alias] });
+    await expect(listRecentDisplayAliases(native)).resolves.toEqual({ tag: "READY", revision: "9", aliases: [alias] });
+    expect(native).toHaveBeenCalledExactlyOnceWith("list_recent_display_aliases");
+    await expect(listRecentDisplayAliases(invoke({ tag: "UNAVAILABLE" }))).resolves.toEqual({ tag: "UNAVAILABLE" });
+  });
+  it.each([
+    { tag: "READY", revision: "01", aliases: [] },
+    { tag: "READY", revision: "18446744073709551616", aliases: [] },
+    { tag: "READY", revision: "1", aliases: [alias, alias] },
+    { tag: "READY", revision: "1", aliases: [{ ...alias, recentId: "path-as-authority" }] },
+    { tag: "READY", revision: "1", aliases: [{ ...alias, displayPath: "\\\\server\\share\\report.pdf" }] },
+    { tag: "READY", revision: "1", aliases: [{ ...alias, displayPath: "V:relative.pdf" }] },
+    { tag: "READY", revision: "1", aliases: [{ ...alias, displayPath: "V:\\bad\nname.pdf" }] },
+    { tag: "READY", revision: "1", aliases: [{ ...alias, server: "forbidden" }] },
+    { tag: "UNAVAILABLE", aliases: [] },
+  ])("rejects malformed or excessive authority payload %#", async value => {
+    await expect(listRecentDisplayAliases(invoke(value))).rejects.toThrow("NATIVE_CONTRACT_INVALID");
   });
 });

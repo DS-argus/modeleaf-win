@@ -485,12 +485,12 @@ dialog h2 { margin: 0 0 12px; font-size: 18px; }
 .file-opener-overlay { width: min(520px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 14px 16px; overflow: hidden; }
 .file-opener-overlay form { display: grid; min-height: 0; max-height: calc(100vh - 60px); gap: 7px; }
 .file-opener-overlay input { min-height: 36px; padding: 8px 10px; border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-inactive-tab); }
-.file-opener-list { grid-template-columns: minmax(0, 1fr); max-height: min(48vh, 360px); padding: 1px; overscroll-behavior: contain; }
+.file-opener-list { grid-template-columns: minmax(0, 1fr); max-height: min(48vh, 360px); padding: 1px; overflow-x: hidden; overscroll-behavior: contain; }
+.file-opener-list > li { min-width: 0; }
 .file-opener-entry { min-height: 30px; padding: 6px 9px; font-size: 13px; }
 .file-opener-browse { display: block; font-weight: 650; background: color-mix(in srgb, var(--theme-active-tab) 72%, transparent); }
 .file-opener-recents-heading { margin: 7px 0 1px; padding: 7px 9px 0; color: var(--overlay-muted); border-top: 1px solid var(--theme-border); font-size: 11px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; }
-.file-opener-recent { display: flex; align-items: baseline; gap: 0; min-width: 0; white-space: nowrap; }
-.file-opener-recent-directory, .file-opener-recent-filename { flex: 0 0 auto; }
+.file-opener-recent { display: block; min-width: 0; white-space: nowrap; overflow: hidden; }
 .file-opener-entry[aria-selected="true"] { background: color-mix(in srgb, var(--theme-accent) 28%, transparent); }
 .file-opener-footer { margin: 2px 1px 0; font-size: 11px; line-height: 1.35; white-space: normal; }
 #command-palette-dialog[open] { display: flex; flex-direction: column; }

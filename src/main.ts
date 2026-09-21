@@ -10,7 +10,7 @@ import { validateProductConfig } from "./domain/config/ConfigValidator";
 import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
 import type { ActionId, ActionRuntimeContext } from "./domain/actions/ActionRegistry";
 import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelection, selectChooserIndex, adoptChooserSnapshot, retainChooserFailure, type OpenChooserModel } from "./ui/OpenChooserModel";
-import { fitRecentPath } from "./ui/RecentPathPresentation";
+import { createRecentChooserRenderer } from "./ui/RecentChooserRenderer";
 import { openFailureAccessibilityError, openFailurePhase, openFailureStatus, type OpenFailurePhase } from "./domain/navigation/OpenFailureIdentifier";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
@@ -46,7 +46,7 @@ import { PrintProgressOwner } from "./ui/PrintProgressOwner";
 import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
-import { clearRecentDocuments, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
+import { clearRecentDocuments, listRecentDocuments, listRecentDisplayAliases, decodeRecentStateChanged, openRecentDocument, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
@@ -146,6 +146,10 @@ const fileOpenerDialog = required<HTMLDialogElement>("#file-opener-dialog");
 const fileOpenerForm = required<HTMLFormElement>("#file-opener-form");
 const fileOpenerInput = required<HTMLInputElement>("#file-opener-input");
 const fileOpenerList = required<HTMLElement>("#file-opener-list");
+const fileOpenerRenderer = createRecentChooserRenderer(fileOpenerList, index => {
+  fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
+  dispatchFileOpenerEntry();
+});
 const paletteDialog = required<HTMLDialogElement>("#command-palette-dialog");
 const paletteInput = required<HTMLInputElement>("#palette-input");
 const SHELL_WINDOW_ID = "current-window";
@@ -1226,117 +1230,28 @@ function renderPalette(): void {
   });
   paletteList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
 }
+let fileOpenerAliases: { readonly revision: string; readonly paths: ReadonlyMap<string, string> } | undefined;
+let fileOpenerAliasRequest: { readonly generation: number; readonly revision: string } | undefined;
 function renderFileOpener(): void {
-  const rows = chooserRows(fileOpenerModel);
-  const projected: HTMLElement[] = [];
-  rows.forEach((row, index) => {
-    if (row.kind === "recent" && index === 1) {
-      const heading = document.createElement("li");
-      heading.className = "file-opener-recents-heading";
-      heading.textContent = "Recent";
-      heading.setAttribute("role", "heading"); heading.setAttribute("aria-level", "2");
-      projected.push(heading);
-    }
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    const selected = fileOpenerModel.activeIndex === index;
-    button.type = "button";
-    button.className = `overlay-list-entry file-opener-entry file-opener-${row.kind}`;
-    button.setAttribute("aria-selected", String(selected));
-    button.setAttribute("aria-current", selected ? "true" : "false");
-    if (row.kind === "browse") {
-      button.setAttribute("aria-label", "Browse for a PDF");
-      button.textContent = row.label;
-    } else {
-      const separatorIndex = Math.max(row.displayPath.lastIndexOf("\\"), row.displayPath.lastIndexOf("/"));
-      const directory = document.createElement("span");
-      const filename = document.createElement("span");
-      directory.className = "file-opener-recent-directory";
-      filename.className = "file-opener-recent-filename";
-      directory.textContent = separatorIndex < 0 ? "" : row.displayPath.slice(0, separatorIndex + 1);
-      filename.textContent = row.displayName;
-      button.setAttribute("aria-label", row.displayPath);
-      button.title = row.displayPath;
-      button.append(directory, filename);
-    }
-    button.addEventListener("click", () => {
-      fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
-      dispatchFileOpenerEntry();
-    });
-    item.append(button);
-    projected.push(item);
+  const prepared = fileOpenerModel.prepared;
+  const diagnostic = fileOpenerModel.diagnostic ?? (prepared.tag === "STATE_UNAVAILABLE" ? prepared.reason : undefined);
+  const aliases = prepared.tag === "READY" && fileOpenerAliases?.revision === prepared.snapshot.revision ? fileOpenerAliases.paths : undefined;
+  fileOpenerRenderer.render(chooserRows(fileOpenerModel), fileOpenerModel.activeIndex, diagnostic, aliases);
+  if (overlayOwner.active?.id !== "recent" || prepared.tag !== "READY") return;
+  const generation = fileOpenerModel.generation, revision = prepared.snapshot.revision;
+  if (fileOpenerAliasRequest?.generation === generation && fileOpenerAliasRequest.revision === revision) return;
+  const request = { generation, revision };
+  fileOpenerAliasRequest = request;
+  void listRecentDisplayAliases(invoke).then(outcome => {
+    if (fileOpenerAliasRequest !== request || overlayOwner.active?.id !== "recent"
+      || fileOpenerModel.generation !== generation || fileOpenerModel.prepared.tag !== "READY"
+      || fileOpenerModel.prepared.snapshot.revision !== revision || outcome.tag !== "READY" || outcome.revision !== revision) return;
+    fileOpenerAliases = { revision, paths: new Map(outcome.aliases.map(alias => [alias.recentId, alias.displayPath])) };
+    renderFileOpener();
+  }, () => {
+    // Aliases are optional presentation metadata; retain truthful canonical paths.
+    // No retry loop or filesystem authority is derived from a display alias.
   });
-  const diagnosticText = fileOpenerModel.diagnostic ?? (fileOpenerModel.prepared.tag === "STATE_UNAVAILABLE" ? fileOpenerModel.prepared.reason : undefined);
-  const diagnostic = diagnosticText === undefined ? [] : [Object.assign(document.createElement("li"), { className: "file-opener-diagnostic", textContent: diagnosticText })];
-  if (diagnostic[0] !== undefined) { diagnostic[0].setAttribute("role", "status"); diagnostic[0].setAttribute("aria-live", "polite"); }
-  fileOpenerList.replaceChildren(...projected, ...diagnostic);
-  fileOpenerList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
-  startFileOpenerPathFitting();
-}
-let fileOpenerPathFitFrame: number | undefined;
-let fileOpenerPathResizeObserver: ResizeObserver | undefined;
-let fileOpenerPathMeasureContext: CanvasRenderingContext2D | null | undefined;
-let fileOpenerPathLastWidth = -1;
-let fileOpenerPathFitDirty = false;
-let fileOpenerPathFitting = false;
-function startFileOpenerPathFitting(): void {
-  fileOpenerPathFitting = true;
-  if (fileOpenerPathResizeObserver === undefined && typeof ResizeObserver === "function") {
-    fileOpenerPathResizeObserver = new ResizeObserver(() => {
-      if (!fileOpenerPathFitting || fileOpenerList.clientWidth <= 0 || fileOpenerList.clientWidth === fileOpenerPathLastWidth) return;
-      scheduleFileOpenerPathFit();
-    });
-    fileOpenerPathResizeObserver.observe(fileOpenerList);
-  }
-  scheduleFileOpenerPathFit(true);
-}
-function scheduleFileOpenerPathFit(force = false): void {
-  if (!fileOpenerPathFitting) return;
-  fileOpenerPathFitDirty = fileOpenerPathFitDirty || force;
-  if (fileOpenerPathFitFrame !== undefined) return;
-  fileOpenerPathFitFrame = requestAnimationFrame(() => {
-    fileOpenerPathFitFrame = undefined;
-    if (!fileOpenerPathFitting) return;
-    const width = fileOpenerList.clientWidth;
-    if (width <= 0 || (!fileOpenerPathFitDirty && width === fileOpenerPathLastWidth)) return;
-    fileOpenerPathFitDirty = false;
-    fileOpenerPathLastWidth = width;
-    fitFileOpenerPaths();
-  });
-}
-function fitFileOpenerPaths(): void {
-  if (fileOpenerList.clientWidth <= 0) return;
-  if (fileOpenerPathMeasureContext === undefined) fileOpenerPathMeasureContext = document.createElement("canvas").getContext("2d");
-  const context = fileOpenerPathMeasureContext;
-  if (context === null) return;
-  for (const button of fileOpenerList.querySelectorAll<HTMLButtonElement>(".file-opener-recent")) {
-    button.style.removeProperty("font-size");
-    if (button.clientWidth <= 0) continue;
-    const style = getComputedStyle(button);
-    const baseFontSize = Number.parseFloat(style.fontSize);
-    const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
-    const availableWidth = button.clientWidth - horizontalPadding - 1;
-    const directory = button.querySelector<HTMLElement>(".file-opener-recent-directory");
-    const filename = button.querySelector<HTMLElement>(".file-opener-recent-filename");
-    if (!(availableWidth > 0) || !(baseFontSize > 0) || directory === null || filename === null) continue;
-    const result = fitRecentPath(button.title, filename.textContent ?? "", availableWidth, baseFontSize, (text, fontSize) => {
-      context.font = `${style.fontStyle} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
-      return context.measureText(text).width;
-    });
-    directory.textContent = result.directoryText;
-    filename.textContent = result.filenameText;
-    if (result.fontSize < baseFontSize) button.style.fontSize = `${result.fontSize}px`;
-  }
-}
-function stopFileOpenerPathFitting(): void {
-  fileOpenerPathFitting = false;
-  fileOpenerPathResizeObserver?.disconnect();
-  fileOpenerPathResizeObserver = undefined;
-  fileOpenerPathMeasureContext = undefined;
-  if (fileOpenerPathFitFrame !== undefined) cancelAnimationFrame(fileOpenerPathFitFrame);
-  fileOpenerPathFitFrame = undefined;
-  fileOpenerPathLastWidth = -1;
-  fileOpenerPathFitDirty = false;
 }
 let clearingRecents = false;
 async function clearFileOpenerHistory(): Promise<void> {
@@ -1359,7 +1274,7 @@ async function clearFileOpenerHistory(): Promise<void> {
   }
 }
 function closeFileOpener(): void {
-  stopFileOpenerPathFitting();
+  fileOpenerRenderer.stop();
   releaseOverlay("recent");
 }
 function dispatchFileOpenerEntry(): void {
@@ -1414,6 +1329,8 @@ async function openFileOpener(): Promise<void> {
   if (nativeOpenPending || overlayOwner.active !== undefined || passwordModalOpen()) return;
   await Promise.all([initialRecentsReady, shellOpen.ready]);
   if (nativeOpenPending || overlayOwner.active !== undefined || passwordModalOpen()) return;
+  fileOpenerAliases = undefined;
+  fileOpenerAliasRequest = undefined;
   fileOpenerModel = createOpenChooser(fileOpenerModel.prepared, fileOpenerModel.generation + 1);
   if (recentStateHealth === "UNAVAILABLE" && fileOpenerModel.prepared.tag === "READY") {
     fileOpenerModel = retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE);
@@ -1792,7 +1709,7 @@ const disposeSearchPrompt = bindSearchPrompt(
 window.addEventListener("resize", () => {
   cancelLinkHints();
   scheduleDprPollFallback();
-  if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
+  if (overlayOwner.active?.id === "recent") fileOpenerRenderer.requestFit();
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);
@@ -1802,7 +1719,7 @@ fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); d
 fileOpenerInput.addEventListener("input", () => { fileOpenerModel = updateChooserQuery(fileOpenerModel, fileOpenerInput.value); renderFileOpener(); });
 fileOpenerDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeFileOpener(); });
 fileOpenerDialog.addEventListener("close", () => {
-  stopFileOpenerPathFitting();
+  fileOpenerRenderer.stop();
   if (overlayOwner.active?.id !== "recent") return;
   releaseOverlay("recent");
   render();
@@ -1841,7 +1758,7 @@ paletteDialog.addEventListener("keydown", (event) => {
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
 window.addEventListener("beforeunload", () => {
   printProgressControl.dispose();
-  stopFileOpenerPathFitting();
+  fileOpenerRenderer.stop();
   disposeSearchPrompt();
   themeUnlisten?.();
   recentSnapshotUnlisten?.();
