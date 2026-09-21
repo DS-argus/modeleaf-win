@@ -1,3 +1,4 @@
+use crate::diagnostics::{NativePdfDiagnostics, PdfDiagnosticStage, PdfFailureObservation};
 use crate::external_link::{validate_external_link, ExternalLinkError};
 use crate::local_path::{
     FinalHandlePolicy, LocalPathPolicy, SystemFinalHandlePolicy, SystemLocalPathPolicy,
@@ -255,6 +256,7 @@ struct Sessions {
 }
 #[derive(Clone)]
 pub struct PdfSessionManager {
+    diagnostics: Arc<std::sync::OnceLock<NativePdfDiagnostics>>,
     sessions: Arc<Mutex<Sessions>>,
     drained: Arc<Condvar>,
     cleanup_tx: SyncSender<CleanupTask>,
@@ -544,6 +546,12 @@ impl PdfSessionManager {
             }
         }
     }
+    pub(crate) fn install_diagnostics(&self, sink: NativePdfDiagnostics) {
+        assert!(
+            self.diagnostics.set(sink).is_ok(),
+            "PDF diagnostics already installed"
+        );
+    }
     pub fn new() -> Self {
         let sessions = Arc::new(Mutex::new(Sessions {
             entries: HashMap::new(),
@@ -587,6 +595,7 @@ impl PdfSessionManager {
             sessions,
             drained,
             cleanup_tx,
+            diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
     fn owner_fenced(sessions: &Sessions, owner: &PdfOwner) -> bool {
@@ -737,6 +746,7 @@ impl PdfSessionManager {
         O: FnOnce(&Path) -> io::Result<File>,
         I: FnOnce(&File) -> Result<PathBuf, crate::local_path::PathPolicyError>,
     {
+        let observation = PdfFailureObservation::new(self.diagnostics.get());
         let mut open_admission = self.admit_open(&owner)?;
         let origin = policy
             .classify_syntax(path)
@@ -756,6 +766,7 @@ impl PdfSessionManager {
             .validate_preopen(path)
             .map_err(|_| PdfSessionError::PathRejected)?;
         let mut file = opener(path).map_err(|error| {
+            observation.capture(PdfDiagnosticStage::Open, Some(&error));
             if error.kind() == io::ErrorKind::NotFound
                 && origin != crate::local_path::DriveKind::Remote
             {
@@ -776,20 +787,24 @@ impl PdfSessionManager {
             _ => return Err(PdfSessionError::PathRejected),
         }
         identity(&file).map_err(|_| PdfSessionError::PathRejected)?;
-        let metadata = file
-            .metadata()
-            .map_err(|_| PdfSessionError::FileUnreadable)?;
+        let metadata = file.metadata().map_err(|error| {
+            observation.capture(PdfDiagnosticStage::OpenMetadata, Some(&error));
+            PdfSessionError::FileUnreadable
+        })?;
         if !metadata.is_file() {
+            observation.capture(PdfDiagnosticStage::OpenFileKind, None);
             return Err(PdfSessionError::FileUnreadable);
         }
         if metadata.len() > MAX_DOCUMENT_BYTES {
             return Err(PdfSessionError::DocumentTooLarge);
         }
-        let modified = metadata
-            .modified()
-            .map_err(|_| PdfSessionError::FileUnreadable)?;
+        let modified = metadata.modified().map_err(|error| {
+            observation.capture(PdfDiagnosticStage::OpenModified, Some(&error));
+            PdfSessionError::FileUnreadable
+        })?;
         let mut magic = [0_u8; 5];
         file.read_exact(&mut magic).map_err(|error| {
+            observation.capture(PdfDiagnosticStage::OpenHeaderRead, Some(&error));
             if error.kind() == io::ErrorKind::UnexpectedEof {
                 PdfSessionError::PdfInvalid
             } else {
@@ -797,10 +812,13 @@ impl PdfSessionManager {
             }
         })?;
         if magic != *b"%PDF-" {
+            observation.capture(PdfDiagnosticStage::OpenHeaderValidate, None);
             return Err(PdfSessionError::PdfInvalid);
         }
-        file.seek(SeekFrom::Start(0))
-            .map_err(|_| PdfSessionError::FileUnreadable)?;
+        file.seek(SeekFrom::Start(0)).map_err(|error| {
+            observation.capture(PdfDiagnosticStage::OpenRewind, Some(&error));
+            PdfSessionError::FileUnreadable
+        })?;
         let mut sessions = self.sessions.lock().expect("session state poisoned");
         if open_admission.invalidated.load(Ordering::Acquire)
             || Self::owner_fenced(&sessions, &owner)
@@ -1026,6 +1044,7 @@ impl PdfSessionManager {
         length: u32,
         limit: u32,
     ) -> Result<Vec<u8>, PdfSessionError> {
+        let observation = PdfFailureObservation::new(self.diagnostics.get());
         if length > limit {
             return Err(PdfSessionError::RangeCapacity);
         }
@@ -1044,7 +1063,7 @@ impl PdfSessionManager {
                 .min(u64::from(length)),
         )
         .map_err(|_| PdfSessionError::RangeInvalid)?;
-        let result = Self::read_file(file, offset, available, expected);
+        let result = Self::read_file(file, offset, available, expected, &observation);
         drop(file_arc);
         if admission.finish() {
             Err(PdfSessionError::SessionClosing)
@@ -1052,18 +1071,47 @@ impl PdfSessionManager {
             result
         }
     }
-    fn file_snapshot(file: &File) -> Result<FileSnapshot, PdfSessionError> {
-        let metadata = file
-            .metadata()
-            .map_err(|_| PdfSessionError::FileUnreadable)?;
+    fn file_snapshot(
+        file: &File,
+        before: bool,
+        observation: &PdfFailureObservation<'_>,
+    ) -> Result<FileSnapshot, PdfSessionError> {
+        use PdfDiagnosticStage::*;
+        let metadata = file.metadata().map_err(|error| {
+            observation.capture(
+                if before {
+                    RangeBeforeMetadata
+                } else {
+                    RangeAfterMetadata
+                },
+                Some(&error),
+            );
+            PdfSessionError::FileUnreadable
+        })?;
         if !metadata.is_file() {
+            observation.capture(
+                if before {
+                    RangeBeforeFileKind
+                } else {
+                    RangeAfterFileKind
+                },
+                None,
+            );
             return Err(PdfSessionError::FileUnreadable);
         }
         Ok(FileSnapshot {
             length: metadata.len(),
-            modified: metadata
-                .modified()
-                .map_err(|_| PdfSessionError::FileUnreadable)?,
+            modified: metadata.modified().map_err(|error| {
+                observation.capture(
+                    if before {
+                        RangeBeforeModified
+                    } else {
+                        RangeAfterModified
+                    },
+                    Some(&error),
+                );
+                PdfSessionError::FileUnreadable
+            })?,
         })
     }
 
@@ -1072,20 +1120,28 @@ impl PdfSessionManager {
         offset: u64,
         available: usize,
         expected: FileSnapshot,
+        observation: &PdfFailureObservation<'_>,
     ) -> Result<Vec<u8>, PdfSessionError> {
-        if Self::file_snapshot(&file)? != expected {
+        // Snapshot checks compare length + modified time, not full file identity.
+        if Self::file_snapshot(&file, true, observation)? != expected {
+            observation.capture(PdfDiagnosticStage::RangeBeforeValidate, None);
             return Err(PdfSessionError::FileUnreadable);
         }
         if available > 0 {
-            file.seek(SeekFrom::Start(offset))
-                .map_err(|_| PdfSessionError::FileUnreadable)?;
+            file.seek(SeekFrom::Start(offset)).map_err(|error| {
+                observation.capture(PdfDiagnosticStage::RangeSeek, Some(&error));
+                PdfSessionError::FileUnreadable
+            })?;
         }
         let mut result = vec![0; available];
         if available > 0 {
-            file.read_exact(&mut result)
-                .map_err(|_| PdfSessionError::FileUnreadable)?;
+            file.read_exact(&mut result).map_err(|error| {
+                observation.capture(PdfDiagnosticStage::RangeRead, Some(&error));
+                PdfSessionError::FileUnreadable
+            })?;
         }
-        if Self::file_snapshot(&file)? != expected {
+        if Self::file_snapshot(&file, false, observation)? != expected {
+            observation.capture(PdfDiagnosticStage::RangeAfterValidate, None);
             return Err(PdfSessionError::FileUnreadable);
         }
         Ok(result)
@@ -2763,6 +2819,166 @@ mod tests {
     }
 
     #[test]
+    fn open_diagnostics_preserve_errors_with_failing_sink_after_admission_release() {
+        let manager = PdfSessionManager::new();
+        let state = Arc::downgrade(&manager.sessions);
+        let (sender, receiver) = mpsc::channel();
+        manager.install_diagnostics(
+            NativePdfDiagnostics::new(move |event| {
+                let state = state.upgrade().unwrap();
+                let sessions = state
+                    .try_lock()
+                    .expect("diagnostic sink must not hold session lock");
+                assert_eq!(sessions.process_opening_in_flight, 0);
+                drop(sessions);
+                sender.send(event.clone()).unwrap();
+                Err(crate::diagnostics::DiagnosticError::Io)
+            })
+            .unwrap(),
+        );
+        let policy = TestPolicy(crate::local_path::DriveKind::Remote);
+        for code in [Some(5), None] {
+            let error = code
+                .map(io::Error::from_raw_os_error)
+                .unwrap_or_else(|| io::Error::from(io::ErrorKind::NotFound));
+            assert_eq!(
+                manager.open_local(owner(), Path::new("case.pdf"), &policy, &policy, |_| Err(
+                    error
+                )),
+                Err(PdfSessionError::FileUnreadable)
+            );
+            let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(event.stage, Some(PdfDiagnosticStage::Open));
+            assert_eq!(event.os_code, code);
+        }
+        assert_empty_after_cleanup(manager);
+    }
+
+    #[test]
+    fn retained_range_failure_is_observed_without_holding_file_or_state_locks() {
+        let (manager, id, path) = session();
+        let state = Arc::downgrade(&manager.sessions);
+        let file = Arc::downgrade(
+            &manager
+                .sessions
+                .lock()
+                .unwrap()
+                .entries
+                .get(&id)
+                .unwrap()
+                .file,
+        );
+        let (sender, receiver) = mpsc::channel();
+        manager.install_diagnostics(
+            NativePdfDiagnostics::new(move |event| {
+                let state = state.upgrade().unwrap();
+                let file = file.upgrade().unwrap();
+                let state_guard = state
+                    .try_lock()
+                    .expect("state lock held at diagnostic emission");
+                let file_guard = file
+                    .try_lock()
+                    .expect("file lock held at diagnostic emission");
+                drop(file_guard);
+                drop(state_guard);
+                sender.send(event.clone()).unwrap();
+                Err(crate::diagnostics::DiagnosticError::Io)
+            })
+            .unwrap(),
+        );
+        assert_eq!(
+            manager.read_range(&owner(), &id, 7, 0, 5).unwrap(),
+            b"%PDF-"
+        );
+        assert!(receiver.try_recv().is_err());
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(5)
+            .unwrap();
+        assert_eq!(
+            manager.read_range_absolute(&owner(), &id, 7, 0, 5),
+            Err(PdfSessionError::FileUnreadable)
+        );
+        let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(event.stage, Some(PdfDiagnosticStage::RangeBeforeValidate));
+        assert_eq!(event.tag, crate::diagnostics::DiagnosticTag::Conflict);
+        assert_eq!(event.os_code, None);
+        manager.drain_owned(&owner());
+        assert_empty_after_cleanup(manager);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn read_shortfall_observation_survives_owner_settlement_override() {
+        let (manager, id, path) = session();
+        let (sender, receiver) = mpsc::channel();
+        manager.install_diagnostics(
+            NativePdfDiagnostics::new(move |event| {
+                sender.send(event.clone()).unwrap();
+                Ok(())
+            })
+            .unwrap(),
+        );
+        {
+            let observation = PdfFailureObservation::new(manager.diagnostics.get());
+            let (mut admission, expected) = manager.admit_file_operation(&owner(), &id, 7).unwrap();
+            let file_arc = admission.file.take().unwrap();
+            let file = file_arc.lock().unwrap();
+            admission.promote().unwrap();
+            let observed = PdfSessionManager::read_file(file, 0, 10, expected, &observation);
+            assert_eq!(observed, Err(PdfSessionError::FileUnreadable));
+            drop(file_arc);
+            manager.defer_owned(&owner());
+            assert!(admission.finish()); // Caller result becomes SESSION_CLOSING, observation is retained.
+        }
+        let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(event.stage, Some(PdfDiagnosticStage::RangeRead));
+        assert_eq!(event.tag, crate::diagnostics::DiagnosticTag::IoFailure);
+        assert_eq!(event.os_code, None); // read_exact UnexpectedEof, not an invented Windows code.
+        assert_empty_after_cleanup(manager);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn header_failures_keep_public_pdf_invalid_and_safe_native_stage() {
+        let path = network_test_pdf();
+        let manager = PdfSessionManager::new();
+        let policy = TestPolicy(crate::local_path::DriveKind::Remote);
+        let (sender, receiver) = mpsc::channel();
+        manager.install_diagnostics(
+            NativePdfDiagnostics::new(move |event| {
+                sender.send(event.clone()).unwrap();
+                Ok(())
+            })
+            .unwrap(),
+        );
+        for (bytes, stage, tag) in [
+            (
+                &b"%P"[..],
+                PdfDiagnosticStage::OpenHeaderRead,
+                crate::diagnostics::DiagnosticTag::IoFailure,
+            ),
+            (
+                &b"other"[..],
+                PdfDiagnosticStage::OpenHeaderValidate,
+                crate::diagnostics::DiagnosticTag::ValidationRejected,
+            ),
+        ] {
+            std::fs::write(&path, bytes).unwrap(); // Disposable synthetic fixture, never a source PDF.
+            assert_eq!(
+                manager.open_local(owner(), &path, &policy, &policy, |path| File::open(path)),
+                Err(PdfSessionError::PdfInvalid)
+            );
+            let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(event.stage, Some(stage));
+            assert_eq!(event.tag, tag);
+            assert_eq!(event.os_code, None);
+        }
+        assert_empty_after_cleanup(manager);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn remote_not_found_does_not_claim_proven_file_absence() {
         let manager = PdfSessionManager::new();
         let remote = TestPolicy(crate::local_path::DriveKind::Remote);
@@ -2782,10 +2998,13 @@ mod tests {
     #[test]
     fn retained_ranges_reject_length_changes_and_exact_read_shortfalls() {
         let (manager, id, path) = session();
-        let snapshot = PdfSessionManager::file_snapshot(&File::open(&path).unwrap()).unwrap();
+        let observation = PdfFailureObservation::new(None);
+        let snapshot =
+            PdfSessionManager::file_snapshot(&File::open(&path).unwrap(), true, &observation)
+                .unwrap();
         let file = Mutex::new(File::open(&path).unwrap());
         assert_eq!(
-            PdfSessionManager::read_file(file.lock().unwrap(), 0, 10, snapshot),
+            PdfSessionManager::read_file(file.lock().unwrap(), 0, 10, snapshot, &observation),
             Err(PdfSessionError::FileUnreadable)
         );
         File::options()

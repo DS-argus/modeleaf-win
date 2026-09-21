@@ -33,6 +33,8 @@ fn event() -> DiagnosticEvent {
         count: Some(2),
         duration_ms: Some(50),
         generation: Some(3),
+        stage: None,
+        os_code: None,
     }
 }
 
@@ -116,5 +118,36 @@ fn deferred_cleanup_is_not_serialized_as_timeout_or_success() {
     assert!(output.contains("\"outcome\":\"CANCELLED\""));
     assert!(!output.contains("TIMEOUT"));
     assert!(!output.contains("SUCCESS"));
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn native_failure_fields_preserve_log_bounds_and_round_trip() {
+    let directory = temp_dir("native-failure");
+    let log = DiagnosticLog::open(&directory).unwrap();
+    let mut native = event();
+    native.outcome = DiagnosticOutcome::Failure;
+    native.tag = DiagnosticTag::IoFailure;
+    native.stage = Some(diagnostics::PdfDiagnosticStage::RangeAfterMetadata);
+    native.os_code = Some(i32::MIN);
+    assert!(diagnostics::validate_renderer_event(&native).is_err());
+    for _ in 0..200 {
+        log.record(&native).unwrap();
+    }
+    let files: Vec<_> = fs::read_dir(&directory)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(files.len(), diagnostics::MAX_LOG_FILES);
+    for file in files {
+        assert!(file.metadata().unwrap().len() <= MAX_LOG_BYTES);
+        for line in fs::read_to_string(file.path()).unwrap().lines() {
+            assert!(line.len() < diagnostics::MAX_DIAGNOSTIC_BYTES);
+            assert_eq!(
+                serde_json::from_str::<DiagnosticEvent>(line).unwrap(),
+                native
+            );
+        }
+    }
     fs::remove_dir_all(directory).unwrap();
 }

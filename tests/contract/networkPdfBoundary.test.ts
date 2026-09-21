@@ -63,4 +63,20 @@ describe("network PDF native dispatch boundaries (static, not SMB QA)", () => {
       expect(text).not.toContain("Copy the PDF to a local drive");
     }
   });
+  it("keeps native evidence behind renderer provenance validation and off the protocol payload", () => {
+    const command = section(native, "fn record_diagnostic(", "const MAX_PENDING_SECOND_INSTANCE_PATHS");
+    expect(command.indexOf("validate_renderer_event(&event)?")).toBeGreaterThanOrEqual(0);
+    expect(command.indexOf("validate_renderer_event(&event)?")).toBeLessThan(command.indexOf("diagnostics.record(&event)"));
+    const protocol = source("src-tauri/src/pdf_protocol.rs");
+    expect(protocol).not.toContain("os_code");
+    expect(protocol).not.toContain("PdfDiagnosticStage");
+    const sessions = source("src-tauri/src/pdf_session.rs");
+    expect(sessions).not.toContain(".record(");
+    expect(sessions).not.toContain("DiagnosticLog");
+    const open = section(sessions, "fn open_local_with_identity", "pub fn trusted_recent_identity");
+    expect(open.indexOf("PdfFailureObservation::new")).toBeLessThan(open.indexOf("self.admit_open"));
+    const range = section(sessions, "fn read_range_limited", "fn file_snapshot");
+    expect(range.indexOf("PdfFailureObservation::new")).toBeLessThan(range.indexOf("self.admit_file_operation"));
+    expect(native).toContain("install_diagnostics(sink)");
+  });
 });
