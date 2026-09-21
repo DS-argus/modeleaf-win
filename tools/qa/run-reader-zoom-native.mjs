@@ -128,6 +128,35 @@ try {
   assert.equal(initial.reader.pageCount, 4, "Launch preview with print-mixed-rotation-4.pdf");
   assert.equal(initial.tabs, 1, "Start this verification with a fresh one-tab preview");
   for (const value of ["w", "w", "-", "=", "F", "-", "=", "w"]) { await key(value); await settled(`key ${value}`); }
+  // Exercise the narrow/wide boundary using shell keys and WebView input only.
+  await key("n"); assert.equal((await settled("mixed page 2")).reader.page, 2);
+  await key("n"); assert.equal((await settled("mixed page 3")).reader.page, 3);
+  await key("w");
+  const fittedWidth = await settled("mixed narrow page fit width");
+  const position = await evaluate("(()=>{const h=nativeZoomQA.controller.options.canvasHost,r=h.getBoundingClientRect();return {x:r.left+h.clientWidth/2,y:r.top+h.clientHeight/2,delta:h.clientHeight*0.4};})()");
+  actions.push({ plainWheel: -position.delta });
+  await call("Input.dispatchMouseEvent", { type: "mouseWheel", x: position.x, y: position.y, deltaX: 0, deltaY: -position.delta, modifiers: 0 });
+  const boundary = await settled("mixed boundary passive fit width");
+  assert.equal(boundary.reader.customScale, fittedWidth.reader.customScale, "Passive page selection must not refit width");
+  await delay(1500);
+  assert.equal((await settled("mixed boundary idle")).reader.customScale, fittedWidth.reader.customScale);
+  await key("F"); await settled("mixed boundary final fit page");
+  const fitGeometry = await evaluate(`(async()=>{
+    const s=nativeZoomQA.session,c=nativeZoomQA.controller,h=c.options.canvasHost,r=s.snapshot.reader;
+    const size=await c.getPageNaturalSize(r.fitPageReference,r.rotationQuarterTurns*90,()=>true);
+    const style=getComputedStyle(h),padding=value=>Number.parseFloat(value)||0;
+    const width=h.clientWidth-padding(style.paddingLeft)-padding(style.paddingRight);
+    const height=h.clientHeight-padding(style.paddingTop)-padding(style.paddingBottom);
+    return {mode:r.zoomMode,topology:c.presentationTopology,scale:r.customScale,renderedScale:c.viewTransform.scale,
+      expected:Math.max(0.25,Math.min(4,width/size.width,height/size.height)),
+      clientWidth:h.clientWidth,clientHeight:h.clientHeight,scrollWidth:h.scrollWidth,scrollHeight:h.scrollHeight,dpr:devicePixelRatio};
+  })()`);
+  assert.equal(fitGeometry.mode, "fit-page");
+  assert.equal(fitGeometry.topology, "single-page");
+  assert(Math.abs(fitGeometry.scale - fitGeometry.expected) < 1e-10, JSON.stringify(fitGeometry));
+  assert.equal(fitGeometry.renderedScale, fitGeometry.scale);
+  results.push({ label: "final single-page geometry", geometry: fitGeometry });
+  await key("w"); await settled("fit width after geometry regression");
   await wheel(-100000);
   assert.equal((await settled("wheel upper bound")).reader.customScale, 4);
   await wheel(100000);

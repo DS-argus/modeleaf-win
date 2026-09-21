@@ -1,6 +1,7 @@
 import { getDocument, GlobalWorkerOptions, AnnotationMode } from "pdfjs-dist";
+import { clampReaderScale } from "../../src/domain/navigation/ZoomPolicy";
 import { PDFJS_POLICY } from "../../src/pdf/PdfJsPolicy";
-import { type PdfLoadingTask } from "../../src/pdf/PdfReaderController";
+import { type PdfLoadingTask, type PdfPage, type PdfRenderTask } from "../../src/pdf/PdfReaderController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "../../src/pdf/PdfTabSession";
 import { ResourceReservationManager } from "../../src/pdf/ResourceBudget";
 import { TabWorkspace } from "../../src/core/TabWorkspace";
@@ -9,6 +10,42 @@ import "../../src/styles/app.css";
 
 // Real PDF.js/DOM/session QA with in-memory native authority. No Tauri calls,
 // user PDF paths, persistent state, native windows, or external URL activation.
+// The fit-geometry matrix may delay only the PDF.js page.render task settlement. This is a QA wrapper around real PDF.js, never product timing or a test sleep.
+const fitDelayQuery = Number(new URLSearchParams(location.search).get("fitDelay") ?? "0");
+if (![0, 120].includes(fitDelayQuery)) throw new Error(`Unsupported fit render delay: ${fitDelayQuery}`);
+const fitRenderDelayMilliseconds = fitDelayQuery;
+const delayedPdfPages = new WeakSet<object>();
+const delayPdfRenderCompletion = (task: PdfRenderTask, milliseconds: number): PdfRenderTask => {
+  if (milliseconds === 0) return task;
+  const promise = new Promise<void>((resolve, reject) => {
+    const settle = (callback: () => void): void => { setTimeout(callback, milliseconds); };
+    void task.promise.then(() => settle(resolve), (error: unknown) => settle(() => reject(error)));
+  });
+  return { promise, cancel: () => task.cancel() };
+};
+const wrapPdfPageForQaDelay = (page: PdfPage): PdfPage => {
+  if (fitRenderDelayMilliseconds === 0 || delayedPdfPages.has(page)) return page;
+  delayedPdfPages.add(page);
+  const originalRender = page.render.bind(page);
+  const mutablePage = page as PdfPage & { render: PdfPage["render"] };
+  mutablePage.render = (options) => delayPdfRenderCompletion(originalRender(options), fitRenderDelayMilliseconds);
+  return mutablePage;
+};
+const wrapPdfLoadingTaskForQaDelay = (task: PdfLoadingTask): PdfLoadingTask => {
+  if (fitRenderDelayMilliseconds === 0) return task;
+  const promise = task.promise.then((document) => {
+    const originalGetPage = document.getPage.bind(document);
+    document.getPage = async (pageNumber) => wrapPdfPageForQaDelay(await originalGetPage(pageNumber));
+    return document;
+  });
+  const wrapped = { promise, destroy: () => task.destroy() } as PdfLoadingTask;
+  Object.defineProperty(wrapped, "onPassword", {
+    configurable: true,
+    get: () => task.onPassword,
+    set: (value: PdfLoadingTask["onPassword"]) => { task.onPassword = value; },
+  });
+  return wrapped;
+};
 GlobalWorkerOptions.workerSrc = new URL(PDFJS_POLICY.assets.workerSrc, `${location.origin}/`).href;
 const host = document.querySelector<HTMLElement>("#host")!;
 const hiddenOpening = new URLSearchParams(location.search).get("hidden") === "true";
@@ -30,7 +67,7 @@ const session = new PdfTabSession({
   },
   pdf: {
     annotationMode: AnnotationMode.DISABLE,
-    getDocument: (options) => getDocument({ ...options, url: undefined, range: undefined, data: bytes.slice() }) as unknown as PdfLoadingTask,
+    getDocument: (options) => wrapPdfLoadingTaskForQaDelay(getDocument({ ...options, url: undefined, range: undefined, data: bytes.slice() }) as unknown as PdfLoadingTask),
   },
   resources,
   canvasHost: host,
@@ -883,6 +920,109 @@ Object.assign(window, { readerHarness: {
     requireInvariant(restored.page === before.page && restored.mode === before.mode && Math.abs(restored.scale - before.scale) < 0.000001 && Math.abs(restored.top - before.top) <= 1, "Tab restoration changed its page, zoom, or position");
     await finish();
     return { before, restored, active: true, disposed: true };
+  },
+  async runFitGeometry(mode: "fit-width" | "fit-page") {
+    const state = session as unknown as {
+      pendingPresentationRenders: number; presentationSettlements: number; wheelSettlement?: unknown;
+      activityGeneration: number; renderIntent: number; viewportIntent: number;
+      pdfReader: { presentationTopology: string; viewportSettlement?: unknown;
+        getPageNaturalSize(page: number, rotation: number): Promise<{ width: number; height: number } | undefined> };
+    };
+    const controller = state.pdfReader;
+    const code = await (await fetch("/src/main.ts")).text();
+    const start = code.indexOf("let viewportFrameRequest"), end = code.indexOf("let readerResizeFrame", start);
+    requireInvariant(start >= 0 && end > start, "Production scroll scheduler missing");
+    const failures: string[] = [];
+    const dispose = new Function("host", "session", "active", "reportPresentationFailure", "rootKeyboard", "render", "cancelLinkHints",
+      code.slice(start, end) + ';return ()=>{viewportDisposed=true;host.removeEventListener("scroll",onReaderScroll);if(viewportFrameRequest!==undefined)cancelAnimationFrame(viewportFrameRequest);};')(
+      host, session, () => ({ session }), (_session: unknown, error: unknown) => failures.push(String(error)), { syncContext() {} }, () => undefined, () => undefined,
+    ) as () => void;
+    const samples: unknown[] = [];
+    const take = () => {
+      const reader = session.snapshot.reader;
+      const canvas = host.querySelector<HTMLCanvasElement>('.pdf-page-frame[data-active-page="true"] canvas');
+      return { page: reader.page, mode: reader.zoomMode, scale: reader.customScale, reference: reader.fitPageReference,
+        documentGeneration: reader.documentGeneration, activityGeneration: state.activityGeneration, renderIntent: state.renderIntent, viewportIntent: state.viewportIntent,
+        topology: controller.presentationTopology, renderedScale: canvas === null ? null : Number(canvas.dataset.scale),
+        width: host.clientWidth, height: host.clientHeight, scrollWidth: host.scrollWidth, scrollHeight: host.scrollHeight, top: host.scrollTop,
+        pending: state.pendingPresentationRenders + state.presentationSettlements + Number(state.wheelSettlement !== undefined) + Number(controller.viewportSettlement !== undefined),
+        renders: resources.snapshot().totals.render };
+    };
+    const settle = async (label: string, expectedScale?: number) => {
+      let previous = "", stable = 0;
+      const trace: ReturnType<typeof take>[] = [];
+      for (let index = 0; index < 300; index += 1) {
+        await frame();
+        const value = take();
+        trace.push(value);
+        if (expectedScale !== undefined && Math.abs(value.scale - expectedScale) > 1e-10) {
+          throw new Error(`First passive fit-width divergence: ${JSON.stringify({ label, expectedScale, trace })}`);
+        }
+        const key = JSON.stringify(value);
+        stable = value.pending === 0 && value.renders === 0 && key === previous ? stable + 1 : 0;
+        previous = key;
+        if (stable >= 3) { samples.push({ label, frames: trace.length, settled: value }); return value; }
+      }
+      throw new Error(`Fit geometry did not settle: ${JSON.stringify({ label, trace, failures })}`);
+    };
+    const apply = async (action: Parameters<typeof session.apply>[0], label: string) => {
+      session.apply(action);
+      requireInvariant(await session.renderCurrentView(), `${label} render failed`);
+      return settle(label);
+    };
+    const assertFinalFit = async (label: string) => {
+      const fitted = await apply({ type: "view.fitPage" }, label);
+      const reader = session.snapshot.reader;
+      const natural = await controller.getPageNaturalSize(reader.fitPageReference!, reader.rotationQuarterTurns * 90);
+      requireInvariant(natural !== undefined, "Missing fit reference natural size");
+      const style = getComputedStyle(host), pad = (value: string) => Number.parseFloat(value) || 0;
+      const width = host.clientWidth - pad(style.paddingLeft) - pad(style.paddingRight);
+      const height = host.clientHeight - pad(style.paddingTop) - pad(style.paddingBottom);
+      const expected = clampReaderScale(Math.min(width / natural!.width, height / natural!.height));
+      requireInvariant(fitted.mode === "fit-page" && fitted.topology === "single-page" && host.querySelectorAll("canvas").length === 1,
+        `Fit mode/topology mismatch: ${JSON.stringify(fitted)}`);
+      requireInvariant(Math.abs(fitted.scale - expected) < 1e-10 && fitted.renderedScale !== null && Math.abs(fitted.renderedScale - expected) < 1e-10,
+        `First final fit-page divergence: ${JSON.stringify({ fitted, natural, expected })}`);
+      samples.push({ label: `${label}-verified`, expected, fitted });
+    };
+    try {
+      const target = fixture === "print-mixed-rotation-4.pdf" ? 3 : 26;
+      requireInvariant((await session.navigatePagePrompt(target)).kind === "verifiedLanding", "Fit fixture navigation failed");
+      await settle("navigation");
+      const fittedWidth = await apply({ type: "view.fitWidth" }, "fit-width");
+      requireInvariant(fittedWidth.mode === "fit-width" && fittedWidth.topology === "continuous", "Fit Width mode/topology mismatch");
+      if (mode === "fit-width") {
+        const top = host.scrollTop;
+        for (const offset of [-0.4, -0.8, 0.4, 0]) {
+          host.scrollTop = top + offset * host.clientHeight;
+          await settle(`boundary-${offset}`, fittedWidth.scale);
+        }
+        await new Promise<void>(resolve => setTimeout(resolve, 1500));
+        await settle("idle-boundary", fittedWidth.scale);
+      } else {
+        if (fixture === "print-mixed-rotation-4.pdf") requireInvariant(host.scrollWidth > host.clientWidth, "Mixed fixture did not produce the pre-F horizontal scrollbar");
+        await assertFinalFit("initial-final-fit");
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          await apply({ type: "view.fitWidth" }, `repeat-width-${repeat}`);
+          await assertFinalFit(`repeat-page-${repeat}`);
+        }
+      }
+      await apply({ type: "view.zoom", factor: 1.1 }, "zoom");
+      await apply({ type: "view.rotate", quarterTurns: 1 }, "rotation");
+      host.style.height = "480px";
+      session.invalidateViewportSynchronization();
+      requireInvariant(await session.renderCurrentView(), "Resize render failed");
+      await settle("resize");
+      await apply({ type: "view.fitWidth" }, "resized-width");
+      if (mode === "fit-page") await assertFinalFit("resized-page");
+      await session.deactivate();
+      session.evictInactiveHeavyResources();
+      await session.activate();
+      await settle("reactivated");
+      requireInvariant(session.snapshot.active, "Tab did not reactivate");
+      requireInvariant(failures.length === 0, `Scheduler failures: ${JSON.stringify(failures)}`);
+      return { fixture, mode, delayMilliseconds: fitRenderDelayMilliseconds, dpr: devicePixelRatio, samples, failures, statuses: [...statuses] };
+    } finally { dispose(); await finish(); }
   },
   async runNavigation() {
     const first = await session.navigateFirstPage();

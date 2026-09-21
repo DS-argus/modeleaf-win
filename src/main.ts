@@ -950,7 +950,11 @@ function switchTabNow(id: TabId): Promise<void> {
     activateWorkspace: (tabId) => workspace.activate(tabId),
     activateCurrent: (restoreFocus) => activateCurrentTab(restoreFocus),
     publish: render,
-    reportFailure: (payload) => payload.session.reader.setStatus(sameTab ? "Could not activate this tab." : "Could not switch tabs."),
+    reportFailure: (payload, failure) => {
+      const message = sameTab ? "Could not activate this tab." : "Could not switch tabs.";
+      const recovery = failure.recoveryCode === undefined ? "" : `; restore-prior: ${failure.recoveryCode}`;
+      payload.session.reader.setStatus(`${message} [${failure.phase}: ${failure.code}${recovery}]`);
+    },
   });
 }
 function switchTab(id: TabId): Promise<void> { return passwordModalOpen() ? Promise.resolve() : queueWorkspaceActivation(() => switchTabNow(id)); }

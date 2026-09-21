@@ -461,7 +461,7 @@ export class PdfTabSession {
       const contentHeight = Math.max(0, clientHeight - paddingTop - padding(style?.paddingBottom));
       let committed = await this.pdfReader.synchronizeViewport(contentScrollTop, contentHeight, guard);
       const snapshot = this.reader.snapshot;
-      if (committed && guard() && snapshot.zoomMode !== "custom") {
+      if (committed && guard() && snapshot.zoomMode !== "custom" && snapshot.zoomMode !== "fit-width") {
         const stableTransform = await this.viewTransformFor(snapshot.page, guard);
         if (stableTransform !== undefined && Math.abs(stableTransform.scale - snapshot.customScale) > Number.EPSILON) {
           committed = await this.pdfReader.renderPageWithTransform(snapshot.page, stableTransform, guard);
@@ -847,32 +847,87 @@ export class PdfTabSession {
     const prior = this.lastCommittedRender;
     const geometryRevision = this.viewportGeometryRevision;
     const anchor = this.pdfReader.captureScrollAnchor();
+    const initialContentSize = this.availableContentSize();
     const current = (): boolean => !this.closed && this.isForegroundActive()
       && navigationIntent === this.navigationIntent && activityGeneration === this.activityGeneration
       && renderIntent === this.renderIntent && geometryRevision === this.viewportGeometryRevision;
-    const rendered = await this.renderPage(this.reader.snapshot.page);
+    const restorePrior = async (failureStatus: string): Promise<boolean> => {
+      if (prior === undefined || anchor === undefined) return false;
+      const restored = await this.pdfReader.renderPageWithTransform(prior.page, {
+        scale: prior.customScale, rotation: prior.rotationQuarterTurns * 90, devicePixelRatio: prior.devicePixelRatio,
+      }, current, prior.zoomMode === "fit-page" ? "single-page" : "continuous", anchor);
+      if (!current()) return false;
+      if (!restored) {
+        this.setStatus("PDF viewport rollback failed after keyboard zoom.");
+        throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+      }
+      this.reader.restoreView(prior);
+      this.lastCommittedRender = prior;
+      if (prior.zoomMode !== "fit-page"
+        && !await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current)) {
+        if (!current()) return false;
+        this.setStatus("PDF viewport rollback failed after keyboard zoom.");
+        throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
+      }
+      if (current()) this.setStatus(failureStatus);
+      return true;
+    };
+    let rendered = await this.renderPage(this.reader.snapshot.page);
     if (!rendered || !current()) return false;
-    if (this.pdfReader.presentationTopology !== "continuous") return true;
+    if (this.pdfReader.presentationTopology !== "continuous") {
+      let renderedContentSize = initialContentSize;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const finalContentSize = this.availableContentSize();
+        if (finalContentSize.width === renderedContentSize.width && finalContentSize.height === renderedContentSize.height) return true;
+        if (!current()) return false;
+        const statusVersionBeforeTransform = this.readerStatusVersion;
+        const stableTransform = await this.viewTransformFor(this.reader.snapshot.page, current);
+        if (stableTransform === undefined || !current()) {
+          if (!current()) return false;
+          const failureStatus = this.reader.snapshot.status;
+          const statusChanged = this.readerStatusVersion !== statusVersionBeforeTransform;
+          const restored = await restorePrior(failureStatus);
+          if (!restored || !statusChanged) this.setStatus("PDF presentation could not be updated.");
+          return false;
+        }
+        const committed = this.lastCommittedRender;
+        if (committed !== undefined
+          && Math.abs(committed.customScale - stableTransform.scale) <= Number.EPSILON
+          && committed.rotationQuarterTurns * 90 === stableTransform.rotation
+          && committed.devicePixelRatio === stableTransform.devicePixelRatio) return true;
+        if (attempt >= 1) {
+          const restored = await restorePrior("PDF presentation could not be updated.");
+          if (!restored && current()) this.setStatus("PDF presentation could not be updated.");
+          return false;
+        }
+        renderedContentSize = finalContentSize;
+        const statusVersionBeforeCorrection = this.readerStatusVersion;
+        try {
+          rendered = await this.renderPage(this.reader.snapshot.page, stableTransform);
+        } catch (error) {
+          if (current()) {
+            const failureStatus = this.reader.snapshot.status;
+            const restored = await restorePrior(failureStatus);
+            if (!restored && current()) this.setStatus("PDF presentation could not be updated.");
+          }
+          throw error;
+        }
+        if (!rendered) {
+          if (!current()) return false;
+          const failureStatus = this.reader.snapshot.status;
+          const statusChanged = this.readerStatusVersion !== statusVersionBeforeCorrection;
+          const restored = await restorePrior(failureStatus);
+          if (current() && (!restored || !statusChanged)) this.setStatus("PDF presentation could not be updated.");
+          return false;
+        }
+        if (!current()) return false;
+      }
+      return false;
+    }
     const synchronized = await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current);
     if (synchronized || !current() || prior === undefined || anchor === undefined) return synchronized && current();
     const failureStatus = this.reader.snapshot.status;
-    const restored = await this.pdfReader.renderPageWithTransform(prior.page, {
-      scale: prior.customScale, rotation: prior.rotationQuarterTurns * 90, devicePixelRatio: prior.devicePixelRatio,
-    }, current, prior.zoomMode === "fit-page" ? "single-page" : "continuous", anchor);
-    if (!current()) return false;
-    if (!restored) {
-      this.setStatus("PDF viewport rollback failed after keyboard zoom.");
-      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
-    }
-    this.reader.restoreView(prior);
-    this.lastCommittedRender = prior;
-    if (prior.zoomMode !== "fit-page"
-      && !await this.synchronizeViewportForOwner(this.options.canvasHost.scrollTop, this.options.canvasHost.clientHeight, current)) {
-      if (!current()) return false;
-      this.setStatus("PDF viewport rollback failed after keyboard zoom.");
-      throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
-    }
-    if (current()) this.setStatus(failureStatus);
+    await restorePrior(failureStatus);
     return false;
   }
   public async resolveDestinationPage(reference: unknown): Promise<number | null> {
