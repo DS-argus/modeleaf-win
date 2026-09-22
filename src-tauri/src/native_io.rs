@@ -43,7 +43,6 @@ impl Drop for IoPermit {
 
 pub struct NativeIo {
     pub open: IoGate,
-    pub range: IoGate,
     pub metadata: IoGate,
     pub control: IoGate,
 }
@@ -53,17 +52,13 @@ impl NativeIo {
         static IO: OnceLock<NativeIo> = OnceLock::new();
         IO.get_or_init(|| Self {
             open: IoGate::new(crate::open_request::MAX_OPEN_REQUESTS),
-            range: IoGate::new(4),
             metadata: IoGate::new(2),
             control: IoGate::new(8),
         })
     }
 
     pub fn unsettled(&self) -> usize {
-        self.open.unsettled()
-            + self.range.unsettled()
-            + self.metadata.unsettled()
-            + self.control.unsettled()
+        self.open.unsettled() + self.metadata.unsettled() + self.control.unsettled()
     }
 }
 
@@ -140,5 +135,18 @@ mod tests {
         drop(first);
         drop(second);
         assert_eq!(reads.unsettled(), 0);
+    }
+
+    #[test]
+    fn metadata_capacity_is_two_and_holds_until_drop() {
+        let metadata = IoGate::new(2);
+        let first = metadata.try_acquire().unwrap();
+        let second = metadata.try_acquire().unwrap();
+        assert_eq!(metadata.unsettled(), 2);
+        assert_eq!(metadata.try_acquire().err(), Some(2));
+        drop(first);
+        assert_eq!(metadata.unsettled(), 1);
+        drop(second);
+        assert_eq!(metadata.unsettled(), 0);
     }
 }

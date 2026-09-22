@@ -12,6 +12,9 @@ import "../../src/styles/app.css";
 // Real PDF.js/DOM/session QA with in-memory native authority. No Tauri calls,
 // user PDF paths, persistent state, native windows, or external URL activation.
 // The fit-geometry matrix may delay only the PDF.js page.render task settlement. This is a QA wrapper around real PDF.js, never product timing or a test sleep.
+// These layout cases pass in-memory data, not the native range/assembly path.
+const unexpectedAssemblyIo = async (): Promise<never> => { throw new Error("Data-only QA must not issue native assembly I/O"); };
+const dataOnlyAssembly = () => ({ reserve: unexpectedAssemblyIo, cancel: unexpectedAssemblyIo, release: unexpectedAssemblyIo, finish: async () => undefined });
 const fitDelayQuery = Number(new URLSearchParams(location.search).get("fitDelay") ?? "0");
 if (![0, 120].includes(fitDelayQuery)) throw new Error(`Unsupported fit render delay: ${fitDelayQuery}`);
 const fitRenderDelayMilliseconds = fitDelayQuery;
@@ -45,6 +48,11 @@ const wrapPdfLoadingTaskForQaDelay = (task: PdfLoadingTask): PdfLoadingTask => {
     get: () => task.onPassword,
     set: (value: PdfLoadingTask["onPassword"]) => { task.onPassword = value; },
   });
+  Object.defineProperty(wrapped, "onProgress", {
+    configurable: true,
+    get: () => task.onProgress,
+    set: (value: PdfLoadingTask["onProgress"]) => { task.onProgress = value; },
+  });
   return wrapped;
 };
 GlobalWorkerOptions.workerSrc = new URL(PDFJS_POLICY.assets.workerSrc, `${location.origin}/`).href;
@@ -63,6 +71,7 @@ const statuses: string[] = [];
 const opened = { sessionId: "headless-layout", documentGeneration: 1, length: bytes.length, displayName: fixture };
 const session = new PdfTabSession({
   native: {
+    assembly: dataOnlyAssembly,
     openPdfDialog: async () => opened,
     cancelSession: async () => ({ barrierId: 1 }),
     closeSession: async () => undefined,
@@ -223,6 +232,7 @@ Object.assign(window, { readerHarness: {
       requireInvariant(retiredStyleTokens.length === 0, `Retired reader styling remains loaded: ${retiredStyleTokens.join(", ")}`);
       linkSession = new PdfTabSession({
         native: {
+          assembly: dataOnlyAssembly,
           openPdfDialog: async () => linkOpened,
           cancelSession: async (metadata) => {
             requireInvariant(metadata.sessionId === linkOpened.sessionId, "Link fixture native cancellation targeted the wrong session");
@@ -515,6 +525,7 @@ Object.assign(window, { readerHarness: {
     try {
       landingSession = new PdfTabSession({
         native: {
+          assembly: dataOnlyAssembly,
           openPdfDialog: async () => landingOpened,
           cancelSession: async (metadata) => {
             requireInvariant(metadata.sessionId === landingOpened.sessionId, "Link landing cancellation targeted the wrong native session");
@@ -842,7 +853,7 @@ Object.assign(window, { readerHarness: {
     secondHost.style.cssText = "width:800px;height:600px;max-width:100vw;box-sizing:border-box";
     document.body.append(secondHost);
     const second = new PdfTabSession({
-      native: { openPdfDialog: async () => opened, cancelSession: async () => ({ barrierId: 1 }), closeSession: async () => undefined },
+      native: { assembly: dataOnlyAssembly, openPdfDialog: async () => opened, cancelSession: async () => ({ barrierId: 1 }), closeSession: async () => undefined },
       pdf: { annotationMode: AnnotationMode.DISABLE, getDocument: (options) => getDocument({ ...options, url: undefined, range: undefined, data: bytes.slice() }) as unknown as PdfLoadingTask },
       resources, canvasHost: secondHost,
       createContentOptions: () => ({

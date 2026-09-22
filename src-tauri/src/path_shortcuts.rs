@@ -1,4 +1,4 @@
-use crate::pdf_session::{PdfSessionError, PdfSessionManager, SessionId};
+use crate::pdf_session::{PdfOwner, PdfSessionError, PdfSessionManager, SessionId};
 use tauri::{Manager, Window};
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -12,25 +12,10 @@ pub enum PathShortcutOutcome {
     Copied { text: String },
     Rejected { reason: String },
 }
-
-fn resolve(
-    window: &Window,
-    sessions: &PdfSessionManager,
-    session_id: String,
-    document_generation: u64,
-    owner_generation: u64,
-) -> Result<std::path::PathBuf, PdfSessionError> {
-    let id = SessionId::from_opaque(session_id)?;
-    sessions
-        .trusted_recent_identity(
-            &crate::pdf_session::PdfOwner {
-                window_label: window.label().to_owned(),
-                generation: owner_generation,
-            },
-            &id,
-            document_generation,
-        )
-        .map(|i| i.canonical_path().to_path_buf())
+#[derive(Clone, Copy)]
+enum PathAction {
+    Show,
+    Copy,
 }
 
 #[tauri::command]
@@ -41,48 +26,58 @@ pub async fn path_shortcut(
     document_generation: u64,
     owner_generation: u64,
 ) -> PathShortcutOutcome {
-    let Ok(permit) = crate::native_io::NativeIo::global().metadata.try_acquire() else {
-        return PathShortcutOutcome::Rejected {
-            reason: "SESSION_CAPACITY".into(),
-        };
+    let action = match action.as_str() {
+        "y" => PathAction::Show,
+        "yy" => PathAction::Copy,
+        _ => {
+            return PathShortcutOutcome::Rejected {
+                reason: "UNKNOWN_ACTION".into(),
+            }
+        }
+    };
+    let id = match SessionId::from_opaque(session_id) {
+        Ok(id) => id,
+        Err(error) => {
+            return PathShortcutOutcome::Rejected {
+                reason: format!("{error:?}"),
+            }
+        }
     };
     let sessions = window.state::<PdfSessionManager>().inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _permit = permit;
-        let path = match resolve(
-            &window,
-            &sessions,
-            session_id,
-            document_generation,
-            owner_generation,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                return PathShortcutOutcome::Rejected {
-                    reason: format!("{e:?}"),
+    let owner = PdfOwner {
+        window_label: window.label().to_owned(),
+        generation: owner_generation,
+    };
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    sessions.enqueue_trusted_identity(owner, id, document_generation, move |result, completion| {
+        let outcome = match completion.guard_result(result) {
+            Err(error) => PathShortcutOutcome::Rejected {
+                reason: if error == PdfSessionError::SessionCapacity {
+                    "SESSION_CAPACITY".into()
+                } else {
+                    format!("{error:?}")
+                },
+            },
+            Ok(identity) => {
+                let text = identity.canonical_path().to_string_lossy().into_owned();
+                match action {
+                    PathAction::Show => PathShortcutOutcome::Shown { text },
+                    PathAction::Copy => match copy_clipboard(&text) {
+                        Ok(()) => PathShortcutOutcome::Copied { text },
+                        Err(reason) => PathShortcutOutcome::Rejected { reason },
+                    },
                 }
             }
         };
-        match action.as_str() {
-            "y" => PathShortcutOutcome::Shown {
-                text: path.to_string_lossy().into_owned(),
-            },
-            "yy" => {
-                let text = path.to_string_lossy().into_owned();
-                match copy_clipboard(&text) {
-                    Ok(()) => PathShortcutOutcome::Copied { text },
-                    Err(reason) => PathShortcutOutcome::Rejected { reason },
-                }
-            }
-            _ => PathShortcutOutcome::Rejected {
-                reason: "UNKNOWN_ACTION".into(),
-            },
-        }
-    })
-    .await
-    .unwrap_or(PathShortcutOutcome::Rejected {
-        reason: "FILE_UNREADABLE".into(),
-    })
+        let _ = sender.try_send(outcome);
+        drop(completion);
+    });
+    receiver
+        .recv()
+        .await
+        .unwrap_or(PathShortcutOutcome::Rejected {
+            reason: "FILE_UNREADABLE".into(),
+        })
 }
 
 #[cfg(windows)]

@@ -1,7 +1,12 @@
 import { classifyPdfFailure, presentPdfFailure, PdfFailureError, type PdfFailureCode, type PdfFailureDiagnostic, type PdfDiagnosticReceipt } from "../core/PdfFailureDiagnostic";
 import { clampReaderScale } from "../domain/navigation/ZoomPolicy";
-import { PDFDataRangeTransport } from "pdfjs-dist";
 import { openFailureStatus } from "../domain/navigation/OpenFailureIdentifier";
+import {
+  createPdfAssemblyPartReader,
+  PdfRangeAssemblyTransport,
+  type PdfAssemblyBoundary,
+} from "./PdfRangeAssembly";
+export type { PdfAssemblyBoundary } from "./PdfRangeAssembly";
 import type { OpaquePdfSessionMetadata } from "./PdfDataRangeAdapter";
 import type {
   PdfContentDocument,
@@ -46,90 +51,9 @@ export function pdfProtocolSourceUrl(
   return `http://modeleaf-pdf.localhost/${encodeURIComponent(session.sessionId)}/${session.documentGeneration}`;
 }
 
-export class PdfProtocolRangeTransport extends PDFDataRangeTransport {
-  private readonly active = new Set<Promise<void>>();
-  private stopped = false;
-  private failed = false;
-
-  public constructor(
-    length: number,
-    private readonly url: string,
-    private readonly onFailure: (error: Error) => void,
-  ) {
-    super(length, null, true);
-  }
-
-  public override requestDataRange(begin: number, end: number): void {
-    const cappedEnd = Math.min(end, this.length);
-    if (this.stopped
-      || !Number.isSafeInteger(begin)
-      || !Number.isSafeInteger(end)
-      || begin < 0
-      || cappedEnd <= begin
-      || cappedEnd - begin > 4 * PDFJS_POLICY.getDocument.rangeChunkSize) {
-      this.fail(new Error("PDF_RANGE_INVALID"));
-      return;
-    }
-    const abort = new AbortController();
-    const operation = this.fetchRange(begin, cappedEnd, abort.signal);
-    const settlement = operation.then(() => undefined, (error: unknown) => {
-      if (!this.stopped) this.fail(error instanceof Error ? error : new Error("PDF_RANGE_FAILED"));
-    }).finally(() => {
-      this.active.delete(settlement);
-    });
-    this.active.add(settlement);
-    if (this.stopped) abort.abort();
-    else {
-      const cancel = (): void => abort.abort();
-      settlement.finally(() => this.abortCallbacks.delete(cancel)).catch(() => {});
-      this.abortCallbacks.add(cancel);
-    }
-  }
-
-  private readonly abortCallbacks = new Set<() => void>();
-
-  public override abort(): void {
-    if (this.stopped) return;
-    this.stopped = true;
-    for (const cancel of this.abortCallbacks) cancel();
-    this.abortCallbacks.clear();
-  }
-
-  public settlements(): readonly Promise<void>[] {
-    return [...this.active];
-  }
-
-  private async fetchRange(begin: number, end: number, signal: AbortSignal): Promise<void> {
-    let response: Response;
-    try {
-      response = await fetch(this.url, { headers: { Range: `bytes=${begin}-${end - 1}` }, signal });
-    } catch {
-      throw new PdfFailureError({ code: signal.aborted ? "PDF_CANCELLED" : "PDF_RANGE_FETCH" });
-    }
-    if (response.status !== 206) {
-      throw new PdfFailureError(response.status >= 100 && response.status <= 599
-        ? { code: "PDF_RANGE_STATUS", httpStatus: response.status } : { code: "PDF_RANGE_FETCH" });
-    }
-    const expectedRange = `bytes ${begin}-${end - 1}/${this.length}`;
-    if (response.headers.get("content-range") !== expectedRange || response.headers.get("content-length") !== String(end - begin)) {
-      throw new PdfFailureError({ code: "PDF_RANGE_HEADERS" });
-    }
-    let bytes: Uint8Array;
-    try { bytes = new Uint8Array(await response.arrayBuffer()); }
-    catch { throw new PdfFailureError({ code: signal.aborted ? "PDF_CANCELLED" : "PDF_RANGE_BODY" }); }
-    if (this.stopped) return;
-    if (bytes.byteLength !== end - begin) throw new PdfFailureError({ code: "PDF_RANGE_LENGTH" });
-    this.onDataRange(begin, bytes);
-  }
-  private fail(error: Error): void {
-    if (this.failed || this.stopped) return;
-    this.failed = true;
-    this.onFailure(error);
-    this.abort();
-  }
-}
 export interface ReaderNativeBoundary {
   openPdfDialog(request: { readonly ownerGeneration: number }): Promise<OpenPdfResult | null>;
+  assembly(session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">, ownerGeneration: number): PdfAssemblyBoundary;
   cancelSession(session: OpaquePdfSessionMetadata, ownerGeneration: number): Promise<{ readonly barrierId: number }>;
   closeSession(session: OpaquePdfSessionMetadata, barrierId: number, ownerGeneration: number): Promise<void>;
 }
@@ -148,10 +72,12 @@ export interface PdfPage extends PdfContentPage {
 export interface PdfDocument extends PdfContentDocument {
   getPage(page: number): Promise<PdfPage>;
 }
+export interface PdfLoadingTaskProgress { readonly loaded: number; readonly total: number; readonly percent?: number; }
 export interface PdfLoadingTask {
   promise: Promise<PdfDocument>;
   destroy(): Promise<void> | void;
   onPassword?: (updatePassword: (password: string) => void, reason: number) => void;
+  onProgress?: ((progress: PdfLoadingTaskProgress) => void) | null;
 }
 interface PreparedPdfPage { readonly page: PdfPage; readonly viewport: PdfViewport; }
 export interface PdfBoundary { getDocument(options: Record<string, unknown>): PdfLoadingTask; annotationMode: number; }
@@ -257,10 +183,12 @@ interface OpeningFailure {
 interface Candidate {
   readonly reportedFailures: WeakSet<object>;
   readonly session: OpenPdfResult;
-  readonly task: PdfLoadingTask;
+  readonly task?: PdfLoadingTask;
   readonly transport: { destroy(): Promise<void> };
-  readonly rangeTransport?: PdfProtocolRangeTransport;
   window?: ContinuousPageWindow;
+  readonly assemblyTransport?: PdfRangeAssemblyTransport;
+  readonly assemblyProgressPrior?: ((progress: PdfLoadingTaskProgress) => void) | null;
+  readonly assemblyProgressWrapper?: (progress: PdfLoadingTaskProgress) => void;
   topSpacer?: HTMLElement;
   bottomSpacer?: HTMLElement;
   topology: PdfPresentationTopology;
@@ -281,6 +209,7 @@ interface Candidate {
   stagedTeardownCompleted?: boolean;
   stagedTeardownRejected?: boolean;
   beforeDisposePhase?: CleanupPhase;
+  assemblyFinishPhase?: CleanupPhase;
   pdfDestroyPhase?: CleanupPhase;
   transportDestroyPhase?: CleanupPhase;
   readonly ownedPagePromises: Set<Promise<PdfPage>>;
@@ -436,7 +365,7 @@ export class PdfReaderController {
   private finishPasswordLifecycle(candidate: Candidate, terminal = true): void {
     candidate.passwordTerminal = true;
     if (terminal) candidate.passwordChallengeActive = false;
-    delete candidate.task.onPassword;
+    if (candidate.task !== undefined) delete candidate.task.onPassword;
     this.abortPasswordPrompt(candidate);
     if (candidate.passwordPending) {
       candidate.passwordPending = false;
@@ -642,45 +571,18 @@ export class PdfReaderController {
     });
     void rangeFailure.catch(() => {});
     let candidateRef: Candidate | undefined;
-    let rangeTransport: PdfProtocolRangeTransport | undefined;
-    let task: PdfLoadingTask;
-    try {
-      const sourceUrl = pdfProtocolSourceUrl(session);
-      rangeTransport = session.length > 2 * PDFJS_POLICY.getDocument.rangeChunkSize
-        ? new PdfProtocolRangeTransport(session.length, sourceUrl, (error) => {
-            rejectRangeFailure(error);
-            if (candidateRef !== undefined
-              && (this.current === candidateRef || this.opening === candidateRef)
-              && !candidateRef.closed) {
-              candidateRef.transportFailure = error;
-              this.reportFailure(error, "PDF_RENDER", safeMessage(error), candidateRef.reportedFailures);
-              void this.disposeCandidate(candidateRef);
-            }
-          })
-        : undefined;
-      task = this.options.pdf.getDocument({
-        ...PDFJS_POLICY.getDocument,
-        ...(rangeTransport === undefined
-          ? { url: sourceUrl }
-          : { range: rangeTransport, length: session.length }),
-        cMapUrl: PDFJS_POLICY.assets.cMapUrl,
-        cMapPacked: PDFJS_POLICY.assets.cMapPacked,
-        standardFontDataUrl: PDFJS_POLICY.assets.standardFontDataUrl,
-        wasmUrl: PDFJS_POLICY.assets.wasmUrl,
-        iccUrl: PDFJS_POLICY.assets.iccUrl,
-      });
-    } catch (error) {
-      rangeTransport?.abort();
-      await this.closeUnloadedSession(session, ownerGeneration);
-      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(error, "PDF_SOURCE");
-      return;
-    }
-    const candidate: Candidate = {
+    let assemblyTransport: PdfRangeAssemblyTransport | undefined;
+    let assemblyProgressPrior: ((progress: PdfLoadingTaskProgress) => void) | null | undefined;
+    let assemblyProgressWrapper: ((progress: PdfLoadingTaskProgress) => void) | undefined;
+    let task: PdfLoadingTask | undefined;
+    const makeCandidate = (loadedTask?: PdfLoadingTask): Candidate => ({
       reportedFailures: new WeakSet<object>(),
       session,
       transport,
-      task,
-      ...(rangeTransport === undefined ? {} : { rangeTransport }),
+      ...(loadedTask === undefined ? {} : { task: loadedTask }),
+      ...(assemblyTransport === undefined ? {} : { assemblyTransport }),
+      ...(assemblyProgressPrior === undefined ? {} : { assemblyProgressPrior }),
+      ...(assemblyProgressWrapper === undefined ? {} : { assemblyProgressWrapper }),
       ownerGeneration,
       closed: false,
       ownedPagePromises: new Set(),
@@ -692,7 +594,74 @@ export class PdfReaderController {
       passwordChallengeActive: false,
       passwordTerminal: false,
       passwordPending: false,
-    };
+    });
+    try {
+      const sourceUrl = pdfProtocolSourceUrl(session);
+      if (session.length > 2 * PDFJS_POLICY.getDocument.rangeChunkSize) {
+        const boundary = this.options.native.assembly(session, ownerGeneration);
+        assemblyTransport = new PdfRangeAssemblyTransport({
+          length: session.length,
+          boundary,
+          readPart: createPdfAssemblyPartReader(sourceUrl, session.length),
+          onFailure: (error) => {
+            rejectRangeFailure(error);
+            if (candidateRef !== undefined
+              && (this.current === candidateRef || this.opening === candidateRef)
+              && !candidateRef.closed) {
+              candidateRef.transportFailure = error;
+              this.reportFailure(error, "PDF_RENDER", safeMessage(error), candidateRef.reportedFailures);
+              void this.disposeCandidate(candidateRef);
+            }
+          },
+        });
+      }
+      task = this.options.pdf.getDocument({
+        ...PDFJS_POLICY.getDocument,
+        ...(assemblyTransport === undefined
+          ? { url: sourceUrl }
+          : { range: assemblyTransport, length: session.length }),
+        cMapUrl: PDFJS_POLICY.assets.cMapUrl,
+        cMapPacked: PDFJS_POLICY.assets.cMapPacked,
+        standardFontDataUrl: PDFJS_POLICY.assets.standardFontDataUrl,
+        wasmUrl: PDFJS_POLICY.assets.wasmUrl,
+        iccUrl: PDFJS_POLICY.assets.iccUrl,
+      });
+      if (assemblyTransport !== undefined) {
+        assemblyProgressPrior = task.onProgress;
+        const prior = assemblyProgressPrior;
+        const wrapper = (progress: PdfLoadingTaskProgress): void => {
+          try { prior?.(progress); }
+          finally { assemblyTransport?.notifyProgress(); }
+        };
+        assemblyProgressWrapper = wrapper;
+        task.onProgress = wrapper;
+      }
+    } catch (error) {
+      if (task !== undefined || assemblyTransport !== undefined) {
+        const setupCandidate = makeCandidate(task);
+        void setupCandidate.openingFailure.promise.catch(() => undefined);
+        void setupCandidate.task?.promise.catch(() => undefined);
+        candidateRef = setupCandidate;
+        await this.disposeCandidate(setupCandidate);
+      } else {
+        await this.closeUnloadedSession(session, ownerGeneration);
+      }
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(error, "PDF_SOURCE");
+      return;
+    }
+    if (task === undefined) {
+      if (assemblyTransport !== undefined) {
+        const setupCandidate = makeCandidate();
+        void setupCandidate.openingFailure.promise.catch(() => undefined);
+        candidateRef = setupCandidate;
+        await this.disposeCandidate(setupCandidate);
+      } else {
+        await this.closeUnloadedSession(session, ownerGeneration);
+      }
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(new Error("PDF_SOURCE"), "PDF_SOURCE");
+      return;
+    }
+    const candidate = makeCandidate(task);
     candidateRef = candidate;
     this.opening = candidate;
     task.onPassword = (updatePassword, reason) => {
@@ -2523,7 +2492,7 @@ export class PdfReaderController {
   }
 
   private disposeCandidate(candidate: Candidate | undefined): Promise<void> {
-    candidate?.rangeTransport?.abort();
+    candidate?.assemblyTransport?.abort();
     if (candidate !== undefined && this.activePrint?.owner === candidate) this.activePrint.abort.abort();
     if (candidate === undefined) return Promise.resolve();
     this.rejectOpening(candidate, new Error(candidate.passwordChallengeActive ? "PASSWORD_CANCELLED" : "Opening PDF cancelled"));
@@ -2540,11 +2509,18 @@ export class PdfReaderController {
     if (!await this.waitForCandidateOwnership(candidate)) return;
     if (this.options.onBeforeDispose !== undefined
       && !await this.awaitPhase(candidate, "beforeDisposePhase", () => this.options.onBeforeDispose!(candidate.session, candidate.ownerGeneration))) return;
-    const pdfDestroyed = await this.awaitPhase(candidate, "pdfDestroyPhase", () => Promise.resolve().then(() => candidate.task.destroy()));
+    const pdfDestroyed = candidate.task === undefined
+      || await this.awaitPhase(candidate, "pdfDestroyPhase", () => Promise.resolve().then(() => candidate.task!.destroy()));
     if (!pdfDestroyed && !candidate.pdfDestroyPhase?.settled) return;
+    if (!pdfDestroyed) return;
+    const assembliesFinished = candidate.assemblyTransport === undefined
+      || await this.awaitPhase(candidate, "assemblyFinishPhase", () => candidate.assemblyTransport!.finishAfterPdfDestroy());
+    if (!assembliesFinished && !candidate.assemblyFinishPhase?.settled) return;
+    if (!assembliesFinished) return;
+    this.restoreAssemblyProgress(candidate);
     const transportDestroyed = await this.awaitPhase(candidate, "transportDestroyPhase", () => candidate.transport.destroy());
     this.releaseCandidateOwnership(candidate);
-    if (pdfDestroyed && transportDestroyed) {
+    if (pdfDestroyed && assembliesFinished && transportDestroyed) {
       this.quarantinedCandidates.delete(candidate);
       this.pendingCleanups.delete(candidate.session.sessionId);
     }
@@ -2555,6 +2531,15 @@ export class PdfReaderController {
       this.releaseRaster(reservation);
     }
     candidate.residentRasters.clear();
+  }
+
+  private restoreAssemblyProgress(candidate: Candidate): void {
+    const wrapper = candidate.assemblyProgressWrapper;
+    const task = candidate.task;
+    if (wrapper === undefined || task === undefined || task.onProgress !== wrapper) return;
+    const prior = candidate.assemblyProgressPrior;
+    if (prior === undefined) delete task.onProgress;
+    else task.onProgress = prior;
   }
 
   private handoffRejectedTransportDestroy(candidate: Candidate): void {
@@ -2569,7 +2554,7 @@ export class PdfReaderController {
     this.publishStatus("A PDF session could not be released. Close and reopen Modeleaf before opening more files.");
   }
 
-  private async awaitPhase(candidate: Candidate, key: "beforeDisposePhase" | "pdfDestroyPhase" | "transportDestroyPhase", operation: () => Promise<void>): Promise<boolean> {
+  private async awaitPhase(candidate: Candidate, key: "beforeDisposePhase" | "assemblyFinishPhase" | "pdfDestroyPhase" | "transportDestroyPhase", operation: () => Promise<void>): Promise<boolean> {
     let phase = candidate[key];
     if (phase === undefined) {
       const raw = Promise.resolve().then(operation);
@@ -2587,7 +2572,7 @@ export class PdfReaderController {
           if (key === "transportDestroyPhase") this.handoffRejectedTransportDestroy(candidate);
           else {
             this.quarantine(candidate);
-            if (key === "beforeDisposePhase" && candidate[key] === phase) delete candidate[key];
+            if ((key === "beforeDisposePhase" || key === "assemblyFinishPhase") && candidate[key] === phase) delete candidate[key];
           }
           if (key !== "beforeDisposePhase") this.retryQuarantinedCandidate(candidate);
         },
@@ -2615,8 +2600,8 @@ export class PdfReaderController {
       ...candidate.ownedPagePromises,
       ...candidate.ownedRenderSettlements,
       ...candidate.ownedPrintSettlements,
-      ...(candidate.rangeTransport?.settlements() ?? []),
       ...(staged === undefined ? [] : [staged]),
+      ...(candidate.assemblyTransport?.settlements() ?? []),
     ];
     try {
       await withDeadline(Promise.allSettled(owned).then(() => undefined), OWNERSHIP_DEADLINE_MS, "PDF_OWNERSHIP_TIMEOUT");
@@ -2641,6 +2626,7 @@ export class PdfReaderController {
   private retryQuarantinedCandidate(candidate: Candidate): void {
     if (!this.quarantinedCandidates.has(candidate) || candidate.ownershipRetry !== undefined || candidate.stagedTeardownRejected
       || (candidate.beforeDisposePhase !== undefined && (!candidate.beforeDisposePhase.settled || candidate.beforeDisposePhase.rejected))
+      || (candidate.assemblyFinishPhase !== undefined && (!candidate.assemblyFinishPhase.settled || candidate.assemblyFinishPhase.rejected))
       || (candidate.pdfDestroyPhase !== undefined && (!candidate.pdfDestroyPhase.settled || candidate.pdfDestroyPhase.rejected))
       || (candidate.transportDestroyPhase !== undefined && (!candidate.transportDestroyPhase.settled || candidate.transportDestroyPhase.rejected))) return;
     const staged = candidate.stagedTeardownSettlement;
@@ -2648,8 +2634,8 @@ export class PdfReaderController {
       ...candidate.ownedPagePromises,
       ...candidate.ownedRenderSettlements,
       ...candidate.ownedPrintSettlements,
-      ...(candidate.rangeTransport?.settlements() ?? []),
       ...(staged === undefined ? [] : [staged]),
+      ...(candidate.assemblyTransport?.settlements() ?? []),
     ];
     if (owned.length > 0) {
       candidate.ownershipRetry = Promise.allSettled(owned).then(() => {
@@ -2671,6 +2657,7 @@ export class PdfReaderController {
       delete candidate.stagedTeardownRejected;
       if (candidate.ownershipRetry !== undefined
         || (candidate.beforeDisposePhase !== undefined && (!candidate.beforeDisposePhase.settled || candidate.beforeDisposePhase.rejected))
+        || (candidate.assemblyFinishPhase !== undefined && (!candidate.assemblyFinishPhase.settled || candidate.assemblyFinishPhase.rejected))
         || (candidate.pdfDestroyPhase !== undefined && (!candidate.pdfDestroyPhase.settled || candidate.pdfDestroyPhase.rejected))
         || (candidate.transportDestroyPhase !== undefined && (!candidate.transportDestroyPhase.settled || candidate.transportDestroyPhase.rejected))) continue;
       delete candidate.cleanup;

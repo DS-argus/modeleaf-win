@@ -1,13 +1,17 @@
 /** @vitest-environment jsdom */
 import { describe, expect, it, vi } from "vitest";
 import {
-  PdfProtocolRangeTransport,
   PdfReaderController,
   pdfProtocolSourceUrl,
   type PdfDocument,
   type PdfLoadingTask,
   type PdfPage,
 } from "../../src/pdf/PdfReaderController";
+import {
+  createPdfAssemblyPartReader,
+  PdfRangeAssemblyTransport,
+  type PdfAssemblyBoundary,
+} from "../../src/pdf/PdfRangeAssembly";
 import { ResourceReservationManager } from "../../src/pdf/ResourceBudget";
 
 const session = (id: string, generation: number) => ({
@@ -64,11 +68,44 @@ function task(document: ReturnType<typeof documentWith>): PdfLoadingTask {
 }
 
 function nativeBoundary(openPdfDialog: ReturnType<typeof vi.fn>) {
+  let nextLease = 1;
+  let currentAssemblyBytes = 0;
+  const activeLeases = new Map<number, number>();
+  const assembly = vi.fn((_session?: unknown, _ownerGeneration?: number) => ({
+    reserve: vi.fn(async (_requestSequence: number, begin: number, end: number) => {
+      const byteLength = end - begin;
+      if (activeLeases.size !== 0 || currentAssemblyBytes + byteLength > 512 * 1024 * 1024) throw new Error("fake assembly capacity");
+      const leaseId = nextLease++;
+      activeLeases.set(leaseId, byteLength);
+      currentAssemblyBytes += byteLength;
+      return { leaseId, byteLength };
+    }),
+    cancel: vi.fn(async (_requestSequence: number) => undefined),
+    release: vi.fn(async (leaseId: number, _proof: "UNALLOCATED" | "DISCARDED" | "TRANSFERRED") => {
+      const byteLength = activeLeases.get(leaseId);
+      if (byteLength !== undefined) {
+        activeLeases.delete(leaseId);
+        currentAssemblyBytes -= byteLength;
+      }
+    }),
+    finish: vi.fn(async () => { activeLeases.clear(); currentAssemblyBytes = 0; }),
+  }));
   return {
     openPdfDialog,
+    assembly,
     cancelSession: vi.fn(async (_session: unknown, _ownerGeneration: number) => ({ barrierId: 7 })),
     closeSession: vi.fn(async (_session: unknown, _barrierId: number, _ownerGeneration: number) => undefined),
   };
+}
+
+function directAssemblyTransport(length: number, url: string, onFailure: (error: Error) => void): PdfRangeAssemblyTransport {
+  const native = nativeBoundary(vi.fn()).assembly({ sessionId: "direct-assembly", documentGeneration: 1 }, 1) as PdfAssemblyBoundary;
+  return new PdfRangeAssemblyTransport({
+    length,
+    boundary: native,
+    readPart: createPdfAssemblyPartReader(url, length),
+    onFailure,
+  });
 }
 
 describe("PdfReaderController", () => {
@@ -84,9 +121,17 @@ describe("PdfReaderController", () => {
       status: 206,
       headers: { "Content-Range": "bytes 0-3/10", "Content-Length": "4" },
     }));
-    const transport = new PdfProtocolRangeTransport(10, "http://modeleaf-pdf.localhost/session/1", onFailure);
+    const transport = directAssemblyTransport(10, "http://modeleaf-pdf.localhost/session/1", onFailure);
     const delivered: unknown[] = [];
-    transport.transportReady((event: unknown) => delivered.push(event));
+    transport.transportReady((raw: unknown) => {
+      const event = raw as { readonly type: string; readonly begin?: number; readonly chunk?: Uint8Array | null };
+      const chunk = event.chunk;
+      delivered.push({ type: event.type, begin: event.begin, chunk: chunk instanceof Uint8Array ? chunk.slice() : chunk });
+      if (chunk instanceof Uint8Array) {
+        structuredClone(chunk, { transfer: [chunk.buffer as ArrayBuffer] });
+        transport.notifyProgress();
+      }
+    });
     transport.requestDataRange(0, 4);
     await Promise.all(transport.settlements());
 
@@ -103,13 +148,15 @@ describe("PdfReaderController", () => {
       signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     }));
     transport.requestDataRange(4, 8);
+    await vi.waitFor(() => expect(signal).toBeDefined());
     transport.abort();
     await Promise.all(transport.settlements());
     expect(signal?.aborted).toBe(true);
     expect(onFailure).not.toHaveBeenCalled();
+    await transport.finishAfterPdfDestroy();
   });
 
-  it("uses PDFDataRangeTransport for large documents without a malformed no-Range probe", async () => {
+  it("uses PdfRangeAssemblyTransport for large documents without a malformed no-Range probe", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
     const largeSession = { ...session("large-range", 1), length: 2 * 1_048_576 + 1 };
     const getDocument = vi.fn(() => task(documentWith(1)));
@@ -127,12 +174,123 @@ describe("PdfReaderController", () => {
 
     await controller.open(1);
     expect(getDocument).toHaveBeenCalledWith(expect.objectContaining({
-      range: expect.any(PdfProtocolRangeTransport),
+      range: expect.any(PdfRangeAssemblyTransport),
       length: largeSession.length,
       url: undefined,
     }));
     await controller.dispose();
     resources.assertEmpty();
+  });
+  it("chains loading progress for detach proof and finishes assembly after PDF destroy", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const largeSession = { ...session("assembly-progress", 1), length: 2 * 1_048_576 + 1 };
+    const native = nativeBoundary(vi.fn().mockResolvedValue(largeSession));
+    const priorProgress = vi.fn();
+    const pdfDocument = documentWith(1);
+    const loading = task(pdfDocument);
+    loading.onProgress = priorProgress;
+    const getDocument = vi.fn((_options: Record<string, unknown>) => loading);
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument, annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(),
+      onPage: vi.fn(),
+      onStatus: vi.fn(),
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(new Uint8Array([1, 2, 3, 4]), {
+      status: 206,
+      headers: {
+        "Content-Range": `bytes 0-3/${largeSession.length}`,
+        "Content-Length": "4",
+      },
+    }));
+
+    await controller.open(1);
+    const range = getDocument.mock.calls[0]![0]!.range as PdfRangeAssemblyTransport;
+    range.transportReady(() => undefined); // Fake SDK retains the complete buffer without transfer.
+    range.requestDataRange(0, 4);
+    await Promise.all(range.settlements());
+    loading.onProgress?.({ loaded: 4, total: largeSession.length, percent: 0 });
+    expect(priorProgress).toHaveBeenCalledOnce();
+    // The fake PDF boundary did not detach the handed view, so progress alone
+    // cannot release native credit; cleanup must wait for destroy and discard.
+    expect(native.assembly.mock.results[0]?.value.release).not.toHaveBeenCalled();
+
+    await controller.dispose();
+    expect(native.assembly.mock.results[0]?.value.release).toHaveBeenCalledWith(1, "DISCARDED");
+    expect(loading.onProgress).toBe(priorProgress);
+    expect(native.assembly.mock.results[0]?.value.finish).toHaveBeenCalledOnce();
+    expect(pdfDocument.destroyWorker).toHaveBeenCalledOnce();
+  });
+  it("cleans the large assembly when getDocument throws before returning a loading task", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const largeSession = { ...session("assembly-setup-throws", 1), length: 2 * 1_048_576 + 1 };
+    const native = nativeBoundary(vi.fn().mockResolvedValue(largeSession));
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument: vi.fn(() => { throw new Error("setup failed"); }), annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(native.assembly).toHaveBeenCalledOnce();
+    expect(native.assembly.mock.results[0]?.value.finish).toHaveBeenCalledOnce();
+    expect(native.cancelSession).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
+  });
+
+  it("destroys an already-created SDK task and releases a late grant when progress installation throws", async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+    const largeSession = { ...session("assembly-late-grant", 1), length: 2 * 1_048_576 + 1 };
+    const grant = deferred<{ readonly leaseId: number; readonly byteLength: number }>();
+    const pdfDocument = documentWith(1);
+    const loading = task(pdfDocument);
+    let grantResolved = false;
+    const assembly = {
+      reserve: vi.fn(() => grant.promise),
+      cancel: vi.fn(async () => {
+        if (!grantResolved) {
+          grantResolved = true;
+          grant.resolve({ leaseId: 1, byteLength: 4 });
+        }
+      }),
+      release: vi.fn(async () => undefined),
+      finish: vi.fn(async () => undefined),
+    };
+    Object.defineProperty(loading, "onProgress", {
+      configurable: true,
+      get: () => null,
+      set: () => { throw new Error("progress install failed"); },
+    });
+    const native = {
+      openPdfDialog: vi.fn().mockResolvedValue(largeSession),
+      assembly: vi.fn(() => assembly),
+      cancelSession: vi.fn(async () => ({ barrierId: 7 })),
+      closeSession: vi.fn(async () => undefined),
+    };
+    const getDocument = vi.fn((options: Record<string, unknown>) => {
+      (options.range as PdfRangeAssemblyTransport).requestDataRange(0, 4);
+      return loading;
+    });
+    const controller = new PdfReaderController({
+      native,
+      resources: new ResourceReservationManager(),
+      pdf: { getDocument, annotationMode: 0 },
+      canvasHost: document.createElement("div"),
+      onCommitted: vi.fn(), onPage: vi.fn(), onStatus: vi.fn(),
+    });
+
+    await controller.open(1);
+    expect(getDocument).toHaveBeenCalledOnce();
+    expect(pdfDocument.destroyWorker).toHaveBeenCalledOnce();
+    expect(assembly.cancel).toHaveBeenCalledOnce();
+    expect(assembly.release).toHaveBeenCalledWith(1, "UNALLOCATED");
+    expect(assembly.finish).toHaveBeenCalledOnce();
+    expect(native.closeSession).toHaveBeenCalledOnce();
   });
   it("closes the native session when PDF.js setup throws synchronously", async () => {
     const native = nativeBoundary(vi.fn().mockResolvedValue(session("setup-throws", 1)));
@@ -174,7 +332,7 @@ describe("PdfReaderController", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("range failed"));
 
     await controller.open(1);
-    const range = getDocument.mock.calls[0]![0]!.range as PdfProtocolRangeTransport;
+    const range = getDocument.mock.calls[0]![0]!.range as PdfRangeAssemblyTransport;
     range.requestDataRange(0, 4);
     await Promise.all(range.settlements());
     await vi.waitFor(() => expect(native.closeSession).toHaveBeenCalledOnce());
@@ -212,7 +370,7 @@ describe("PdfReaderController", () => {
 
     const opening = controller.open(1);
     await entered.promise;
-    const range = getDocument.mock.calls[0]![0]!.range as PdfProtocolRangeTransport;
+    const range = getDocument.mock.calls[0]![0]!.range as PdfRangeAssemblyTransport;
     range.requestDataRange(0, 4);
     await Promise.all(range.settlements());
     release.resolve();
@@ -372,10 +530,11 @@ describe("PdfReaderController", () => {
     await controller.open(1);
 
     expect(native.openPdfDialog).toHaveBeenCalledTimes(2);
-    expect(native.cancelSession).toHaveBeenCalledOnce();
+    // The failed SDK destroy still owns its native session; no close success is fabricated.
+    expect(native.cancelSession).not.toHaveBeenCalled();
     expect(statuses).toContain("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
-    expect(native.closeSession).toHaveBeenCalledOnce();
-    expect(resources.snapshot().totals["canvas-bytes"]).toBe(20 * 30 * 4);
+    expect(native.closeSession).not.toHaveBeenCalled();
+    expect(resources.snapshot().totals["canvas-bytes"]).toBe(2 * 20 * 30 * 4);
   });
   it("waits for content ownership before destroying a replaced PDF", async () => {
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
@@ -3465,7 +3624,7 @@ describe("PDF failure diagnostic delivery", () => {
       } });
     const opening = controller.open(1);
     await precommitEntered.promise;
-    const range = getDocument.mock.calls[0]![0]!.range as PdfProtocolRangeTransport;
+    const range = getDocument.mock.calls[0]![0]!.range as PdfRangeAssemblyTransport;
     range.requestDataRange(0, 4);
     await Promise.all(range.settlements());
     precommitRelease.resolve();
@@ -3511,10 +3670,11 @@ describe("PDF failure diagnostic delivery", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     if (kind === "fetch") fetchMock.mockRejectedValue(new Error("private URL"));
     else fetchMock.mockResolvedValue(response);
-    const transport = new PdfProtocolRangeTransport(10, "http://modeleaf-pdf.localhost/opaque/1", onFailure);
+    const transport = directAssemblyTransport(10, "http://modeleaf-pdf.localhost/opaque/1", onFailure);
     transport.requestDataRange(0, 4);
     await Promise.all(transport.settlements());
     expect(onFailure).toHaveBeenCalledOnce();
+    await transport.finishAfterPdfDestroy();
     const error = onFailure.mock.calls[0]![0] as { diagnostic: unknown; message: string };
     expect(error.diagnostic).toEqual({ code: `PDF_RANGE_${kind.toUpperCase()}`, ...(kind === "status" ? { httpStatus: 500 } : {}) });
     expect(error.message).not.toContain("private");

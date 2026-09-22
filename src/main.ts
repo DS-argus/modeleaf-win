@@ -1,5 +1,6 @@
 import { classifyPdfFailure, isSafePdfFailureStatus, presentPdfFailure, type PdfFailureCode } from "./core/PdfFailureDiagnostic";
 import { createPdfFailureReporter } from "./platform/PdfFailureDiagnostics";
+import { createPdfAssemblyBoundary } from "./platform/PdfAssemblyClient";
 import "./styles/app.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -383,6 +384,7 @@ themeDialog.addEventListener("keydown", (event) => {
   previewTheme((picker.activeIndex + direction + THEME_PICKER_ROWS.length) % THEME_PICKER_ROWS.length);
 });
 const native = {
+  assembly: (session: { readonly sessionId: string; readonly documentGeneration: number }, sessionOwnerGeneration: number) => createPdfAssemblyBoundary(invoke, session, sessionOwnerGeneration),
   openPdfDialog: async (): Promise<never> => { throw new Error("OPEN_INGRESS_REQUIRED"); },
   cancelSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, sessionOwnerGeneration: number) => invoke<{ readonly barrierId: number }>("cancel_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration }),
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),

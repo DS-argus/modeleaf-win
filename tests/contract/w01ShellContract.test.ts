@@ -76,7 +76,7 @@ describe("W01 secure shell contract", () => {
     const build = command.indexOf(".build()");
     const setup = command.indexOf("disable_browser_accelerators");
     const show = command.indexOf("window.show()");
-    const retain = command.indexOf("windows.retain(window)");
+    const retain = command.indexOf("windows.retain(window.clone(), owner.clone())");
     const nativeSetupStart = source.indexOf(".setup(|app|");
     const nativeSetup = source.slice(nativeSetupStart, source.indexOf(".on_window_event", nativeSetupStart));
     const mainHardening = nativeSetup.indexOf("disable_browser_accelerators(&window)");
@@ -93,7 +93,9 @@ describe("W01 secure shell contract", () => {
     expect(setup).toBeGreaterThan(build);
     expect(show).toBeGreaterThan(setup);
     expect(command.slice(setup, show)).toMatch(/is_shutting_down[\s\S]*?window\.destroy\(\)[\s\S]*?ShuttingDown/);
-    expect(retain).toBeGreaterThan(show);
+    // Destruction must retain the exact owner even when setup/show or workspace teardown fails.
+    expect(retain).toBeGreaterThan(build);
+    expect(retain).toBeLessThan(setup);
     expect(command.slice(setup)).toMatch(/window\.destroy\(\)[\s\S]*?workspace\.destroy_window/);
     expect(command).toMatch(/WebviewWindowBuilder/);
     expect(command).toMatch(/inner_size\(preferred_width,\s*preferred_height\)/);
