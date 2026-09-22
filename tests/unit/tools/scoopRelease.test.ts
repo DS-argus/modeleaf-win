@@ -201,23 +201,36 @@ describe("Scoop release validation and notes", () => {
       sourceCommit: SOURCE_COMMIT,
       zipSha256: ZIP_SHA256,
       assetBasenames: ASSET_BASENAMES,
+      prerelease: false,
       releaseNotes: expect.any(String),
     });
-    expect(result.releaseNotes).toContain("experimental Modeleaf release for Windows 11 x64");
+    expect(result.releaseNotes).toContain("stable Modeleaf release for Windows 11 x64");
+    expect(result.prerelease).toBe(false);
+    expect(result.releaseNotes).toContain("Release classification does not certify unperformed verification.");
     expect(result.releaseNotes).not.toMatch(/initial experimental|owner accepted basic app use/iu);
     expect(result.releaseNotes).toMatch(/native behavior.*DPI scaling.*Narrator accessibility.*clean-machine installation.*signature checks are unverified/isu);
     expect(result.releaseNotes).toContain("Automated tests and package validation do not certify installed behavior.");
     expect(result.releaseNotes).toContain("Passwords are not persisted.");
-    expect(result.releaseNotes).toContain("Changes since 0.1.5:");
-    expect(result.releaseNotes).toContain("Document actions are consolidated into File, and the empty-screen Open PDF banner is clickable.");
-    expect(result.releaseNotes).toContain("wheel/keyboard zoom, viewport settlement, and tab-presentation recovery within unchanged resource budgets");
+    expect(result.releaseNotes).toContain("Changes since 0.2.0:");
+    expect(result.releaseNotes).toContain("UNC and existing mapped-drive PDFs read-only with bounded remote I/O");
+    expect(result.releaseNotes).toContain("Corrected capacity 503 rejections under normal large-PDF demand");
+    expect(result.releaseNotes).toContain("additional 512 MiB app-global assembly budget across windows");
+    expect(result.releaseNotes).toContain("not a total RSS limit");
+    expect(result.releaseNotes).not.toContain("unchanged resource budgets");
+    expect(result.releaseNotes).toContain("Fit Page/Fit Width");
+    expect(result.releaseNotes).toContain("fixed-font middle path truncation");
+    expect(result.releaseNotes).toContain("y/yy display/copy without changing native file authority");
+    expect(result.releaseNotes).toContain("Finite native/renderer diagnostic error codes");
+    expect(result.releaseNotes).toContain("Scoop bucket Draft PR; bucket review and merge remain manual");
+    expect(result.releaseNotes).toContain("not comprehensively certified");
+    expect(result.releaseNotes).toContain("Prior internal candidate QA is not versioned release-candidate certification");
     expect(result.releaseNotes).toContain("Zoom is bounded to 25–400%.");
     expect(result.releaseNotes).toContain("Password-protected PDF support was already available in 0.1.5; it is not new in this release.");
     expect(result.releaseNotes).not.toContain("Added password-protected PDF support");
     expect(result.releaseNotes).toContain("CLI enhancements and update notifications are not included in this release.");
     expect(result.releaseNotes).toContain("The app does not download or install updates.");
     expect(result.releaseNotes).toContain("Embedded table of contents (TOC) remains retired.");
-    expect(result.releaseNotes).toContain("PDF-provided links support keyboard hints with f, anchored external-URL confirmation with Enter/Escape, and transient internal destination-coordinate feedback.");
+    expect(result.releaseNotes).toContain("Link hints, external-URL confirmation, and internal destination indicators were already available in 0.2.0");
     expect(result.releaseNotes).toContain("Prerequisite: Install the Microsoft Edge WebView2 Runtime");
     expect(result.releaseNotes).toContain(
       `scoop install https://github.com/${REPOSITORY}/releases/download/${TAG}/modeleaf.json`,

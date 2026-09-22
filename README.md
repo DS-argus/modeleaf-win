@@ -26,9 +26,9 @@ A keyboard-first, read-only PDF viewer for Windows 11 x64.
 
 Requires **Windows 11 x64** and **Microsoft Edge WebView2 Runtime**.
 
-Published builds appear in [Releases](https://github.com/DS-argus/modeleaf-win/releases). The initial Windows release is **experimental**, not parity-complete or native-certified.
+Published builds appear in [Releases](https://github.com/DS-argus/modeleaf-win/releases). Version 0.3.0 uses the normal/stable GitHub Release classification; earlier experimental prereleases keep their classification. Stable labeling does not certify unperformed native, installed, signing, accessibility, or private-network verification; see each release's limitations.
 
-After the experimental release and its [Scoop bucket](https://github.com/DS-argus/scoop-bucket) are published, install with PowerShell:
+After the release and its [Scoop bucket](https://github.com/DS-argus/scoop-bucket) manifest are published, install with PowerShell:
 
 ```powershell
 scoop bucket add modeleaf https://github.com/DS-argus/scoop-bucket

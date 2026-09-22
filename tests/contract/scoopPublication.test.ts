@@ -56,25 +56,25 @@ async function execute(name: string, github: ReturnType<typeof api>, env: Record
   }, nativeRequire);
   return core;
 }
-async function candidate() {
+async function candidate(version = "1.2.3") {
   const directory = await mkdtemp(join(tmpdir(), "modeleaf-publication-test-"));
   roots.push(directory);
   // Synthetic transport bytes only; publication APIs are mocked and nothing is launched.
   const zip = Buffer.from("synthetic reviewed ZIP transport fixture");
   const hash = createHash("sha256").update(zip).digest("hex");
-  const basename = "modeleaf-1.2.3-windows-x64.zip";
+  const basename = `modeleaf-${version}-windows-x64.zip`;
   const files = {
     [basename]: zip,
     "modeleaf.json": JSON.stringify({
-      version: "1.2.3", description: "Keyboard-first read-only PDF viewer for Windows",
+      version, description: "Keyboard-first read-only PDF viewer for Windows",
       homepage: "https://github.com/DS-argus/modeleaf-win", license: "MIT",
-      architecture: { "64bit": { url: "https://github.com/DS-argus/modeleaf-win/releases/download/v1.2.3/" + basename, hash } },
+      architecture: { "64bit": { url: `https://github.com/DS-argus/modeleaf-win/releases/download/v${version}/` + basename, hash } },
       bin: "modeleaf.exe", shortcuts: [["modeleaf.exe", "Modeleaf"]],
       notes: ["Requires Windows 11 x64.", "Requires the Microsoft Edge WebView2 Runtime to be installed."],
     }),
     "SHA256SUMS": `${hash}  ${basename}\n`,
     "package-receipt.json": JSON.stringify({
-      source: { commit: source, version: "1.2.3" },
+      source: { commit: source, version },
       artifact: { basename, sha256: hash, bytes: zip.length },
       status: { signature: "not-verified", executableValidation: "header-only", nativeAcceptance: "not-verified" },
     }),
@@ -123,12 +123,14 @@ describe("review-bound tag publication", () => {
     await expect(execute("Find the approved main artifact", github)).rejects.toThrow(/missing, expired or ambiguous/iu);
   });
 
-  it("uploads all verified bytes to a draft before publishing an experimental release", async () => {
+  it.each(["0.3.0", "0.3.1-beta.1"])("publishes %s with matching classification and latest eligibility after verified uploads", async (version) => {
     const github = api();
-    await execute("Validate and publish through a draft", github, await candidate());
-    expect(github.rest.repos.createRelease).toHaveBeenCalledWith(expect.objectContaining({ draft: true, prerelease: true, target_commitish: source }));
+    await execute("Validate and publish through a draft", github, await candidate(version), false, { ref: `refs/tags/v${version}` });
+    const prerelease = version.includes("-");
+    const make_latest = prerelease ? "false" : "true";
+    expect(github.rest.repos.createRelease).toHaveBeenCalledWith(expect.objectContaining({ draft: true, prerelease, make_latest, target_commitish: source, name: `Modeleaf ${version} — Windows release` }));
     expect(github.rest.repos.uploadReleaseAsset).toHaveBeenCalledTimes(4);
-    expect(github.rest.repos.updateRelease).toHaveBeenCalledWith(expect.objectContaining({ release_id: 123, draft: false, prerelease: true }));
+    expect(github.rest.repos.updateRelease).toHaveBeenCalledWith(expect.objectContaining({ release_id: 123, draft: false, prerelease, make_latest }));
     expect(github.rest.repos.updateRelease.mock.invocationCallOrder[0]).toBeGreaterThan(github.rest.repos.uploadReleaseAsset.mock.invocationCallOrder.at(-1)!);
   });
 
@@ -149,19 +151,19 @@ describe("review-bound tag publication", () => {
   });
 });
 
-async function publicFixture() {
-  const env = await candidate();
+async function publicFixture(version = "1.2.3") {
+  const env = await candidate(version);
   const temporary = await mkdtemp(join(tmpdir(), "modeleaf-public-transport-"));
   roots.push(temporary);
   const files = new Map(await Promise.all((await readdir(env.ARTIFACT_DIRECTORY)).map(async (name) => [name, await readFile(join(env.ARTIFACT_DIRECTORY, name))] as const)));
-  const release = { tag_name: "v1.2.3", draft: false, prerelease: true, published_at: "2026-09-20T00:00:00Z", assets: [...files].map(([name, bytes]) => ({
+  const release = { tag_name: `v${version}`, draft: false, prerelease: true, published_at: "2026-09-20T00:00:00Z", assets: [...files].map(([name, bytes]) => ({
     name, size: bytes.length, state: "uploaded", digest: "sha256:" + createHash("sha256").update(bytes).digest("hex"),
-    browser_download_url: `https://github.com/DS-argus/modeleaf-win/releases/download/v1.2.3/${name}`,
+    browser_download_url: `https://github.com/DS-argus/modeleaf-win/releases/download/v${version}/${name}`,
   })) };
   const transport = vi.fn(async (url: string, options: RequestInit) => {
     expect(new Headers(options.headers).has("authorization")).toBe(false);
     expect(options.credentials).toBe("omit");
-    if (url === "https://api.github.com/repos/DS-argus/modeleaf-win/releases/tags/v1.2.3") return new Response(JSON.stringify(release));
+    if (url === `https://api.github.com/repos/DS-argus/modeleaf-win/releases/tags/v${version}`) return new Response(JSON.stringify(release));
     const asset = release.assets.find((entry) => entry.browser_download_url === url);
     if (!asset) throw new Error("Unexpected test network destination");
     return new Response(new Uint8Array(files.get(asset.name)!));
@@ -198,11 +200,12 @@ describe("explicit protected publication-to-promotion linkage", () => {
     expect(JSON.stringify(workflow)).not.toMatch(/pull_request_target|enablePullRequestAutoMerge|mergePullRequest/u);
   });
 
-  it("accepts an already-published release on rerun only after public byte verification", async () => {
-    const { env, transport } = await publicFixture();
+  it.each([true, false])("preserves an existing release's classification (%s) and bytes on verified rerun", async (prerelease) => {
+    const { env, transport, release } = await publicFixture("0.2.0");
+    release.prerelease = prerelease;
     const github = api();
-    github.paginate.mockResolvedValue([{ tag_name: "v1.2.3", draft: false }]);
-    const core = await execute("Validate and publish through a draft", github, env);
+    github.paginate.mockResolvedValue([release]);
+    const core = await execute("Validate and publish through a draft", github, env, false, { ref: "refs/tags/v0.2.0" });
     expect(transport).toHaveBeenCalledTimes(5);
     expect(core.setOutput).toHaveBeenCalledWith("source", source);
     expect(github.rest.repos.createRelease).not.toHaveBeenCalled();
