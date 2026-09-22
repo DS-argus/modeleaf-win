@@ -299,6 +299,9 @@ describe("Scoop bucket public-release promotion", () => {
       expect(transport.calls.filter((call) => call.url === url)).toHaveLength(1);
     }
     expect(transport.calls).toHaveLength(1 + ASSET_BASENAMES.length * 2);
+    expect(
+      transport.calls.filter((call) => call.url.startsWith("https://release-assets.githubusercontent.com/")).length,
+    ).toBe(ASSET_BASENAMES.length);
     expect(transport.calls.every((call) => call.redirect === "manual")).toBe(true);
     expect(transport.calls.every((call) => !call.hasAuthorization)).toBe(true);
     expect(transport.calls.every((call) => call.credentials === "omit")).toBe(true);
@@ -446,15 +449,42 @@ describe("Scoop bucket public-release promotion", () => {
     await expectNoOutputAndUnchangedArtifacts(fixture, before);
   });
 
-  it("rejects a non-HTTPS release asset redirect", async () => {
+  it.each([
+    {
+      name: "non-HTTPS host",
+      redirectUrl: (name: string) => `http://release-assets.example.invalid/${encodeURIComponent(name)}`,
+    },
+    {
+      name: "hostile public HTTPS host",
+      redirectUrl: (name: string) => `https://downloads.example.invalid/${encodeURIComponent(name)}`,
+    },
+    {
+      name: "localhost",
+      redirectUrl: (name: string) => `https://localhost/${encodeURIComponent(name)}`,
+    },
+    {
+      name: "private IP",
+      redirectUrl: (name: string) => `https://192.168.1.10/${encodeURIComponent(name)}`,
+    },
+    {
+      name: "nondefault port",
+      redirectUrl: (name: string) => `https://release-assets.githubusercontent.com:8443/${encodeURIComponent(name)}`,
+    },
+    {
+      name: "fragment",
+      redirectUrl: (name: string) => `https://release-assets.githubusercontent.com/modeleaf-test/${encodeURIComponent(name)}#fragment`,
+    },
+    {
+      name: "empty fragment",
+      redirectUrl: (name: string) => `https://release-assets.githubusercontent.com/modeleaf-test/${encodeURIComponent(name)}#`,
+    },
+  ])("rejects a $name release asset redirect", async ({ redirectUrl }) => {
     const fixture = await createFixture();
     const before = await artifactSnapshot(fixture.artifacts);
-    const transport = createFetchHarness(releaseFixture(fixture), fixture, {
-      redirectUrl: (name) => `http://release-assets.example.invalid/${encodeURIComponent(name)}`,
-    });
+    const transport = createFetchHarness(releaseFixture(fixture), fixture, { redirectUrl });
 
     await expect(prepareScoopBucket(bucketOptions(fixture, transport.fetch))).rejects.toThrow(
-      /redirect must remain credential-free HTTPS/iu,
+      /redirect (?:must remain credential-free HTTPS|destination is not allowlisted)/iu,
     );
     await expectNoOutputAndUnchangedArtifacts(fixture, before);
   });
