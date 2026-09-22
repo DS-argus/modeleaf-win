@@ -45,6 +45,7 @@ function api() {
 async function execute(name: string, github: ReturnType<typeof api>, env: Record<string, string> = {}, privateRepository = false, overrideContext = {}) {
   const step = [...job.steps, ...workflow.jobs.promote.steps].find((entry: { name: string }) => entry.name === name);
   const core = {
+    exportVariable: vi.fn(),
     setOutput: vi.fn(), info: vi.fn(), setFailed: vi.fn((message: string) => { throw new Error(message); }),
     summary: { addHeading: vi.fn().mockReturnThis(), addRaw: vi.fn().mockReturnThis(), write: vi.fn().mockResolvedValue(undefined) },
   };
@@ -174,6 +175,16 @@ async function publicFixture(version = "1.2.3") {
 
 describe("explicit protected publication-to-promotion linkage", () => {
   const promote = workflow.jobs.promote;
+  it("initializes promotion paths only after a runner exists", async () => {
+    expect(JSON.stringify(promote.env)).not.toContain("runner.");
+    const setup = promote.steps.findIndex((step: { name: string }) => step.name === "Set promotion output directories");
+    const download = promote.steps.findIndex((step: { name: string }) => step.name === "Download exact reviewed bytes");
+    expect(setup).toBeGreaterThan(0);
+    expect(setup).toBeLessThan(download);
+    const core = await execute("Set promotion output directories", api());
+    expect(core.exportVariable).toHaveBeenCalledWith("ARTIFACT_DIRECTORY", join(tmpdir(), "modeleaf-reviewed-release"));
+    expect(core.exportVariable).toHaveBeenCalledWith("VERIFIED_DIRECTORY", join(tmpdir(), "modeleaf-public-verified"));
+  });
   it("uses a successful same-workflow dependency, pinned trusted source and read-only source token", () => {
     expect(promote.needs).toBe("publish");
     expect(promote.if).toBe("github.repository == 'DS-argus/modeleaf-win' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.event.repository.private == false");

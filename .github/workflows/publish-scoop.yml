@@ -69,15 +69,18 @@
       "concurrency": { "group": "scoop-bucket-modeleaf", "cancel-in-progress": false },
       "env": {
         "APPROVED_SOURCE_SHA": "${{ needs.publish.outputs.source }}",
-        "APPROVED_ZIP_SHA256": "${{ needs.publish.outputs.zip }}",
-        "ARTIFACT_DIRECTORY": "${{ runner.temp }}/modeleaf-reviewed-release",
-        "VERIFIED_DIRECTORY": "${{ runner.temp }}/modeleaf-public-verified"
+        "APPROVED_ZIP_SHA256": "${{ needs.publish.outputs.zip }}"
       },
       "steps": [
         {
           "name": "Check out approved source only",
           "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
           "with": { "ref": "${{ needs.publish.outputs.source }}", "persist-credentials": false }
+        },
+        {
+          "name": "Set promotion output directories",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "with": { "script": "const { join } = require('node:path');\ncore.exportVariable('ARTIFACT_DIRECTORY', join(process.env.RUNNER_TEMP, 'modeleaf-reviewed-release'));\ncore.exportVariable('VERIFIED_DIRECTORY', join(process.env.RUNNER_TEMP, 'modeleaf-public-verified'));" }
         },
         {
           "name": "Set up pinned Node.js",
