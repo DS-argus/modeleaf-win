@@ -444,6 +444,17 @@ function unicodePdf() {
   ];
   return pdf(objects);
 }
+/** QA-only stress fixture; reuse the deterministic writer without changing golden assets. */
+export function createMixedGeometryFixture() {
+  return document(Array.from({ length: 40 }, (_, index) => {
+    const [width, height] = index === 12 || index === 15 || index === 27
+      ? [1080.12, 779.88] : index % 3 === 1 ? [595.32, 841.92] : [540, 780];
+    return {
+      mediaBox: `[0 0 ${width} ${height}]`, resources: font,
+      content: `BT /F1 14 Tf 40 ${height - 40} Td (Generated geometry page ${index + 1}) Tj ET`,
+    };
+  }));
+}
 export function createGoldenFixtures() {
   const locked = createAdversarialPdfs().get(
     "password-user-modeleaf.pdf",

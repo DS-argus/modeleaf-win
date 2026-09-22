@@ -35,6 +35,8 @@ fn event() -> DiagnosticEvent {
         generation: Some(3),
         stage: None,
         os_code: None,
+        renderer_code: None,
+        http_status: None,
     }
 }
 

@@ -1,6 +1,8 @@
 import { getDocument, GlobalWorkerOptions, AnnotationMode } from "pdfjs-dist";
+import { clampReaderScale } from "../../src/domain/navigation/ZoomPolicy";
 import { PDFJS_POLICY } from "../../src/pdf/PdfJsPolicy";
-import { type PdfLoadingTask } from "../../src/pdf/PdfReaderController";
+import type { PdfViewportAnchor } from "../../src/pdf/PdfViewportAnchor";
+import { type PdfLoadingTask, type PdfPage, type PdfRenderTask } from "../../src/pdf/PdfReaderController";
 import { PdfTabSession, publishActivateAndAdoptPdfTab } from "../../src/pdf/PdfTabSession";
 import { ResourceReservationManager } from "../../src/pdf/ResourceBudget";
 import { TabWorkspace } from "../../src/core/TabWorkspace";
@@ -9,13 +11,58 @@ import "../../src/styles/app.css";
 
 // Real PDF.js/DOM/session QA with in-memory native authority. No Tauri calls,
 // user PDF paths, persistent state, native windows, or external URL activation.
+// The fit-geometry matrix may delay only the PDF.js page.render task settlement. This is a QA wrapper around real PDF.js, never product timing or a test sleep.
+// These layout cases pass in-memory data, not the native range/assembly path.
+const unexpectedAssemblyIo = async (): Promise<never> => { throw new Error("Data-only QA must not issue native assembly I/O"); };
+const dataOnlyAssembly = () => ({ reserve: unexpectedAssemblyIo, cancel: unexpectedAssemblyIo, release: unexpectedAssemblyIo, finish: async () => undefined });
+const fitDelayQuery = Number(new URLSearchParams(location.search).get("fitDelay") ?? "0");
+if (![0, 120].includes(fitDelayQuery)) throw new Error(`Unsupported fit render delay: ${fitDelayQuery}`);
+const fitRenderDelayMilliseconds = fitDelayQuery;
+const delayedPdfPages = new WeakSet<object>();
+const delayPdfRenderCompletion = (task: PdfRenderTask, milliseconds: number): PdfRenderTask => {
+  if (milliseconds === 0) return task;
+  const promise = new Promise<void>((resolve, reject) => {
+    const settle = (callback: () => void): void => { setTimeout(callback, milliseconds); };
+    void task.promise.then(() => settle(resolve), (error: unknown) => settle(() => reject(error)));
+  });
+  return { promise, cancel: () => task.cancel() };
+};
+const wrapPdfPageForQaDelay = (page: PdfPage): PdfPage => {
+  if (fitRenderDelayMilliseconds === 0 || delayedPdfPages.has(page)) return page;
+  delayedPdfPages.add(page);
+  const originalRender = page.render.bind(page);
+  const mutablePage = page as PdfPage & { render: PdfPage["render"] };
+  mutablePage.render = (options) => delayPdfRenderCompletion(originalRender(options), fitRenderDelayMilliseconds);
+  return mutablePage;
+};
+const wrapPdfLoadingTaskForQaDelay = (task: PdfLoadingTask): PdfLoadingTask => {
+  if (fitRenderDelayMilliseconds === 0) return task;
+  const promise = task.promise.then((document) => {
+    const originalGetPage = document.getPage.bind(document);
+    document.getPage = async (pageNumber) => wrapPdfPageForQaDelay(await originalGetPage(pageNumber));
+    return document;
+  });
+  const wrapped = { promise, destroy: () => task.destroy() } as PdfLoadingTask;
+  Object.defineProperty(wrapped, "onPassword", {
+    configurable: true,
+    get: () => task.onPassword,
+    set: (value: PdfLoadingTask["onPassword"]) => { task.onPassword = value; },
+  });
+  Object.defineProperty(wrapped, "onProgress", {
+    configurable: true,
+    get: () => task.onProgress,
+    set: (value: PdfLoadingTask["onProgress"]) => { task.onProgress = value; },
+  });
+  return wrapped;
+};
 GlobalWorkerOptions.workerSrc = new URL(PDFJS_POLICY.assets.workerSrc, `${location.origin}/`).href;
 const host = document.querySelector<HTMLElement>("#host")!;
+if (new URLSearchParams(location.search).get("tall") === "true") host.style.height = "800px";
 const hiddenOpening = new URLSearchParams(location.search).get("hidden") === "true";
 host.hidden = hiddenOpening;
 if (hiddenOpening && (host.clientWidth !== 0 || host.clientHeight !== 0)) throw new Error("Hidden opening fixture must have zero layout size");
 const fixture = new URLSearchParams(location.search).get("fixture") ?? "fixture-L-text-300.pdf";
-if (!["fixture-L-text-300.pdf", "print-mixed-rotation-4.pdf"].includes(fixture)) throw new Error("Unsupported reader QA fixture");
+if (!["fixture-L-text-300.pdf", "print-mixed-rotation-4.pdf", "mixed-geometry-40.pdf"].includes(fixture)) throw new Error("Unsupported reader QA fixture");
 const response = await fetch(`/fixtures/pdf/${fixture}`);
 if (!response.ok) throw new Error(`Fixture load failed: ${response.status}`);
 const bytes = new Uint8Array(await response.arrayBuffer());
@@ -24,13 +71,14 @@ const statuses: string[] = [];
 const opened = { sessionId: "headless-layout", documentGeneration: 1, length: bytes.length, displayName: fixture };
 const session = new PdfTabSession({
   native: {
+    assembly: dataOnlyAssembly,
     openPdfDialog: async () => opened,
     cancelSession: async () => ({ barrierId: 1 }),
     closeSession: async () => undefined,
   },
   pdf: {
     annotationMode: AnnotationMode.DISABLE,
-    getDocument: (options) => getDocument({ ...options, url: undefined, range: undefined, data: bytes.slice() }) as unknown as PdfLoadingTask,
+    getDocument: (options) => wrapPdfLoadingTaskForQaDelay(getDocument({ ...options, url: undefined, range: undefined, data: bytes.slice() }) as unknown as PdfLoadingTask),
   },
   resources,
   canvasHost: host,
@@ -184,6 +232,7 @@ Object.assign(window, { readerHarness: {
       requireInvariant(retiredStyleTokens.length === 0, `Retired reader styling remains loaded: ${retiredStyleTokens.join(", ")}`);
       linkSession = new PdfTabSession({
         native: {
+          assembly: dataOnlyAssembly,
           openPdfDialog: async () => linkOpened,
           cancelSession: async (metadata) => {
             requireInvariant(metadata.sessionId === linkOpened.sessionId, "Link fixture native cancellation targeted the wrong session");
@@ -476,6 +525,7 @@ Object.assign(window, { readerHarness: {
     try {
       landingSession = new PdfTabSession({
         native: {
+          assembly: dataOnlyAssembly,
           openPdfDialog: async () => landingOpened,
           cancelSession: async (metadata) => {
             requireInvariant(metadata.sessionId === landingOpened.sessionId, "Link landing cancellation targeted the wrong native session");
@@ -686,148 +736,105 @@ Object.assign(window, { readerHarness: {
     };
   },
   async runChrome() {
-    // Execute the dev-transformed production renderer fragments and pure fitter, not copied UI layout logic.
-    const code = await (await fetch("/src/main.ts")).text();
     const raw = (await import("../../src/main.ts?raw")).default as string;
     const chooser = await import("../../src/ui/OpenChooserModel");
-    const recentPathPresentation = await import("../../src/ui/RecentPathPresentation");
-    const accessibility = await import("../../src/ui/AccessibilityController");
-    const strip = document.createElement("div");
-    strip.className = "tab-strip";
-    strip.setAttribute("role", "tablist");
-    document.body.prepend(strip);
-    const names = ["a.pdf", "A considerably longer research document filename.pdf", "한글 문서 이름.pdf"];
-    const tabs = names.map((title, index) => ({ id: index + 1, payload: { session: { snapshot: { title } } } }));
-    const tabStart = code.indexOf("tabStrip.replaceChildren(");
-    const tabEnd = code.indexOf("function cancelPagePromptOwnership", tabStart);
-    requireInvariant(tabStart >= 0 && tabEnd > tabStart, "Production tab renderer was not found");
-    const tabBody = code.slice(tabStart, tabEnd).trim().replace(/\}\s*$/u, "");
-    const unusedAction = () => { throw new Error("Layout QA does not dispatch native actions"); };
-    new Function("documentTabs", "workspace", "tabStrip", "tabAccessibilitySemantics", "switchTab", "closeTab", tabBody)(tabs, { activeTabId: 3 }, strip, accessibility.tabAccessibilitySemantics, unusedAction, unusedAction);
-    const dimensions = [...strip.querySelectorAll<HTMLElement>(".workspace-tab-item")].map(item => {
-      const rect = item.getBoundingClientRect();
-      const label = item.querySelector<HTMLElement>(".workspace-tab")!;
-      return { width: rect.width, height: rect.height, labelWidth: label.clientWidth, labelScrollWidth: label.scrollWidth, title: label.title };
-    });
-    requireInvariant(dimensions.every(size => Math.abs(size.width - 184) <= 0.1 && Math.abs(size.height - 26) <= 0.1), "Tab sizes depend on filenames");
-    requireInvariant(dimensions[1]!.labelScrollWidth > dimensions[1]!.labelWidth, "Long tab title did not exercise ellipsis");
-    const activeBounds = strip.querySelector<HTMLElement>('[aria-selected="true"]')!.getBoundingClientRect();
+    const { createRecentChooserRenderer } = await import("../../src/ui/RecentChooserRenderer");
+    const { createTabStripRenderer } = await import("../../src/ui/shell/TabStripRenderer");
+    const { commandPaletteKeyAction } = await import("../../src/ui/CommandPaletteModel");
+    const { THEMES, THEME_TOKENS, themeContrastEndpoint } = await import("../../src/domain/theme/Theme");
+    const theme = THEMES.find(value => value.id === "tokyo-night")!;
+    for (const token of THEME_TOKENS) document.documentElement.style.setProperty(`--theme-${token}`, theme.palette[token]);
+    document.documentElement.style.setProperty("--theme-contrast", themeContrastEndpoint(theme.palette));
+    const strip = document.createElement("div"); strip.className = "tab-strip"; strip.setAttribute("role", "tablist"); document.body.prepend(strip);
+    const tabRenderer = createTabStripRenderer(strip, { activate: () => undefined, close: () => undefined });
+    const titles = ["a.pdf", "A considerably longer research document filename.pdf", "한글 문서 이름.pdf"];
+    tabRenderer.render(titles.map((title, index) => ({ id: String(index), title, selected: index === 2 })));
+    const dimensions = [...strip.querySelectorAll<HTMLElement>(".workspace-tab-item")].map(item => ({ width: item.getBoundingClientRect().width, height: item.getBoundingClientRect().height }));
+    requireInvariant(dimensions.every(value => Math.abs(value.height - 26) <= 0.1 && value.width >= 40 && value.width <= 184.1), "Tab geometry outside responsive bounds");
+    if (strip.clientWidth >= titles.length * 184) requireInvariant(dimensions.every(value => Math.abs(value.width - 184) <= 0.1), "Unconstrained tab widths depend on filenames");
+    const tabLabels = [...strip.querySelectorAll<HTMLElement>(".workspace-tab")];
+    requireInvariant(tabLabels[1]!.scrollWidth > tabLabels[1]!.clientWidth, "Long tab title did not exercise ellipsis");
+    const selectedTab = strip.querySelector<HTMLElement>('[aria-selected="true"]')!.getBoundingClientRect();
     const stripBounds = strip.getBoundingClientRect();
-    requireInvariant(activeBounds.left >= stripBounds.left - 1 && activeBounds.right <= stripBounds.right + 1, "Selected tab is clipped outside strip");
+    requireInvariant(selectedTab.left >= stripBounds.left - 1 && selectedTab.right <= stripBounds.right + 1, "Selected tab clipped outside strip");
     const markup = raw.match(/<dialog id="file-opener-dialog"[\s\S]*?<\/dialog>/u)?.[0];
-    requireInvariant(markup !== undefined, "Production chooser markup was not found");
+    requireInvariant(markup !== undefined, "Chooser markup unavailable");
     document.body.insertAdjacentHTML("beforeend", markup!);
     const dialog = document.querySelector<HTMLDialogElement>("#file-opener-dialog")!;
     const list = dialog.querySelector<HTMLElement>("#file-opener-list")!;
-    const chooserStart = code.indexOf("function renderFileOpener()");
-    const chooserEnd = code.indexOf("let clearingRecents", chooserStart);
-    requireInvariant(chooserStart >= 0 && chooserEnd > chooserStart, "Production chooser renderer was not found");
-    const chooserRenderer = new Function(
-      "fileOpenerList", "chooserRows", "selectChooserIndex", "dispatchFileOpenerEntry", "fitRecentPath",
-      `let fileOpenerModel;${code.slice(chooserStart, chooserEnd)};return {render(model){fileOpenerModel=model;renderFileOpener();},dispose(){stopFileOpenerPathFitting();}};`,
-    )(list, chooser.chooserRows, chooser.selectChooserIndex, unusedAction, recentPathPresentation.fitRecentPath) as {
-      render(model: ReturnType<typeof chooser.createOpenChooser>): void;
-      dispose(): void;
+    const input = dialog.querySelector<HTMLInputElement>("input")!;
+    const directoryEntry = { recentId: "qa-directory", displayName: "research-report.pdf", displayPath: `C:\\Research\\${"Long directory\\".repeat(18)}research-report.pdf` };
+    const longName = `${"긴보고서".repeat(30)}.pdf`;
+    const filenameEntry = { recentId: "qa-filename", displayName: longName, displayPath: `\\\\qa.example.invalid\\share$\\Documents\\${longName}` };
+    const resizeEntry = { recentId: "qa-resize", displayName: "moderately-long-filename-for-resize-check.pdf", displayPath: "E:\\QA\\moderately-long-filename-for-resize-check.pdf" };
+    const entries = [directoryEntry, filenameEntry, resizeEntry, ...Array.from({ length: 12 }, (_, index) => ({ recentId: `qa-${index}`, displayName: `Generated-report-${index}.pdf`, displayPath: `\\\\qa.example.invalid\\share$\\${"generated-folder\\".repeat(10)}Generated-report-${index}.pdf` }))];
+    const aliases = new Map([[filenameEntry.recentId, `V:\\Documents\\${longName}`]]);
+    let model = chooser.createOpenChooser({ tag: "READY", snapshot: { revision: "1", entries: [] } });
+    const activated: string[] = [];
+    const renderer = createRecentChooserRenderer(list, index => {
+      model = chooser.selectChooserIndex(model, index);
+      const row = chooser.chooserRows(model)[index];
+      if (row?.kind === "recent") activated.push(row.recentId);
+    });
+    const render = () => renderer.render(chooser.chooserRows(model), model.activeIndex, undefined, aliases);
+    const onKey = (event: KeyboardEvent) => {
+      const action = commandPaletteKeyAction(event);
+      if (action !== "next" && action !== "previous") return;
+      event.preventDefault(); model = chooser.moveChooserSelection(model, action === "next" ? 1 : -1); render();
     };
-    const renderChooser = (entries: { recentId: string; displayName: string; displayPath: string }[]) => {
-      chooserRenderer.render(chooser.createOpenChooser({ tag: "READY", snapshot: { revision: "1", entries } }));
+    dialog.addEventListener("keydown", onKey);
+    const settle = async () => { await frame(); await frame(); await frame(); };
+    const samples: unknown[] = [];
+    const verify = (label: string) => {
+      requireInvariant(list.scrollWidth <= list.clientWidth, `History horizontal overflow at ${label}: ${list.scrollWidth}/${list.clientWidth}`);
+      for (const button of list.querySelectorAll<HTMLButtonElement>(".file-opener-recent")) {
+        const path = button.querySelector<HTMLElement>(".file-opener-recent-path")!;
+        const style = getComputedStyle(button);
+        const available = button.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
+        requireInvariant(style.fontSize === "13px" && button.style.fontSize === "", "History font was shrunk");
+        requireInvariant(path.getBoundingClientRect().width <= available + 1, `Hidden clipping is not a fitting solution: ${label}`);
+        requireInvariant(path.textContent!.endsWith(".pdf"), "PDF extension lost in fitted row");
+      }
+      samples.push({ label, width: list.clientWidth, scrollWidth: list.scrollWidth, height: list.clientHeight, selected: model.activeIndex });
     };
-    renderChooser([]);
-    requireInvariant(list.querySelector(".file-opener-recents-heading") === null, "Empty recents has an orphan divider");
-    const longDirectoryEntry = {
-      recentId: "qa-directory",
-      displayName: "research-report.pdf",
-      displayPath: `C:\\Research\\${"Long directory\\".repeat(18)}research-report.pdf`,
-    };
-    const longFilenameEntry = {
-      recentId: "qa-filename",
-      displayName: `${"긴보고서".repeat(30)}.pdf`,
-      displayPath: `D:\\Documents\\${"긴보고서".repeat(30)}.pdf`,
-    };
-    const resizeEntry = {
-      recentId: "qa-resize",
-      displayName: "moderately-long-filename-for-resize-check.pdf",
-      displayPath: "E:\\QA\\moderately-long-filename-for-resize-check.pdf",
-    };
-    const entries = [longDirectoryEntry, longFilenameEntry, resizeEntry];
-    renderChooser(entries);
-    dialog.style.width = "270px";
-    dialog.showModal();
-    const settleLayout = async () => { await frame(); await frame(); await frame(); };
-    await settleLayout();
-    const buttonFor = (entry: typeof entries[number]) => {
-      const button = [...list.querySelectorAll<HTMLButtonElement>(".file-opener-recent")].find(candidate => candidate.title === entry.displayPath);
-      requireInvariant(button !== undefined, `Recent row was not rendered: ${entry.recentId}`);
-      return button!;
-    };
-    const narrowResizeFont = Number.parseFloat(getComputedStyle(buttonFor(resizeEntry)).fontSize);
-    requireInvariant(narrowResizeFont < 13, "Narrow recent row did not shrink from its base font");
-    // 460px is the production dialog width at the 480px viewport breakpoint.
-    dialog.style.width = "min(460px, calc(100vw - 20px))";
-    await settleLayout();
-    const browse = list.querySelector<HTMLElement>(".file-opener-browse")!;
-    const heading = list.querySelector<HTMLElement>(".file-opener-recents-heading")!;
-    requireInvariant(browse.childElementCount === 0 && browse.textContent === "Browse...", "Browse glyph was not removed");
-    const browseStyle = getComputedStyle(browse);
-    requireInvariant([browseStyle.borderTopWidth, browseStyle.borderRightWidth, browseStyle.borderBottomWidth, browseStyle.borderLeftWidth].every(width => Number.parseFloat(width) === 0), "Browse retained a visible border");
-    browse.focus();
-    await frame();
-    requireInvariant(Number.parseFloat(getComputedStyle(browse).outlineWidth) >= 2, "Browse keyboard focus outline is missing");
-    requireInvariant(Number.parseFloat(getComputedStyle(heading).borderTopWidth) >= 1, "Recent divider is not visible");
-    const assertFittedRow = (entry: typeof entries[number]) => {
-      const button = buttonFor(entry);
-      const directory = button.querySelector<HTMLElement>(".file-opener-recent-directory")!;
-      const filename = button.querySelector<HTMLElement>(".file-opener-recent-filename")!;
-      const style = getComputedStyle(button);
-      const contentWidth = button.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight);
-      const visibleWidth = directory.getBoundingClientRect().width + filename.getBoundingClientRect().width;
-      requireInvariant(filename.textContent === entry.displayName, `Recent filename was changed: ${entry.recentId}`);
-      requireInvariant(filename.getBoundingClientRect().right <= button.getBoundingClientRect().right - Number.parseFloat(style.paddingRight) + 1, `Recent filename is clipped: ${entry.recentId}`);
-      requireInvariant(visibleWidth <= contentWidth + 1, `Recent path exceeds its row: ${entry.recentId}`);
-      requireInvariant(button.getAttribute("aria-label") === entry.displayPath && button.title === entry.displayPath, `Recent full path is not accessible: ${entry.recentId}`);
-      return { button, directory, filename, fontSize: Number.parseFloat(style.fontSize), visibleText: directory.textContent! + filename.textContent!, visibleWidth, contentWidth };
-    };
-    const directoryFit = assertFittedRow(longDirectoryEntry);
-    requireInvariant(directoryFit.directory.textContent!.startsWith("C:\\") && directoryFit.directory.textContent!.includes("…"), "Directory was not middle-truncated with its root visible");
-    const filenameFit = assertFittedRow(longFilenameEntry);
-    requireInvariant(filenameFit.fontSize < 13, "Long filename was not fitted by shrinking the row font");
-    const resizeFit = assertFittedRow(resizeEntry);
-    requireInvariant(Math.abs(resizeFit.fontSize - 13) <= 0.01 && resizeFit.visibleText === resizeEntry.displayPath, "Wider chooser did not restore the full path and base font");
-    const dispatchStart = code.indexOf("function dispatchFileOpenerEntry()");
-    const dispatchEnd = code.indexOf("async function openFileOpener", dispatchStart);
-    const dispatchSource = code.slice(dispatchStart, dispatchEnd);
-    requireInvariant(dispatchSource.includes("openRecentDocument(invoke, row.recentId)") && !dispatchSource.includes("openRecentDocument(invoke, row.displayPath)"), "Recent display path replaced opaque ID open authority");
-    if (matchMedia("(forced-colors: active)").matches) requireInvariant([...dialog.querySelectorAll("kbd")].every(key => getComputedStyle(key).color === getComputedStyle(heading).color), "Forced-color shortcut hints do not use CanvasText");
-    const bounds = dialog.getBoundingClientRect();
-    requireInvariant(bounds.width > 0 && bounds.width <= Math.min(460, innerWidth - 20) + 1, "Chooser exceeded its 480px-breakpoint width");
-    requireInvariant(bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight, "Chooser exceeds viewport");
-    const stripWidth = strip.clientWidth;
-    const stripScrollWidth = strip.scrollWidth;
-    const stripScrollLeft = strip.scrollLeft;
-    const browseText = browse.textContent;
-    const divider = getComputedStyle(heading).borderTop;
-    chooserRenderer.dispose();
-    dialog.close();
-    dialog.remove();
-    strip.remove();
-    await finish();
-    return {
-      dimensions,
-      stripWidth,
-      stripScrollWidth,
-      stripScrollLeft,
-      browse: browseText,
-      divider,
-      recentPaths: {
-        directory: directoryFit.visibleText,
-        longFilename: filenameFit.filename.textContent,
-        longFilenameFontSize: filenameFit.fontSize,
-        narrowResizeFont,
-        restoredResizeFont: resizeFit.fontSize,
-      },
-      dialog: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height },
-      disposed: true,
-    };
+    try {
+      render(); requireInvariant(list.querySelector(".file-opener-recents-heading") === null, "Empty history has an orphan heading");
+      dialog.style.width = "270px"; dialog.showModal();
+      model = chooser.createOpenChooser({ tag: "READY", snapshot: { revision: "1", entries } }); render(); await settle(); verify("narrow");
+      const buttonFor = (entry: typeof entries[number]) => [...list.querySelectorAll<HTMLButtonElement>(".file-opener-recent")].find(button => button.title === entry.displayPath)!;
+      const narrowText = buttonFor(resizeEntry).textContent!;
+      requireInvariant(narrowText.includes("…"), "Narrow filename did not exercise truncation");
+      requireInvariant(buttonFor(filenameEntry).textContent!.startsWith("V:"), "Mapped letter not displayed");
+      requireInvariant(buttonFor(filenameEntry).title === filenameEntry.displayPath, "Canonical tooltip lost");
+      requireInvariant(buttonFor(filenameEntry).getAttribute("aria-label") === aliases.get(filenameEntry.recentId), "Full display alias is inaccessible");
+      const browse = list.querySelector<HTMLElement>(".file-opener-browse")!;
+      const heading = list.querySelector<HTMLElement>(".file-opener-recents-heading")!;
+      requireInvariant(browse.childElementCount === 0 && browse.textContent === "Browse...", "Browse glyph was not removed");
+      const browseStyle = getComputedStyle(browse);
+      requireInvariant([browseStyle.borderTopWidth, browseStyle.borderRightWidth, browseStyle.borderBottomWidth, browseStyle.borderLeftWidth].every(value => Number.parseFloat(value) === 0), "Browse retained a border");
+      browse.focus(); await frame();
+      requireInvariant(Number.parseFloat(getComputedStyle(browse).outlineWidth) >= 2, "Browse keyboard focus outline missing");
+      requireInvariant(Number.parseFloat(getComputedStyle(heading).borderTopWidth) >= 1, "Recent divider missing");
+      if (matchMedia("(forced-colors: active)").matches) requireInvariant([...dialog.querySelectorAll("kbd")].every(key => getComputedStyle(key).color === getComputedStyle(heading).color), "Forced-color hints lost CanvasText");
+      const original = [...list.querySelectorAll("button")];
+      const text = original.map(button => button.textContent);
+      input.focus({ preventScroll: true });
+      const height = list.clientHeight;
+      for (let index = 0; index < 24; index += 1) {
+        dialog.dispatchEvent(new KeyboardEvent("keydown", { key: index < 16 ? "j" : "k", ctrlKey: true, bubbles: true }));
+        verify(`key-${index}`); await frame(); verify(`paint-${index}`);
+        requireInvariant(original.every((button, position) => list.querySelectorAll("button")[position] === button && button.textContent === text[position]), "Selection rebuilt or refitted existing rows");
+        requireInvariant(list.clientHeight === height, "Selection changed history viewport height");
+      }
+      buttonFor(filenameEntry).click();
+      requireInvariant(activated.at(-1) === filenameEntry.recentId, "Display path became opening authority");
+      dialog.style.removeProperty("width"); await settle(); verify("wide");
+      requireInvariant(buttonFor(resizeEntry).textContent!.length >= narrowText.length, "Wider viewport did not restore text context");
+      if (innerWidth >= 800) requireInvariant(buttonFor(resizeEntry).textContent === resizeEntry.displayPath, "Wider viewport failed to restore full path");
+      const bounds = dialog.getBoundingClientRect();
+      requireInvariant(bounds.left >= 0 && bounds.right <= innerWidth + 1 && bounds.top >= 0 && bounds.bottom <= innerHeight + 1, "History exceeds viewport");
+      return { dimensions, samples, dpr: devicePixelRatio, activated, mappedDisplay: buttonFor(filenameEntry).textContent, fixedFont: getComputedStyle(buttonFor(filenameEntry)).fontSize, syntheticKeyboard: true };
+    } finally { dialog.removeEventListener("keydown", onKey); renderer.stop(); dialog.close(); dialog.remove(); strip.remove(); await finish(); }
   },
   async runTabClose() {
     const landing = await session.navigatePagePrompt(12);
@@ -846,7 +853,7 @@ Object.assign(window, { readerHarness: {
     secondHost.style.cssText = "width:800px;height:600px;max-width:100vw;box-sizing:border-box";
     document.body.append(secondHost);
     const second = new PdfTabSession({
-      native: { openPdfDialog: async () => opened, cancelSession: async () => ({ barrierId: 1 }), closeSession: async () => undefined },
+      native: { assembly: dataOnlyAssembly, openPdfDialog: async () => opened, cancelSession: async () => ({ barrierId: 1 }), closeSession: async () => undefined },
       pdf: { annotationMode: AnnotationMode.DISABLE, getDocument: (options) => getDocument({ ...options, url: undefined, range: undefined, data: bytes.slice() }) as unknown as PdfLoadingTask },
       resources, canvasHost: secondHost,
       createContentOptions: () => ({
@@ -883,6 +890,245 @@ Object.assign(window, { readerHarness: {
     requireInvariant(restored.page === before.page && restored.mode === before.mode && Math.abs(restored.scale - before.scale) < 0.000001 && Math.abs(restored.top - before.top) <= 1, "Tab restoration changed its page, zoom, or position");
     await finish();
     return { before, restored, active: true, disposed: true };
+  },
+  async runLazyGeometry(mode: "continuous-fit" | "custom") {
+    requireInvariant(fixture === "mixed-geometry-40.pdf", "Lazy geometry needs the long mixed fixture");
+    const state = session as unknown as { pendingPresentationRenders: number; presentationSettlements: number;
+      pdfReader: { viewportSettlement?: unknown; current: { residentRasters: Map<number, { viewport: { convertToViewportPoint(x: number, y: number): readonly [number, number] } }> };
+        capturePointerAnchor(offset: { x: number; y: number }): { pageNumber: number; pagePoint: { x: number; y: number }; viewportOffset: { x: number; y: number } } | undefined;
+        captureVisibleScrollAnchor?: () => PdfViewportAnchor | undefined;
+        applyWindowSpacers: (...args: unknown[]) => void;
+      } };
+    const controller = state.pdfReader;
+    const code = await (await fetch("/src/main.ts")).text();
+    const start = code.indexOf("let viewportFrameRequest"), end = code.indexOf("let readerResizeFrame", start);
+    requireInvariant(start >= 0 && end > start, "Production viewport scheduler missing");
+    const failures: string[] = [];
+    const dispose = new Function("host", "session", "active", "reportPresentationFailure", "rootKeyboard", "render", "cancelLinkHints",
+      code.slice(start, end) + ';return ()=>{viewportDisposed=true;host.removeEventListener("scroll",onReaderScroll);if(viewportFrameRequest!==undefined)cancelAnimationFrame(viewportFrameRequest);};')(
+      host, session, () => ({ session }), (_session: unknown, error: unknown) => failures.push(String(error)), { syncContext() {} }, () => undefined, () => undefined,
+    ) as () => void;
+    const observed = new Set<number>();
+    const shifts: { page: number; dx: number; dy: number; beforeWidth: number; afterWidth: number }[] = [];
+    const samples: unknown[] = [];
+    const originalLayout = controller.applyWindowSpacers;
+    controller.applyWindowSpacers = function (...args) {
+      const anchor = this.captureVisibleScrollAnchor?.() ?? this.capturePointerAnchor({ x: host.clientWidth / 2, y: host.clientHeight / 2 });
+      const canvas = anchor === undefined ? null : host.querySelector<HTMLCanvasElement>(`.pdf-page-frame[data-page="${anchor.pageNumber}"] canvas`);
+      const raster = anchor === undefined ? undefined : this.current.residentRasters.get(anchor.pageNumber);
+      const measured = anchor !== undefined && observed.has(anchor.pageNumber) && canvas !== null && raster !== undefined
+        && anchor.viewportOffset.x > 0 && anchor.viewportOffset.x < host.clientWidth && anchor.viewportOffset.y > 0 && anchor.viewportOffset.y < host.clientHeight;
+      const point = measured ? raster!.viewport.convertToViewportPoint(anchor!.pagePoint.x, anchor!.pagePoint.y) : undefined;
+      const before = canvas?.getBoundingClientRect();
+      const beforeWidth = host.scrollWidth;
+      originalLayout.apply(this, args);
+      if (point !== undefined && before !== undefined && canvas !== null) queueMicrotask(() => {
+        if (!canvas.isConnected) return;
+        const after = canvas.getBoundingClientRect();
+        shifts.push({ page: anchor!.pageNumber, dx: after.left + point[0] - (before.left + point[0]), dy: after.top + point[1] - (before.top + point[1]), beforeWidth, afterWidth: host.scrollWidth });
+      });
+    };
+    const settle = async () => {
+      let previous = "", stable = 0;
+      for (let index = 0; index < 400; index += 1) {
+        await frame();
+        for (const canvas of host.querySelectorAll<HTMLCanvasElement>("canvas")) observed.add(Number(canvas.dataset.page));
+        const key = JSON.stringify({ ...snapshot(), left: host.scrollLeft, width: host.scrollWidth, clientHeight: host.clientHeight });
+        stable = !state.pendingPresentationRenders && !state.presentationSettlements && !controller.viewportSettlement && resources.snapshot().totals.render === 0 && key === previous ? stable + 1 : 0;
+        previous = key;
+        if (stable >= 4) return;
+      }
+      throw new Error("Lazy viewport did not settle");
+    };
+    try {
+      if (mode === "custom") requireInvariant(await session.requestKeyboardView({ type: "view.zoom", factor: 1 }), "Custom-mode setup failed");
+      await settle();
+      const scale = session.snapshot.reader.customScale;
+      const initialWidth = host.scrollWidth;
+      let sawWidePage = false;
+      for (let step = 0; step < 30; step += 1) {
+        host.scrollTop += host.clientHeight * 0.45;
+        await settle();
+        const sample = { step, ...snapshot(), width: host.scrollWidth, clientHeight: host.clientHeight, left: host.scrollLeft };
+        samples.push(sample);
+        requireInvariant(Math.abs(sample.scale - scale) < 1e-10, `Passive geometry changed fit scale: ${JSON.stringify({ expected: scale, sample })}`);
+        const jump = shifts.find(value => Math.abs(value.dx) > 1 + 1e-6 || Math.abs(value.dy) > 1 + 1e-6);
+        requireInvariant(jump === undefined, `Lazy layout moved the visible PDF point: ${JSON.stringify(jump)}`);
+        if (host.scrollWidth > initialWidth + 1) { sawWidePage = true; break; }
+      }
+      requireInvariant(sawWidePage, "Stress fixture did not discover a wider overscan page");
+      requireInvariant(failures.length === 0, `Viewport failures: ${JSON.stringify(failures)}`);
+      return { mode, dpr: devicePixelRatio, delayMilliseconds: fitRenderDelayMilliseconds, initialWidth, samples, shifts, failures };
+    } finally { controller.applyWindowSpacers = originalLayout; dispose(); await finish(); }
+  },
+  async runKeyboardView() {
+    const samples: { label: string; requested: number; committed: number; raster: number }[] = [];
+    const sample = (label: string) => {
+      const committed = session.committedPresentation;
+      const canvas = host.querySelector<HTMLCanvasElement>('.pdf-page-frame[data-active-page="true"] canvas');
+      requireInvariant(committed !== undefined && canvas !== null, "Keyboard view requires committed presentation");
+      const value = { label, requested: session.snapshot.reader.customScale, committed: committed!.customScale, raster: Number(canvas!.dataset.scale) };
+      requireInvariant(Math.abs(value.committed - value.raster) < 1e-10, `Badge projection led the raster: ${JSON.stringify(value)}`);
+      samples.push(value);
+      return value;
+    };
+    try {
+      requireInvariant((await session.navigatePagePrompt(3)).kind === "verifiedLanding", "Keyboard fixture navigation failed");
+      requireInvariant(await session.requestKeyboardView({ type: "view.actualSize" }), "Actual-size setup failed");
+      requireInvariant(await session.requestKeyboardView({ type: "view.zoom", factor: 2 }), "200% setup failed");
+      const padding = getComputedStyle(host);
+      const availableWidth = host.clientWidth - Number.parseFloat(padding.paddingLeft) - Number.parseFloat(padding.paddingRight);
+      const naturalWidth = Number(host.querySelector<HTMLCanvasElement>('.pdf-page-frame[data-active-page="true"] canvas')?.dataset.naturalWidth);
+      requireInvariant(Number.isFinite(naturalWidth) && naturalWidth > 0, "Missing fitted reference width");
+      const expectedFit = clampReaderScale(availableWidth / naturalWidth);
+      const fitting = session.requestKeyboardView({ type: "view.fitWidth" });
+      const zooming = session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+      requireInvariant(fitting === zooming, "Queued relative zoom must share one owner settlement");
+      sample("fit-minus-requested");
+      requireInvariant(await zooming, "Fit-minus composition failed");
+      const composed = sample("fit-minus-committed");
+      requireInvariant(Math.abs(composed.committed - clampReaderScale(expectedFit / 1.1)) < 1e-10,
+        `Minus used pre-fit scale: ${JSON.stringify({ expectedFit, composed })}`);
+      requireInvariant(await session.requestKeyboardView({ type: "view.fitWidth" }), "Burst fit setup failed");
+      const before = sample("burst-start").committed;
+      let expected = before;
+      let pending: Promise<boolean> | undefined;
+      let progressedDuringInput = false;
+      for (let index = 0; index < 12; index += 1) {
+        expected = clampReaderScale(expected / 1.1);
+        pending = session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+        const observed = sample(`minus-${index}`);
+        if (index < 11 && observed.committed < before) progressedDuringInput = true;
+        await new Promise<void>(resolve => setTimeout(resolve, 120));
+      }
+      requireInvariant(pending !== undefined && await pending, "Keyboard burst did not settle successfully");
+      const after = sample("burst-settled");
+      requireInvariant(progressedDuringInput, "Keyboard producer starved all intermediate commits");
+      requireInvariant(Math.abs(after.committed - expected) < 1e-10, `Queued steps lost intent: ${JSON.stringify({ after, expected })}`);
+      return { delayMilliseconds: fitRenderDelayMilliseconds, dpr: devicePixelRatio, samples, progressedDuringInput, expected, statuses: [...statuses] };
+    } finally { await finish(); }
+  },
+  async runFitPageEdge() {
+    try {
+      requireInvariant(fixture === "print-mixed-rotation-4.pdf" && host.clientHeight === 800, "Edge fixture requires an 800px-tall host");
+      const initialLanding = await session.navigatePagePrompt(3);
+      requireInvariant(initialLanding.kind === "verifiedLanding", `Could not establish narrow reference page: ${JSON.stringify({ initialLanding, snapshot: snapshot(), statuses })}`);
+      session.apply({ type: "view.fitPage" });
+      requireInvariant(await session.renderCurrentView(), "Fit Page setup failed");
+      const before = snapshot();
+      const reference = session.snapshot.reader.fitPageReference;
+      const outcome = await session.navigateAdjacentPage(1);
+      const after = snapshot();
+      requireInvariant(outcome.kind === "verifiedLanding", `Wide target must land at its browser-reachable edge: ${JSON.stringify({ outcome, before, after, width: host.clientWidth, scrollWidth: host.scrollWidth, left: host.scrollLeft })}`);
+      requireInvariant(after.page === 4 && after.mode === "fit-page" && after.scale === before.scale && session.snapshot.reader.fitPageReference === reference,
+        `Edge navigation changed fixed fit reference: ${JSON.stringify({ before, after, reference })}`);
+      requireInvariant((await session.navigateAdjacentPage(-1)).kind === "verifiedLanding", "Reverse edge navigation failed");
+      requireInvariant(session.snapshot.reader.page === 3, "Reverse edge navigation missed the reference page");
+      return { before, after, outcome, reference, dpr: devicePixelRatio, statuses: [...statuses] };
+    } finally { await finish(); }
+  },
+  async runFitGeometry(mode: "fit-width" | "fit-page") {
+    const state = session as unknown as {
+      pendingPresentationRenders: number; presentationSettlements: number; wheelSettlement?: unknown;
+      activityGeneration: number; renderIntent: number; viewportIntent: number;
+      pdfReader: { presentationTopology: string; viewportSettlement?: unknown;
+        getPageNaturalSize(page: number, rotation: number): Promise<{ width: number; height: number } | undefined> };
+    };
+    const controller = state.pdfReader;
+    const code = await (await fetch("/src/main.ts")).text();
+    const start = code.indexOf("let viewportFrameRequest"), end = code.indexOf("let readerResizeFrame", start);
+    requireInvariant(start >= 0 && end > start, "Production scroll scheduler missing");
+    const failures: string[] = [];
+    const dispose = new Function("host", "session", "active", "reportPresentationFailure", "rootKeyboard", "render", "cancelLinkHints",
+      code.slice(start, end) + ';return ()=>{viewportDisposed=true;host.removeEventListener("scroll",onReaderScroll);if(viewportFrameRequest!==undefined)cancelAnimationFrame(viewportFrameRequest);};')(
+      host, session, () => ({ session }), (_session: unknown, error: unknown) => failures.push(String(error)), { syncContext() {} }, () => undefined, () => undefined,
+    ) as () => void;
+    const samples: unknown[] = [];
+    const take = () => {
+      const reader = session.snapshot.reader;
+      const canvas = host.querySelector<HTMLCanvasElement>('.pdf-page-frame[data-active-page="true"] canvas');
+      return { page: reader.page, mode: reader.zoomMode, scale: reader.customScale, reference: reader.fitPageReference,
+        documentGeneration: reader.documentGeneration, activityGeneration: state.activityGeneration, renderIntent: state.renderIntent, viewportIntent: state.viewportIntent,
+        topology: controller.presentationTopology, renderedScale: canvas === null ? null : Number(canvas.dataset.scale),
+        width: host.clientWidth, height: host.clientHeight, scrollWidth: host.scrollWidth, scrollHeight: host.scrollHeight, top: host.scrollTop,
+        pending: state.pendingPresentationRenders + state.presentationSettlements + Number(state.wheelSettlement !== undefined) + Number(controller.viewportSettlement !== undefined),
+        renders: resources.snapshot().totals.render };
+    };
+    const settle = async (label: string, expectedScale?: number) => {
+      let previous = "", stable = 0;
+      const trace: ReturnType<typeof take>[] = [];
+      for (let index = 0; index < 300; index += 1) {
+        await frame();
+        const value = take();
+        trace.push(value);
+        if (expectedScale !== undefined && Math.abs(value.scale - expectedScale) > 1e-10) {
+          throw new Error(`First passive fit-width divergence: ${JSON.stringify({ label, expectedScale, trace })}`);
+        }
+        const key = JSON.stringify(value);
+        stable = value.pending === 0 && value.renders === 0 && key === previous ? stable + 1 : 0;
+        previous = key;
+        if (stable >= 3) { samples.push({ label, frames: trace.length, settled: value }); return value; }
+      }
+      throw new Error(`Fit geometry did not settle: ${JSON.stringify({ label, trace, failures })}`);
+    };
+    const apply = async (action: Parameters<typeof session.apply>[0], label: string) => {
+      session.apply(action);
+      requireInvariant(await session.renderCurrentView(), `${label} render failed`);
+      return settle(label);
+    };
+    const assertFinalFit = async (label: string) => {
+      const fitted = await apply({ type: "view.fitPage" }, label);
+      const reader = session.snapshot.reader;
+      const natural = await controller.getPageNaturalSize(reader.fitPageReference!, reader.rotationQuarterTurns * 90);
+      requireInvariant(natural !== undefined, "Missing fit reference natural size");
+      const style = getComputedStyle(host), pad = (value: string) => Number.parseFloat(value) || 0;
+      const width = host.clientWidth - pad(style.paddingLeft) - pad(style.paddingRight);
+      const height = host.clientHeight - pad(style.paddingTop) - pad(style.paddingBottom);
+      const expected = clampReaderScale(Math.min(width / natural!.width, height / natural!.height));
+      requireInvariant(fitted.mode === "fit-page" && fitted.topology === "single-page" && host.querySelectorAll("canvas").length === 1,
+        `Fit mode/topology mismatch: ${JSON.stringify(fitted)}`);
+      requireInvariant(Math.abs(fitted.scale - expected) < 1e-10 && fitted.renderedScale !== null && Math.abs(fitted.renderedScale - expected) < 1e-10,
+        `First final fit-page divergence: ${JSON.stringify({ fitted, natural, expected })}`);
+      samples.push({ label: `${label}-verified`, expected, fitted });
+    };
+    try {
+      const target = fixture === "print-mixed-rotation-4.pdf" ? 3 : 26;
+      requireInvariant((await session.navigatePagePrompt(target)).kind === "verifiedLanding", "Fit fixture navigation failed");
+      await settle("navigation");
+      const fittedWidth = await apply({ type: "view.fitWidth" }, "fit-width");
+      requireInvariant(fittedWidth.mode === "fit-width" && fittedWidth.topology === "continuous", "Fit Width mode/topology mismatch");
+      if (mode === "fit-width") {
+        const top = host.scrollTop;
+        for (const offset of [-0.4, -0.8, 0.4, 0]) {
+          host.scrollTop = top + offset * host.clientHeight;
+          await settle(`boundary-${offset}`, fittedWidth.scale);
+        }
+        await new Promise<void>(resolve => setTimeout(resolve, 1500));
+        await settle("idle-boundary", fittedWidth.scale);
+      } else {
+        if (fixture === "print-mixed-rotation-4.pdf") requireInvariant(host.scrollWidth > host.clientWidth, "Mixed fixture did not produce the pre-F horizontal scrollbar");
+        await assertFinalFit("initial-final-fit");
+        for (let repeat = 0; repeat < 2; repeat += 1) {
+          await apply({ type: "view.fitWidth" }, `repeat-width-${repeat}`);
+          await assertFinalFit(`repeat-page-${repeat}`);
+        }
+      }
+      await apply({ type: "view.zoom", factor: 1.1 }, "zoom");
+      await apply({ type: "view.rotate", quarterTurns: 1 }, "rotation");
+      host.style.height = "480px";
+      session.invalidateViewportSynchronization();
+      requireInvariant(await session.renderCurrentView(), "Resize render failed");
+      await settle("resize");
+      await apply({ type: "view.fitWidth" }, "resized-width");
+      if (mode === "fit-page") await assertFinalFit("resized-page");
+      await session.deactivate();
+      session.evictInactiveHeavyResources();
+      await session.activate();
+      await settle("reactivated");
+      requireInvariant(session.snapshot.active, "Tab did not reactivate");
+      requireInvariant(failures.length === 0, `Scheduler failures: ${JSON.stringify(failures)}`);
+      return { fixture, mode, delayMilliseconds: fitRenderDelayMilliseconds, dpr: devicePixelRatio, samples, failures, statuses: [...statuses] };
+    } finally { dispose(); await finish(); }
   },
   async runNavigation() {
     const first = await session.navigateFirstPage();

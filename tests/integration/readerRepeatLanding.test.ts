@@ -35,6 +35,7 @@ async function fixture(displacement = 0, rawScroll = false) {
   const resources = new ResourceReservationManager();
   const controller = new PdfReaderController({
     native: {
+      assembly: () => { throw new Error("Quantized landing fixture does not use native ranges"); },
       openPdfDialog: async () => ({ sessionId: "quantized", documentGeneration: 1, displayName: "mixed.pdf", length: 10 }),
       cancelSession: async () => ({ barrierId: 1 }), closeSession: async () => undefined,
     },

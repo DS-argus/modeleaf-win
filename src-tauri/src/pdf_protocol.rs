@@ -1,99 +1,240 @@
 use crate::pdf_session::{
-    PdfOwner, PdfSessionError, PdfSessionManager, SessionId, ABSOLUTE_RANGE_LIMIT,
+    FileCompletion, PdfOwner, PdfSessionError, PdfSessionManager, SessionId, ABSOLUTE_RANGE_LIMIT,
 };
 use tauri::http::{header, Method, Request, Response, StatusCode};
 
 pub const PDF_PROTOCOL_HOST: &str = "localhost";
 pub const PDF_PROTOCOL_ALLOWED_ORIGIN: &str = "http://tauri.localhost";
 const PDF_PROTOCOL_ALLOWED_REFERER_PREFIX: &str = "http://tauri.localhost/";
+const MAX_PROTOCOL_URI_BYTES: usize = 128;
+const MAX_PROTOCOL_HEADER_BYTES: usize = 8 * 1024;
+const MAX_PROTOCOL_HEADERS: usize = 64;
 
-/// Handles an already-attributed custom-protocol request. The caller supplies the owner from a
-/// trusted webview boundary; the opaque URI token is only a session selector.
-pub fn handle_pdf_protocol_request(
+/// Carries only a completed bounded body and fixed response metadata, never the raw request.
+pub(crate) enum PdfProtocolReply {
+    Immediate(Response<Vec<u8>>),
+    Read {
+        result: Result<Vec<u8>, PdfSessionError>,
+        expected: u32,
+        total: u64,
+        range: Option<(u64, u64, u64)>,
+    },
+}
+impl PdfProtocolReply {
+    /// Invoke at actual UI handoff while the file completion lease remains owned.
+    pub(crate) fn into_response(self, completion: &FileCompletion) -> Response<Vec<u8>> {
+        match self {
+            Self::Immediate(response) => response,
+            Self::Read {
+                result,
+                expected,
+                total,
+                range,
+            } => match completion.guard_result(result) {
+                Ok(bytes) if bytes.len() == expected as usize => document_response(
+                    if range.is_some() {
+                        StatusCode::PARTIAL_CONTENT
+                    } else {
+                        StatusCode::OK
+                    },
+                    if range.is_some() {
+                        u64::from(expected)
+                    } else {
+                        total
+                    },
+                    range,
+                    bytes,
+                ),
+                Ok(_) => cors_empty(StatusCode::INTERNAL_SERVER_ERROR),
+                Err(error) => session_error(error),
+            },
+        }
+    }
+}
+
+enum PreparedRequest {
+    Immediate(Response<Vec<u8>>),
+    Read {
+        id: SessionId,
+        generation: u64,
+        offset: u64,
+        length: u32,
+        total: u64,
+        range: Option<(u64, u64, u64)>,
+    },
+}
+
+/// Native attribution precedes this boundary. No worker is reserved for validation or cached metadata.
+pub(crate) fn dispatch_pdf_protocol_request<F>(
+    request: Request<Vec<u8>>,
+    owner: PdfOwner,
+    sessions: &PdfSessionManager,
+    complete: F,
+) where
+    F: FnOnce(PdfProtocolReply, FileCompletion) + Send + 'static,
+{
+    let prepared = prepare_request(&request, &owner, sessions);
+    drop(request); // SDK input is bounded; no raw headers/body captured by a queued Rust closure.
+    match prepared {
+        PreparedRequest::Immediate(response) => complete(
+            PdfProtocolReply::Immediate(response),
+            FileCompletion::empty(),
+        ),
+        PreparedRequest::Read {
+            id,
+            generation,
+            offset,
+            length,
+            total,
+            range,
+        } => {
+            sessions.enqueue_range_read(
+                owner,
+                id,
+                generation,
+                offset,
+                length,
+                move |result, completion| {
+                    complete(
+                        PdfProtocolReply::Read {
+                            result,
+                            expected: length,
+                            total,
+                            range,
+                        },
+                        completion,
+                    );
+                },
+            );
+        }
+    }
+}
+
+fn prepare_request(
     request: &Request<Vec<u8>>,
     owner: &PdfOwner,
     sessions: &PdfSessionManager,
-) -> Response<Vec<u8>> {
+) -> PreparedRequest {
+    let immediate = PreparedRequest::Immediate;
+    let uri = request.uri();
+    let uri_bytes = uri.scheme_str().map_or(0, |value| value.len() + 3)
+        + uri.authority().map_or(0, |value| value.as_str().len())
+        + uri.path_and_query().map_or(0, |value| value.as_str().len());
+    if uri_bytes > MAX_PROTOCOL_URI_BYTES {
+        return immediate(empty(StatusCode::NOT_FOUND));
+    }
+    let header_bytes = request
+        .headers()
+        .iter()
+        .try_fold(0usize, |sum, (name, value)| {
+            sum.checked_add(name.as_str().len())?
+                .checked_add(value.as_bytes().len())
+        });
+    if request.headers().len() > MAX_PROTOCOL_HEADERS
+        || header_bytes.map_or(true, |bytes| bytes > MAX_PROTOCOL_HEADER_BYTES)
+    {
+        return immediate(cors_empty(StatusCode::PAYLOAD_TOO_LARGE));
+    }
+    if matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    ) && !request.body().is_empty()
+    {
+        return immediate(cors_empty(StatusCode::PAYLOAD_TOO_LARGE));
+    }
     let Some((id, generation)) = parse_route(request) else {
-        return empty(StatusCode::NOT_FOUND);
+        return immediate(empty(StatusCode::NOT_FOUND));
     };
     if !has_trusted_request_source(request) {
-        return empty(StatusCode::FORBIDDEN);
+        return immediate(empty(StatusCode::FORBIDDEN));
     }
-
-    let length = match sessions.session_length(owner, &id, generation) {
+    let total = match sessions.session_length(owner, &id, generation) {
         Ok(length) => length,
-        Err(error) => return session_error(error),
+        Err(error) => return immediate(session_error(error)),
     };
-
     match *request.method() {
-        Method::OPTIONS => Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                PDF_PROTOCOL_ALLOWED_ORIGIN,
-            )
-            .header(header::ACCESS_CONTROL_ALLOW_METHODS, "HEAD, GET, OPTIONS")
-            .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Range")
-            .header(header::VARY, "Origin")
-            .body(Vec::new())
-            .expect("static protocol response"),
-        Method::HEAD => document_response(StatusCode::OK, length, None, Vec::new()),
+        Method::OPTIONS => immediate(
+            Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    PDF_PROTOCOL_ALLOWED_ORIGIN,
+                )
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "HEAD, GET, OPTIONS")
+                .header(header::ACCESS_CONTROL_ALLOW_HEADERS, "Range")
+                .header(header::VARY, "Origin")
+                .body(Vec::new())
+                .expect("static protocol response"),
+        ),
+        Method::HEAD => immediate(document_response(StatusCode::OK, total, None, Vec::new())),
         Method::GET => {
             let ranges = request.headers().get_all(header::RANGE);
             if ranges.iter().next().is_none() {
-                let Some(full_length) = bounded_full_length(length) else {
-                    return cors_empty(StatusCode::PAYLOAD_TOO_LARGE);
+                return match bounded_full_length(total) {
+                    Some(length) => PreparedRequest::Read {
+                        id,
+                        generation,
+                        offset: 0,
+                        length,
+                        total,
+                        range: None,
+                    },
+                    None => immediate(cors_empty(StatusCode::PAYLOAD_TOO_LARGE)),
                 };
-                let bytes =
-                    match sessions.read_range_absolute(owner, &id, generation, 0, full_length) {
-                        Ok(bytes) if bytes.len() == full_length as usize => bytes,
-                        Ok(_) | Err(PdfSessionError::FileUnreadable) => {
-                            return cors_empty(StatusCode::INTERNAL_SERVER_ERROR)
-                        }
-                        Err(error) => return session_error(error),
-                    };
-                return document_response(StatusCode::OK, length, None, bytes);
             }
             let Some(range) = (ranges.iter().count() == 1)
                 .then(|| ranges.iter().next())
                 .flatten()
                 .and_then(|value| value.to_str().ok())
-                .and_then(|value| parse_range(value, length))
+                .and_then(|value| parse_range(value, total))
             else {
-                return range_not_satisfiable(length);
+                return immediate(range_not_satisfiable(total));
             };
-            let bytes = match sessions.read_range_absolute(
-                owner,
-                &id,
+            PreparedRequest::Read {
+                id,
                 generation,
-                range.start,
-                range.length,
-            ) {
-                Ok(bytes) if bytes.len() == range.length as usize => bytes,
-                Ok(_) | Err(PdfSessionError::FileUnreadable) => {
-                    return cors_empty(StatusCode::INTERNAL_SERVER_ERROR)
-                }
-                Err(error) => return session_error(error),
-            };
-            document_response(
-                StatusCode::PARTIAL_CONTENT,
-                range.length as u64,
-                Some((range.start, range.end, length)),
-                bytes,
-            )
+                offset: range.start,
+                length: range.length,
+                total,
+                range: Some((range.start, range.end, total)),
+            }
         }
-        _ => Response::builder()
-            .status(StatusCode::METHOD_NOT_ALLOWED)
-            .header(header::ALLOW, "HEAD, GET, OPTIONS")
-            .header(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                PDF_PROTOCOL_ALLOWED_ORIGIN,
-            )
-            .header(header::VARY, "Origin")
-            .body(Vec::new())
-            .expect("static protocol response"),
+        _ => immediate(
+            Response::builder()
+                .status(StatusCode::METHOD_NOT_ALLOWED)
+                .header(header::ALLOW, "HEAD, GET, OPTIONS")
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    PDF_PROTOCOL_ALLOWED_ORIGIN,
+                )
+                .header(header::VARY, "Origin")
+                .body(Vec::new())
+                .expect("static protocol response"),
+        ),
     }
+}
+
+/// Synchronous test facade uses the SAME dispatcher and owns completion through receipt.
+#[cfg(test)]
+pub(crate) fn handle_pdf_protocol_request(
+    request: &Request<Vec<u8>>,
+    owner: &PdfOwner,
+    sessions: &PdfSessionManager,
+) -> Response<Vec<u8>> {
+    let mut owned = Request::builder()
+        .method(request.method().clone())
+        .uri(request.uri().clone())
+        .body(request.body().clone())
+        .unwrap();
+    *owned.headers_mut() = request.headers().clone();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    dispatch_pdf_protocol_request(owned, owner.clone(), sessions, move |reply, completion| {
+        let response = reply.into_response(&completion);
+        let _ = sender.send((response, completion));
+    });
+    let (response, completion) = receiver.recv().expect("protocol test completion missing");
+    drop(completion);
+    response
 }
 
 #[derive(Clone, Copy)]
@@ -602,6 +743,205 @@ mod tests {
             bounded_full_length(u64::from(ABSOLUTE_RANGE_LIMIT) + 1),
             None
         );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn bounded_input_limits_reject_before_file_admission() {
+        let (manager, id, generation, path, bytes) = session();
+        let mut head = request(Method::HEAD, &id, generation, None);
+        let base: usize = head
+            .headers()
+            .iter()
+            .map(|(name, value)| name.as_str().len() + value.as_bytes().len())
+            .sum();
+        let padding = MAX_PROTOCOL_HEADER_BYTES - base - "x-padding".len();
+        head.headers_mut()
+            .insert("x-padding", "p".repeat(padding).parse().unwrap());
+        assert_eq!(
+            handle_pdf_protocol_request(&head, &owner(), &manager).status(),
+            StatusCode::OK
+        );
+        head.headers_mut()
+            .insert("x-padding", "p".repeat(padding + 1).parse().unwrap());
+        assert_eq!(
+            handle_pdf_protocol_request(&head, &owner(), &manager).status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let mut head = request(Method::HEAD, &id, generation, None);
+        for index in 0..MAX_PROTOCOL_HEADERS - 1 {
+            head.headers_mut().insert(
+                format!("x-{index}").parse::<header::HeaderName>().unwrap(),
+                "v".parse().unwrap(),
+            );
+        }
+        assert_eq!(
+            handle_pdf_protocol_request(&head, &owner(), &manager).status(),
+            StatusCode::OK
+        );
+        head.headers_mut().insert("x-over", "v".parse().unwrap());
+        assert_eq!(
+            handle_pdf_protocol_request(&head, &owner(), &manager).status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let mut body = request(Method::GET, &id, generation, Some("bytes=0-0"));
+        body.body_mut().push(1);
+        assert_eq!(
+            handle_pdf_protocol_request(&body, &owner(), &manager).status(),
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+        let mut long = request(Method::HEAD, &id, generation, None);
+        *long.uri_mut() = format!("http://localhost/{}/1", "a".repeat(MAX_PROTOCOL_URI_BYTES))
+            .parse()
+            .unwrap();
+        assert_eq!(
+            handle_pdf_protocol_request(&long, &owner(), &manager).status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn only_a_full_session_wait_queue_returns_capacity_status() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (manager, id, generation, path, bytes) = session();
+        let (held_sender, held_receiver) = mpsc::sync_channel(1);
+        manager.enqueue_range_read(
+            owner(),
+            id.clone(),
+            generation,
+            0,
+            1,
+            move |result, completion| {
+                assert_eq!(completion.guard_result(result).unwrap(), b"%");
+                held_sender.send(completion).unwrap();
+            },
+        );
+        let held = held_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(16);
+        for _ in 0..9 {
+            let sender = sender.clone();
+            dispatch_pdf_protocol_request(
+                request(Method::GET, &id, generation, Some("bytes=0-0")),
+                owner(),
+                &manager,
+                move |reply, completion| {
+                    let response = reply.into_response(&completion);
+                    let _ = sender.send((response, completion));
+                },
+            );
+        }
+        let (full, completion) = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(full.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(full.body().is_empty());
+        assert_eq!(full.headers()[header::CACHE_CONTROL], "no-store");
+        drop(completion);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        drop(held);
+        for _ in 0..8 {
+            let (response, completion) = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.body(), b"%");
+            drop(completion);
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn saturated_file_workers_wait_without_blocking_metadata_or_masking_invalid_requests() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (manager, id, generation, path, bytes) = session();
+        let mut handles = vec![(id.clone(), generation)];
+        for _ in 0..3 {
+            let metadata = manager
+                .open_local(owner(), &path, &Local, &Final, |path| File::open(path))
+                .unwrap();
+            handles.push((metadata.session_id, metadata.document_generation));
+        }
+        let mut held = Vec::new();
+        for (session_id, document_generation) in handles {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            manager.enqueue_range_read(
+                owner(),
+                session_id,
+                document_generation,
+                0,
+                1,
+                move |result, completion| {
+                    assert_eq!(completion.guard_result(result).unwrap(), b"%");
+                    sender.send(completion).unwrap();
+                },
+            );
+            held.push(receiver.recv_timeout(Duration::from_secs(5)).unwrap());
+        }
+        let (read_sender, read_receiver) = mpsc::sync_channel(1);
+        dispatch_pdf_protocol_request(
+            request(Method::GET, &id, generation, Some("bytes=0-0")),
+            owner(),
+            &manager,
+            move |reply, completion| {
+                let response = reply.into_response(&completion);
+                let _ = read_sender.send((response, completion));
+            },
+        );
+        assert!(matches!(
+            read_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        let metadata_manager = manager.clone();
+        let metadata_id = id.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let metadata = std::thread::spawn(move || {
+            let statuses = [
+                handle_pdf_protocol_request(
+                    &request(Method::HEAD, &metadata_id, generation, None),
+                    &owner(),
+                    &metadata_manager,
+                )
+                .status(),
+                handle_pdf_protocol_request(
+                    &request(Method::OPTIONS, &metadata_id, generation, None),
+                    &owner(),
+                    &metadata_manager,
+                )
+                .status(),
+                handle_pdf_protocol_request(
+                    &request(Method::GET, &metadata_id, generation, Some("bytes=5-4")),
+                    &owner(),
+                    &metadata_manager,
+                )
+                .status(),
+                handle_pdf_protocol_request(
+                    &request(Method::GET, &metadata_id, generation + 1, Some("bytes=0-0")),
+                    &owner(),
+                    &metadata_manager,
+                )
+                .status(),
+            ];
+            let _ = sender.send(statuses);
+        });
+        let early = receiver.recv_timeout(Duration::from_secs(2));
+        drop(held);
+        metadata.join().unwrap();
+        assert_eq!(
+            early.unwrap(),
+            [
+                StatusCode::OK,
+                StatusCode::NO_CONTENT,
+                StatusCode::RANGE_NOT_SATISFIABLE,
+                StatusCode::NOT_FOUND
+            ]
+        );
+        let (read, completion) = read_receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(read.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(read.body(), b"%");
+        drop(completion);
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         std::fs::remove_file(path).unwrap();
     }

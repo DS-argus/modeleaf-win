@@ -1,109 +1,97 @@
-const DIRECTORY_ELLIPSIS = "…";
-const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const ELLIPSIS = "…";
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export interface RecentPathFit {
   readonly directoryText: string;
   readonly filenameText: string;
-  readonly fontSize: number;
 }
 
+/** Fits display text only; the caller retains the full path for accessibility/tooltip. */
 export function fitRecentPath(
   displayPath: string,
   displayName: string,
   availableWidth: number,
-  baseFontSize: number,
-  measureText: (text: string, fontSize: number) => number,
+  measureText: (text: string) => number,
 ): RecentPathFit {
+  const result = (directoryText: string, filenameText: string): RecentPathFit => Object.freeze({ directoryText, filenameText });
+  if (!Number.isFinite(availableWidth) || availableWidth <= 0) return result("", "");
+  const fits = (text: string): boolean => {
+    const width = measureText(text);
+    return Number.isFinite(width) && width >= 0 && width <= availableWidth;
+  };
   const separatorIndex = Math.max(displayPath.lastIndexOf("\\"), displayPath.lastIndexOf("/"));
   const directory = separatorIndex < 0 ? "" : displayPath.slice(0, separatorIndex + 1);
-  const filenameText = displayName;
-  const fullText = directory + filenameText;
-  if (!(availableWidth > 0) || !(baseFontSize > 0) || measureText(fullText, baseFontSize) <= availableWidth) {
-    return Object.freeze({ directoryText: directory, filenameText, fontSize: baseFontSize });
-  }
+  if (fits(directory + displayName)) return result(directory, displayName);
 
-  const graphemes = Array.from(graphemeSegmenter.segment(directory), ({ segment }) => segment);
-  const prefixCount = rootPrefixGraphemeCount(graphemes);
-  const preferredSuffixCount = graphemes.at(-1) !== undefined && isPathSeparator(graphemes.at(-1)!) ? 2 : 1;
-  const suffixCount = Math.min(preferredSuffixCount, Math.max(0, graphemes.length - prefixCount - 1));
-  const canTruncateDirectory = prefixCount > 0 && suffixCount > 0 && prefixCount + suffixCount < graphemes.length;
-  const minimumDirectory = canTruncateDirectory
-    ? truncateDirectory(graphemes, prefixCount, suffixCount, prefixCount + suffixCount)
-    : directory;
-  const minimumText = minimumDirectory + filenameText;
-  const fontSize = largestFittingFontSize(minimumText, availableWidth, baseFontSize, measureText);
-
-  if (!canTruncateDirectory || measureText(fullText, fontSize) <= availableWidth) {
-    return Object.freeze({ directoryText: directory, filenameText, fontSize });
-  }
-
-  let lower = prefixCount + suffixCount;
-  let upper = graphemes.length - 1;
-  let directoryText = minimumDirectory;
-  while (lower <= upper) {
-    const retained = Math.floor((lower + upper) / 2);
-    const candidate = truncateDirectory(graphemes, prefixCount, suffixCount, retained);
-    if (measureText(candidate + filenameText, fontSize) <= availableWidth) {
-      directoryText = candidate;
-      lower = retained + 1;
-    } else {
-      upper = retained - 1;
+  const parts = graphemes(directory);
+  const prefixCount = rootPrefixLength(parts);
+  const suffixCount = Math.min(isSeparator(parts.at(-1)) ? 2 : 1, Math.max(0, parts.length - prefixCount - 1));
+  const minimum = prefixCount + suffixCount;
+  // Retain the full filename when a middle-cut directory can fit. No list of
+  // all possible strings is materialized, even for a32767-unit Windows path.
+  if (prefixCount > 0 && suffixCount > 0 && minimum < parts.length) {
+    const candidate = (retained: number): string => {
+      const extra = retained - minimum;
+      return parts.slice(0, prefixCount + Math.ceil(extra / 2)).join("") + ELLIPSIS
+        + parts.slice(parts.length - suffixCount - Math.floor(extra / 2)).join("");
+    };
+    if (fits(candidate(minimum) + displayName)) {
+      const fitted = largestFitting(minimum, parts.length - 1, candidate, text => fits(text + displayName));
+      if (fitted !== undefined) return result(fitted, displayName);
     }
   }
-  return Object.freeze({ directoryText, filenameText, fontSize });
-}
 
-function largestFittingFontSize(
-  text: string,
-  availableWidth: number,
-  baseFontSize: number,
-  measureText: (text: string, fontSize: number) => number,
-): number {
-  if (measureText(text, baseFontSize) <= availableWidth) return baseFontSize;
-  let lower = 0;
-  let upper = baseFontSize;
-  let fitted = 0;
-  for (let iteration = 0; iteration < 40; iteration += 1) {
-    const candidate = (lower + upper) / 2;
-    if (measureText(text, candidate) <= availableWidth) {
-      fitted = candidate;
-      lower = candidate;
-    } else {
-      upper = candidate;
-    }
+  const separator = directory.endsWith("/") ? "/" : "\\";
+  const root = parts.slice(0, prefixCount).join("");
+  const rooted = directory === root ? root : root + ELLIPSIS + separator;
+  const unc = isSeparator(parts[0]) && isSeparator(parts[1]);
+  const directories = directory.length === 0 ? [""]
+    : [...new Set([rooted, ...(unc ? [separator + separator + ELLIPSIS + separator] : []), ELLIPSIS + separator, ""])];
+  const filenamePreservingDirectories = unc ? directories.slice(0, 2) : directories.slice(0, 1);
+  for (const label of filenamePreservingDirectories) {
+    if (fits(label + displayName)) return result(label, displayName);
   }
-  return fitted;
-}
-
-function truncateDirectory(
-  graphemes: readonly string[],
-  prefixCount: number,
-  suffixCount: number,
-  retainedCount: number,
-): string {
-  const extraCount = retainedCount - prefixCount - suffixCount;
-  const leadingCount = prefixCount + Math.ceil(extraCount / 2);
-  const trailingCount = suffixCount + Math.floor(extraCount / 2);
-  return graphemes.slice(0, leadingCount).join("") + DIRECTORY_ELLIPSIS + graphemes.slice(graphemes.length - trailingCount).join("");
-}
-
-function rootPrefixGraphemeCount(graphemes: readonly string[]): number {
-  if (graphemes.length === 0) return 0;
-  if (/^[A-Za-z]$/u.test(graphemes[0]!) && graphemes[1] === ":" && isPathSeparator(graphemes[2])) return 3;
-  if (isPathSeparator(graphemes[0]) && isPathSeparator(graphemes[1])) {
-    let componentSeparators = 0;
-    for (let index = 2; index < graphemes.length; index += 1) {
-      if (!isPathSeparator(graphemes[index])) continue;
-      componentSeparators += 1;
-      if (componentSeparators === 2) return index + 1;
-    }
-    return 2;
+  const extension = displayName.length > 4 && /\.pdf$/iu.test(displayName) ? displayName.slice(-4) : "";
+  const stem = graphemes(extension ? displayName.slice(0, -extension.length) : displayName);
+  const minimumName = ELLIPSIS + extension;
+  for (const label of directories) {
+    if (fits(label + displayName)) return result(label, displayName);
+    if (!fits(label + minimumName)) continue;
+    const candidate = (retained: number): string => stem.slice(0, Math.ceil(retained / 2)).join("")
+      + ELLIPSIS + stem.slice(stem.length - Math.floor(retained / 2)).join("") + extension;
+    const fitted = largestFitting(0, Math.max(0, stem.length - 1), candidate, text => fits(label + text));
+    if (fitted !== undefined) return result(label, fitted);
   }
-  if (isPathSeparator(graphemes[0])) return 1;
-  const firstSeparator = graphemes.findIndex(isPathSeparator);
-  return firstSeparator < 0 ? 1 : firstSeparator + 1;
+  if (extension && fits(extension)) return result("", extension);
+  return fits(ELLIPSIS) ? result("", ELLIPSIS) : result("", "");
 }
 
-function isPathSeparator(value: string | undefined): boolean {
-  return value === "\\" || value === "/";
+function largestFitting(minimum: number, maximum: number, candidate: (retained: number) => string, fits: (text: string) => boolean): string | undefined {
+  let best: string | undefined;
+  while (minimum <= maximum) {
+    const retained = Math.floor((minimum + maximum) / 2);
+    const text = candidate(retained);
+    if (fits(text)) { best = text; minimum = retained + 1; }
+    else maximum = retained - 1;
+  }
+  return best;
+}
+
+function graphemes(text: string): string[] {
+  return Array.from(segmenter.segment(text), ({ segment }) => segment);
+}
+function isSeparator(character: string | undefined): boolean { return character === "\\" || character === "/"; }
+function rootPrefixLength(parts: readonly string[]): number {
+  if (parts.length === 0) return 0;
+  if (/^[A-Za-z]$/u.test(parts[0]!) && parts[1] === ":" && isSeparator(parts[2])) return 3;
+  if (isSeparator(parts[0]) && isSeparator(parts[1])) {
+    let separators = 0;
+    for (let index = 2; index < parts.length; index += 1) {
+      if (isSeparator(parts[index]) && ++separators === 2) return index + 1;
+    }
+    return Math.min(2, parts.length);
+  }
+  if (isSeparator(parts[0])) return 1;
+  const index = parts.findIndex(isSeparator);
+  return index < 0 ? 0 : index + 1;
 }

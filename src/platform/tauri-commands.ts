@@ -65,6 +65,32 @@ const RECENT_FAILURE_REASONS = {
   TRANSIENT_FAILURE: new Set(["IO_TRANSIENT"]),
   DOCUMENT_REJECTED: SELECTION_REJECTION_REASONS,
 } as const;
+export type RecentDisplayAliases =
+  | { readonly tag: "READY"; readonly revision: string; readonly aliases: readonly { readonly recentId: string; readonly displayPath: string }[] }
+  | { readonly tag: "UNAVAILABLE" };
+
+/** Display metadata only: callers still open the original opaque recent ID. */
+export async function listRecentDisplayAliases(invoke: NativeInvoke): Promise<RecentDisplayAliases> {
+  const object = tagged(await invoke<unknown>("list_recent_display_aliases"), new Set(["READY", "UNAVAILABLE"]));
+  if (object.tag === "UNAVAILABLE") { exactKeys(object, ["tag"]); return Object.freeze({ tag: "UNAVAILABLE" }); }
+  exactKeys(object, ["tag", "revision", "aliases"]);
+  const revision = decodeRevision(object.revision);
+  if (!Array.isArray(object.aliases) || object.aliases.length > 15) throw contractError();
+  const ids = new Set<string>();
+  const aliases = object.aliases.map(value => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) throw contractError();
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) throw contractError();
+    const alias = value as Record<string, unknown>;
+    exactKeys(alias, ["recentId", "displayPath"]);
+    if (typeof alias.recentId !== "string" || !RECENT_ID.test(alias.recentId) || ids.has(alias.recentId)) throw contractError();
+    if (typeof alias.displayPath !== "string" || alias.displayPath.length > 32_767
+      || !/^[A-Za-z]:[\\/]/u.test(alias.displayPath) || /\p{Cc}/u.test(alias.displayPath)) throw contractError();
+    ids.add(alias.recentId);
+    return Object.freeze({ recentId: alias.recentId, displayPath: alias.displayPath });
+  });
+  return Object.freeze({ tag: "READY", revision, aliases: Object.freeze(aliases) });
+}
 export async function listRecentDocuments(invoke: NativeInvoke): Promise<RecentListOutcome> {
   return decodeRecentList(await invoke<unknown>("list_recents"));
 }

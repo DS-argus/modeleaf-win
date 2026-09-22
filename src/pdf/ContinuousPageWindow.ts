@@ -9,6 +9,10 @@ export interface PageGeometry extends PageMetric {
 }
 
 export interface DocumentGeometry extends PageMetric {}
+export interface PageGeometryProjection {
+  pageGeometry(pageNumber: number): PageGeometry;
+  documentGeometry(): DocumentGeometry;
+}
 
 export interface PageWindowPlan {
   readonly generation: number;
@@ -104,6 +108,18 @@ export class ContinuousPageWindow {
     for (const { pageNumber, metric } of validated) this.measuredMetrics.set(pageNumber, metric);
   }
 
+  /** Provisional geometry without changing residency, generations or committed metrics. */
+  public projectMetrics(updates: readonly { readonly pageNumber: number; readonly metric: PageMetric }[]): PageGeometryProjection {
+    const metrics = new Map(this.measuredMetrics);
+    for (const { pageNumber, metric } of updates) {
+      this.assertPage(pageNumber);
+      metrics.set(pageNumber, Object.freeze({ width: positiveFinite(metric.width, "metric.width"), height: positiveFinite(metric.height, "metric.height") }));
+    }
+    return Object.freeze({
+      pageGeometry: (pageNumber: number) => this.pageGeometryForMetrics(pageNumber, metrics),
+      documentGeometry: () => this.documentGeometryForMetrics(metrics),
+    });
+  }
   public checkpoint(): PageWindowCheckpoint {
     return Object.freeze({
       plannedPages: Object.freeze([...this.planned].sort((a, b) => a - b)),
@@ -281,21 +297,27 @@ export class ContinuousPageWindow {
   }
 
   public pageGeometry(pageNumber: number): PageGeometry {
+    return this.pageGeometryForMetrics(pageNumber, this.measuredMetrics);
+  }
+  private pageGeometryForMetrics(pageNumber: number, metrics: ReadonlyMap<number, PageMetric>): PageGeometry {
     this.assertPage(pageNumber);
-    const metric = this.measuredMetrics.get(pageNumber);
+    const metric = metrics.get(pageNumber);
     return Object.freeze({
       pageNumber,
-      top: this.offsetForPage(pageNumber),
+      top: this.offsetForMetrics(pageNumber, metrics),
       width: metric?.width ?? this.estimatedPageWidth,
       height: metric?.height ?? this.estimatedPageHeight,
     });
   }
 
   public documentGeometry(): DocumentGeometry {
+    return this.documentGeometryForMetrics(this.measuredMetrics);
+  }
+  private documentGeometryForMetrics(metrics: ReadonlyMap<number, PageMetric>): DocumentGeometry {
     if (this.pageCount === 0) return Object.freeze({ width: 0, height: 0 });
     let width = this.estimatedPageWidth;
     let height = this.pageCount * this.estimatedPageHeight + (this.pageCount - 1) * this.pageGap;
-    for (const metric of this.measuredMetrics.values()) {
+    for (const metric of metrics.values()) {
       width = Math.max(width, metric.width);
       height += metric.height - this.estimatedPageHeight;
     }
@@ -303,9 +325,12 @@ export class ContinuousPageWindow {
   }
 
   public offsetForPage(pageNumber: number): number {
+    return this.offsetForMetrics(pageNumber, this.measuredMetrics);
+  }
+  private offsetForMetrics(pageNumber: number, metrics: ReadonlyMap<number, PageMetric>): number {
     this.assertPage(pageNumber);
     let offset = (pageNumber - 1) * (this.estimatedPageHeight + this.pageGap);
-    for (const [page, metric] of this.measuredMetrics) {
+    for (const [page, metric] of metrics) {
       if (page >= pageNumber) continue;
       offset += metric.height - this.estimatedPageHeight;
     }

@@ -13,6 +13,7 @@ pub mod print_job;
 #[cfg(windows)]
 mod print_windows;
 pub mod recent;
+pub mod recent_display_aliases;
 pub mod theme_state;
 pub mod workspace;
 use crate::commands::config::{
@@ -177,6 +178,8 @@ fn record_native_diagnostic<R: tauri::Runtime>(
         generation: None,
         stage: None,
         os_code: None,
+        renderer_code: None,
+        http_status: None,
     };
     let _ = log.record(&event);
 }
@@ -323,6 +326,13 @@ fn record_diagnostic(
     diagnostics.record(&event)
 }
 
+#[tauri::command]
+fn report_pdf_failure(
+    sessions: State<'_, PdfSessionManager>,
+    failure: diagnostics::PdfRendererFailure,
+) -> Result<diagnostics::PdfDiagnosticReceipt, diagnostics::DiagnosticError> {
+    sessions.report_renderer_failure(&failure)
+}
 const MAX_PENDING_SECOND_INSTANCE_PATHS: usize = 8;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -363,37 +373,50 @@ impl PageLoadRegistry {
         self.loaded.remove(label);
     }
 }
+struct OwnedAppWindow {
+    _window: tauri::WebviewWindow,
+    owner: PdfOwner,
+}
 #[derive(Clone, Default)]
 struct AppWindowRegistry {
     loaded_pages: Arc<Mutex<PageLoadRegistry>>,
-    windows: Arc<Mutex<HashMap<String, tauri::WebviewWindow>>>,
+    windows: Arc<Mutex<HashMap<String, OwnedAppWindow>>>,
 }
 
 impl AppWindowRegistry {
-    /// Returns true only for replacement loads; initial argv-admitted sessions
-    /// belong to the first renderer and must remain printable.
+    /// Initial argv sessions belong to the first renderer; replacement loads invalidate old activity.
     fn page_started(&self, label: &str) -> bool {
         self.loaded_pages
             .lock()
             .expect("page lifecycle registry poisoned")
             .page_started(label)
     }
-    fn retain(&self, window: tauri::WebviewWindow) {
-        self.windows
-            .lock()
-            .expect("app window registry poisoned")
-            .insert(window.label().to_owned(), window);
+    fn retain(&self, window: tauri::WebviewWindow, owner: PdfOwner) {
+        assert_eq!(window.label(), owner.window_label);
+        let mut windows = self.windows.lock().expect("app window registry poisoned");
+        assert!(
+            !windows.contains_key(window.label()),
+            "physical window label already retained"
+        );
+        windows.insert(
+            window.label().to_owned(),
+            OwnedAppWindow {
+                _window: window,
+                owner,
+            },
+        );
     }
-
-    fn remove(&self, label: &str) {
+    fn remove(&self, label: &str) -> Option<PdfOwner> {
         self.loaded_pages
             .lock()
             .expect("page lifecycle registry poisoned")
             .remove(label);
-        self.windows
+        let owned = self
+            .windows
             .lock()
             .expect("app window registry poisoned")
             .remove(label);
+        owned.map(|entry| entry.owner)
     }
 }
 
@@ -519,6 +542,7 @@ async fn create_app_window(
             return Err(CreateAppWindowError::CreationFailed);
         }
     };
+    windows.retain(window.clone(), owner.clone());
     if disable_browser_accelerators(&window).is_err() {
         let _ = window.destroy();
         let _ = workspace.destroy_window(&owner);
@@ -534,7 +558,6 @@ async fn create_app_window(
         let _ = workspace.destroy_window(&owner);
         return Err(CreateAppWindowError::SetupFailed);
     }
-    windows.retain(window);
     Ok(())
 }
 
@@ -725,7 +748,7 @@ where
     R: tauri::Runtime,
     E: Emitter<R> + Clone + Send + Sync + 'static,
 {
-    let Some(permit) = NativeIo::global().open.try_acquire() else {
+    let Ok(permit) = NativeIo::global().open.try_acquire() else {
         return publish_open_failure(
             emitter,
             window_label,
@@ -881,7 +904,7 @@ async fn open_pdf_dialog(
             let permit = NativeIo::global()
                 .open
                 .try_acquire()
-                .ok_or(OpenRequestError::Capacity)?;
+                .map_err(|_| OpenRequestError::Capacity)?;
             let coordinator = coordinator.inner().clone();
             Ok(tauri::async_runtime::spawn_blocking(move || {
                 let _permit = permit;
@@ -952,7 +975,7 @@ async fn reject_open_request(
     let permit = NativeIo::global()
         .control
         .try_acquire()
-        .ok_or(OpenRequestError::Capacity)?;
+        .map_err(|_| OpenRequestError::Capacity)?;
     let coordinator = coordinator.inner().clone();
     let request_id = OpenRequestId::from_opaque(request_id)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -976,57 +999,59 @@ async fn record_recent(
     document_generation: u64,
     owner_generation: u64,
 ) -> RecentRecordOutcome {
-    let Some(permit) = NativeIo::global().metadata.try_acquire() else {
-        return RecentRecordOutcome::StorageFailed {
-            reason: RecentStorageReason::IdentityUnavailable,
-        };
+    let session_id = match SessionId::from_opaque(session_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return RecentRecordOutcome::StorageFailed {
+                reason: RecentStorageReason::IdentityUnavailable,
+            }
+        }
     };
     let sessions = window.state::<PdfSessionManager>().inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let _permit = permit;
-        let recents = window.state::<Mutex<RecentStore>>();
-        let owner = command_owner(&window, owner_generation);
-        let session_id = match SessionId::from_opaque(session_id) {
-            Ok(session_id) => session_id,
-            Err(_) => {
-                return RecentRecordOutcome::StorageFailed {
+    let owner = command_owner(&window, owner_generation);
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    sessions.enqueue_trusted_identity(
+        owner,
+        session_id,
+        document_generation,
+        move |result, completion| {
+            let outcome = match completion.guard_result(result) {
+                Err(_) => RecentRecordOutcome::StorageFailed {
                     reason: RecentStorageReason::IdentityUnavailable,
-                }
-            }
-        };
-        let identity =
-            match sessions.trusted_recent_identity(&owner, &session_id, document_generation) {
-                Ok(identity) => identity,
-                Err(_) => {
-                    return RecentRecordOutcome::StorageFailed {
-                        reason: RecentStorageReason::IdentityUnavailable,
+                },
+                Ok(identity) => {
+                    let store = window.state::<Mutex<RecentStore>>();
+                    let mut recents = store.lock().expect("recent store state poisoned");
+                    match recents.record_trusted_opened_and_save(identity) {
+                        Ok(_) => {
+                            let (revision, entries) = recents.snapshot();
+                            let event = RecentListOutcome::Ready {
+                                revision: revision.clone(),
+                                entries: entries.clone(),
+                            };
+                            drop(recents);
+                            publish_recent_snapshot(&window, &event);
+                            RecentRecordOutcome::Committed { revision, entries }
+                        }
+                        Err(RecentStoreError::StateUnavailable(reason)) => {
+                            RecentRecordOutcome::StateUnavailable { reason }
+                        }
+                        Err(_) => RecentRecordOutcome::StorageFailed {
+                            reason: RecentStorageReason::StateWriteFailed,
+                        },
                     }
                 }
             };
-        let mut recents = recents.lock().expect("recent store state poisoned");
-        match recents.record_trusted_opened_and_save(identity) {
-            Ok(_) => {
-                let (revision, entries) = recents.snapshot();
-                let event = RecentListOutcome::Ready {
-                    revision: revision.clone(),
-                    entries: entries.clone(),
-                };
-                drop(recents);
-                publish_recent_snapshot(&window, &event);
-                RecentRecordOutcome::Committed { revision, entries }
-            }
-            Err(RecentStoreError::StateUnavailable(reason)) => {
-                RecentRecordOutcome::StateUnavailable { reason }
-            }
-            Err(_) => RecentRecordOutcome::StorageFailed {
-                reason: RecentStorageReason::StateWriteFailed,
-            },
-        }
-    })
-    .await
-    .unwrap_or(RecentRecordOutcome::StorageFailed {
-        reason: RecentStorageReason::IdentityUnavailable,
-    })
+            let _ = sender.try_send(outcome);
+            drop(completion);
+        },
+    );
+    receiver
+        .recv()
+        .await
+        .unwrap_or(RecentRecordOutcome::StorageFailed {
+            reason: RecentStorageReason::IdentityUnavailable,
+        })
 }
 #[tauri::command]
 fn clear_recent_documents(
@@ -1101,7 +1126,7 @@ fn prune_confirmed_missing(
 #[tauri::command]
 async fn open_recent(window: Window, recent_id: String) -> RecentOpenOutcome {
     let coordinator = window.state::<OpenRequestCoordinator>().inner().clone();
-    let Some(permit) = NativeIo::global().open.try_acquire() else {
+    let Ok(permit) = NativeIo::global().open.try_acquire() else {
         return RecentOpenOutcome::DocumentRejected {
             reason: "SESSION_CAPACITY".into(),
         };
@@ -1273,6 +1298,102 @@ async fn open_external_link(
     .map_err(|_| ExternalLinkError::LinkLaunchFailed)?
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReservePdfAssemblyRequest {
+    session_id: String,
+    document_generation: u64,
+    owner_generation: u64,
+    request_sequence: u64,
+    begin: u64,
+    end: u64,
+}
+#[tauri::command]
+async fn reserve_pdf_assembly(
+    window: Window,
+    sessions: State<'_, PdfSessionManager>,
+    request: ReservePdfAssemblyRequest,
+) -> Result<crate::pdf_session::PdfAssemblyLease, PdfSessionError> {
+    let id = SessionId::from_opaque(request.session_id)?;
+    let owner = command_owner(&window, request.owner_generation);
+    let (sender, mut receiver) = tauri::async_runtime::channel(1);
+    sessions.request_assembly(
+        owner,
+        id,
+        request.document_generation,
+        request.request_sequence,
+        request.begin..request.end,
+        move |result| {
+            // Uncertain grant delivery is retained until verified finish/destruction, not released on abandonment.
+            let _ = sender.try_send(result);
+        },
+    );
+    receiver
+        .recv()
+        .await
+        .unwrap_or(Err(PdfSessionError::SessionClosing))
+}
+
+#[tauri::command]
+fn cancel_pdf_assembly(
+    window: Window,
+    sessions: State<'_, PdfSessionManager>,
+    session_id: String,
+    document_generation: u64,
+    owner_generation: u64,
+    request_sequence: u64,
+) -> Result<(), PdfSessionError> {
+    let id = SessionId::from_opaque(session_id)?;
+    sessions.cancel_assembly_request(
+        &command_owner(&window, owner_generation),
+        &id,
+        document_generation,
+        request_sequence,
+    )
+}
+
+#[tauri::command]
+fn release_pdf_assembly(
+    window: Window,
+    sessions: State<'_, PdfSessionManager>,
+    session_id: String,
+    document_generation: u64,
+    owner_generation: u64,
+    lease_id: u64,
+    proof: crate::pdf_session::PdfAssemblyReleaseProof,
+) -> Result<(), PdfSessionError> {
+    let id = SessionId::from_opaque(session_id)?;
+    sessions.release_assembly(
+        &command_owner(&window, owner_generation),
+        &id,
+        document_generation,
+        lease_id,
+        proof,
+    )
+}
+
+#[tauri::command]
+fn finish_pdf_assemblies(
+    window: Window,
+    sessions: State<'_, PdfSessionManager>,
+    session_id: String,
+    document_generation: u64,
+    owner_generation: u64,
+) -> Result<(), PdfSessionError> {
+    let id = SessionId::from_opaque(session_id)?;
+    sessions.finish_assemblies(
+        &command_owner(&window, owner_generation),
+        &id,
+        document_generation,
+    )
+}
+
+#[tauri::command]
+fn pdf_assembly_stats(
+    sessions: State<'_, PdfSessionManager>,
+) -> crate::pdf_session::PdfAssemblyStats {
+    sessions.assembly_stats()
+}
 #[tauri::command]
 async fn cancel_pdf_session(
     window: Window,
@@ -1286,7 +1407,7 @@ async fn cancel_pdf_session(
     let permit = NativeIo::global()
         .control
         .try_acquire()
-        .ok_or(PdfSessionError::SessionCapacity)?;
+        .map_err(|_| PdfSessionError::SessionCapacity)?;
     let sessions = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
@@ -1310,7 +1431,7 @@ async fn close_pdf_session(
     let permit = NativeIo::global()
         .control
         .try_acquire()
-        .ok_or(PdfSessionError::SessionCapacity)?;
+        .map_err(|_| PdfSessionError::SessionCapacity)?;
     let sessions = state.inner().clone();
     let workspace = workspace.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1374,35 +1495,34 @@ pub fn run() {
             let owner = app
                 .state::<WorkspaceManager>()
                 .active_owner(context.webview_label());
-            let Some(permit) = NativeIo::global().range.try_acquire() else {
+            let Some(owner) = owner else {
                 responder.respond(
                     tauri::http::Response::builder()
-                        .status(tauri::http::StatusCode::SERVICE_UNAVAILABLE)
-                        .header("Cache-Control", "no-store")
-                        .header("Vary", "Origin")
-                        .header(
-                            "Access-Control-Allow-Origin",
-                            pdf_protocol::PDF_PROTOCOL_ALLOWED_ORIGIN,
-                        )
+                        .status(tauri::http::StatusCode::NOT_FOUND)
                         .body(Vec::new())
                         .expect("static protocol response"),
                 );
                 return;
             };
-            tauri::async_runtime::spawn_blocking(move || {
-                let _permit = permit;
-                let sessions = app.state::<PdfSessionManager>();
-                let response = match owner {
-                    Some(owner) => {
-                        pdf_protocol::handle_pdf_protocol_request(&request, &owner, &sessions)
+            let sessions = app.state::<PdfSessionManager>().inner().clone();
+            pdf_protocol::dispatch_pdf_protocol_request(
+                request,
+                owner,
+                &sessions,
+                move |reply, completion| {
+                    if !completion.is_admitted() {
+                        // Cached metadata/preflight executes on the protocol's UI callback, without a worker.
+                        responder.respond(reply.into_response(&completion));
+                        return;
                     }
-                    None => tauri::http::Response::builder()
-                        .status(tauri::http::StatusCode::NOT_FOUND)
-                        .body(Vec::new())
-                        .expect("static protocol response"),
-                };
-                responder.respond(response);
-            });
+                    // Wry otherwise posts the response after returning. Keep the selected/queued lease
+                    // until its actual UI handoff; failed posting drops bytes/ownership without success.
+                    let _ = app.run_on_main_thread(move || {
+                        responder.respond(reply.into_response(&completion));
+                        drop(completion);
+                    });
+                },
+            );
         })
         .manage(second_instance_ingress)
         .manage(QuitCoordinator::default())
@@ -1469,9 +1589,12 @@ pub fn run() {
                     diagnostics::DiagnosticTag::ValidationRejected,
                 );
             }
-            app.state::<WorkspaceManager>()
+            let owner = app
+                .state::<WorkspaceManager>()
                 .claim_window(window.label())
                 .expect("main window capacity");
+            app.state::<AppWindowRegistry>()
+                .retain(window.clone(), owner);
             drain_second_instance_ingress(
                 &window,
                 window.label(),
@@ -1566,9 +1689,12 @@ pub fn run() {
                     .abandon_owner(window.label());
                 let label = window.label().to_owned();
                 window.state::<WindowCloseCoordinator>().remove(&label);
-                window.state::<AppWindowRegistry>().remove(&label);
+                let destroyed_owner = window.state::<AppWindowRegistry>().remove(&label);
                 let workspace = window.state::<WorkspaceManager>();
-                if let Some(owner) = workspace.active_owner(&label) {
+                if let Some(owner) = destroyed_owner {
+                    window
+                        .state::<PdfSessionManager>()
+                        .discard_assemblies_for_destroyed_owner(&owner);
                     let settled = drain_owner_for_lifecycle(
                         &window.state::<OpenRequestCoordinator>(),
                         &workspace,
@@ -1593,6 +1719,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            recent_display_aliases::list_recent_display_aliases,
             begin_quit,
             renderer_ready,
             finish_quit,
@@ -1602,6 +1729,7 @@ pub fn run() {
             read_theme_state,
             commit_theme_state,
             record_diagnostic,
+            report_pdf_failure,
             create_app_window,
             window_close_ready,
             close_current_window,
@@ -1620,6 +1748,11 @@ pub fn run() {
             finalize_external_links,
             abort_external_links,
             open_external_link,
+            reserve_pdf_assembly,
+            cancel_pdf_assembly,
+            release_pdf_assembly,
+            finish_pdf_assemblies,
+            pdf_assembly_stats,
             cancel_pdf_session,
             close_pdf_session,
             start_pdf_print,

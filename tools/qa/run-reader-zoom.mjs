@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
+import { createMixedGeometryFixture } from "../fixtures/generate-golden-pdfs.mjs";
 
 // Isolated real PDF.js/DOM QA. Native authority is mocked by reader-stability.ts.
 // No Tauri build, installed-app launch, user profile, print, or manual preview.
@@ -17,7 +18,18 @@ const hashes = async () => Object.fromEntries(await Promise.all(fixtures.map(asy
 const beforeHashes = await hashes();
 const manifest = JSON.parse(await readFile(resolve(root, "fixtures/manifest.json"), "utf8"));
 for (const name of fixtures) assert.equal(beforeHashes[name], manifest.files.find(file => file.name === name)?.sha256);
-const server = await createServer({ root, configFile: false, cacheDir: resolve(evidence, "vite-cache"), server: { host: "127.0.0.1", port: 0, open: false, watch: null, hmr: false } });
+const mixedGeometry = createMixedGeometryFixture();
+const generatedGeometrySha256 = createHash("sha256").update(mixedGeometry).digest("hex");
+await writeFile(resolve(evidence, "mixed-geometry-40.pdf"), mixedGeometry);
+const server = await createServer({ root, configFile: false, cacheDir: resolve(evidence, "vite-cache"),
+  plugins: [{ name: "reader-mixed-geometry-fixture", configureServer(vite) {
+    vite.middlewares.use((request, response, next) => {
+      if (request.url !== "/fixtures/pdf/mixed-geometry-40.pdf") return next();
+      response.setHeader("Content-Type", "application/pdf");
+      response.setHeader("Content-Length", mixedGeometry.length);
+      response.end(mixedGeometry);
+    });
+  } }], server: { host: "127.0.0.1", port: 0, open: false, watch: null, hmr: false } });
 const transcript = [];
 const pending = new Map();
 let sequence = 0;
@@ -78,6 +90,7 @@ try {
     await call("Page.navigate", { url: `${origin}/tools/qa/reader-stability.html${query}` });
     await wait("!!window.readerHarness");
   }
+  if (!process.env.READER_QA_FIT_ONLY) {
   await open("?hidden=true");
   const hidden = await evaluate("({opening:window.readerOpening,reference:window.readerHarness.session.snapshot.reader.fitPageReference})");
   assert.equal(hidden.opening.hiddenOpening, true);
@@ -284,11 +297,64 @@ try {
   }
   await open();
   results.push({ scenario: 'evicted tab restored after closing its successor', result: await evaluate('window.readerHarness.runTabClose()') });
+  }
+  const requestedFitMode = process.env.READER_QA_FIT_ONLY;
+  assert([undefined, "all", "fit-width", "fit-page", "edge", "keyboard", "geometry", "history"].includes(requestedFitMode), "Unknown READER_QA_FIT_ONLY mode");
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "edge") {
+    for (const dpr of [1, 1.25, 1.3, 1.5]) {
+      await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 1000, deviceScaleFactor: dpr, mobile: false });
+      await open("?fixture=print-mixed-rotation-4.pdf&tall=true");
+      results.push({ scenario: "narrow-to-wide fixed Fit Page edge", dpr, result: await evaluate("window.readerHarness.runFitPageEdge()") });
+    }
+  }
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "keyboard") {
+    for (const dpr of [1, 1.25, 1.5]) {
+      for (const renderDelay of [0, 120]) {
+        await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 800, deviceScaleFactor: dpr, mobile: false });
+        await open(`?fixture=print-mixed-rotation-4.pdf&fitDelay=${renderDelay}`);
+        results.push({ scenario: "bounded keyboard view intent", dpr, renderDelay, result: await evaluate("window.readerHarness.runKeyboardView()") });
+      }
+    }
+  }
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "geometry") {
+    for (const dpr of [1.25, 1.3, 1.5]) {
+      for (const renderDelay of [0, 120]) {
+        for (const mode of ["continuous-fit", "custom"]) {
+          await call("Emulation.setDeviceMetricsOverride", { width: 1100, height: 800, deviceScaleFactor: dpr, mobile: false });
+          await open(`?fixture=mixed-geometry-40.pdf&fitDelay=${renderDelay}`);
+          results.push({ scenario: "owned lazy mixed-page geometry", dpr, renderDelay, mode,
+            result: await evaluate(`window.readerHarness.runLazyGeometry(${JSON.stringify(mode)})`) });
+        }
+      }
+    }
+  }
+  if (requestedFitMode === undefined || requestedFitMode === "all" || requestedFitMode === "history") {
+    for (const config of [{ width: 878, dpr: 1, forcedColors: false }, { width: 480, dpr: 1.25, forcedColors: false }, { width: 878, dpr: 1.5, forcedColors: true }]) {
+      await call("Emulation.setDeviceMetricsOverride", { width: config.width, height: 896, deviceScaleFactor: config.dpr, mobile: false });
+      await call("Emulation.setEmulatedMedia", { features: [{ name: "forced-colors", value: config.forcedColors ? "active" : "none" }] });
+      await open("?fixture=print-mixed-rotation-4.pdf");
+      results.push({ scenario: "retained fixed-font Browse history", config, result: await evaluate("window.readerHarness.runChrome()") });
+    }
+    await call("Emulation.setEmulatedMedia", { features: [] });
+  }
+  const fitModes = ["edge", "keyboard", "geometry", "history"].includes(requestedFitMode) ? [] : requestedFitMode === "fit-width" || requestedFitMode === "fit-page" ? [requestedFitMode] : ["fit-width", "fit-page"];
+  for (const fixture of [...fixtures].reverse()) {
+    for (const dpr of [1, 1.25, 1.5]) {
+      for (const renderDelay of [0, 120]) {
+        for (const mode of fitModes) {
+          await call("Emulation.setDeviceMetricsOverride", { width: 800, height: 600, deviceScaleFactor: dpr, mobile: false });
+          await open(`?fixture=${fixture}&fitDelay=${renderDelay}`);
+          results.push({ scenario: "final fit geometry", fixture, dpr, renderDelay, mode,
+            result: await evaluate(`window.readerHarness.runFitGeometry(${JSON.stringify(mode)})`) });
+        }
+      }
+    }
+  }
   const afterHashes = await hashes();
   assert.deepEqual(afterHashes, beforeHashes);
-  const report = { schemaVersion: 1, kind: "browser-automation-transcript", tool: "Chrome DevTools Protocol", status: "passed", browser: version.Browser, node: process.version, recordedAt: new Date().toISOString(), sourceHash: process.env.READER_QA_SOURCE_HASH ?? null, limitations: ["Headless Edge with real PDF.js and production wheel binding", "Native authority is mocked; not packaged WebView2 or physical device QA", "No native build or manual preview"], sourceHashesBefore: beforeHashes, sourceHashesAfter: afterHashes, results, transcript, actions: transcript.map(({ method, params }) => ({ type: method, params })), screenshot: "wheel-zoom.png"};
+  const report = { schemaVersion: 1, kind: "browser-automation-transcript", tool: "Chrome DevTools Protocol", status: "passed", browser: version.Browser, node: process.version, recordedAt: new Date().toISOString(), sourceHash: process.env.READER_QA_SOURCE_HASH ?? null, limitations: ["Headless Edge with real PDF.js and production wheel binding", "Native authority is mocked; not packaged WebView2 or physical device QA", "No native build or manual preview"], sourceHashesBefore: beforeHashes, generatedGeometrySha256, sourceHashesAfter: afterHashes, results, transcript, actions: transcript.map(({ method, params }) => ({ type: method, params })), screenshot: process.env.READER_QA_FIT_ONLY ? null : "wheel-zoom.png"};
   await writeFile(resolve(evidence, "reader-zoom.json"), JSON.stringify(report, null, 2));
-  console.log(JSON.stringify({ status: "passed", scenarios: results.length, evidence: resolve(evidence, "reader-zoom.json"), screenshot: resolve(evidence, "wheel-zoom.png") }));
+  console.log(JSON.stringify({ status: "passed", scenarios: results.length, evidence: resolve(evidence, "reader-zoom.json"), screenshot: process.env.READER_QA_FIT_ONLY ? null : resolve(evidence, "wheel-zoom.png") }));
 } catch (error) {
   await writeFile(resolve(evidence, "failure.json"), JSON.stringify({ status: "failed", error: String(error.stack ?? error), results, transcript }, null, 2));
   console.error(`QA failure evidence: ${resolve(evidence, "failure.json")}`);

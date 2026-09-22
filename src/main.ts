@@ -1,3 +1,6 @@
+import { classifyPdfFailure, isSafePdfFailureStatus, presentPdfFailure, type PdfFailureCode } from "./core/PdfFailureDiagnostic";
+import { createPdfFailureReporter } from "./platform/PdfFailureDiagnostics";
+import { createPdfAssemblyBoundary } from "./platform/PdfAssemblyClient";
 import "./styles/app.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -10,7 +13,7 @@ import { validateProductConfig } from "./domain/config/ConfigValidator";
 import { createRootKeyboardRouter } from "./platform/RootKeyboardRouter";
 import type { ActionId, ActionRuntimeContext } from "./domain/actions/ActionRegistry";
 import { createOpenChooser, chooserRows, updateChooserQuery, moveChooserSelection, selectChooserIndex, adoptChooserSnapshot, retainChooserFailure, type OpenChooserModel } from "./ui/OpenChooserModel";
-import { fitRecentPath } from "./ui/RecentPathPresentation";
+import { createRecentChooserRenderer } from "./ui/RecentChooserRenderer";
 import { openFailureAccessibilityError, openFailurePhase, openFailureStatus, type OpenFailurePhase } from "./domain/navigation/OpenFailureIdentifier";
 import { nativeOpenError } from "./domain/navigation/OpenError";
 import { buildCommandPaletteEntries, commandPaletteKeyAction, isPaletteClearShortcut, moveCommandPaletteIndex, type CommandPaletteCommandEntry } from "./ui/CommandPaletteModel";
@@ -35,7 +38,7 @@ import { createTabStripRenderer } from "./ui/shell/TabStripRenderer";
 import { loadInstalledVersion } from "./platform/InstalledVersion";
 import { createShellStatusRenderer } from "./ui/shell/ShellStatusRenderer";
 import { AccessibilityController, readerAccessibilityName, tabAccessibilitySemantics } from "./ui/AccessibilityController";
-import { PdfTabSession, publishActivateAndAdoptPdfTab } from "./pdf/PdfTabSession";
+import { PdfTabSession, publishActivateAndAdoptPdfTab, type PdfTabViewAction } from "./pdf/PdfTabSession";
 import { createPasswordPrompt } from "./ui/PasswordPrompt";
 import type { PdfLoadingTask } from "./pdf/PdfReaderController";
 import { LinkHints, type LinkHintHostContext } from "./ui/LinkHints";
@@ -46,7 +49,7 @@ import { PrintProgressOwner } from "./ui/PrintProgressOwner";
 import { bindApplicationMenuOwner } from "./ui/shell/ApplicationMenuOwner";
 import { projectConfigDiagnostics, summarizeConfigReload, type ConfigReloadOutcome } from "./ui/ConfigDiagnosticsModel";
 import { projectUpdateNotice, releasePageUrl, HIDDEN_UPDATE_NOTICE, type UpdateNoticeState } from "./ui/UpdateNoticeModel";
-import { clearRecentDocuments, listRecentDocuments, decodeRecentStateChanged, openRecentDocument, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
+import { clearRecentDocuments, listRecentDocuments, listRecentDisplayAliases, decodeRecentStateChanged, openRecentDocument, readProductConfig, recordRecentDocument } from "./platform/tauri-commands";
 
 const shellConfigResult = validateProductConfig({});
 if (!shellConfigResult.ok) throw new Error("BUILT_IN_CONFIG_INVALID");
@@ -119,18 +122,20 @@ const status = required<HTMLElement>("#status");
 const shellStatus = createShellStatusRenderer(status, () => {
   const session = active().session;
   const reader = session.reader.snapshot;
+  const presentation = session.committedPresentation ?? reader;
   return {
     hasDocument: reader.hasDocument,
-    zoomMode: reader.zoomMode,
+    zoomMode: presentation.zoomMode,
     searchPromptOpen: overlayOwner.active?.id === "search",
     query: session.query,
     status: reader.status,
-    page: reader.page,
+    page: presentation.page,
     pageCount: reader.pageCount,
-    ...(reader.zoomMode === "custom" ? { zoom: reader.customScale } : {}),
+    ...(presentation.zoomMode === "custom" ? { zoom: presentation.customScale } : {}),
   };
 }, { onHelp: () => dispatch({ type: "help.toggle" }) });
 void loadInstalledVersion().then((version) => shellStatus.setVersion(version));
+const observedKeyboardViewSettlements = new WeakSet<Promise<boolean>>();
 const printProgressOwner = new PrintProgressOwner<PdfTabSession>();
 const printProgressControl = createPrintProgress(shellStatus.printHost, () => printProgressOwner.cancel());
 let printFocusOwner: { readonly session: PdfTabSession; readonly element?: HTMLElement } | undefined;
@@ -144,6 +149,10 @@ const fileOpenerDialog = required<HTMLDialogElement>("#file-opener-dialog");
 const fileOpenerForm = required<HTMLFormElement>("#file-opener-form");
 const fileOpenerInput = required<HTMLInputElement>("#file-opener-input");
 const fileOpenerList = required<HTMLElement>("#file-opener-list");
+const fileOpenerRenderer = createRecentChooserRenderer(fileOpenerList, index => {
+  fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
+  dispatchFileOpenerEntry();
+});
 const paletteDialog = required<HTMLDialogElement>("#command-palette-dialog");
 const paletteInput = required<HTMLInputElement>("#palette-input");
 const SHELL_WINDOW_ID = "current-window";
@@ -375,6 +384,7 @@ themeDialog.addEventListener("keydown", (event) => {
   previewTheme((picker.activeIndex + direction + THEME_PICKER_ROWS.length) % THEME_PICKER_ROWS.length);
 });
 const native = {
+  assembly: (session: { readonly sessionId: string; readonly documentGeneration: number }, sessionOwnerGeneration: number) => createPdfAssemblyBoundary(invoke, session, sessionOwnerGeneration),
   openPdfDialog: async (): Promise<never> => { throw new Error("OPEN_INGRESS_REQUIRED"); },
   cancelSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, sessionOwnerGeneration: number) => invoke<{ readonly barrierId: number }>("cancel_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration }),
   closeSession: (session: { readonly sessionId: string; readonly documentGeneration: number }, barrierId: number, sessionOwnerGeneration: number) => invoke<void>("close_pdf_session", { ...session, ownerGeneration: sessionOwnerGeneration, barrierId }),
@@ -421,10 +431,22 @@ function openFailureTag(value: unknown): OpenFailureNotice["tag"] | undefined {
   const tag = value.tag === "SELECTION_REJECTED" && "reason" in value ? value.reason : value.tag;
   return tag === "DOCUMENT_TOO_LARGE" || tag === "MISSING_FILE" || tag === "PATH_REJECTED" || tag === "PDF_INVALID" || tag === "FILE_UNREADABLE" || tag === "SESSION_CAPACITY" ? tag : undefined;
 }
+const reportPdfFailure = createPdfFailureReporter(invoke);
+const failureRevisions = new WeakMap<PdfTabSession, number>();
+function showPdfFailure(session: PdfTabSession, error: unknown, phase: PdfFailureCode, message: string): void {
+  const revision = (failureRevisions.get(session) ?? 0) + 1;
+  failureRevisions.set(session, revision);
+  const generation = session.snapshot.reader.documentGeneration;
+  presentPdfFailure(message, classifyPdfFailure(error, phase),
+    (status) => { session.reader.setStatus(status); render(); },
+    (initial) => !session.snapshot.closed && failureRevisions.get(session) === revision &&
+      session.snapshot.reader.documentGeneration === generation && session.snapshot.status === initial,
+    reportPdfFailure);
+}
 function reportOpenInvokeFailure(error?: unknown, fallbackStatus = openFailureStatus("unknown"), fallbackPhase: OpenFailurePhase = "unknown"): void {
   const tag = openFailureTag(error);
   const phase = openFailurePhase(error) ?? fallbackPhase;
-  active().session.reader.setStatus(tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
+  showPdfFailure(active().session, error, "PDF_OPEN_REQUEST", tag === undefined ? fallbackStatus : OPEN_FAILURE_STATUS[tag]);
   const openError = tag === undefined ? undefined : nativeOpenError(tag);
   const accessibleError = openError === "unsupportedLocation" ? "document-locality-denied"
     : openError === "malformedDocument" || openError === "unreadableFile" || openError === "missingFile" ? "document-invalid"
@@ -439,6 +461,20 @@ function reportRecentStorageFailure(session: PdfTabSession): void {
   render();
 }
 const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
+  "PDF viewport could not be materialized.",
+  "PDF viewport landing failed.",
+  "PDF viewport rollback was incomplete.",
+  "PDF viewport rollback failed after wheel zoom.",
+  "PDF direct rollback was incomplete.",
+  "PDF DPR rollback was incomplete.",
+  openFailureStatus("presentation"),
+  "PDF contains no pages.",
+  "This PDF no longer exists.",
+  "PDF resident authority rollback failed.",
+  "PDF viewport rollback failed.",
+  "PDF resident authority restore failed.",
+  "PDF direct authority restore failed.",
+  "PDF DPR authority restore failed.",
   "PDF presentation could not be updated.",
   "Could not read this PDF.",
   "This PDF path cannot be opened safely.",
@@ -448,8 +484,12 @@ const SAFE_ADOPTION_FAILURE_STATUSES = new Set([
   "The local PDF renderer could not start.",
   "The PDF operation timed out.",
 ]);
-function safeAdoptionFailureStatus(status: string, fallbackPhase: OpenFailurePhase = "adoption"): string {
-  return SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : openFailureStatus(fallbackPhase);
+function safeAdoptionFailureStatus(session: PdfTabSession, error: unknown, fallbackPhase: OpenFailurePhase): string {
+  const status = session.snapshot.status;
+  if (isSafePdfFailureStatus(status, SAFE_ADOPTION_FAILURE_STATUSES)) return status;
+  const code: PdfFailureCode = status === "Opening PDF cancelled." ? "PDF_CANCELLED" : status === "The PDF operation timed out." ? "PDF_TIMEOUT" : "PDF_PRESENTATION";
+  showPdfFailure(session, error, code, SAFE_ADOPTION_FAILURE_STATUSES.has(status) ? status : openFailureStatus(fallbackPhase));
+  return session.snapshot.status;
 }
 let paletteActiveIndex = 0;
 let fileOpenerModel: OpenChooserModel = createOpenChooser({ tag: "READY", snapshot: { revision: "0", entries: [] } }, 0);
@@ -597,7 +637,7 @@ function renderHelpRows(): void {
 }
 function reportPresentationFailure(session: PdfTabSession, error: unknown): void {
   if (!(error instanceof Error && error.message === "PDF_RESIDENT_AUTHORITY_INCOMPLETE")) {
-    session.reader.setStatus("PDF presentation could not be updated.");
+    showPdfFailure(session, error, "PDF_PRESENTATION", "PDF presentation could not be updated.");
   }
   render();
 }
@@ -659,6 +699,7 @@ function createTab(): TabPayload {
   let announcedGeneration = -1;
   let viewportSyncDocumentGeneration = -1;
   session = new PdfTabSession({
+    onDiagnostic: reportPdfFailure,
     native,
     onPassword: (request) => {
       if (shellDisposing || request.signal.aborted) return Promise.resolve(null);
@@ -718,14 +759,15 @@ function createTab(): TabPayload {
       if (workspace === undefined || active().session !== session) return;
       const snapshot = session.snapshot;
       const reader = snapshot.reader;
+      const presentation = session.committedPresentation ?? reader;
       if (reader.hasDocument && reader.documentGeneration !== viewportSyncDocumentGeneration) {
         viewportSyncDocumentGeneration = reader.documentGeneration;
         queueMicrotask(scheduleViewportSync);
       }
       accessibility.activateTab(String(workspace.activeTabId), reader.documentGeneration);
       if (reader.hasDocument && reader.pageCount > 0) {
-        accessibility.announce({ kind: "page", generation: reader.documentGeneration, page: reader.page, pageCount: reader.pageCount });
-        if (reader.zoomMode === "custom") accessibility.announce({ kind: "zoom", generation: reader.documentGeneration, zoomPercent: Math.round(reader.customScale * 100) });
+        accessibility.announce({ kind: "page", generation: reader.documentGeneration, page: presentation.page, pageCount: reader.pageCount });
+        if (presentation.zoomMode === "custom") accessibility.announce({ kind: "zoom", generation: reader.documentGeneration, zoomPercent: Math.round(presentation.customScale * 100) });
         if (announcedGeneration !== reader.documentGeneration) {
           announcedGeneration = reader.documentGeneration;
           accessibility.announce({ kind: "loading-complete", generation: reader.documentGeneration, pageCount: reader.pageCount });
@@ -948,7 +990,11 @@ function switchTabNow(id: TabId): Promise<void> {
     activateWorkspace: (tabId) => workspace.activate(tabId),
     activateCurrent: (restoreFocus) => activateCurrentTab(restoreFocus),
     publish: render,
-    reportFailure: (payload) => payload.session.reader.setStatus(sameTab ? "Could not activate this tab." : "Could not switch tabs."),
+    reportFailure: (payload, failure) => {
+      const message = sameTab ? "Could not activate this tab." : "Could not switch tabs.";
+      const recovery = failure.recoveryCode === undefined ? "" : `; restore-prior: ${failure.recoveryCode}`;
+      payload.session.reader.setStatus(`${message} [${failure.phase}: ${failure.code}${recovery}]`);
+    },
   });
 }
 function switchTab(id: TabId): Promise<void> { return passwordModalOpen() ? Promise.resolve() : queueWorkspaceActivation(() => switchTabNow(id)); }
@@ -1019,7 +1065,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         );
       } catch (error) {
         if (shellDisposing) throw error;
-        const candidateStatus = safeAdoptionFailureStatus(payload.session.snapshot.status, error instanceof OpenAdoptionPresentationError ? "presentation" : "adoption");
+        const candidateStatus = safeAdoptionFailureStatus(payload.session, error, error instanceof OpenAdoptionPresentationError ? "presentation" : "adoption");
         if (error instanceof OpenAdoptionPresentationError) {
           const pending = pendingOpenAdoptions.get(request.requestId);
           if (pending !== undefined) pendingOpenAdoptions.set(request.requestId, { ...pending, failureStatus: candidateStatus });
@@ -1035,7 +1081,7 @@ async function adoptRequest(request: OpenRequestAdoption): Promise<void> {
         await activateCurrentTab();
         active().session.reader.setStatus(candidateStatus);
         render();
-        if (candidateStatus === "Opening PDF cancelled.") {
+        if (candidateStatus === "Opening PDF cancelled." || candidateStatus.startsWith("Opening PDF cancelled. [PDF_CANCELLED]")) {
           const element = priorFocus?.isConnected && priorFocus !== document.body && !priorFocus.closest("[hidden], [inert]")
             ? priorFocus : active().session.snapshot.reader.hasDocument ? active().host : emptyReaderOpen;
           element.focus({ preventScroll: true });
@@ -1219,117 +1265,28 @@ function renderPalette(): void {
   });
   paletteList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
 }
+let fileOpenerAliases: { readonly revision: string; readonly paths: ReadonlyMap<string, string> } | undefined;
+let fileOpenerAliasRequest: { readonly generation: number; readonly revision: string } | undefined;
 function renderFileOpener(): void {
-  const rows = chooserRows(fileOpenerModel);
-  const projected: HTMLElement[] = [];
-  rows.forEach((row, index) => {
-    if (row.kind === "recent" && index === 1) {
-      const heading = document.createElement("li");
-      heading.className = "file-opener-recents-heading";
-      heading.textContent = "Recent";
-      heading.setAttribute("role", "heading"); heading.setAttribute("aria-level", "2");
-      projected.push(heading);
-    }
-    const item = document.createElement("li");
-    const button = document.createElement("button");
-    const selected = fileOpenerModel.activeIndex === index;
-    button.type = "button";
-    button.className = `overlay-list-entry file-opener-entry file-opener-${row.kind}`;
-    button.setAttribute("aria-selected", String(selected));
-    button.setAttribute("aria-current", selected ? "true" : "false");
-    if (row.kind === "browse") {
-      button.setAttribute("aria-label", "Browse for a PDF");
-      button.textContent = row.label;
-    } else {
-      const separatorIndex = Math.max(row.displayPath.lastIndexOf("\\"), row.displayPath.lastIndexOf("/"));
-      const directory = document.createElement("span");
-      const filename = document.createElement("span");
-      directory.className = "file-opener-recent-directory";
-      filename.className = "file-opener-recent-filename";
-      directory.textContent = separatorIndex < 0 ? "" : row.displayPath.slice(0, separatorIndex + 1);
-      filename.textContent = row.displayName;
-      button.setAttribute("aria-label", row.displayPath);
-      button.title = row.displayPath;
-      button.append(directory, filename);
-    }
-    button.addEventListener("click", () => {
-      fileOpenerModel = selectChooserIndex(fileOpenerModel, index);
-      dispatchFileOpenerEntry();
-    });
-    item.append(button);
-    projected.push(item);
+  const prepared = fileOpenerModel.prepared;
+  const diagnostic = fileOpenerModel.diagnostic ?? (prepared.tag === "STATE_UNAVAILABLE" ? prepared.reason : undefined);
+  const aliases = prepared.tag === "READY" && fileOpenerAliases?.revision === prepared.snapshot.revision ? fileOpenerAliases.paths : undefined;
+  fileOpenerRenderer.render(chooserRows(fileOpenerModel), fileOpenerModel.activeIndex, diagnostic, aliases);
+  if (overlayOwner.active?.id !== "recent" || prepared.tag !== "READY") return;
+  const generation = fileOpenerModel.generation, revision = prepared.snapshot.revision;
+  if (fileOpenerAliasRequest?.generation === generation && fileOpenerAliasRequest.revision === revision) return;
+  const request = { generation, revision };
+  fileOpenerAliasRequest = request;
+  void listRecentDisplayAliases(invoke).then(outcome => {
+    if (fileOpenerAliasRequest !== request || overlayOwner.active?.id !== "recent"
+      || fileOpenerModel.generation !== generation || fileOpenerModel.prepared.tag !== "READY"
+      || fileOpenerModel.prepared.snapshot.revision !== revision || outcome.tag !== "READY" || outcome.revision !== revision) return;
+    fileOpenerAliases = { revision, paths: new Map(outcome.aliases.map(alias => [alias.recentId, alias.displayPath])) };
+    renderFileOpener();
+  }, () => {
+    // Aliases are optional presentation metadata; retain truthful canonical paths.
+    // No retry loop or filesystem authority is derived from a display alias.
   });
-  const diagnosticText = fileOpenerModel.diagnostic ?? (fileOpenerModel.prepared.tag === "STATE_UNAVAILABLE" ? fileOpenerModel.prepared.reason : undefined);
-  const diagnostic = diagnosticText === undefined ? [] : [Object.assign(document.createElement("li"), { className: "file-opener-diagnostic", textContent: diagnosticText })];
-  if (diagnostic[0] !== undefined) { diagnostic[0].setAttribute("role", "status"); diagnostic[0].setAttribute("aria-live", "polite"); }
-  fileOpenerList.replaceChildren(...projected, ...diagnostic);
-  fileOpenerList.querySelector<HTMLElement>("[aria-selected='true']")?.scrollIntoView({ block: "nearest" });
-  startFileOpenerPathFitting();
-}
-let fileOpenerPathFitFrame: number | undefined;
-let fileOpenerPathResizeObserver: ResizeObserver | undefined;
-let fileOpenerPathMeasureContext: CanvasRenderingContext2D | null | undefined;
-let fileOpenerPathLastWidth = -1;
-let fileOpenerPathFitDirty = false;
-let fileOpenerPathFitting = false;
-function startFileOpenerPathFitting(): void {
-  fileOpenerPathFitting = true;
-  if (fileOpenerPathResizeObserver === undefined && typeof ResizeObserver === "function") {
-    fileOpenerPathResizeObserver = new ResizeObserver(() => {
-      if (!fileOpenerPathFitting || fileOpenerList.clientWidth <= 0 || fileOpenerList.clientWidth === fileOpenerPathLastWidth) return;
-      scheduleFileOpenerPathFit();
-    });
-    fileOpenerPathResizeObserver.observe(fileOpenerList);
-  }
-  scheduleFileOpenerPathFit(true);
-}
-function scheduleFileOpenerPathFit(force = false): void {
-  if (!fileOpenerPathFitting) return;
-  fileOpenerPathFitDirty = fileOpenerPathFitDirty || force;
-  if (fileOpenerPathFitFrame !== undefined) return;
-  fileOpenerPathFitFrame = requestAnimationFrame(() => {
-    fileOpenerPathFitFrame = undefined;
-    if (!fileOpenerPathFitting) return;
-    const width = fileOpenerList.clientWidth;
-    if (width <= 0 || (!fileOpenerPathFitDirty && width === fileOpenerPathLastWidth)) return;
-    fileOpenerPathFitDirty = false;
-    fileOpenerPathLastWidth = width;
-    fitFileOpenerPaths();
-  });
-}
-function fitFileOpenerPaths(): void {
-  if (fileOpenerList.clientWidth <= 0) return;
-  if (fileOpenerPathMeasureContext === undefined) fileOpenerPathMeasureContext = document.createElement("canvas").getContext("2d");
-  const context = fileOpenerPathMeasureContext;
-  if (context === null) return;
-  for (const button of fileOpenerList.querySelectorAll<HTMLButtonElement>(".file-opener-recent")) {
-    button.style.removeProperty("font-size");
-    if (button.clientWidth <= 0) continue;
-    const style = getComputedStyle(button);
-    const baseFontSize = Number.parseFloat(style.fontSize);
-    const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
-    const availableWidth = button.clientWidth - horizontalPadding - 1;
-    const directory = button.querySelector<HTMLElement>(".file-opener-recent-directory");
-    const filename = button.querySelector<HTMLElement>(".file-opener-recent-filename");
-    if (!(availableWidth > 0) || !(baseFontSize > 0) || directory === null || filename === null) continue;
-    const result = fitRecentPath(button.title, filename.textContent ?? "", availableWidth, baseFontSize, (text, fontSize) => {
-      context.font = `${style.fontStyle} ${style.fontWeight} ${fontSize}px ${style.fontFamily}`;
-      return context.measureText(text).width;
-    });
-    directory.textContent = result.directoryText;
-    filename.textContent = result.filenameText;
-    if (result.fontSize < baseFontSize) button.style.fontSize = `${result.fontSize}px`;
-  }
-}
-function stopFileOpenerPathFitting(): void {
-  fileOpenerPathFitting = false;
-  fileOpenerPathResizeObserver?.disconnect();
-  fileOpenerPathResizeObserver = undefined;
-  fileOpenerPathMeasureContext = undefined;
-  if (fileOpenerPathFitFrame !== undefined) cancelAnimationFrame(fileOpenerPathFitFrame);
-  fileOpenerPathFitFrame = undefined;
-  fileOpenerPathLastWidth = -1;
-  fileOpenerPathFitDirty = false;
 }
 let clearingRecents = false;
 async function clearFileOpenerHistory(): Promise<void> {
@@ -1352,7 +1309,7 @@ async function clearFileOpenerHistory(): Promise<void> {
   }
 }
 function closeFileOpener(): void {
-  stopFileOpenerPathFitting();
+  fileOpenerRenderer.stop();
   releaseOverlay("recent");
 }
 function dispatchFileOpenerEntry(): void {
@@ -1407,6 +1364,8 @@ async function openFileOpener(): Promise<void> {
   if (nativeOpenPending || overlayOwner.active !== undefined || passwordModalOpen()) return;
   await Promise.all([initialRecentsReady, shellOpen.ready]);
   if (nativeOpenPending || overlayOwner.active !== undefined || passwordModalOpen()) return;
+  fileOpenerAliases = undefined;
+  fileOpenerAliasRequest = undefined;
   fileOpenerModel = createOpenChooser(fileOpenerModel.prepared, fileOpenerModel.generation + 1);
   if (recentStateHealth === "UNAVAILABLE" && fileOpenerModel.prepared.tag === "READY") {
     fileOpenerModel = retainChooserFailure(fileOpenerModel, fileOpenerModel.generation, RECENT_STATE_UNAVAILABLE);
@@ -1629,11 +1588,12 @@ function dispatch(action: Action): void {
     navigateAdjacentReaderPage(active(), type === "page.next" ? 1 : -1);
     return;
   }
+  const currentPresentation = active().session.committedPresentation ?? active().session.snapshot.reader;
   const fitPageScrollDirection: -1 | 1 | undefined = type === "scroll.byCssPixels" && action.axis === "vertical"
     ? action.delta > 0 ? 1 : action.delta < 0 ? -1 : undefined
     : type === "scroll.byViewport" ? action.factor > 0 ? 1 : action.factor < 0 ? -1 : undefined
     : undefined;
-  if (fitPageScrollDirection !== undefined && active().session.snapshot.reader.zoomMode === "fit-page") {
+  if (fitPageScrollDirection !== undefined && currentPresentation.zoomMode === "fit-page") {
     navigateAdjacentReaderPage(active(), fitPageScrollDirection);
     return;
   }
@@ -1651,8 +1611,22 @@ function dispatch(action: Action): void {
   if (type === "config.reload") { void reloadConfiguration(); return; }
   if (type === "update.show") { void showUpdateNotice(); return; }
   if (type === "application.quit") { void requestApplicationQuit(false, true); return; }
+  if (type.startsWith("view.")) {
+    const payload = active();
+    const settlement = payload.session.requestKeyboardView(action as PdfTabViewAction);
+    if (!observedKeyboardViewSettlements.has(settlement)) {
+      observedKeyboardViewSettlements.add(settlement);
+      void settlement.then((committed) => {
+        if (committed && active().session === payload.session) {
+          rootKeyboard.syncContext();
+          render();
+        }
+      }, (error: unknown) => reportPresentationFailure(payload.session, error));
+    }
+    return;
+  }
   const payload = active(); const session = payload.session; session.apply(action); const reader = session.snapshot.reader;
-  if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error)); if (type.startsWith("view.")) void session.renderCurrentView().catch((error: unknown) => reportPresentationFailure(session, error));
+  if (type.startsWith("page.")) void session.renderPage(reader.page).catch((error: unknown) => reportPresentationFailure(session, error));
   if (type === "search.open") { claimOverlay("search"); searchInput.value = session.query; searchInput.focus(); }
   if (type.startsWith("scroll.")) {
     const intent = session.reader.consumePendingScroll();
@@ -1770,7 +1744,7 @@ const disposeSearchPrompt = bindSearchPrompt(
 window.addEventListener("resize", () => {
   cancelLinkHints();
   scheduleDprPollFallback();
-  if (overlayOwner.active?.id === "recent") scheduleFileOpenerPathFit();
+  if (overlayOwner.active?.id === "recent") fileOpenerRenderer.requestFit();
 });
 window.addEventListener("blur", rootKeyboard.cancelPending);
 window.addEventListener("compositionstart", rootKeyboard.cancelPending);
@@ -1780,7 +1754,7 @@ fileOpenerForm.addEventListener("submit", (event) => { event.preventDefault(); d
 fileOpenerInput.addEventListener("input", () => { fileOpenerModel = updateChooserQuery(fileOpenerModel, fileOpenerInput.value); renderFileOpener(); });
 fileOpenerDialog.addEventListener("cancel", (event) => { event.preventDefault(); closeFileOpener(); });
 fileOpenerDialog.addEventListener("close", () => {
-  stopFileOpenerPathFitting();
+  fileOpenerRenderer.stop();
   if (overlayOwner.active?.id !== "recent") return;
   releaseOverlay("recent");
   render();
@@ -1819,7 +1793,7 @@ paletteDialog.addEventListener("keydown", (event) => {
 helpDialog.addEventListener("cancel", (event) => { event.preventDefault(); active().session.apply({ type: "prompt.cancel" }); releaseOverlay("help"); render(); });
 window.addEventListener("beforeunload", () => {
   printProgressControl.dispose();
-  stopFileOpenerPathFitting();
+  fileOpenerRenderer.stop();
   disposeSearchPrompt();
   themeUnlisten?.();
   recentSnapshotUnlisten?.();

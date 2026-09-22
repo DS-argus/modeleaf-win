@@ -1,6 +1,12 @@
+import { classifyPdfFailure, presentPdfFailure, PdfFailureError, type PdfFailureCode, type PdfFailureDiagnostic, type PdfDiagnosticReceipt } from "../core/PdfFailureDiagnostic";
 import { clampReaderScale } from "../domain/navigation/ZoomPolicy";
-import { PDFDataRangeTransport } from "pdfjs-dist";
 import { openFailureStatus } from "../domain/navigation/OpenFailureIdentifier";
+import {
+  createPdfAssemblyPartReader,
+  PdfRangeAssemblyTransport,
+  type PdfAssemblyBoundary,
+} from "./PdfRangeAssembly";
+export type { PdfAssemblyBoundary } from "./PdfRangeAssembly";
 import type { OpaquePdfSessionMetadata } from "./PdfDataRangeAdapter";
 import type {
   PdfContentDocument,
@@ -8,7 +14,7 @@ import type {
   PdfContentViewport,
 } from "./PdfContentController";
 import { PDFJS_POLICY } from "./PdfJsPolicy";
-import { ContinuousPageWindow, type PageWindowPlan } from "./ContinuousPageWindow";
+import { ContinuousPageWindow, type PageWindowPlan, type PageGeometryProjection } from "./ContinuousPageWindow";
 import {
   capturePdfViewportAnchor,
   restorePdfViewportAnchor,
@@ -45,87 +51,9 @@ export function pdfProtocolSourceUrl(
   return `http://modeleaf-pdf.localhost/${encodeURIComponent(session.sessionId)}/${session.documentGeneration}`;
 }
 
-export class PdfProtocolRangeTransport extends PDFDataRangeTransport {
-  private readonly active = new Set<Promise<void>>();
-  private stopped = false;
-  private failed = false;
-
-  public constructor(
-    length: number,
-    private readonly url: string,
-    private readonly onFailure: (error: Error) => void,
-  ) {
-    super(length, null, true);
-  }
-
-  public override requestDataRange(begin: number, end: number): void {
-    const cappedEnd = Math.min(end, this.length);
-    if (this.stopped
-      || !Number.isSafeInteger(begin)
-      || !Number.isSafeInteger(end)
-      || begin < 0
-      || cappedEnd <= begin
-      || cappedEnd - begin > 4 * PDFJS_POLICY.getDocument.rangeChunkSize) {
-      this.fail(new Error("PDF_RANGE_INVALID"));
-      return;
-    }
-    const abort = new AbortController();
-    const operation = this.fetchRange(begin, cappedEnd, abort.signal);
-    const settlement = operation.then(() => undefined, (error: unknown) => {
-      if (!this.stopped) this.fail(error instanceof Error ? error : new Error("PDF_RANGE_FAILED"));
-    }).finally(() => {
-      this.active.delete(settlement);
-    });
-    this.active.add(settlement);
-    if (this.stopped) abort.abort();
-    else {
-      const cancel = (): void => abort.abort();
-      settlement.finally(() => this.abortCallbacks.delete(cancel)).catch(() => {});
-      this.abortCallbacks.add(cancel);
-    }
-  }
-
-  private readonly abortCallbacks = new Set<() => void>();
-
-  public override abort(): void {
-    if (this.stopped) return;
-    this.stopped = true;
-    for (const cancel of this.abortCallbacks) cancel();
-    this.abortCallbacks.clear();
-  }
-
-  public settlements(): readonly Promise<void>[] {
-    return [...this.active];
-  }
-
-  private async fetchRange(begin: number, end: number, signal: AbortSignal): Promise<void> {
-    const response = await fetch(this.url, {
-      headers: { Range: `bytes=${begin}-${end - 1}` },
-      signal,
-    });
-    const expectedRange = `bytes ${begin}-${end - 1}/${this.length}`;
-    if (response.status !== 206
-      || response.headers.get("content-range") !== expectedRange
-      || response.headers.get("content-length") !== String(end - begin)) {
-      throw new Error("PDF_RANGE_RESPONSE_INVALID");
-    }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength !== end - begin || this.stopped) {
-      if (!this.stopped) throw new Error("PDF_RANGE_RESPONSE_INVALID");
-      return;
-    }
-    this.onDataRange(begin, bytes);
-  }
-
-  private fail(error: Error): void {
-    if (this.failed || this.stopped) return;
-    this.failed = true;
-    this.onFailure(error);
-    this.abort();
-  }
-}
 export interface ReaderNativeBoundary {
   openPdfDialog(request: { readonly ownerGeneration: number }): Promise<OpenPdfResult | null>;
+  assembly(session: Pick<OpenPdfResult, "sessionId" | "documentGeneration">, ownerGeneration: number): PdfAssemblyBoundary;
   cancelSession(session: OpaquePdfSessionMetadata, ownerGeneration: number): Promise<{ readonly barrierId: number }>;
   closeSession(session: OpaquePdfSessionMetadata, barrierId: number, ownerGeneration: number): Promise<void>;
 }
@@ -144,10 +72,12 @@ export interface PdfPage extends PdfContentPage {
 export interface PdfDocument extends PdfContentDocument {
   getPage(page: number): Promise<PdfPage>;
 }
+export interface PdfLoadingTaskProgress { readonly loaded: number; readonly total: number; readonly percent?: number; }
 export interface PdfLoadingTask {
   promise: Promise<PdfDocument>;
   destroy(): Promise<void> | void;
   onPassword?: (updatePassword: (password: string) => void, reason: number) => void;
+  onProgress?: ((progress: PdfLoadingTaskProgress) => void) | null;
 }
 interface PreparedPdfPage { readonly page: PdfPage; readonly viewport: PdfViewport; }
 export interface PdfBoundary { getDocument(options: Record<string, unknown>): PdfLoadingTask; annotationMode: number; }
@@ -213,6 +143,8 @@ export interface PdfReaderControllerOptions {
     ownerGeneration: number,
   ) => Promise<void>;
   readonly onStatus: (message: string) => void;
+  readonly onDiagnostic?: (failure: PdfFailureDiagnostic) => Promise<PdfDiagnosticReceipt>;
+  readonly currentStatus?: () => string;
   readonly onEvictPage?: (page: number) => void;
   readonly onBeforeResidentCommit?: (pages: readonly number[]) => Promise<PdfResidentAuthorityTransaction | void>;
 }
@@ -249,11 +181,14 @@ interface OpeningFailure {
   reject(error: Error): void;
 }
 interface Candidate {
+  readonly reportedFailures: WeakSet<object>;
   readonly session: OpenPdfResult;
-  readonly task: PdfLoadingTask;
+  readonly task?: PdfLoadingTask;
   readonly transport: { destroy(): Promise<void> };
-  readonly rangeTransport?: PdfProtocolRangeTransport;
   window?: ContinuousPageWindow;
+  readonly assemblyTransport?: PdfRangeAssemblyTransport;
+  readonly assemblyProgressPrior?: ((progress: PdfLoadingTaskProgress) => void) | null;
+  readonly assemblyProgressWrapper?: (progress: PdfLoadingTaskProgress) => void;
   topSpacer?: HTMLElement;
   bottomSpacer?: HTMLElement;
   topology: PdfPresentationTopology;
@@ -274,6 +209,7 @@ interface Candidate {
   stagedTeardownCompleted?: boolean;
   stagedTeardownRejected?: boolean;
   beforeDisposePhase?: CleanupPhase;
+  assemblyFinishPhase?: CleanupPhase;
   pdfDestroyPhase?: CleanupPhase;
   transportDestroyPhase?: CleanupPhase;
   readonly ownedPagePromises: Set<Promise<PdfPage>>;
@@ -312,7 +248,7 @@ const OWNERSHIP_DEADLINE_MS = 10_000;
 async function withDeadline<T>(operation: Promise<T>, milliseconds: number, tag: string): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(() => reject(new Error(tag)), milliseconds);
+    timeoutId = setTimeout(() => reject(new PdfFailureError({ code: "PDF_TIMEOUT" }, tag)), milliseconds);
   });
   try {
     return await Promise.race([operation, timeout]);
@@ -361,6 +297,29 @@ const createOpeningFailure = (): OpeningFailure => {
 };
 /** Owns opaque sessions and PDFs. A candidate is invisible until its first page has rendered. */
 export class PdfReaderController {
+  private statusRevision = 0;
+  private failureRevision = 0;
+  private lastStatus = "";
+  private publishStatus(message: string): void {
+    this.statusRevision += 1;
+    this.lastStatus = message;
+    this.options.onStatus(message);
+  }
+  private reportFailure(error: unknown, fallback: PdfFailureCode, message = safeMessage(error), reported?: WeakSet<object>): void {
+    if (this.disposed) return;
+    if (typeof error === "object" && error !== null) {
+      if (reported?.has(error)) return;
+      reported?.add(error);
+    }
+    this.failureRevision += 1;
+    const revision = this.statusRevision + 1;
+    const openSequence = this.openSequence;
+    presentPdfFailure(message, classifyPdfFailure(error, fallback),
+      (message) => this.publishStatus(message),
+      (initial) => !this.disposed && openSequence === this.openSequence && this.statusRevision === revision &&
+        (this.options.currentStatus?.() ?? this.lastStatus) === initial,
+      this.options.onDiagnostic);
+  }
   private current: Candidate | undefined;
   private opening: Candidate | undefined;
   private activeRender: ActiveRender | undefined;
@@ -373,7 +332,9 @@ export class PdfReaderController {
   private readonly quarantinedCandidates = new Set<Candidate>();
   private readonly pendingCleanups = new Map<string, PendingCleanup>();
   private readonly teardownSessions = new Map<string, Promise<void>>();
-  private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan } | undefined;
+  private activeViewportPlan: { readonly candidate: Candidate; readonly plan: PageWindowPlan;
+    readonly publishLayout?: (page: number, raster: RenderedCanvas, anchor: PdfScrollAnchor | undefined, publish: () => void) => boolean;
+  } | undefined;
   private viewportEpoch = 0;
   private viewportSettlement: Promise<void> | undefined;
   private presentationRequestSequence = 0;
@@ -404,7 +365,7 @@ export class PdfReaderController {
   private finishPasswordLifecycle(candidate: Candidate, terminal = true): void {
     candidate.passwordTerminal = true;
     if (terminal) candidate.passwordChallengeActive = false;
-    delete candidate.task.onPassword;
+    if (candidate.task !== undefined) delete candidate.task.onPassword;
     this.abortPasswordPrompt(candidate);
     if (candidate.passwordPending) {
       candidate.passwordPending = false;
@@ -565,14 +526,14 @@ export class PdfReaderController {
     }
     await this.retryQuarantinedCandidates();
     if (this.quarantinedCandidates.size > 0) {
-      this.options.onStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
+      this.publishStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
       if (adoptedSession !== undefined) await this.closeUnloadedSession(adoptedSession, ownerGeneration);
       return;
     }
     const openSequence = ++this.openSequence;
     await this.disposeCandidate(this.opening);
     if (this.quarantinedCandidates.size > 0) {
-      this.options.onStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
+      this.publishStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
       if (adoptedSession !== undefined) await this.closeUnloadedSession(adoptedSession, ownerGeneration);
       return;
     }
@@ -582,7 +543,7 @@ export class PdfReaderController {
       try {
         session = await this.options.native.openPdfDialog({ ownerGeneration });
       } catch (error) {
-        this.options.onStatus(safeMessage(error));
+        if (!this.disposed && openSequence === this.openSequence) this.reportFailure(error, "PDF_OPEN_REQUEST");
         return;
       }
     }
@@ -597,7 +558,7 @@ export class PdfReaderController {
     }
     if (validateDocumentBytes(session.length) !== undefined) {
       await this.closeUnloadedSession(session, ownerGeneration);
-      this.options.onStatus("This PDF exceeds reader resource limits.");
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(new Error("DOCUMENT_TOO_LARGE"), "PDF_RESOURCE_LIMIT");
       return;
     }
 
@@ -610,44 +571,18 @@ export class PdfReaderController {
     });
     void rangeFailure.catch(() => {});
     let candidateRef: Candidate | undefined;
-    let rangeTransport: PdfProtocolRangeTransport | undefined;
-    let task: PdfLoadingTask;
-    try {
-      const sourceUrl = pdfProtocolSourceUrl(session);
-      rangeTransport = session.length > 2 * PDFJS_POLICY.getDocument.rangeChunkSize
-        ? new PdfProtocolRangeTransport(session.length, sourceUrl, (error) => {
-            rejectRangeFailure(error);
-            if (candidateRef !== undefined
-              && (this.current === candidateRef || this.opening === candidateRef)
-              && !candidateRef.closed) {
-              candidateRef.transportFailure = error;
-              this.options.onStatus(safeMessage(error));
-              void this.disposeCandidate(candidateRef);
-            }
-          })
-        : undefined;
-      task = this.options.pdf.getDocument({
-        ...PDFJS_POLICY.getDocument,
-        ...(rangeTransport === undefined
-          ? { url: sourceUrl }
-          : { range: rangeTransport, length: session.length }),
-        cMapUrl: PDFJS_POLICY.assets.cMapUrl,
-        cMapPacked: PDFJS_POLICY.assets.cMapPacked,
-        standardFontDataUrl: PDFJS_POLICY.assets.standardFontDataUrl,
-        wasmUrl: PDFJS_POLICY.assets.wasmUrl,
-        iccUrl: PDFJS_POLICY.assets.iccUrl,
-      });
-    } catch (error) {
-      rangeTransport?.abort();
-      await this.closeUnloadedSession(session, ownerGeneration);
-      if (!this.disposed) this.options.onStatus(safeMessage(error));
-      return;
-    }
-    const candidate: Candidate = {
+    let assemblyTransport: PdfRangeAssemblyTransport | undefined;
+    let assemblyProgressPrior: ((progress: PdfLoadingTaskProgress) => void) | null | undefined;
+    let assemblyProgressWrapper: ((progress: PdfLoadingTaskProgress) => void) | undefined;
+    let task: PdfLoadingTask | undefined;
+    const makeCandidate = (loadedTask?: PdfLoadingTask): Candidate => ({
+      reportedFailures: new WeakSet<object>(),
       session,
       transport,
-      task,
-      ...(rangeTransport === undefined ? {} : { rangeTransport }),
+      ...(loadedTask === undefined ? {} : { task: loadedTask }),
+      ...(assemblyTransport === undefined ? {} : { assemblyTransport }),
+      ...(assemblyProgressPrior === undefined ? {} : { assemblyProgressPrior }),
+      ...(assemblyProgressWrapper === undefined ? {} : { assemblyProgressWrapper }),
       ownerGeneration,
       closed: false,
       ownedPagePromises: new Set(),
@@ -659,17 +594,86 @@ export class PdfReaderController {
       passwordChallengeActive: false,
       passwordTerminal: false,
       passwordPending: false,
-    };
+    });
+    try {
+      const sourceUrl = pdfProtocolSourceUrl(session);
+      if (session.length > 2 * PDFJS_POLICY.getDocument.rangeChunkSize) {
+        const boundary = this.options.native.assembly(session, ownerGeneration);
+        assemblyTransport = new PdfRangeAssemblyTransport({
+          length: session.length,
+          boundary,
+          readPart: createPdfAssemblyPartReader(sourceUrl, session.length),
+          onFailure: (error) => {
+            rejectRangeFailure(error);
+            if (candidateRef !== undefined
+              && (this.current === candidateRef || this.opening === candidateRef)
+              && !candidateRef.closed) {
+              candidateRef.transportFailure = error;
+              this.reportFailure(error, "PDF_RENDER", safeMessage(error), candidateRef.reportedFailures);
+              void this.disposeCandidate(candidateRef);
+            }
+          },
+        });
+      }
+      task = this.options.pdf.getDocument({
+        ...PDFJS_POLICY.getDocument,
+        ...(assemblyTransport === undefined
+          ? { url: sourceUrl }
+          : { range: assemblyTransport, length: session.length }),
+        cMapUrl: PDFJS_POLICY.assets.cMapUrl,
+        cMapPacked: PDFJS_POLICY.assets.cMapPacked,
+        standardFontDataUrl: PDFJS_POLICY.assets.standardFontDataUrl,
+        wasmUrl: PDFJS_POLICY.assets.wasmUrl,
+        iccUrl: PDFJS_POLICY.assets.iccUrl,
+      });
+      if (assemblyTransport !== undefined) {
+        assemblyProgressPrior = task.onProgress;
+        const prior = assemblyProgressPrior;
+        const wrapper = (progress: PdfLoadingTaskProgress): void => {
+          try { prior?.(progress); }
+          finally { assemblyTransport?.notifyProgress(); }
+        };
+        assemblyProgressWrapper = wrapper;
+        task.onProgress = wrapper;
+      }
+    } catch (error) {
+      if (task !== undefined || assemblyTransport !== undefined) {
+        const setupCandidate = makeCandidate(task);
+        void setupCandidate.openingFailure.promise.catch(() => undefined);
+        void setupCandidate.task?.promise.catch(() => undefined);
+        candidateRef = setupCandidate;
+        await this.disposeCandidate(setupCandidate);
+      } else {
+        await this.closeUnloadedSession(session, ownerGeneration);
+      }
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(error, "PDF_SOURCE");
+      return;
+    }
+    if (task === undefined) {
+      if (assemblyTransport !== undefined) {
+        const setupCandidate = makeCandidate();
+        void setupCandidate.openingFailure.promise.catch(() => undefined);
+        candidateRef = setupCandidate;
+        await this.disposeCandidate(setupCandidate);
+      } else {
+        await this.closeUnloadedSession(session, ownerGeneration);
+      }
+      if (!this.disposed && openSequence === this.openSequence) this.reportFailure(new Error("PDF_SOURCE"), "PDF_SOURCE");
+      return;
+    }
+    const candidate = makeCandidate(task);
     candidateRef = candidate;
     this.opening = candidate;
     task.onPassword = (updatePassword, reason) => {
       this.handlePasswordRequest(candidate, updatePassword, reason);
     };
-    this.options.onStatus(`Opening ${session.displayName}`);
+    this.publishStatus(`Opening ${session.displayName}`);
+    let openingPhase: PdfFailureCode = "PDF_LOAD";
     try {
       const document = await this.awaitOpeningDocument(candidate, task.promise, rangeFailure);
       candidate.document = document;
       if (document.numPages < 1) throw new Error("EMPTY_DOCUMENT");
+      openingPhase = "PDF_METADATA";
       const firstPage = await this.getOwnedPage(candidate, 1);
       const firstViewport = firstPage.getViewport({ scale: 1, rotation: 0 });
       let openingFitEvidence!: PdfOpeningFitEvidence;
@@ -696,6 +700,7 @@ export class PdfReaderController {
           rotation: 0,
           devicePixelRatio: typeof window === "undefined" ? 1 : Math.min(2, window.devicePixelRatio || 1),
         });
+        openingPhase = "PDF_FIRST_RENDER";
         rendered = await this.renderCandidatePage(candidate, 1, openingTransform);
         const after = this.usableContentSize();
         const stable = !openingFitEvidence.complete || (after !== undefined
@@ -771,6 +776,7 @@ export class PdfReaderController {
           },
         });
       };
+      openingPhase = "PDF_PRESENTATION";
       for (let attempt = 0; attempt < 3 && !canvasCommitted; attempt += 1) {
         await commitOpening();
         if (canvasCommitted || attempt === 2) break;
@@ -826,8 +832,8 @@ export class PdfReaderController {
       this.options.onOpenAborted?.(session, ownerGeneration);
       if (this.opening === candidate) this.opening = undefined;
       await this.disposeCandidate(candidate);
-      if (!this.disposed) {
-        this.options.onStatus(safeMessage(candidate.transportFailure ?? error));
+      if (!this.disposed && openSequence === this.openSequence) {
+        this.reportFailure(candidate.transportFailure ?? error, openingPhase, safeMessage(candidate.transportFailure ?? error), candidate.reportedFailures);
       }
     }
   }
@@ -853,7 +859,7 @@ export class PdfReaderController {
     const printDocument = current.document;
     const createNative = this.options.printNative;
     if (createNative === undefined) {
-      this.options.onStatus("Printing is unavailable.");
+      this.publishStatus("Printing is unavailable.");
       return false;
     }
     const activePageNumber = current.activePageNumber;
@@ -896,14 +902,14 @@ export class PdfReaderController {
     try {
       const outcome = await operation;
       if (outcome.kind === "failed") {
-        if (this.current === current && !this.disposed) this.options.onStatus(`Printing failed: ${outcome.reason}`);
+        if (this.current === current && !this.disposed) this.publishStatus(`Printing failed: ${outcome.reason}`);
         return false;
       }
       if (outcome.kind !== "submitted") return false;
       return this.current === current && !current.closed
         && current.activePageNumber === activePageNumber && this.viewTransform === transform;
     } catch {
-      if (!abort.signal.aborted && this.current === current && !this.disposed) this.options.onStatus("Printing failed.");
+      if (!abort.signal.aborted && this.current === current && !this.disposed) this.publishStatus("Printing failed.");
       return false;
     }
   }
@@ -1035,7 +1041,7 @@ export class PdfReaderController {
     this.viewportEpoch += 1;
     this.renderSequence += 1;
     void this.cancelActiveRender().catch(() => {
-      if (!this.disposed) this.options.onStatus("PDF viewport cancellation pending.");
+      if (!this.disposed) this.publishStatus("PDF viewport cancellation pending.");
     });
   }
   private viewportCanvasBytes(viewport: PdfViewport, devicePixelRatio: number): number {
@@ -1056,8 +1062,22 @@ export class PdfReaderController {
     return available();
   }
   /** Synchronizes the bounded continuous resident window to finite host geometry. */
-  public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard): Promise<boolean> {
+  public async synchronizeViewport(scrollTop: number, clientHeight: number, requestCommitGuard?: PdfRequestCommitGuard, anchorPolicy: "preserve-visible" | "caller-owned" = "preserve-visible"): Promise<boolean> {
     if (!Number.isFinite(scrollTop) || !Number.isFinite(clientHeight) || clientHeight < 0) return false;
+    const host = this.options.canvasHost;
+    const position = () => ({ left: host.scrollLeft, top: host.scrollTop,
+      maxLeft: Math.max(0, host.scrollWidth - host.clientWidth), maxTop: Math.max(0, host.scrollHeight - host.clientHeight) });
+    let ownedPosition = position();
+    const positionCurrent = (): boolean => host.scrollLeft === ownedPosition.left && host.scrollTop === ownedPosition.top;
+    const acceptOwnedLayoutClamp = (): boolean => {
+      const now = position();
+      const ownedAxis = (old: number, oldMax: number, value: number, max: number): boolean =>
+        value === old || (max < oldMax && old > max && value === max);
+      if (!ownedAxis(ownedPosition.left, ownedPosition.maxLeft, now.left, now.maxLeft)
+        || !ownedAxis(ownedPosition.top, ownedPosition.maxTop, now.top, now.maxTop)) return false;
+      ownedPosition = now;
+      return true;
+    };
     const requestSequence = ++this.presentationRequestSequence;
     await this.awaitViewportIdle();
     if (requestSequence !== this.presentationRequestSequence || !(requestCommitGuard?.() ?? true)) return false;
@@ -1067,13 +1087,13 @@ export class PdfReaderController {
     if (window === undefined) return false;
     const range = window.visibleRangeForViewport(scrollTop, clientHeight);
     if (range.firstVisiblePage === undefined || range.lastVisiblePage === undefined) return false;
-    current.visiblePageNumbers = Object.freeze(Array.from(
+    const requestedVisiblePages = Object.freeze(Array.from(
       { length: range.lastVisiblePage - range.firstVisiblePage + 1 },
       (_unused, index) => range.firstVisiblePage! + index,
     ));
 
     const planningCurrent = (): boolean => requestSequence === this.presentationRequestSequence
-      && this.current === current && !this.disposed && (requestCommitGuard?.() ?? true);
+      && this.current === current && !this.disposed && positionCurrent() && (requestCommitGuard?.() ?? true);
     const preparedPages = new Map<number, PreparedPdfPage>();
     const pageBytes = new Map<number, number>();
     try {
@@ -1086,7 +1106,7 @@ export class PdfReaderController {
         pageBytes.set(pageNumber, this.viewportCanvasBytes(viewport, this.viewTransform.devicePixelRatio));
       }
     } catch (error) {
-      if (planningCurrent()) this.options.onStatus(safeMessage(error));
+      if (planningCurrent()) this.reportFailure(error, "PDF_RENDER");
       return false;
     }
     let overscanPages = 2;
@@ -1096,10 +1116,11 @@ export class PdfReaderController {
     if (!planningCurrent()) return false;
     while (overscanPages > 0 && requiredBytes(overscanPages) > availableBytes) overscanPages -= 1;
     if (requiredBytes(overscanPages) > availableBytes) {
-      this.options.onStatus(safeMessage(new Error("CANVAS_LIMIT")));
+      this.reportFailure(new Error("CANVAS_LIMIT"), "PDF_RESOURCE_LIMIT");
       return false;
     }
     const hostScrollTopAtStart = this.options.canvasHost.scrollTop;
+    const hostClientHeightAtStart = host.clientHeight;
     const checkpoint = window.checkpoint();
     const originalResidents = new Set(checkpoint.residentPages);
     const priorActivePage = current.activePageNumber;
@@ -1119,6 +1140,7 @@ export class PdfReaderController {
       return center;
     };
     if (plan.materializePages.length === 0 && plan.evictPages.length === 0) {
+      current.visiblePageNumbers = requestedVisiblePages;
       const center = activateViewportCenter(scrollTop);
       if (center !== priorActivePage) this.notifyObserver(() => this.options.onPage(center, this.viewTransform));
       return true;
@@ -1131,9 +1153,19 @@ export class PdfReaderController {
     const transactionCurrent = (): boolean => this.viewportEpoch === epoch
       && this.current === current
       && !this.disposed
-      && (requestCommitGuard?.() ?? true);
-    this.activeViewportPlan = { candidate: current, plan };
+      && positionCurrent() && (requestCommitGuard?.() ?? true);
     const stagedMetrics: { readonly pageNumber: number; readonly metric: { readonly width: number; readonly height: number } }[] = [];
+    this.activeViewportPlan = { candidate: current, plan, publishLayout: (pageNumber, raster, anchor, publish) => {
+      if (!transactionCurrent()) return false;
+      stagedMetrics.push({ pageNumber, metric: { width: raster.viewport.width, height: raster.viewport.height } });
+      const projected = window.projectMetrics(stagedMetrics);
+      publish();
+      this.applyWindowSpacers(current, plan, projected);
+      if (!acceptOwnedLayoutClamp()) return false;
+      if (anchorPolicy === "preserve-visible" && anchor !== undefined && this.restoreScrollAnchor(anchor) === undefined) return false;
+      ownedPosition = position();
+      return transactionCurrent();
+    } };
     let succeeded = false;
     let residentAuthority: PdfResidentAuthorityTransaction | void = undefined;
     let rollbackAuthorityError: unknown;
@@ -1148,25 +1180,32 @@ export class PdfReaderController {
           this.evictResidentPage(current, obsolete, true);
         }
         window.begin(page, plan.generation);
+        const failureRevision = this.failureRevision;
         const committed = await this.renderPageInternal(page, this.viewTransform, transactionCurrent, undefined, current.topology, "preserve-anchor", preparedPages.get(page));
         if (!committed) {
-          if (transactionCurrent()) this.options.onStatus(`PDF viewport page ${page} could not be materialized.`);
+          if (transactionCurrent() && this.failureRevision === failureRevision) this.reportFailure(new Error("PDF_VIEWPORT_MATERIALIZATION_FAILED"), "PDF_PRESENTATION", `PDF viewport page ${page} could not be materialized.`);
           return false;
         }
         if (!transactionCurrent()) return false;
-        const raster = current.residentRasters.get(page);
-        if (raster !== undefined) {
-          stagedMetrics.push({ pageNumber: page, metric: { width: raster.viewport.width, height: raster.viewport.height } });
-        }
       }
       residentAuthority = await this.options.onBeforeResidentCommit?.(plan.plannedPages);
       if (!transactionCurrent()) return false;
       for (const page of plan.evictPages) this.evictResidentPage(current, page);
       if (!transactionCurrent()) return false;
+      const finalAnchor = anchorPolicy === "preserve-visible" ? this.captureVisibleScrollAnchor() : undefined;
       window.updateMetrics(stagedMetrics);
       this.prunePageFrames(plan.plannedPages);
       const finalPlan = window.plan(range.firstVisiblePage, range.lastVisiblePage, overscanPages);
       this.applyWindowSpacers(current, finalPlan);
+      if (!acceptOwnedLayoutClamp()) return false;
+      if (finalAnchor !== undefined && this.restoreScrollAnchor(finalAnchor) === undefined) return false;
+      ownedPosition = position();
+      const finalRange = window.visibleRangeForViewport(scrollTop + host.scrollTop - hostScrollTopAtStart,
+        Math.max(0, clientHeight + host.clientHeight - hostClientHeightAtStart));
+      if (finalRange.firstVisiblePage === undefined || finalRange.lastVisiblePage === undefined) return false;
+      const finalVisiblePages = Array.from({ length: finalRange.lastVisiblePage - finalRange.firstVisiblePage + 1 }, (_, index) => finalRange.firstVisiblePage! + index);
+      if (!finalVisiblePages.every(page => current.residentRasters.has(page))) return false;
+      current.visiblePageNumbers = Object.freeze(finalVisiblePages);
       const latestViewportTop = scrollTop + this.options.canvasHost.scrollTop - hostScrollTopAtStart;
       const center = activateViewportCenter(latestViewportTop);
       residentAuthority?.finalize();
@@ -1176,6 +1215,7 @@ export class PdfReaderController {
     } finally {
       for (const page of plan.materializePages) window.fail(page, plan.generation);
       if (!succeeded && this.current === current && !this.disposed) {
+        const rollbackAnchor = anchorPolicy === "preserve-visible" && transactionCurrent() ? this.captureVisibleScrollAnchor() : undefined;
         this.viewportRollback = true;
         let physicalRestored = false;
         let authorityResidents: number[] = [];
@@ -1187,7 +1227,7 @@ export class PdfReaderController {
               residentAuthority = undefined;
             } catch (error) {
               rollbackAuthorityError = error;
-              this.options.onStatus(`PDF resident authority rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+              this.reportFailure(error, "PDF_PRESENTATION", "PDF resident authority rollback failed.");
             }
           }
           if (rollbackAuthorityError === undefined) {
@@ -1214,6 +1254,10 @@ export class PdfReaderController {
               const restoredPlan = window.restore(checkpoint, authorityResidents);
               this.prunePageFrames(authorityResidents);
               this.applyWindowSpacers(current, restoredPlan);
+              if (rollbackAnchor !== undefined && acceptOwnedLayoutClamp()) {
+                this.restoreScrollAnchor(rollbackAnchor);
+                ownedPosition = position();
+              }
               const restoredActive = priorActivePage !== undefined && current.residentRasters.has(priorActivePage)
                 ? priorActivePage
                 : authorityResidents[0];
@@ -1225,7 +1269,7 @@ export class PdfReaderController {
             } catch (error) {
               physicalRollbackError ??= error;
               authorityResidents = [...current.residentRasters.keys()].filter((page) => originalResidents.has(page)).sort((a, b) => a - b);
-              this.options.onStatus(`PDF viewport rollback failed: ${error instanceof Error ? error.message : String(error)}`);
+              this.reportFailure(error, "PDF_PRESENTATION", "PDF viewport rollback failed.");
             }
 
           }
@@ -1235,12 +1279,12 @@ export class PdfReaderController {
               compensation?.finalize();
             } catch (error) {
               rollbackAuthorityError = error;
-              this.options.onStatus(`PDF resident authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+              this.reportFailure(error, "PDF_PRESENTATION", "PDF resident authority restore failed.");
             }
           }
           if (!physicalRestored && rollbackAuthorityError === undefined) {
             rollbackAuthorityError = physicalRollbackError ?? new Error("PDF_VIEWPORT_ROLLBACK_INCOMPLETE");
-            this.options.onStatus("PDF viewport rollback was incomplete.");
+            this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF viewport rollback was incomplete.");
           }
         } finally {
           this.viewportRollback = false;
@@ -1275,6 +1319,15 @@ export class PdfReaderController {
 
   /** Captures the PDF point under a host-local pointer, clamping to the nearest page edge. */
   public capturePointerAnchor(viewportOffset: PdfViewportOffset): PdfScrollAnchor | undefined {
+    return this.captureResidentAnchor(viewportOffset, false);
+  }
+
+  private captureVisibleScrollAnchor(): PdfScrollAnchor | undefined {
+    const host = this.options.canvasHost;
+    return this.captureResidentAnchor({ x: host.clientWidth / 2, y: host.clientHeight / 2 }, true);
+  }
+
+  private captureResidentAnchor(viewportOffset: PdfViewportOffset, visibleOnly: boolean): PdfScrollAnchor | undefined {
     const current = this.current;
     const host = this.options.canvasHost;
     if (current === undefined || this.disposed || !Number.isFinite(viewportOffset.x) || !Number.isFinite(viewportOffset.y)) return undefined;
@@ -1286,6 +1339,8 @@ export class PdfReaderController {
       if (frame === null) continue;
       const left = frame.offsetLeft + raster.canvas.offsetLeft;
       const top = frame.offsetTop + raster.canvas.offsetTop;
+      if (visibleOnly && (left + raster.viewport.width <= host.scrollLeft || left >= host.scrollLeft + host.clientWidth
+        || top + raster.viewport.height <= host.scrollTop || top >= host.scrollTop + host.clientHeight)) continue;
       const x = Math.max(left, Math.min(left + raster.viewport.width, point.x));
       const y = Math.max(top, Math.min(top + raster.viewport.height, point.y));
       const distance = (point.x - x) ** 2 + (point.y - y) ** 2;
@@ -1341,7 +1396,7 @@ export class PdfReaderController {
     if (!guard()) return false;
     if (!restored || !await this.settlePointerAnchor(priorAnchor, guard)) {
       if (!guard()) return false;
-      this.options.onStatus("PDF viewport rollback failed after wheel zoom.");
+      this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF viewport rollback failed after wheel zoom.");
       throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
     }
     if (failure !== undefined) throw failure;
@@ -1369,33 +1424,55 @@ export class PdfReaderController {
     return false;
   }
   public restoreScrollAnchor(anchor: PdfScrollAnchor): { readonly scrollLeft: number; readonly scrollTop: number; readonly landing: PdfViewportLanding } | undefined {
-    const raster = this.current?.residentRasters.get(anchor.pageNumber);
+    const owner = this.current;
+    const raster = owner?.residentRasters.get(anchor.pageNumber);
     const frame = this.options.canvasHost.querySelector<HTMLElement>(`:scope > .pdf-page-frame[data-page='${anchor.pageNumber}']`);
     if (raster === undefined || frame === null) return;
     const host = this.options.canvasHost;
-    const restored = restorePdfViewportAnchor(anchor, {
-      viewport: raster.viewport,
-      pageFrameOffset: { x: frame.offsetLeft + raster.canvas.offsetLeft, y: frame.offsetTop + raster.canvas.offsetTop },
-      host: {
-        scrollLeft: host.scrollLeft,
-        scrollTop: host.scrollTop,
-        clientWidth: host.clientWidth,
-        clientHeight: host.clientHeight,
-        scrollWidth: Math.max(host.clientWidth, host.scrollWidth),
-        scrollHeight: Math.max(host.clientHeight, host.scrollHeight),
-      },
-    });
+    const pageFrameOffset = { x: frame.offsetLeft + raster.canvas.offsetLeft, y: frame.offsetTop + raster.canvas.offsetTop };
+    const geometry = {
+      scrollLeft: host.scrollLeft, scrollTop: host.scrollTop,
+      clientWidth: host.clientWidth, clientHeight: host.clientHeight,
+      scrollWidth: Math.max(host.clientWidth, host.scrollWidth),
+      scrollHeight: Math.max(host.clientHeight, host.scrollHeight),
+    };
+    const restored = restorePdfViewportAnchor(anchor, { viewport: raster.viewport, pageFrameOffset, host: geometry });
     host.scrollLeft = restored.scrollLeft;
     host.scrollTop = restored.scrollTop;
     const scrollLeft = host.scrollLeft;
     const scrollTop = host.scrollTop;
-    // CSSOM extents are integers, but WebView2 applies scrolling on its physical
-    // pixel grid. Retain that immediate, bounded result before yielding; it is
-    // not permission to accept a later raw scroll as a successful landing.
+    // Ordinary CSSOM rounding remains limited to one physical pixel. Hidden
+    // single-page overflow with a stable gutter can report a larger range than
+    // the browser permits; prove that exceptional clamp synchronously at its edge.
     const browserDpr = typeof window === "undefined" ? 1 : window.devicePixelRatio;
     const quantum = 1 / (Number.isFinite(browserDpr) && browserDpr > 0 ? browserDpr : 1);
     if (Math.abs(scrollLeft - restored.scrollLeft) > quantum + 1e-6
-      || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) return undefined;
+      || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) {
+      if (owner?.topology !== "single-page" || Math.abs(scrollTop - restored.scrollTop) > quantum + 1e-6) return undefined;
+      const style = getComputedStyle(host);
+      if (!(style.overflow === "hidden" || (style.overflowX === "hidden" && style.overflowY === "hidden"))
+        || !style.getPropertyValue("scrollbar-gutter").includes("stable")) return undefined;
+      const outerWidth = host.offsetWidth;
+      const paddingBoxWidth = outerWidth - (Number.parseFloat(style.borderLeftWidth) || 0) - (Number.parseFloat(style.borderRightWidth) || 0);
+      if (paddingBoxWidth <= geometry.clientWidth) return undefined;
+      const layoutCurrent = (): boolean => !this.disposed && this.current === owner
+        && owner.residentRasters.get(anchor.pageNumber) === raster
+        && frame.isConnected === host.isConnected && frame.parentElement === host
+        && host.clientWidth === geometry.clientWidth && host.clientHeight === geometry.clientHeight
+        && Math.max(host.clientWidth, host.scrollWidth) === geometry.scrollWidth
+        && Math.max(host.clientHeight, host.scrollHeight) === geometry.scrollHeight
+        && frame.offsetLeft + raster.canvas.offsetLeft === pageFrameOffset.x
+        && frame.offsetTop + raster.canvas.offsetTop === pageFrameOffset.y;
+      if (restored.scrollLeft < scrollLeft || scrollLeft < 0 || !layoutCurrent()) return undefined;
+      host.scrollLeft = geometry.scrollWidth;
+      const edge = host.scrollLeft;
+      const orthogonalUnchanged = host.scrollTop === scrollTop;
+      host.scrollLeft = restored.scrollLeft;
+      const expectedEdge = Math.max(0, geometry.scrollWidth - paddingBoxWidth);
+      if (!orthogonalUnchanged || host.scrollTop !== scrollTop || edge !== scrollLeft
+        || host.scrollLeft !== scrollLeft || Math.abs(edge - expectedEdge) > quantum + 1e-6
+        || host.offsetWidth !== outerWidth || !layoutCurrent()) return undefined;
+    }
     const landing = this.captureViewportLandingAtOffset(anchor.pageNumber, anchor.viewportOffset);
     return landing === undefined ? undefined : { scrollLeft, scrollTop, landing };
   }
@@ -1522,6 +1599,7 @@ export class PdfReaderController {
       return { kind: "staleOrCancelled" };
     }
     const pageNumber = target.pageIndex + 1;
+    const failureRevision = this.failureRevision;
     try {
       const transformUnchanged = targetTransform.scale === this.viewTransform.scale
         && targetTransform.rotation === this.viewTransform.rotation
@@ -1529,7 +1607,7 @@ export class PdfReaderController {
       let committed = true;
       const synchronizeTargetWindow = async (offset: number): Promise<boolean> => {
         for (let attempt = 0; attempt < 4; attempt += 1) {
-          if (await this.synchronizeViewport(offset, this.contentViewportGeometry().clientHeight, prePlacementGuard)) return true;
+          if (await this.synchronizeViewport(offset, this.contentViewportGeometry().clientHeight, prePlacementGuard, "caller-owned")) return true;
           if (!prePlacementGuard()) return false;
           await this.awaitViewportIdle();
         }
@@ -1622,7 +1700,7 @@ export class PdfReaderController {
         const materializationGuard = (): boolean => (requestCommitGuard?.() ?? true) && acceptOwnedLayoutClamp();
         let synchronized: boolean;
         try {
-          synchronized = await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, materializationGuard);
+          synchronized = await this.synchronizeViewport(geometry.scrollTop, geometry.clientHeight, materializationGuard, "caller-owned");
         } catch (error) {
           if (requestCurrent() && !acceptOwnedLayoutClamp()) onViewportOwnershipLost?.();
           throw error;
@@ -1658,8 +1736,9 @@ export class PdfReaderController {
       this.notifyObserver(() => this.options.onPage(pageNumber, this.viewTransform));
       return exact ? { kind: "verified", landing } : { kind: "constrainedEdgeVerified", landing, expected };
     } catch (error) {
-      this.options.onStatus(`PDF viewport landing failed: ${error instanceof Error ? error.message : String(error)}`);
-      return !(requestCommitGuard?.() ?? true) ? { kind: "staleOrCancelled" } : { kind: "failed" };
+      if (!requestCurrent()) return { kind: "staleOrCancelled" };
+      if (this.failureRevision === failureRevision) this.reportFailure(error, "PDF_PRESENTATION", "PDF viewport landing failed.");
+      return { kind: "failed" };
     }
   }
 
@@ -1688,9 +1767,12 @@ export class PdfReaderController {
           page,
         ])].sort((a, b) => a - b));
       let committed = false;
+      let layoutFailed = false;
       const commitCanvas = (accessory?: HTMLElement): boolean => {
         if (committed || commitSequence !== this.renderSequence || this.current !== current || this.disposed || (requestCommitGuard !== undefined && !requestCommitGuard())) return false;
         const prior = current.residentRasters.get(page);
+        const publishLayout = activePlan === undefined ? undefined : this.activeViewportPlan?.publishLayout;
+        const visibleAnchor = publishLayout === undefined ? undefined : this.captureVisibleScrollAnchor();
         let plan = activePlan;
         if (!cssTransformChanged && directPreview !== undefined) {
           directPlan = current.window?.plan(page);
@@ -1718,7 +1800,7 @@ export class PdfReaderController {
           if (topology === "single-page") { current.topSpacer?.remove(); current.bottomSpacer?.remove(); delete current.topSpacer; delete current.bottomSpacer; this.options.canvasHost.classList.add("pdf-reader-single-page"); } else this.options.canvasHost.classList.remove("pdf-reader-single-page");
         } else if (plan !== undefined) {
           if (activePlan === undefined) for (const evicted of plan.evictPages) current.window?.unpublish(evicted);
-          current.window?.updateMetric(page, { width: rendered.viewport.width, height: rendered.viewport.height });
+          if (publishLayout === undefined) current.window?.updateMetric(page, { width: rendered.viewport.width, height: rendered.viewport.height });
           if (plan.materializePages.includes(page)) {
             try { current.window?.publish(page, plan.generation); } catch { return false; }
           }
@@ -1729,8 +1811,12 @@ export class PdfReaderController {
         if (this.activeViewportPlan === undefined) current.visiblePageNumbers = Object.freeze([page]);
         this.viewTransform = transform;
         if (prior !== undefined) this.releaseRaster(prior);
-        this.canvasReplace(rendered.canvas, accessory, undefined, false, activePlan === undefined);
-        if (plan !== undefined && topology === "continuous") this.applyWindowSpacers(current, plan);
+        const publish = (): void => { this.canvasReplace(rendered.canvas, accessory, undefined, false, activePlan === undefined); };
+        if (publishLayout !== undefined) {
+          committed = true;
+          layoutFailed = !publishLayout(page, rendered, visibleAnchor, publish);
+        } else publish();
+        if (publishLayout === undefined && plan !== undefined && topology === "continuous") this.applyWindowSpacers(current, plan);
         if (viewportPolicy === "opening-top") {
           this.options.canvasHost.scrollLeft = 0;
           this.options.canvasHost.scrollTop = 0;
@@ -1743,7 +1829,7 @@ export class PdfReaderController {
         if (retainedAnchor !== undefined) this.evictedScrollAnchor = undefined;
         committed = true;
         if (activePlan === undefined) this.notifyObserver(() => this.options.onPage(current.activePageNumber ?? page, transform));
-        return true;
+        return !layoutFailed;
       };
       try {
       if (this.options.onBeforeCommit === undefined) commitCanvas();
@@ -1753,10 +1839,10 @@ export class PdfReaderController {
         throw error;
       }
       if (!committed) { this.releaseRaster(rendered); return false; }
-      return true;
+      return !layoutFailed;
     } catch (error) {
       if (isRenderCancellation(error)) return false;
-      if (!this.disposed && this.current === current) this.options.onStatus(safeMessage(error));
+      if (!this.disposed && this.current === current && (requestCommitGuard?.() ?? true)) this.reportFailure(error, "PDF_RENDER");
       return false;
     }
     finally {
@@ -1780,7 +1866,7 @@ export class PdfReaderController {
     const availableBytes = this.availableCanvasBytes(current, replacementBytes);
     if (!guard() || this.current !== current || current.closed || this.disposed) return false;
     if (replacementBytes > availableBytes) {
-      this.options.onStatus(safeMessage(new Error("CANVAS_LIMIT")));
+      this.reportFailure(new Error("CANVAS_LIMIT"), "PDF_RESOURCE_LIMIT");
       return false;
     }
     const replacementAnchor = viewportPolicy === "preserve-anchor"
@@ -1812,12 +1898,12 @@ export class PdfReaderController {
           const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
           compensation?.finalize();
         } catch (error) {
-          this.options.onStatus(`PDF direct authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.reportFailure(error, "PDF_PRESENTATION", "PDF direct authority restore failed.");
           throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
         }
       }
       if (rollbackIncomplete || authorityResidents.length !== priorPages.length || current.topology !== priorTopology || current.window !== undefined) {
-        this.options.onStatus("PDF direct rollback was incomplete.");
+        this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF direct rollback was incomplete.");
         throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
       }
       return false;
@@ -1850,7 +1936,7 @@ export class PdfReaderController {
     const availableBytes = this.availableCanvasBytes(current, replacementBytes);
     if (!guard() || this.current !== current || current.closed || this.disposed) return false;
     if (replacementBytes > availableBytes) {
-      this.options.onStatus(safeMessage(new Error("CANVAS_LIMIT")));
+      this.reportFailure(new Error("CANVAS_LIMIT"), "PDF_RESOURCE_LIMIT");
       return false;
     }
     // Keep the active page until last, but release as many obsolete backings as
@@ -1896,12 +1982,12 @@ export class PdfReaderController {
           const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
           compensation?.finalize();
         } catch (error) {
-          this.options.onStatus(`PDF direct authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+          this.reportFailure(error, "PDF_PRESENTATION", "PDF direct authority restore failed.");
           throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
         }
       }
       if (rollbackIncomplete || authorityResidents.length !== checkpoint.residentPages.length) {
-        this.options.onStatus("PDF direct rollback was incomplete.");
+        this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF direct rollback was incomplete.");
         throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
       }
       return false;
@@ -1985,12 +2071,12 @@ export class PdfReaderController {
                 const compensation = await this.options.onBeforeResidentCommit(authorityResidents);
                 compensation?.finalize();
               } catch (error) {
-                this.options.onStatus(`PDF DPR authority restore failed: ${error instanceof Error ? error.message : String(error)}`);
+                this.reportFailure(error, "PDF_PRESENTATION", "PDF DPR authority restore failed.");
                 throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
               }
             }
             if (!rollbackComplete || authorityResidents.length !== checkpoint.residentPages.length) {
-              this.options.onStatus("PDF DPR rollback was incomplete.");
+              this.reportFailure(new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"), "PDF_PRESENTATION", "PDF DPR rollback was incomplete.");
               throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE");
             }
           } finally {
@@ -2027,7 +2113,7 @@ export class PdfReaderController {
         if (!ownerCurrent() || this.current !== candidate || this.disposed) return false;
         prepared = { page: source, viewport: source.getViewport({ scale: transform.scale, rotation: transform.rotation }) };
       } catch (error) {
-        if (ownerCurrent()) this.options.onStatus(safeMessage(error));
+        if (ownerCurrent()) this.reportFailure(error, "PDF_RENDER");
         return false;
       }
     }
@@ -2084,7 +2170,7 @@ export class PdfReaderController {
     try {
       await this.cancelActiveRender();
     } catch {
-      this.options.onStatus("A PDF render could not be stopped. Close and reopen Modeleaf before opening more files.");
+      this.publishStatus("A PDF render could not be stopped. Close and reopen Modeleaf before opening more files.");
     }
     await this.retryQuarantinedCandidates();
     await this.disposeCandidate(this.opening);
@@ -2229,7 +2315,7 @@ export class PdfReaderController {
       observer();
     } catch (error) {
       try {
-        this.options.onStatus(safeMessage(error));
+        this.reportFailure(error, "PDF_RENDER");
       } catch {
         // Observer failures cannot roll back an already-published canvas.
       }
@@ -2348,8 +2434,8 @@ export class PdfReaderController {
     }
   }
 
-  private applyWindowSpacers(candidate: Candidate, _plan: PageWindowPlan): void {
-    const layout = candidate.window;
+  private applyWindowSpacers(candidate: Candidate, _plan: PageWindowPlan, projected?: PageGeometryProjection): void {
+    const layout = projected ?? candidate.window;
     if (layout === undefined || candidate.topology !== "continuous") return;
     const host = this.options.canvasHost;
     const geometry = layout.documentGeometry();
@@ -2406,7 +2492,7 @@ export class PdfReaderController {
   }
 
   private disposeCandidate(candidate: Candidate | undefined): Promise<void> {
-    candidate?.rangeTransport?.abort();
+    candidate?.assemblyTransport?.abort();
     if (candidate !== undefined && this.activePrint?.owner === candidate) this.activePrint.abort.abort();
     if (candidate === undefined) return Promise.resolve();
     this.rejectOpening(candidate, new Error(candidate.passwordChallengeActive ? "PASSWORD_CANCELLED" : "Opening PDF cancelled"));
@@ -2423,11 +2509,18 @@ export class PdfReaderController {
     if (!await this.waitForCandidateOwnership(candidate)) return;
     if (this.options.onBeforeDispose !== undefined
       && !await this.awaitPhase(candidate, "beforeDisposePhase", () => this.options.onBeforeDispose!(candidate.session, candidate.ownerGeneration))) return;
-    const pdfDestroyed = await this.awaitPhase(candidate, "pdfDestroyPhase", () => Promise.resolve().then(() => candidate.task.destroy()));
+    const pdfDestroyed = candidate.task === undefined
+      || await this.awaitPhase(candidate, "pdfDestroyPhase", () => Promise.resolve().then(() => candidate.task!.destroy()));
     if (!pdfDestroyed && !candidate.pdfDestroyPhase?.settled) return;
+    if (!pdfDestroyed) return;
+    const assembliesFinished = candidate.assemblyTransport === undefined
+      || await this.awaitPhase(candidate, "assemblyFinishPhase", () => candidate.assemblyTransport!.finishAfterPdfDestroy());
+    if (!assembliesFinished && !candidate.assemblyFinishPhase?.settled) return;
+    if (!assembliesFinished) return;
+    this.restoreAssemblyProgress(candidate);
     const transportDestroyed = await this.awaitPhase(candidate, "transportDestroyPhase", () => candidate.transport.destroy());
     this.releaseCandidateOwnership(candidate);
-    if (pdfDestroyed && transportDestroyed) {
+    if (pdfDestroyed && assembliesFinished && transportDestroyed) {
       this.quarantinedCandidates.delete(candidate);
       this.pendingCleanups.delete(candidate.session.sessionId);
     }
@@ -2440,6 +2533,15 @@ export class PdfReaderController {
     candidate.residentRasters.clear();
   }
 
+  private restoreAssemblyProgress(candidate: Candidate): void {
+    const wrapper = candidate.assemblyProgressWrapper;
+    const task = candidate.task;
+    if (wrapper === undefined || task === undefined || task.onProgress !== wrapper) return;
+    const prior = candidate.assemblyProgressPrior;
+    if (prior === undefined) delete task.onProgress;
+    else task.onProgress = prior;
+  }
+
   private handoffRejectedTransportDestroy(candidate: Candidate): void {
     if (candidate.transportDestroyHandedOff) return;
     candidate.transportDestroyHandedOff = true;
@@ -2449,10 +2551,10 @@ export class PdfReaderController {
     });
     this.quarantinedCandidates.delete(candidate);
     this.releaseCandidateOwnership(candidate);
-    this.options.onStatus("A PDF session could not be released. Close and reopen Modeleaf before opening more files.");
+    this.publishStatus("A PDF session could not be released. Close and reopen Modeleaf before opening more files.");
   }
 
-  private async awaitPhase(candidate: Candidate, key: "beforeDisposePhase" | "pdfDestroyPhase" | "transportDestroyPhase", operation: () => Promise<void>): Promise<boolean> {
+  private async awaitPhase(candidate: Candidate, key: "beforeDisposePhase" | "assemblyFinishPhase" | "pdfDestroyPhase" | "transportDestroyPhase", operation: () => Promise<void>): Promise<boolean> {
     let phase = candidate[key];
     if (phase === undefined) {
       const raw = Promise.resolve().then(operation);
@@ -2470,7 +2572,7 @@ export class PdfReaderController {
           if (key === "transportDestroyPhase") this.handoffRejectedTransportDestroy(candidate);
           else {
             this.quarantine(candidate);
-            if (key === "beforeDisposePhase" && candidate[key] === phase) delete candidate[key];
+            if ((key === "beforeDisposePhase" || key === "assemblyFinishPhase") && candidate[key] === phase) delete candidate[key];
           }
           if (key !== "beforeDisposePhase") this.retryQuarantinedCandidate(candidate);
         },
@@ -2498,8 +2600,8 @@ export class PdfReaderController {
       ...candidate.ownedPagePromises,
       ...candidate.ownedRenderSettlements,
       ...candidate.ownedPrintSettlements,
-      ...(candidate.rangeTransport?.settlements() ?? []),
       ...(staged === undefined ? [] : [staged]),
+      ...(candidate.assemblyTransport?.settlements() ?? []),
     ];
     try {
       await withDeadline(Promise.allSettled(owned).then(() => undefined), OWNERSHIP_DEADLINE_MS, "PDF_OWNERSHIP_TIMEOUT");
@@ -2518,12 +2620,13 @@ export class PdfReaderController {
   private quarantine(candidate: Candidate): void {
     if (this.quarantinedCandidates.has(candidate)) return;
     this.quarantinedCandidates.add(candidate);
-    this.options.onStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
+    this.publishStatus("A PDF renderer could not be released. Close and reopen Modeleaf before opening more files.");
   }
 
   private retryQuarantinedCandidate(candidate: Candidate): void {
     if (!this.quarantinedCandidates.has(candidate) || candidate.ownershipRetry !== undefined || candidate.stagedTeardownRejected
       || (candidate.beforeDisposePhase !== undefined && (!candidate.beforeDisposePhase.settled || candidate.beforeDisposePhase.rejected))
+      || (candidate.assemblyFinishPhase !== undefined && (!candidate.assemblyFinishPhase.settled || candidate.assemblyFinishPhase.rejected))
       || (candidate.pdfDestroyPhase !== undefined && (!candidate.pdfDestroyPhase.settled || candidate.pdfDestroyPhase.rejected))
       || (candidate.transportDestroyPhase !== undefined && (!candidate.transportDestroyPhase.settled || candidate.transportDestroyPhase.rejected))) return;
     const staged = candidate.stagedTeardownSettlement;
@@ -2531,8 +2634,8 @@ export class PdfReaderController {
       ...candidate.ownedPagePromises,
       ...candidate.ownedRenderSettlements,
       ...candidate.ownedPrintSettlements,
-      ...(candidate.rangeTransport?.settlements() ?? []),
       ...(staged === undefined ? [] : [staged]),
+      ...(candidate.assemblyTransport?.settlements() ?? []),
     ];
     if (owned.length > 0) {
       candidate.ownershipRetry = Promise.allSettled(owned).then(() => {
@@ -2554,6 +2657,7 @@ export class PdfReaderController {
       delete candidate.stagedTeardownRejected;
       if (candidate.ownershipRetry !== undefined
         || (candidate.beforeDisposePhase !== undefined && (!candidate.beforeDisposePhase.settled || candidate.beforeDisposePhase.rejected))
+        || (candidate.assemblyFinishPhase !== undefined && (!candidate.assemblyFinishPhase.settled || candidate.assemblyFinishPhase.rejected))
         || (candidate.pdfDestroyPhase !== undefined && (!candidate.pdfDestroyPhase.settled || candidate.pdfDestroyPhase.rejected))
         || (candidate.transportDestroyPhase !== undefined && (!candidate.transportDestroyPhase.settled || candidate.transportDestroyPhase.rejected))) continue;
       delete candidate.cleanup;
@@ -2598,7 +2702,7 @@ export class PdfReaderController {
       return true;
     } catch {
       this.pendingCleanups.set(session.sessionId, { session, ownerGeneration });
-      this.options.onStatus("A PDF session could not be released. Close and reopen Modeleaf before opening more files.");
+      this.publishStatus("A PDF session could not be released. Close and reopen Modeleaf before opening more files.");
       return false;
     }
   }

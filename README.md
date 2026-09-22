@@ -59,6 +59,8 @@ Scoop updates are user-invoked and become available after the bucket manifest is
 | Previous / next tab | `P` / `N` |
 | Theme / palette / help | `T` / `:` / `?` |
 
+The recent-file picker keeps a fixed text size and shortens long paths in the middle; exceptionally long filenames are also middle-shortened while retaining the PDF extension. Hover for the full canonical path. Existing mapped-drive letters are shown when available in your current Windows user context; this changes only the label, not the file's stored identity or opening authority.
+
 Jump history is temporary and local to each tab. Page-number/first/last jumps, internal PDF links, and search navigation record positions; ordinary scrolling, adjacent-page steps, zoom and rotation do not add entries. `Ctrl+O` goes back and `Ctrl+I` forward; opening PDFs remains `Ctrl+Shift+O`.
 New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page in a single-page Fit Page view; in that view, `j`/`k` and `d`/`u` move to the next/previous page like `n`/`p`.
 

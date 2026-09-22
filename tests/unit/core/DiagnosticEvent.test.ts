@@ -86,6 +86,17 @@ describe("native PDF failure observations", () => {
     expect(isDiagnosticEvent({ ...observation, message: "private" })).toBe(false);
   });
 
+  it("requires native admission stage for capacity rejection and rejects forged OS codes", () => {
+    const capacity = { ...valid, outcome: "REJECTED", tag: "CAPACITY_REJECTED", stage: "OUTER_PROTOCOL_RANGE_GATE", count: 4 };
+    expect(isDiagnosticEvent(capacity)).toBe(true);
+    expect(isDiagnosticEvent({ ...capacity, count: undefined })).toBe(true);
+    for (const count of [null, -1, 1.5, "4", Infinity]) expect(isDiagnosticEvent({ ...capacity, count })).toBe(false);
+    expect(isDiagnosticEvent({ ...capacity, count: 1_000_001 })).toBe(false);
+    expect(isDiagnosticEvent({ ...capacity, osCode: 0 })).toBe(false);
+    expect(isDiagnosticEvent({ ...capacity, stage: undefined })).toBe(false);
+    expect(isRendererDiagnosticEvent(capacity)).toBe(false);
+    expect(isRendererDiagnosticEvent({ ...capacity, stage: undefined })).toBe(false);
+  });
   it("rejects orphan codes, unknown/null stages and forged native fields", () => {
     expect(isRendererDiagnosticEvent(valid)).toBe(true);
     expect(isDiagnosticEvent({ ...valid, osCode: 5 })).toBe(false);

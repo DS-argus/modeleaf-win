@@ -12,6 +12,7 @@ import {
   updateChooserQuery,
   type OpenChooserModel,
 } from "../../src/ui/OpenChooserModel";
+import { createRecentChooserRenderer } from "../../src/ui/RecentChooserRenderer";
 import { commandPaletteKeyAction, isPaletteClearShortcut } from "../../src/ui/CommandPaletteModel";
 import { createOverlayOwner, reduceOverlayOwner, type OverlayOwnerState } from "../../src/ui/overlays/OverlayOwner";
 import { createShellOpenCoordinator, type ShellOpenCoordinator } from "../../src/platform/ShellOpenCoordinator";
@@ -68,7 +69,8 @@ const productionFragments = [
   sourceFragment("function claimOverlay(", "const paletteList =", "overlay open/close functions"),
   sourceFragment("function restoreOpenFocus(", "function handleOpenTerminal(", "native terminal focus restoration"),
   sourceFragment("const shellOpen = createShellOpenCoordinator({", 'emptyReaderOpen.addEventListener("click"', "shell open coordinator initializer"),
-  sourceFragment("function renderFileOpener(", "let fileOpenerPathFitFrame", "chooser renderer"),
+  sourceFragment("const fileOpenerRenderer =", "const paletteDialog =", "chooser renderer binding"),
+  sourceFragment("let fileOpenerAliases:", "let clearingRecents", "chooser renderer"),
   sourceFragment("function closeFileOpener(", "let quitRequest", "chooser open/close/dispatch functions"),
   sourceFragment('fileOpenerForm.addEventListener("submit"', 'paletteInput.addEventListener("input"', "chooser DOM listeners"),
 ].join("\n");
@@ -212,8 +214,6 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
   const listen = vi.fn(async () => () => undefined);
   const reportFailure = vi.fn();
   const render = vi.fn();
-  const startFileOpenerPathFitting = vi.fn();
-  const stopFileOpenerPathFitting = vi.fn();
   const applicationMenuOwner = { close: vi.fn() };
   const prompt = document.createElement("section");
   const themeDialog = document.createElement("dialog");
@@ -261,8 +261,8 @@ async function createHarness(hasDocument = false): Promise<ChooserHarness> {
     suspendedPagePrompt: undefined,
     pagePromptRevision: 0,
     ownsPagePrompt: () => false,
-    startFileOpenerPathFitting,
-    stopFileOpenerPathFitting,
+    createRecentChooserRenderer,
+    listRecentDisplayAliases: async () => ({ tag: "READY", revision: "0", aliases: [] }),
     render,
     openRecentDocument: () => { throw new Error("Recent dispatch is outside this chooser-input harness"); },
     clearFileOpenerHistory: () => { throw new Error("Recent clearing is outside this chooser-input harness"); },

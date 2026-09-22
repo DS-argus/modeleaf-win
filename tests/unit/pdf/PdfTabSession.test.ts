@@ -1991,6 +1991,246 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await expect(session.renderCurrentView()).resolves.toBe(true);
     expect(session.snapshot.reader).toMatchObject({ page: 2, fitPageReference: 2, customScale: 0.25 });
   });
+  it.each(["fit-width", "continuous-fit"] as const)("keeps passive %s scale stable when the active page changes size", async zoomMode => {
+    const session = createSession();
+    const internals = (session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    });
+    const reader = internals.pdfReader;
+    session.reader.mountDocument(2);
+    await session.activate();
+    if (zoomMode === "fit-width") session.apply({ type: "view.fitWidth" });
+    internals.onPage(1, { scale: 2, rotation: 0, devicePixelRatio: 1 });
+    const sizes = vi.spyOn(reader, "getPageNaturalSize").mockResolvedValue({ width: 400, height: 100 });
+    const render = vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    vi.spyOn(reader, "synchronizeViewport").mockImplementation(async (_scrollTop, _clientHeight, guard) => {
+      if (!guard()) return false;
+      internals.onPage(2, { scale: 2, rotation: 0, devicePixelRatio: 1 });
+      return true;
+    });
+
+    await expect(session.synchronizeViewport(160, 100)).resolves.toBe(true);
+
+    expect(sizes).not.toHaveBeenCalled();
+    expect(render).not.toHaveBeenCalled();
+    expect(session.snapshot.reader).toMatchObject({ page: 2, zoomMode, customScale: 2 });
+  });
+  it.each([
+    { geometryChanged: true, pageWidth: 150, pageHeight: 300, expectedRenders: 2, expectedScale: 1 / 3, finalHeight: 100 },
+    { geometryChanged: false, pageWidth: 150, pageHeight: 300, expectedRenders: 1, expectedScale: 17 / 60, finalHeight: 85 },
+    { geometryChanged: true, pageWidth: 1_000, pageHeight: 1_000, expectedRenders: 1, expectedScale: 0.25, finalHeight: 100 },
+  ] as const)("settles Fit Page against final single-page geometry: changed=%s", async ({ geometryChanged, pageWidth, pageHeight, expectedRenders, expectedScale, finalHeight }) => {
+    const session = createSession();
+    const internals = (session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientWidth: number; clientHeight: number } };
+    });
+    const reader = internals.pdfReader;
+    const host = internals.options.canvasHost;
+    let topology: "continuous" | "single-page" = "continuous";
+    Object.defineProperty(reader, "presentationTopology", { configurable: true, get: () => topology });
+    session.reader.mountDocument(2);
+    await session.activate();
+    vi.spyOn(reader, "getPageNaturalSize").mockImplementation(async page => page === 1
+      ? { width: 100, height: 100 }
+      : { width: pageWidth, height: pageHeight });
+    let renderCalls = 0;
+    const renderTransforms: unknown[] = [];
+    const renderPageWithTransform = async (page: number, transform: unknown, guard: () => boolean): Promise<boolean> => {
+      if (!guard()) return false;
+      renderCalls += 1;
+      renderTransforms.push(transform);
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    };
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(renderPageWithTransform);
+    vi.spyOn(reader, "synchronizeViewport").mockResolvedValue(true);
+    vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (nextTopology, page, transform, guard) => {
+      topology = nextTopology;
+      const committed = await renderPageWithTransform(page, transform, guard);
+      if (committed && nextTopology === "single-page" && geometryChanged) host.clientHeight = 100;
+      return committed;
+    });
+
+    session.apply({ type: "view.fitWidth" });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    internals.onPage(2, { scale: 2, rotation: 0, devicePixelRatio: 1 });
+    host.clientHeight = 85;
+    session.apply({ type: "view.fitPage" });
+    const beforeFitPage = renderCalls;
+
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+
+    expect(renderCalls - beforeFitPage).toBe(expectedRenders);
+    expect(host.clientHeight).toBe(finalHeight);
+    expect(renderTransforms.at(-1)).toMatchObject({ scale: expectedScale, rotation: 0 });
+  });
+  it.each(["failure", "stale"] as const)("guards corrective Fit Page settlement on %s ownership", async outcome => {
+    const session = createSession();
+    const internals = (session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientWidth: number; clientHeight: number } };
+    });
+    const reader = internals.pdfReader;
+    const host = internals.options.canvasHost;
+    let topology: "continuous" | "single-page" = "continuous";
+    let singlePageRenders = 0;
+    let renderCalls = 0;
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const anchor = { pageNumber: 1, pagePoint: { x: 10, y: 20 }, viewportOffset: { x: 30, y: 40 } };
+    Object.defineProperty(reader, "presentationTopology", { configurable: true, get: () => topology });
+    vi.spyOn(reader as unknown as { captureScrollAnchor: () => typeof anchor }, "captureScrollAnchor").mockReturnValue(anchor);
+    session.reader.mountDocument(2);
+    await session.activate();
+    vi.spyOn(reader, "getPageNaturalSize").mockImplementation(async page => page === 1
+      ? { width: 100, height: 100 }
+      : { width: 150, height: 300 });
+    const renderPageWithTransform = async (
+      page: number,
+      transform: unknown,
+      guard: () => boolean,
+      presentationTopology?: "continuous" | "single-page",
+    ): Promise<boolean> => {
+      if (!guard()) return false;
+      renderCalls += 1;
+      if ((presentationTopology ?? topology) === "single-page") {
+        singlePageRenders += 1;
+        if (singlePageRenders === 2) {
+          if (outcome === "failure") throw new Error("fit-page corrective render failed");
+          entered.resolve();
+          await release.promise;
+          if (!guard()) return false;
+        }
+      }
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    };
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(renderPageWithTransform);
+    vi.spyOn(reader, "synchronizeViewport").mockResolvedValue(true);
+    vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (nextTopology, page, transform, guard) => {
+      topology = nextTopology;
+      const committed = await renderPageWithTransform(page, transform, guard);
+      if (committed && nextTopology === "single-page") host.clientHeight = 100;
+      return committed;
+    });
+
+    session.apply({ type: "view.fitWidth" });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    internals.onPage(2, { scale: 2, rotation: 0, devicePixelRatio: 1 });
+    host.clientHeight = 85;
+    session.apply({ type: "view.fitPage" });
+    if (outcome === "stale") {
+      const settling = session.renderCurrentView();
+      await entered.promise;
+      session.apply({ type: "view.zoom", factor: 1.1 });
+      release.resolve();
+      await expect(settling).resolves.toBe(false);
+      expect(session.snapshot.reader.zoomMode).toBe("custom");
+      expect(singlePageRenders).toBe(2);
+    } else {
+      await expect(session.renderCurrentView()).rejects.toThrow("fit-page corrective render failed");
+      expect(session.snapshot.reader.zoomMode).toBe("fit-width");
+      expect(singlePageRenders).toBe(2);
+    }
+    expect(renderCalls).toBeGreaterThan(0);
+  });
+  it("does not replace newer status when missing fit metadata rollback becomes stale", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientHeight: number } };
+    };
+    const reader = internals.pdfReader;
+    let topology: "continuous" | "single-page" = "continuous";
+    Object.defineProperty(reader, "presentationTopology", { configurable: true, get: () => topology });
+    const anchor = { pageNumber: 1, pagePoint: { x: 10, y: 20 }, viewportOffset: { x: 30, y: 40 } };
+    vi.spyOn(reader as unknown as { captureScrollAnchor: () => typeof anchor }, "captureScrollAnchor").mockReturnValue(anchor);
+    session.reader.mountDocument(2);
+    await session.activate();
+    let metadataCalls = 0;
+    vi.spyOn(reader, "getPageNaturalSize").mockImplementation(async () => ++metadataCalls === 3 ? undefined : { width: 100, height: 300 });
+    vi.spyOn(reader, "synchronizeViewport").mockResolvedValue(true);
+    vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (nextTopology, page, transform, guard) => {
+      if (!guard()) return false;
+      topology = nextTopology;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      if (nextTopology === "single-page") internals.options.canvasHost.clientHeight = 100;
+      return true;
+    });
+    const rollback = vi.spyOn(reader, "renderPageWithTransform").mockImplementation(async () => {
+      session.apply({ type: "view.zoom", factor: 1.1 });
+      session.reader.setStatus("Newer presentation status");
+      return false;
+    });
+    session.apply({ type: "view.fitWidth" });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    internals.options.canvasHost.clientHeight = 85;
+    session.apply({ type: "view.fitPage" });
+    await expect(session.renderCurrentView()).resolves.toBe(false);
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(session.snapshot.reader.zoomMode).toBe("custom");
+    expect(session.snapshot.reader.status).toBe("Newer presentation status");
+  });
+  it("reports bounded Fit Page geometry exhaustion after a second layout change", async () => {
+    const session = createSession();
+    const internals = (session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientWidth: number; clientHeight: number } };
+    });
+    const reader = internals.pdfReader;
+    const host = internals.options.canvasHost;
+    let topology: "continuous" | "single-page" = "continuous";
+    let singlePageRenders = 0;
+    let renderCalls = 0;
+    const renderTransforms: unknown[] = [];
+    const anchor = { pageNumber: 1, pagePoint: { x: 10, y: 20 }, viewportOffset: { x: 30, y: 40 } };
+    Object.defineProperty(reader, "presentationTopology", { configurable: true, get: () => topology });
+    vi.spyOn(reader as unknown as { captureScrollAnchor: () => typeof anchor }, "captureScrollAnchor").mockReturnValue(anchor);
+    session.reader.mountDocument(2);
+    await session.activate();
+    vi.spyOn(reader, "getPageNaturalSize").mockImplementation(async page => page === 1
+      ? { width: 100, height: 100 }
+      : { width: 150, height: 300 });
+    const renderPageWithTransform = async (
+      page: number,
+      transform: unknown,
+      guard: () => boolean,
+      presentationTopology?: "continuous" | "single-page",
+    ): Promise<boolean> => {
+      if (!guard()) return false;
+      renderCalls += 1;
+      renderTransforms.push(transform);
+      if ((presentationTopology ?? topology) === "single-page") singlePageRenders += 1;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    };
+    vi.spyOn(reader, "renderPageWithTransform").mockImplementation(renderPageWithTransform);
+    vi.spyOn(reader, "synchronizeViewport").mockResolvedValue(true);
+    vi.spyOn(reader, "setPresentationTopology").mockImplementation(async (nextTopology, page, transform, guard) => {
+      topology = nextTopology;
+      const committed = await renderPageWithTransform(page, transform, guard);
+      if (committed && nextTopology === "single-page") host.clientHeight = singlePageRenders === 1 ? 100 : 95;
+      return committed;
+    });
+
+    session.apply({ type: "view.fitWidth" });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    internals.onPage(2, { scale: 2, rotation: 0, devicePixelRatio: 1 });
+    host.clientHeight = 85;
+    session.apply({ type: "view.fitPage" });
+
+    await expect(session.renderCurrentView()).resolves.toBe(false);
+
+    expect(singlePageRenders).toBe(2);
+    expect(renderTransforms.at(-2)).toMatchObject({ scale: 1 / 3, rotation: 0 });
+    expect(session.snapshot.reader.zoomMode).toBe("fit-width");
+    expect(session.snapshot.status).toBe("PDF presentation could not be updated.");
+  });
   it.each([false, "exception", "after-commit"] as const)("clears a failed wheel target and restores its reference: %s", async (failure) => {
     const session = createSession();
     const internals = session as unknown as SessionInternals & { onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void };
@@ -2163,5 +2403,158 @@ describe("PdfTabSession CP4 pressure and search ownership", () => {
     await fit.promise;
     await Promise.resolve();
     expect(session.snapshot.reader.status === "PDF presentation could not be updated.").toBe(!resized);
+  });
+});
+
+describe("explicit continuous fit geometry ownership", () => {
+  it("refits the fixed reference for an explicit presentation owner after geometry changes", async () => {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+      options: { canvasHost: { clientHeight: number } };
+    };
+    session.reader.mountDocument(2);
+    await session.activate();
+    internals.onPage(1, { scale: 1, rotation: 0, devicePixelRatio: 1 });
+    const sizes = vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    const render = vi.spyOn(internals.pdfReader, "renderPageWithTransform").mockImplementation(async (page, transform, guard) => {
+      if (!guard()) return false;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    vi.spyOn(internals.pdfReader, "synchronizeViewport").mockImplementation(async () => {
+      internals.options.canvasHost.clientHeight = 85;
+      return true;
+    });
+    await expect(session.renderCurrentView()).resolves.toBe(true);
+    expect(render.mock.calls.at(-1)?.[1]).toMatchObject({ scale: 0.85 });
+    expect(sizes.mock.calls.every(([page]) => page === 1)).toBe(true);
+    expect(session.snapshot.reader).toMatchObject({ zoomMode: "continuous-fit", fitPageReference: 1, customScale: 0.85 });
+  });
+});
+describe("bounded keyboard view ownership", () => {
+  async function harness(scale = 2) {
+    const session = createSession();
+    const internals = session as unknown as SessionInternals & {
+      onPage: (page: number, transform: { scale: number; rotation: number; devicePixelRatio: number }) => void;
+    };
+    session.reader.mountDocument(3);
+    await session.activate();
+    session.reader.restoreView({ zoomMode: "custom", customScale: scale, fitPageReference: undefined, rotationQuarterTurns: 0 });
+    internals.onPage(1, { scale, rotation: 0, devicePixelRatio: 1 });
+    let topology: "single-page" | "continuous" = "continuous";
+    Object.defineProperty(internals.pdfReader, "presentationTopology", { configurable: true, get: () => topology });
+    vi.spyOn(internals.pdfReader, "getPageNaturalSize").mockResolvedValue({ width: 100, height: 100 });
+    vi.spyOn(internals.pdfReader, "synchronizeViewport").mockResolvedValue(true);
+    const holds: ReturnType<typeof deferred<void>>[] = [];
+    const render = vi.mocked(internals.pdfReader.setPresentationTopology).mockImplementation(async (next, page, transform, guard) => {
+      const hold = holds.shift();
+      if (hold !== undefined) await hold.promise;
+      if (!guard()) return false;
+      topology = next;
+      internals.onPage(page, transform as { scale: number; rotation: number; devicePixelRatio: number });
+      return true;
+    });
+    return { session, internals, render, holds, setTopology: (next: typeof topology) => { topology = next; }, topology: () => topology };
+  }
+
+  it.each(["view.fitWidth", "view.fitPage"] as const)("composes queued minus from resolved %s, not pre-fit zoom", async type => {
+    const h = await harness(3);
+    const first = deferred<void>(); h.holds.push(first);
+    const fitting = h.session.requestKeyboardView({ type });
+    const minus = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    expect(minus).toBe(fitting);
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    expect(h.render.mock.calls[0]![3]()).toBe(true);
+    expect(h.session.committedPresentation?.customScale).toBe(3);
+    first.resolve();
+    await expect(minus).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledTimes(2);
+    expect(h.session.committedPresentation?.customScale).toBeCloseTo((type === "view.fitWidth" ? 2 : 1) / 1.1, 12);
+  });
+
+  it("lets active raster commit while more zoom input waits in one bounded summary", async () => {
+    const h = await harness(2);
+    const first = deferred<void>(), second = deferred<void>(); h.holds.push(first, second);
+    const work = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    for (let index = 0; index < 1_000; index += 1) expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 })).toBe(work);
+    expect(h.render.mock.calls[0]![3]()).toBe(true);
+    first.resolve();
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledTimes(2));
+    expect(h.session.committedPresentation?.customScale).toBeCloseTo(2 / 1.1, 12);
+    expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 })).toBe(work);
+    const owner = (h.session as unknown as { keyboardViewOwner: { pendingZoom: unknown } }).keyboardViewOwner;
+    expect(Object.keys(owner.pendingZoom as object).sort()).toEqual(["factor", "lower", "upper"]);
+    second.resolve();
+    await expect(work).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledTimes(3);
+    expect(h.session.committedPresentation?.customScale).toBeCloseTo(0.275, 12);
+  });
+
+  it.each(["navigation", "deactivate", "close", "replacement", "resize"] as const)("fences queued work on %s and leaves no delayed zoom", async reason => {
+    const h = await harness(2);
+    const first = deferred<void>(); h.holds.push(first);
+    const work = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 })).toBe(work);
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    if (reason === "navigation") h.session.apply({ type: "page.goTo", page: 2 });
+    else if (reason === "deactivate") await h.session.deactivate();
+    else if (reason === "close") await h.session.close();
+    else if (reason === "resize") h.session.invalidateViewportSynchronization();
+    else (h.internals.pdfReader as unknown as { options: { onCommitted: (count: number, name: string) => void } }).options.onCommitted(5, "replacement.pdf");
+    await expect(work).resolves.toBe(false);
+    expect(h.render.mock.calls[0]![3]()).toBe(false);
+    first.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(h.render).toHaveBeenCalledOnce();
+    if (reason === "navigation" || reason === "resize") expect(h.session.snapshot.reader.customScale).toBe(2);
+    if (reason === "replacement") expect(h.session.snapshot.reader.pageCount).toBe(5);
+  });
+
+  it("supersedes an active fit and its queued zoom with a newer fit command", async () => {
+    const h = await harness(3);
+    const first = deferred<void>(); h.holds.push(first);
+    const old = h.session.requestKeyboardView({ type: "view.fitWidth" });
+    h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 });
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledOnce());
+    const current = h.session.requestKeyboardView({ type: "view.fitPage" });
+    await expect(old).resolves.toBe(false);
+    await expect(current).resolves.toBe(true);
+    first.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(h.render).toHaveBeenCalledTimes(2);
+    expect(h.session.committedPresentation).toMatchObject({ zoomMode: "fit-page", customScale: 1 });
+  });
+
+  it("rejects current render failure without draining queued input or hiding its cause", async () => {
+    const h = await harness(2);
+    const failure = new Error("controlled raster failure");
+    h.render.mockRejectedValueOnce(failure);
+    const work = h.session.requestKeyboardView({ type: "view.fitWidth" });
+    expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 })).toBe(work);
+    await expect(work).rejects.toBe(failure);
+    expect(h.render).toHaveBeenCalledOnce();
+    expect(h.session.committedPresentation?.customScale).toBe(2);
+    await expect(h.session.requestKeyboardView({ type: "view.actualSize" })).resolves.toBe(true);
+  });
+
+  it("converts clamped Fit Page to continuous custom topology instead of relabeling the canvas", async () => {
+    const h = await harness(0.25);
+    h.session.reader.restoreView({ zoomMode: "fit-page", customScale: 0.25, fitPageReference: 1, rotationQuarterTurns: 0 });
+    h.internals.onPage(1, { scale: 0.25, rotation: 0, devicePixelRatio: 1 }); h.setTopology("single-page");
+    await expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 })).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledOnce();
+    expect(h.topology()).toBe("continuous");
+    expect(h.session.committedPresentation).toMatchObject({ zoomMode: "custom", customScale: 0.25 });
+  });
+
+  it("ignores invalid factors independently and keeps clamped custom fast path raster-free", async () => {
+    const h = await harness(4);
+    await expect(h.session.requestKeyboardView({ type: "view.zoom", factor: 1.1 })).resolves.toBe(false);
+    expect(h.render).not.toHaveBeenCalled();
+    const first = deferred<void>(); h.holds.push(first);
+    const work = h.session.requestKeyboardView({ type: "view.zoom", factor: 1 / 1.1 });
+    await expect(h.session.requestKeyboardView({ type: "view.zoom", factor: NaN })).resolves.toBe(false);
+    first.resolve(); await expect(work).resolves.toBe(true);
+    expect(h.render).toHaveBeenCalledOnce();
   });
 });

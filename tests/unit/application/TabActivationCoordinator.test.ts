@@ -71,6 +71,79 @@ describe("TabActivationCoordinator", () => {
     ]);
   });
 
+  it("reports deactivation failure without attempting target activation", async () => {
+    const h = activationHarness();
+    const failures: unknown[] = [];
+    await performTabActivation(2, {
+      ...h.operations,
+      deactivate: async () => { throw new Error("PDF_ACTIVITY_AUTHORITY_INCOMPLETE"); },
+      reportFailure: (_payload, failure) => { failures.push(failure); },
+    });
+    expect(failures).toEqual([{ phase: "deactivate", code: "PDF_ACTIVITY_AUTHORITY_INCOMPLETE" }]);
+    expect(h.activeId()).toBe(1);
+    expect(h.events).toEqual(["cancel:one", "publish:1"]);
+  });
+
+  it("preserves the first target failure when restoring the prior tab also fails", async () => {
+    const h = activationHarness();
+    const failures: unknown[] = [];
+    let attempts = 0;
+    await performTabActivation(2, {
+      ...h.operations,
+      activateCurrent: async () => { throw new Error(++attempts === 1 ? "PDF_PRESENTATION_RESTORE_FAILED" : "PDF_ACTIVITY_AUTHORITY_INCOMPLETE"); },
+      reportFailure: (_payload, failure) => { failures.push(failure); },
+    });
+    expect(attempts).toBe(2);
+    expect(failures).toEqual([{ phase: "activate", code: "PDF_PRESENTATION_RESTORE_FAILED", recoveryCode: "PDF_ACTIVITY_AUTHORITY_INCOMPLETE" }]);
+    expect(h.activeId()).toBe(1);
+    expect(h.payloads.get(1)?.active).toBe(false);
+  });
+
+  it.each([
+    new Error("C:/private/document.pdf secret text https://private.invalid password"),
+    new Error("PDF_PRESENTATION_RESTORE_FAILED: C:/private/document.pdf"),
+    "PDF_PRESENTATION_RESTORE_FAILED",
+    { message: "PDF_PRESENTATION_RESTORE_FAILED" },
+  ])("redacts non-allowlisted failures without retaining raw causes", async (error) => {
+    const h = activationHarness();
+    const failures: unknown[] = [];
+    h.payloads.get(1)!.active = false;
+    await performTabActivation(1, {
+      ...h.operations,
+      activateCurrent: async () => { throw error; },
+      reportFailure: (_payload, failure) => { failures.push(failure); },
+    });
+    expect(failures).toEqual([{ phase: "activate", code: "UNKNOWN" }]);
+  });
+
+  it("reports failed prior restoration when the requested tab disappeared", async () => {
+    const h = activationHarness();
+    const failures: unknown[] = [];
+    await performTabActivation(3, {
+      ...h.operations,
+      activateCurrent: async () => { throw new Error("PDF_RESIDENT_AUTHORITY_INCOMPLETE"); },
+      reportFailure: (_payload, failure) => { failures.push(failure); },
+    });
+    expect(failures).toEqual([{ phase: "restore-prior", code: "PDF_RESIDENT_AUTHORITY_INCOMPLETE" }]);
+    expect(h.activeId()).toBe(1);
+  });
+  it("reports the original target tag after successful prior recovery", async () => {
+    const h = activationHarness();
+    const failures: unknown[] = [];
+    let attempts = 0;
+    await performTabActivation(2, {
+      ...h.operations,
+      activateCurrent: async (restoreFocus) => {
+        if (++attempts === 1) throw new Error("PDF_PRESENTATION_RESTORE_FAILED");
+        await h.operations.activateCurrent(restoreFocus);
+      },
+      reportFailure: (_payload, failure) => { failures.push(failure); },
+    });
+    expect(failures).toEqual([{ phase: "activate", code: "PDF_PRESENTATION_RESTORE_FAILED" }]);
+    expect(h.activeId()).toBe(1);
+    expect(h.payloads.get(1)?.active).toBe(true);
+    expect(h.events).toContain("focus:1");
+  });
   it("serializes rapid relative P and N moves against the latest committed tab", async () => {
     const workspace = new TabWorkspace(() => undefined);
     const second = workspace.appendAndActivate(undefined)!;

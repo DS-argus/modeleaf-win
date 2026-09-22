@@ -1,7 +1,18 @@
+#[path = "pdf_assembly.rs"]
+mod pdf_assembly;
+#[path = "pdf_file_dispatch.rs"]
+mod pdf_file_dispatch;
+
 use crate::diagnostics::{NativePdfDiagnostics, PdfDiagnosticStage, PdfFailureObservation};
 use crate::external_link::{validate_external_link, ExternalLinkError};
 use crate::local_path::{
     FinalHandlePolicy, LocalPathPolicy, SystemFinalHandlePolicy, SystemLocalPathPolicy,
+};
+use pdf_assembly::{AssemblyCallback, PdfAssemblyLedger};
+pub use pdf_assembly::{PdfAssemblyLease, PdfAssemblyReleaseProof, PdfAssemblyStats};
+pub(crate) use pdf_file_dispatch::FileCompletion;
+use pdf_file_dispatch::{
+    file_key, spawn_selected_job, DispatchJob, FileCallback, FileDispatcher, FileValue,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -9,6 +20,7 @@ use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -184,6 +196,7 @@ struct ActivePrintLease {
     cancellation_flag: Arc<AtomicBool>,
 }
 struct Session {
+    assembly_work: usize,
     owner: PdfOwner,
     generation: u64,
     length: u64,
@@ -256,6 +269,8 @@ struct Sessions {
 }
 #[derive(Clone)]
 pub struct PdfSessionManager {
+    dispatcher: Arc<FileDispatcher>,
+    assemblies: Arc<PdfAssemblyLedger>,
     diagnostics: Arc<std::sync::OnceLock<NativePdfDiagnostics>>,
     sessions: Arc<Mutex<Sessions>>,
     drained: Arc<Condvar>,
@@ -399,85 +414,6 @@ impl Drop for OpenAdmission {
     }
 }
 
-struct ProcessAdmission {
-    sessions: Arc<Mutex<Sessions>>,
-    drained: Arc<Condvar>,
-    id: SessionId,
-    queued: bool,
-    in_flight: bool,
-    released: bool,
-    cleanup_tx: SyncSender<CleanupTask>,
-    file: Option<Arc<Mutex<File>>>,
-}
-
-impl ProcessAdmission {
-    fn promote(&mut self) -> Result<(), PdfSessionError> {
-        if !self.queued || self.in_flight || self.released {
-            return Err(PdfSessionError::SessionClosing);
-        }
-        let mut sessions = self.sessions.lock().expect("session state poisoned");
-        let process_full = sessions.process_in_flight >= MAX_PROCESS_IN_FLIGHT;
-        let session = sessions
-            .entries
-            .get_mut(&self.id)
-            .ok_or(PdfSessionError::SessionNotFound)?;
-        if session.teardown != TeardownOwner::Active {
-            return Err(PdfSessionError::SessionClosing);
-        }
-        if process_full || session.in_flight >= MAX_SESSION_IN_FLIGHT {
-            return Err(PdfSessionError::RangeCapacity);
-        }
-        session.queued -= 1;
-        session.in_flight += 1;
-        sessions.process_queued -= 1;
-        sessions.process_in_flight += 1;
-        self.queued = false;
-        self.in_flight = true;
-        Ok(())
-    }
-
-    fn finish(&mut self) -> bool {
-        if self.released {
-            return false;
-        }
-        drop(self.file.take());
-        let mut sessions = self.sessions.lock().expect("session state poisoned");
-        let closing = sessions
-            .entries
-            .get(&self.id)
-            .map_or(true, |session| session.teardown != TeardownOwner::Active);
-        if let Some(session) = sessions.entries.get_mut(&self.id) {
-            if self.queued {
-                session.queued -= 1;
-            }
-            if self.in_flight {
-                session.in_flight -= 1;
-            }
-        }
-        if self.queued {
-            sessions.process_queued -= 1;
-        }
-        if self.in_flight {
-            sessions.process_in_flight -= 1;
-        }
-        self.queued = false;
-        self.in_flight = false;
-        self.released = true;
-        PdfSessionManager::queue_deferred_drained_session(
-            &mut sessions,
-            &self.cleanup_tx,
-            &self.id,
-        );
-        self.drained.notify_all();
-        closing
-    }
-}
-
-impl Drop for ProcessAdmission {
-    fn drop(&mut self) {
-        self.finish();
-    }
-}
 impl Default for PdfSessionManager {
     fn default() -> Self {
         Self::new()
@@ -546,6 +482,16 @@ impl PdfSessionManager {
             }
         }
     }
+    pub(crate) fn report_renderer_failure(
+        &self,
+        failure: &crate::diagnostics::PdfRendererFailure,
+    ) -> Result<crate::diagnostics::PdfDiagnosticReceipt, crate::diagnostics::DiagnosticError> {
+        failure.validate()?;
+        match self.diagnostics.get() {
+            Some(sink) => sink.report_renderer(failure),
+            None => Ok(crate::diagnostics::PdfDiagnosticReceipt::unavailable()),
+        }
+    }
     pub(crate) fn install_diagnostics(&self, sink: NativePdfDiagnostics) {
         assert!(
             self.diagnostics.set(sink).is_ok(),
@@ -591,20 +537,513 @@ impl PdfSessionManager {
                 }
             })
             .expect("failed to start PDF handle cleanup worker");
+        let dispatcher = Arc::new(FileDispatcher::new());
+        let assemblies = Arc::new(PdfAssemblyLedger::new());
         Self {
             sessions,
+            dispatcher,
+            assemblies,
             drained,
             cleanup_tx,
             diagnostics: Arc::new(std::sync::OnceLock::new()),
         }
     }
+}
+fn file_rejection_for_job(sessions: &Sessions, job: &DispatchJob) -> PdfSessionError {
+    match sessions.entries.get(&job.id) {
+        None => PdfSessionError::SessionNotFound,
+        Some(session) if session.owner.window_label != job.owner.window_label => {
+            PdfSessionError::OwnerMismatch
+        }
+        Some(session)
+            if session.owner.generation != job.owner.generation
+                || session.generation != job.generation =>
+        {
+            PdfSessionError::GenerationMismatch
+        }
+        Some(_) => PdfSessionError::SessionClosing,
+    }
+}
+
+fn pump_file_dispatch_parts(
+    dispatcher: Arc<FileDispatcher>,
+    sessions: Arc<Mutex<Sessions>>,
+    drained: Arc<Condvar>,
+    cleanup_tx: SyncSender<CleanupTask>,
+) {
+    loop {
+        let (revoked, selected) = {
+            let mut state = sessions.lock().expect("session state poisoned");
+            let revoked = dispatcher.revoke_where(|job| {
+                !state.entries.get(&job.id).is_some_and(|session| {
+                    session.owner == job.owner
+                        && session.generation == job.generation
+                        && session.teardown == TeardownOwner::Active
+                })
+            });
+            let selected = dispatcher.take_next(|dispatcher_state, job| {
+                let Some(session) = state.entries.get(&job.id) else {
+                    return false;
+                };
+                state.process_in_flight < MAX_PROCESS_IN_FLIGHT
+                    && session.owner == job.owner
+                    && session.generation == job.generation
+                    && session.teardown == TeardownOwner::Active
+                    && session.in_flight < MAX_SESSION_IN_FLIGHT
+                    && !dispatcher_state.file_selected(job.file_key)
+            });
+            if let Some(job) = selected.as_ref() {
+                {
+                    let session = state
+                        .entries
+                        .get_mut(&job.id)
+                        .expect("selected session missing");
+                    session.queued = session
+                        .queued
+                        .checked_sub(1)
+                        .expect("session queue underflow");
+                    session.in_flight += 1;
+                }
+                state.process_queued = state
+                    .process_queued
+                    .checked_sub(1)
+                    .expect("process queue underflow");
+                state.process_in_flight += 1;
+            }
+            (revoked, selected)
+        };
+
+        let had_revoked = !revoked.is_empty();
+        for mut job in revoked {
+            let error = {
+                let state = sessions.lock().expect("session state poisoned");
+                file_rejection_for_job(&state, &job)
+            };
+            let token = FileCompletion::from_job(
+                Arc::clone(&dispatcher),
+                Arc::clone(&sessions),
+                Arc::clone(&drained),
+                cleanup_tx.clone(),
+                &mut job,
+            );
+            drop(job.work.take());
+            drop(job.file);
+            let Some(complete) = job.complete.take() else {
+                drop(token);
+                continue;
+            };
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                complete(Err(error), token);
+            }));
+        }
+
+        if let Some(job) = selected {
+            spawn_selected_job(
+                job,
+                Arc::clone(&dispatcher),
+                Arc::clone(&sessions),
+                Arc::clone(&drained),
+                cleanup_tx.clone(),
+            );
+            continue;
+        }
+        if !had_revoked {
+            break;
+        }
+    }
+}
+
+impl PdfSessionManager {
+    fn pump_file_dispatch(&self) {
+        pump_file_dispatch_parts(
+            Arc::clone(&self.dispatcher),
+            Arc::clone(&self.sessions),
+            Arc::clone(&self.drained),
+            self.cleanup_tx.clone(),
+        );
+    }
+
+    fn prepare_file_job(
+        &self,
+        sessions: &mut Sessions,
+        owner: &PdfOwner,
+        id: &SessionId,
+        observation: &PdfFailureObservation<'_>,
+        generation: u64,
+    ) -> Result<(Arc<Mutex<File>>, FileSnapshot), PdfSessionError> {
+        let source = {
+            let session = Self::checked_session(sessions, owner, id, generation)?;
+            if session.teardown != TeardownOwner::Active {
+                return Err(PdfSessionError::SessionClosing);
+            }
+            if session.queued >= MAX_SESSION_QUEUE {
+                observation.capture_capacity(PdfDiagnosticStage::FileSessionQueue, session.queued);
+                return Err(PdfSessionError::RangeCapacity);
+            }
+            (
+                Arc::clone(&session.file),
+                FileSnapshot {
+                    length: session.length,
+                    modified: session.modified,
+                },
+            )
+        };
+        if sessions.process_queued >= MAX_PROCESS_QUEUE {
+            observation.capture_capacity(
+                PdfDiagnosticStage::FileProcessQueue,
+                sessions.process_queued,
+            );
+            return Err(PdfSessionError::RangeCapacity);
+        }
+        Ok(source)
+    }
+
+    pub(crate) fn enqueue_range_read<F>(
+        &self,
+        owner: PdfOwner,
+        id: SessionId,
+        generation: u64,
+        offset: u64,
+        length: u32,
+        complete: F,
+    ) where
+        F: FnOnce(Result<Vec<u8>, PdfSessionError>, FileCompletion) + Send + 'static,
+    {
+        if length > ABSOLUTE_RANGE_LIMIT {
+            complete(Err(PdfSessionError::RangeCapacity), FileCompletion::empty());
+            return;
+        }
+        if offset.checked_add(u64::from(length)).is_none() {
+            complete(Err(PdfSessionError::RangeInvalid), FileCompletion::empty());
+            return;
+        }
+        let diagnostics = Arc::clone(&self.diagnostics);
+        let observation = PdfFailureObservation::new(self.diagnostics.get());
+        let user_complete = Arc::new(Mutex::new(Some(complete)));
+        let result = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            let (file, expected) =
+                match self.prepare_file_job(&mut sessions, &owner, &id, &observation, generation) {
+                    Ok(source) => source,
+                    Err(error) => {
+                        drop(sessions);
+                        let callback = user_complete
+                            .lock()
+                            .expect("completion poisoned")
+                            .take()
+                            .expect("completion missing");
+                        callback(Err(error), FileCompletion::empty());
+                        return;
+                    }
+                };
+            let file_for_work = Arc::clone(&file);
+            let work = Box::new(move || {
+                let observation = PdfFailureObservation::new(diagnostics.get());
+                let guard = file_for_work
+                    .lock()
+                    .map_err(|_| PdfSessionError::FileUnreadable)?;
+                let available = usize::try_from(
+                    expected
+                        .length
+                        .saturating_sub(offset)
+                        .min(u64::from(length)),
+                )
+                .map_err(|_| PdfSessionError::RangeInvalid)?;
+                PdfSessionManager::read_file(guard, offset, available, expected, &observation)
+                    .map(FileValue::Range)
+            });
+            let callback_arc = Arc::clone(&user_complete);
+            let callback: FileCallback = Box::new(move |result, token| {
+                let result = result.and_then(|value| match value {
+                    FileValue::Range(bytes) => Ok(bytes),
+                    FileValue::Identity(_) => Err(PdfSessionError::FileUnreadable),
+                });
+                let callback = callback_arc.lock().expect("completion poisoned").take();
+                if let Some(callback) = callback {
+                    callback(result, token);
+                }
+            });
+            let job = DispatchJob {
+                reservation_id: 0,
+                owner: owner.clone(),
+                id: id.clone(),
+                generation,
+                file_key: file_key(&file),
+                file,
+                work: Some(work),
+                complete: Some(callback),
+                metadata_permit: None,
+            };
+            match self.dispatcher.enqueue(job) {
+                Ok(_) => {
+                    {
+                        let session = sessions.entries.get_mut(&id).expect("session missing");
+                        session.queued += 1;
+                    }
+                    sessions.process_queued += 1;
+                    Ok(())
+                }
+                Err(_) => Err(PdfSessionError::RangeCapacity),
+            }
+        };
+        if let Err(error) = result {
+            let callback = user_complete.lock().expect("completion poisoned").take();
+            if let Some(callback) = callback {
+                callback(Err(error), FileCompletion::empty());
+            }
+            return;
+        }
+        self.pump_file_dispatch();
+    }
+
+    pub(crate) fn enqueue_trusted_identity<F>(
+        &self,
+        owner: PdfOwner,
+        id: SessionId,
+        generation: u64,
+        complete: F,
+    ) where
+        F: FnOnce(Result<TrustedRecentIdentity, PdfSessionError>, FileCompletion) + Send + 'static,
+    {
+        let observation = PdfFailureObservation::new(self.diagnostics.get());
+        let user_complete = Arc::new(Mutex::new(Some(complete)));
+        let result = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            let file = match self
+                .prepare_file_job(&mut sessions, &owner, &id, &observation, generation)
+                .map(|(file, _)| file)
+            {
+                Ok(file) => file,
+                Err(error) => {
+                    drop(sessions);
+                    let callback = user_complete
+                        .lock()
+                        .expect("completion poisoned")
+                        .take()
+                        .expect("completion missing");
+                    callback(Err(error), FileCompletion::empty());
+                    return;
+                }
+            };
+            let file_for_work = Arc::clone(&file);
+            let metadata_permit = match crate::native_io::NativeIo::global().metadata.try_acquire()
+            {
+                Ok(permit) => permit,
+                Err(_) => {
+                    drop(sessions);
+                    let callback = user_complete
+                        .lock()
+                        .expect("completion poisoned")
+                        .take()
+                        .expect("completion missing");
+                    callback(
+                        Err(PdfSessionError::SessionCapacity),
+                        FileCompletion::empty(),
+                    );
+                    return;
+                }
+            };
+            let work = Box::new(move || {
+                let file = file_for_work
+                    .lock()
+                    .map_err(|_| PdfSessionError::FileUnreadable)?;
+                SystemFinalHandlePolicy
+                    .classify_final(&file)
+                    .and_then(|_| SystemFinalHandlePolicy.canonical_path(&file))
+                    .map(|canonical_path| {
+                        FileValue::Identity(TrustedRecentIdentity { canonical_path })
+                    })
+                    .map_err(|_| PdfSessionError::PathRejected)
+            });
+            let callback_arc = Arc::clone(&user_complete);
+            let callback: FileCallback = Box::new(move |result, token| {
+                let result = result.and_then(|value| match value {
+                    FileValue::Identity(identity) => Ok(identity),
+                    FileValue::Range(_) => Err(PdfSessionError::FileUnreadable),
+                });
+                let callback = callback_arc.lock().expect("completion poisoned").take();
+                if let Some(callback) = callback {
+                    callback(result, token);
+                }
+            });
+            let job = DispatchJob {
+                reservation_id: 0,
+                owner: owner.clone(),
+                id: id.clone(),
+                generation,
+                file_key: file_key(&file),
+                file,
+                work: Some(work),
+                complete: Some(callback),
+                metadata_permit: Some(metadata_permit),
+            };
+            match self.dispatcher.enqueue(job) {
+                Ok(_) => {
+                    {
+                        let session = sessions.entries.get_mut(&id).expect("session missing");
+                        session.queued += 1;
+                    }
+                    sessions.process_queued += 1;
+                    Ok(())
+                }
+                Err(_) => Err(PdfSessionError::RangeCapacity),
+            }
+        };
+        if let Err(error) = result {
+            let callback = user_complete.lock().expect("completion poisoned").take();
+            if let Some(callback) = callback {
+                callback(Err(error), FileCompletion::empty());
+            }
+            return;
+        }
+        self.pump_file_dispatch();
+    }
+    fn sync_assembly_work_locked(&self, sessions: &mut Sessions) {
+        for (id, session) in sessions.entries.iter_mut() {
+            session.assembly_work = self.assemblies.work_count(id, session.generation);
+        }
+    }
+    pub(crate) fn request_assembly<F>(
+        &self,
+        owner: PdfOwner,
+        id: SessionId,
+        generation: u64,
+        request_sequence: u64,
+        range: Range<u64>,
+        complete: F,
+    ) where
+        F: FnOnce(Result<PdfAssemblyLease, PdfSessionError>) + Send + 'static,
+    {
+        let mut callback = Some(Box::new(complete) as AssemblyCallback);
+        let (completions, error) = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            match Self::checked_session(&mut sessions, &owner, &id, generation).and_then(
+                |session| {
+                    if range.start > range.end || range.end > session.length {
+                        return Err(PdfSessionError::RangeInvalid);
+                    }
+                    if session.teardown != TeardownOwner::Active {
+                        return Err(PdfSessionError::SessionClosing);
+                    }
+                    Ok(())
+                },
+            ) {
+                Ok(()) => {
+                    let (completions, _) = self.assemblies.request(
+                        owner.clone(),
+                        &id,
+                        generation,
+                        request_sequence,
+                        range,
+                        callback.take().expect("assembly callback missing"),
+                    );
+                    self.sync_assembly_work_locked(&mut sessions);
+                    (completions, None)
+                }
+                Err(error) => (Vec::new(), Some(error)),
+            }
+        };
+        if let Some(error) = error {
+            let callback = callback.take().expect("assembly callback missing");
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(Err(error))));
+        } else {
+            pdf_assembly::run_completions(completions);
+            self.drained.notify_all();
+        }
+    }
+
+    pub(crate) fn cancel_assembly_request(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        sequence: u64,
+    ) -> Result<(), PdfSessionError> {
+        let (completions, result) = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            Self::checked_session(&mut sessions, owner, id, generation)?;
+            let result = self.assemblies.cancel(owner, id, generation, sequence);
+            self.sync_assembly_work_locked(&mut sessions);
+            Self::queue_deferred_drained_session(&mut sessions, &self.cleanup_tx, id);
+            match result {
+                Ok(completions) => (completions, Ok(())),
+                Err(error) => (Vec::new(), Err(error)),
+            }
+        };
+        pdf_assembly::run_completions(completions);
+        self.drained.notify_all();
+        result
+    }
+
+    pub(crate) fn release_assembly(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+        lease_id: u64,
+        proof: PdfAssemblyReleaseProof,
+    ) -> Result<(), PdfSessionError> {
+        let (completions, result) = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            Self::checked_session(&mut sessions, owner, id, generation)?;
+            let result = self
+                .assemblies
+                .release(owner, id, generation, lease_id, proof);
+            self.sync_assembly_work_locked(&mut sessions);
+            Self::queue_deferred_drained_session(&mut sessions, &self.cleanup_tx, id);
+            match result {
+                Ok(completions) => (completions, Ok(())),
+                Err(error) => (Vec::new(), Err(error)),
+            }
+        };
+        pdf_assembly::run_completions(completions);
+        self.drained.notify_all();
+        result
+    }
+
+    pub(crate) fn finish_assemblies(
+        &self,
+        owner: &PdfOwner,
+        id: &SessionId,
+        generation: u64,
+    ) -> Result<(), PdfSessionError> {
+        let (completions, result) = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            Self::checked_session(&mut sessions, owner, id, generation)?;
+            let result = self.assemblies.finish(owner, id, generation);
+            self.sync_assembly_work_locked(&mut sessions);
+            Self::queue_deferred_drained_session(&mut sessions, &self.cleanup_tx, id);
+            match result {
+                Ok(completions) => (completions, Ok(())),
+                Err(error) => (Vec::new(), Err(error)),
+            }
+        };
+        pdf_assembly::run_completions(completions);
+        self.drained.notify_all();
+        result
+    }
+
+    pub(crate) fn discard_assemblies_for_destroyed_owner(&self, owner: &PdfOwner) {
+        let completions = {
+            let mut sessions = self.sessions.lock().expect("session state poisoned");
+            let completions = self.assemblies.discard_owner(owner);
+            self.sync_assembly_work_locked(&mut sessions);
+            completions
+        };
+        pdf_assembly::run_completions(completions);
+        self.drained.notify_all();
+    }
+
+    pub(crate) fn assembly_stats(&self) -> PdfAssemblyStats {
+        self.assemblies.stats()
+    }
+
     fn owner_fenced(sessions: &Sessions, owner: &PdfOwner) -> bool {
         sessions.lifecycle_fence_all
             || sessions.owner_generation_fences.iter().any(|fence| {
                 fence.window_label == owner.window_label && owner.generation <= fence.generation
             })
     }
-
     fn fence_owner(sessions: &mut Sessions, owner: &PdfOwner) {
         if let Some(fence) = sessions
             .owner_generation_fences
@@ -676,6 +1115,8 @@ impl PdfSessionManager {
                 .values()
                 .any(|operation| &operation.owner == owner)
             && !sessions.cleanup_by_owner.contains_key(owner)
+            && !self.dispatcher.has_work_for_owner(owner)
+            && self.assemblies.owner_is_empty(owner)
     }
 
     /// Opens a read-only filesystem PDF and validates the retained handle's storage policy,
@@ -844,6 +1285,7 @@ impl PdfSessionManager {
             Session {
                 owner,
                 generation,
+                assembly_work: 0,
                 length,
                 modified,
                 file: Arc::new(Mutex::new(file)),
@@ -878,62 +1320,22 @@ impl PdfSessionManager {
         id: &SessionId,
         generation: u64,
     ) -> Result<TrustedRecentIdentity, PdfSessionError> {
-        let (mut admission, _) = self.admit_file_operation(owner, id, generation)?;
-        let file_arc = admission.file.take().expect("admitted file missing");
-        let file = file_arc.lock().expect("session file poisoned");
-        admission.promote()?;
-        let result = SystemFinalHandlePolicy
-            .classify_final(&file)
-            .and_then(|_| SystemFinalHandlePolicy.canonical_path(&file))
-            .map(|canonical_path| TrustedRecentIdentity { canonical_path })
-            .map_err(|_| PdfSessionError::PathRejected);
-        drop(file);
-        drop(file_arc);
-        if admission.finish() {
-            Err(PdfSessionError::SessionClosing)
-        } else {
-            result
-        }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.enqueue_trusted_identity(
+            owner.clone(),
+            id.clone(),
+            generation,
+            move |result, completion| {
+                let result = completion.guard_result(result);
+                let _ = sender.send(result);
+                drop(completion);
+            },
+        );
+        receiver
+            .recv()
+            .unwrap_or(Err(PdfSessionError::FileUnreadable))
     }
 
-    fn admit_file_operation(
-        &self,
-        owner: &PdfOwner,
-        id: &SessionId,
-        generation: u64,
-    ) -> Result<(ProcessAdmission, FileSnapshot), PdfSessionError> {
-        let mut sessions = self.sessions.lock().expect("session state poisoned");
-        if sessions.process_queued >= MAX_PROCESS_QUEUE {
-            return Err(PdfSessionError::RangeCapacity);
-        }
-        let session = Self::checked_session(&mut sessions, owner, id, generation)?;
-        if session.teardown != TeardownOwner::Active {
-            return Err(PdfSessionError::SessionClosing);
-        }
-        if session.queued >= MAX_SESSION_QUEUE {
-            return Err(PdfSessionError::RangeCapacity);
-        }
-        let file = Arc::clone(&session.file);
-        let snapshot = FileSnapshot {
-            length: session.length,
-            modified: session.modified,
-        };
-        session.queued += 1;
-        sessions.process_queued += 1;
-        Ok((
-            ProcessAdmission {
-                sessions: Arc::clone(&self.sessions),
-                drained: Arc::clone(&self.drained),
-                id: id.clone(),
-                queued: true,
-                in_flight: false,
-                released: false,
-                cleanup_tx: self.cleanup_tx.clone(),
-                file: Some(file),
-            },
-            snapshot,
-        ))
-    }
     #[cfg(debug_assertions)]
     #[doc(hidden)]
     pub fn resolve_canonical_path(
@@ -1044,32 +1446,28 @@ impl PdfSessionManager {
         length: u32,
         limit: u32,
     ) -> Result<Vec<u8>, PdfSessionError> {
-        let observation = PdfFailureObservation::new(self.diagnostics.get());
         if length > limit {
             return Err(PdfSessionError::RangeCapacity);
         }
-        offset
-            .checked_add(u64::from(length))
-            .ok_or(PdfSessionError::RangeInvalid)?;
-        let (mut admission, expected) = self.admit_file_operation(owner, id, generation)?;
-        // Declared after admission: unwind drops the borrowed file before releasing admission.
-        let file_arc = admission.file.take().expect("admitted file missing");
-        let file = file_arc.lock().expect("file state poisoned");
-        admission.promote()?;
-        let available = usize::try_from(
-            expected
-                .length
-                .saturating_sub(offset)
-                .min(u64::from(length)),
-        )
-        .map_err(|_| PdfSessionError::RangeInvalid)?;
-        let result = Self::read_file(file, offset, available, expected, &observation);
-        drop(file_arc);
-        if admission.finish() {
-            Err(PdfSessionError::SessionClosing)
-        } else {
-            result
+        if offset.checked_add(u64::from(length)).is_none() {
+            return Err(PdfSessionError::RangeInvalid);
         }
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.enqueue_range_read(
+            owner.clone(),
+            id.clone(),
+            generation,
+            offset,
+            length,
+            move |result, completion| {
+                let result = completion.guard_result(result);
+                let _ = sender.send(result);
+                drop(completion);
+            },
+        );
+        receiver
+            .recv()
+            .unwrap_or(Err(PdfSessionError::FileUnreadable))
     }
     fn file_snapshot(
         file: &File,
@@ -1537,8 +1935,13 @@ impl PdfSessionManager {
         if let Some(lease) = &session.print_lease {
             lease.cancellation_flag.store(true, Ordering::Release);
         }
+        let existing_barrier = session.barrier;
         self.drained.notify_all();
-        if let Some(barrier_id) = session.barrier {
+        drop(sessions);
+        let _ = self.cancel_assembly_request(owner, id, generation, u64::MAX);
+        self.pump_file_dispatch();
+        sessions = self.sessions.lock().expect("session state poisoned");
+        if let Some(barrier_id) = existing_barrier {
             return Ok(CancelBarrier { barrier_id });
         }
         while sessions
@@ -1559,6 +1962,12 @@ impl PdfSessionManager {
                 .ok_or(PdfSessionError::SessionNotFound)?
                 .print_lease
                 .is_some()
+            || sessions
+                .entries
+                .get(id)
+                .ok_or(PdfSessionError::SessionNotFound)?
+                .assembly_work
+                != 0
         {
             sessions = self.drained.wait(sessions).expect("session state poisoned");
         }
@@ -1652,6 +2061,7 @@ impl PdfSessionManager {
                 || session.in_flight != 0
                 || session.queued != 0
                 || session.print_lease.is_some()
+                || session.assembly_work != 0
                 || session.external_link_in_flight != 0
             {
                 return Err(PdfSessionError::SessionClosing);
@@ -1813,8 +2223,9 @@ impl PdfSessionManager {
                     && session.in_flight == 0
                     && session.queued == 0
                     && session.external_link_in_flight == 0
-                    && session.print_lease.is_none())
-                .then_some(id.clone())
+                    && session.print_lease.is_none()
+                    && session.assembly_work == 0)
+                    .then_some(id.clone())
             })
             .collect::<Vec<_>>();
         for id in ids {
@@ -1856,6 +2267,12 @@ impl PdfSessionManager {
                 Self::fence_owner(&mut sessions, &owner);
             }
         }
+        let assembly_sessions = sessions
+            .entries
+            .iter()
+            .filter(|(_, session)| all || matches(&session.owner))
+            .map(|(id, session)| (session.owner.clone(), id.clone(), session.generation))
+            .collect::<Vec<_>>();
         for session in sessions.entries.values_mut() {
             if !(all || matches(&session.owner)) {
                 continue;
@@ -1873,6 +2290,10 @@ impl PdfSessionManager {
         self.schedule_idle_cleanup_locked(&mut sessions, &matches, all);
         drop(sessions);
         self.drained.notify_all();
+        for (owner, id, generation) in assembly_sessions {
+            let _ = self.cancel_assembly_request(&owner, &id, generation, u64::MAX);
+        }
+        self.pump_file_dispatch();
     }
 
     fn drain_matching(
@@ -1927,6 +2348,7 @@ impl PdfSessionManager {
                 && session.queued == 0
                 && session.external_link_in_flight == 0
                 && session.print_lease.is_none()
+                && session.assembly_work == 0
         }) {
             return;
         }
@@ -1943,7 +2365,7 @@ impl PdfSessionManager {
         sessions
             .entries
             .values()
-            .all(|session| session.print_lease.is_none())
+            .all(|session| session.print_lease.is_none() && session.assembly_work == 0)
             && sessions.entries.is_empty()
             && sessions.process_queued == 0
             && sessions.process_in_flight == 0
@@ -1953,6 +2375,9 @@ impl PdfSessionManager {
             && sessions.cleanup_pending == 0
             && sessions.cleanup_by_session.is_empty()
             && sessions.pending_closes.is_empty()
+            && self.dispatcher.queued() == 0
+            && self.dispatcher.selected() == 0
+            && self.assemblies.is_empty()
     }
 
     fn checked_external_link_session<'a>(
@@ -2087,6 +2512,7 @@ mod tests {
         manager.sessions.lock().unwrap().entries.insert(
             id.clone(),
             Session {
+                assembly_work: 0,
                 owner: owner(),
                 generation: 7,
                 teardown: TeardownOwner::Active,
@@ -2474,6 +2900,7 @@ mod tests {
                 sessions.entries.insert(
                     id.clone(),
                     Session {
+                        assembly_work: 0,
                         owner: owner(),
                         generation: 7,
                         length: 9,
@@ -2869,8 +3296,12 @@ mod tests {
                 .file,
         );
         let (sender, receiver) = mpsc::channel();
+        let (allow_observation, observation_ready) = mpsc::sync_channel(1);
         manager.install_diagnostics(
             NativePdfDiagnostics::new(move |event| {
+                observation_ready
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap();
                 let state = state.upgrade().unwrap();
                 let file = file.upgrade().unwrap();
                 let state_guard = state
@@ -2897,11 +3328,16 @@ mod tests {
             .unwrap()
             .set_len(5)
             .unwrap();
-        assert_eq!(
-            manager.read_range_absolute(&owner(), &id, 7, 0, 5),
-            Err(PdfSessionError::FileUnreadable)
-        );
+        let (done, completed) = mpsc::sync_channel(1);
+        manager.enqueue_range_read(owner(), id.clone(), 7, 0, 5, move |result, completion| {
+            let result = completion.guard_result(result);
+            done.send((result, completion)).ok();
+        });
+        let (result, completion) = completed.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(result, Err(PdfSessionError::FileUnreadable));
+        allow_observation.send(()).unwrap();
         let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        drop(completion);
         assert_eq!(event.stage, Some(PdfDiagnosticStage::RangeBeforeValidate));
         assert_eq!(event.tag, crate::diagnostics::DiagnosticTag::Conflict);
         assert_eq!(event.os_code, None);
@@ -2923,15 +3359,38 @@ mod tests {
         );
         {
             let observation = PdfFailureObservation::new(manager.diagnostics.get());
-            let (mut admission, expected) = manager.admit_file_operation(&owner(), &id, 7).unwrap();
-            let file_arc = admission.file.take().unwrap();
-            let file = file_arc.lock().unwrap();
-            admission.promote().unwrap();
-            let observed = PdfSessionManager::read_file(file, 0, 10, expected, &observation);
+            let (done, received) = mpsc::sync_channel(1);
+            manager.enqueue_range_read(owner(), id.clone(), 7, 0, 1, move |result, completion| {
+                assert!(result.is_ok());
+                done.send(completion).ok();
+            });
+            let completion = received.recv_timeout(Duration::from_secs(5)).unwrap();
+            let (file_arc, expected) = {
+                let state = manager.sessions.lock().unwrap();
+                let session = &state.entries[&id];
+                (
+                    Arc::clone(&session.file),
+                    FileSnapshot {
+                        length: session.length,
+                        modified: session.modified,
+                    },
+                )
+            };
+            let observed = PdfSessionManager::read_file(
+                file_arc.lock().unwrap(),
+                0,
+                10,
+                expected,
+                &observation,
+            );
             assert_eq!(observed, Err(PdfSessionError::FileUnreadable));
             drop(file_arc);
             manager.defer_owned(&owner());
-            assert!(admission.finish()); // Caller result becomes SESSION_CLOSING, observation is retained.
+            assert_eq!(
+                completion.guard_result(observed),
+                Err(PdfSessionError::SessionClosing)
+            );
+            drop(completion);
         }
         let event = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(event.stage, Some(PdfDiagnosticStage::RangeRead));
@@ -3162,7 +3621,7 @@ mod tests {
         let reading_id = id.clone();
         let reader = std::thread::spawn(move || reading.read_range(&owner(), &reading_id, 7, 0, 9));
         let deadline = Instant::now() + Duration::from_secs(5);
-        while manager.sessions.lock().unwrap().process_queued == 0 {
+        while manager.sessions.lock().unwrap().process_in_flight == 0 {
             assert!(Instant::now() < deadline, "range was not admitted");
             std::thread::yield_now();
         }
@@ -3173,5 +3632,252 @@ mod tests {
         assert_eq!(reader.join().unwrap(), Err(PdfSessionError::SessionClosing));
         assert_empty_after_cleanup(manager);
         std::fs::remove_file(path).unwrap();
+    }
+    fn admission_fixture(count: usize) -> (PdfSessionManager, Vec<PdfSessionMetadata>, PathBuf) {
+        let manager = PdfSessionManager::new();
+        let path = network_test_pdf();
+        let policy = TestPolicy(crate::local_path::DriveKind::Fixed);
+        let sessions = (0..count)
+            .map(|_| {
+                manager
+                    .open_local(owner(), &path, &policy, &policy, |path| File::open(path))
+                    .unwrap()
+            })
+            .collect();
+        (manager, sessions, path)
+    }
+
+    fn admission_events(
+        manager: &PdfSessionManager,
+    ) -> mpsc::Receiver<(crate::diagnostics::DiagnosticEvent, bool)> {
+        let state = Arc::downgrade(&manager.sessions);
+        let files: Vec<_> = manager
+            .sessions
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .map(|session| Arc::downgrade(&session.file))
+            .collect();
+        let (sender, receiver) = mpsc::channel();
+        manager.install_diagnostics(
+            NativePdfDiagnostics::new(move |event| {
+                let state = state.upgrade().unwrap();
+                drop(
+                    state
+                        .try_lock()
+                        .expect("rejecting operation retained the session lock"),
+                );
+                let files_free = files
+                    .iter()
+                    .all(|file| file.upgrade().is_some_and(|file| file.try_lock().is_ok()));
+                sender.send((event.clone(), files_free)).unwrap();
+                // Evidence delivery failure must never replace the original capacity result.
+                Err(crate::diagnostics::DiagnosticError::Io)
+            })
+            .unwrap(),
+        );
+        receiver
+    }
+
+    fn assert_admission_event(
+        event: &crate::diagnostics::DiagnosticEvent,
+        stage: PdfDiagnosticStage,
+        count: usize,
+    ) {
+        use crate::diagnostics::{DiagnosticEventName, DiagnosticOutcome, DiagnosticTag};
+        assert_eq!(event.event, DiagnosticEventName::PdfSession);
+        assert_eq!(event.outcome, DiagnosticOutcome::Rejected);
+        assert_eq!(event.tag, DiagnosticTag::CapacityRejected);
+        assert_eq!(event.stage, Some(stage));
+        assert_eq!(event.count, Some(count as u32));
+        assert_eq!(event.os_code, None);
+        assert_eq!(event.renderer_code, None);
+        assert_eq!(event.session_id, None);
+        assert_eq!(event.request_id, None);
+    }
+
+    fn finish_admission_fixture(manager: PdfSessionManager, path: PathBuf) {
+        manager.drain_owned(&owner());
+        assert_empty_after_cleanup(manager);
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-test");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn dispatcher_enforces_session_queue_eight_and_waits_for_file_settlement() {
+        let (manager, sessions, path) = admission_fixture(1);
+        let events = admission_events(&manager);
+        let session = &sessions[0];
+        let file = Arc::clone(
+            &manager
+                .sessions
+                .lock()
+                .unwrap()
+                .entries
+                .get(&session.session_id)
+                .unwrap()
+                .file,
+        );
+        let guard = file.lock().unwrap();
+        let mut receivers = Vec::new();
+        for _ in 0..=MAX_SESSION_QUEUE {
+            let (sender, receiver) = mpsc::channel();
+            receivers.push(receiver);
+            manager.enqueue_range_read(
+                owner(),
+                session.session_id.clone(),
+                session.document_generation,
+                0,
+                1,
+                move |result, completion| {
+                    let _ = sender.send(completion.guard_result(result));
+                    drop(completion);
+                },
+            );
+        }
+        let (rejected_sender, rejected_receiver) = mpsc::channel();
+        manager.enqueue_range_read(
+            owner(),
+            session.session_id.clone(),
+            session.document_generation,
+            0,
+            1,
+            move |result, completion| {
+                let _ = rejected_sender.send((result, !completion.is_admitted()));
+                drop(completion);
+            },
+        );
+        assert!(
+            rejected_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .1
+        );
+        let (event, _) = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_admission_event(
+            &event,
+            PdfDiagnosticStage::FileSessionQueue,
+            MAX_SESSION_QUEUE,
+        );
+        assert_eq!(
+            manager
+                .sessions
+                .lock()
+                .unwrap()
+                .entries
+                .get(&session.session_id)
+                .unwrap()
+                .queued,
+            MAX_SESSION_QUEUE
+        );
+        drop(guard);
+        for receiver in receivers {
+            assert!(receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .is_ok());
+        }
+        finish_admission_fixture(manager, path);
+    }
+    #[test]
+    fn dispatcher_global_queue_keeps_four_selected_and_thirty_two_queued() {
+        let (manager, sessions, path) = admission_fixture(MAX_PROCESS_IN_FLIGHT);
+        let files = manager
+            .sessions
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .map(|session| Arc::clone(&session.file))
+            .collect::<Vec<_>>();
+        let guards = files
+            .iter()
+            .map(|file| file.lock().unwrap())
+            .collect::<Vec<_>>();
+        let mut receivers = Vec::new();
+        for session in &sessions {
+            for _ in 0..=MAX_SESSION_QUEUE {
+                let (sender, receiver) = mpsc::channel();
+                receivers.push(receiver);
+                manager.enqueue_range_read(
+                    owner(),
+                    session.session_id.clone(),
+                    session.document_generation,
+                    0,
+                    1,
+                    move |result, completion| {
+                        let _ = sender.send(completion.guard_result(result));
+                        drop(completion);
+                    },
+                );
+            }
+        }
+        assert_eq!(
+            manager.sessions.lock().unwrap().process_in_flight,
+            MAX_PROCESS_IN_FLIGHT
+        );
+        assert_eq!(
+            manager.sessions.lock().unwrap().process_queued,
+            MAX_PROCESS_QUEUE
+        );
+        let (full_sender, full_receiver) = mpsc::channel();
+        manager.enqueue_range_read(
+            owner(),
+            sessions[0].session_id.clone(),
+            sessions[0].document_generation,
+            0,
+            1,
+            move |result, completion| {
+                let _ = full_sender.send((result, !completion.is_admitted()));
+                drop(completion);
+            },
+        );
+        assert!(
+            full_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .1
+        );
+        drop(guards);
+        for receiver in receivers {
+            assert!(receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .is_ok());
+        }
+        finish_admission_fixture(manager, path);
+    }
+    #[test]
+    fn dispatcher_reuses_settled_budget_without_success_logging() {
+        let (manager, sessions, path) = admission_fixture(1);
+        let events = admission_events(&manager);
+        let session = &sessions[0];
+        for _ in 0..12 {
+            let (sender, receiver) = mpsc::channel();
+            manager.enqueue_range_read(
+                owner(),
+                session.session_id.clone(),
+                session.document_generation,
+                0,
+                5,
+                move |result, completion| {
+                    let result = completion.guard_result(result);
+                    drop(completion);
+                    let _ = sender.send(result);
+                },
+            );
+            assert_eq!(
+                receiver
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                    .unwrap(),
+                b"%PDF-"
+            );
+            let state = manager.sessions.lock().unwrap();
+            assert_eq!((state.process_queued, state.process_in_flight), (0, 0));
+        }
+        assert!(events.try_recv().is_err());
+        finish_admission_fixture(manager, path);
     }
 }
