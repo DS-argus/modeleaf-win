@@ -59,7 +59,14 @@ pub async fn path_shortcut(
                 },
             },
             Ok(identity) => {
-                let text = identity.canonical_path().to_string_lossy().into_owned();
+                let canonical = identity.canonical_path().to_string_lossy();
+                let text = crate::recent_display_aliases::mapped_path_for_shortcut(&canonical);
+                if let Err(error) = completion.guard_result(Ok(())) {
+                    let _ = sender.try_send(PathShortcutOutcome::Rejected {
+                        reason: format!("{error:?}"),
+                    });
+                    return;
+                }
                 match action {
                     PathAction::Show => PathShortcutOutcome::Shown { text },
                     PathAction::Copy => match copy_clipboard(&text) {

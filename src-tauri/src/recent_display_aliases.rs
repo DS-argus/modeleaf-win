@@ -215,10 +215,39 @@ fn alias_for_candidate(
     candidate: &RecentAliasCandidate,
     mappings: &[DriveMapping],
 ) -> Option<RecentDisplayAlias> {
+    mapped_path(&candidate.display_path, mappings).map(|display_path| RecentDisplayAlias {
+        recent_id: candidate.recent_id.clone(),
+        display_path,
+    })
+}
+
+/// Presentation only: callers retain the canonical identity for filesystem authority.
+/// Runs on the already-admitted metadata worker, never on the UI thread.
+pub(crate) fn mapped_path_for_shortcut(path: &str) -> String {
+    if !is_unc_path(path) {
+        return path.to_owned();
+    }
+    let Some(_lookup) = AliasLookupLease::acquire() else {
+        return path.to_owned();
+    };
+    display_path_with_provider(path, &WindowsDriveMappingProvider)
+}
+
+fn display_path_with_provider<P: DriveMappingProvider>(path: &str, provider: &P) -> String {
+    if !is_unc_path(path) || path.encode_utf16().count() > MAX_PROVIDER_TEXT_UNITS {
+        return path.to_owned();
+    }
+    provider
+        .mappings()
+        .and_then(normalize_mappings)
+        .ok()
+        .and_then(|mappings| mapped_path(path, &mappings))
+        .unwrap_or_else(|| path.to_owned())
+}
+fn mapped_path(path: &str, mappings: &[DriveMapping]) -> Option<String> {
     let mut best: Option<(&DriveMapping, usize, usize)> = None;
     for mapping in mappings {
-        let Some(prefix_end) = matching_prefix_end(&candidate.display_path, &mapping.unc_root)
-        else {
+        let Some(prefix_end) = matching_prefix_end(path, &mapping.unc_root) else {
             continue;
         };
         let root_length = mapping.unc_root.encode_utf16().count();
@@ -231,15 +260,12 @@ fn alias_for_candidate(
         }
     }
     let (mapping, _, prefix_end) = best?;
-    let suffix = &candidate.display_path[prefix_end..];
+    let suffix = &path[prefix_end..];
     let display_path = alias_path(mapping.drive, suffix);
     if display_path.encode_utf16().count() > MAX_PROVIDER_TEXT_UNITS {
         return None;
     }
-    Some(RecentDisplayAlias {
-        recent_id: candidate.recent_id.clone(),
-        display_path,
-    })
+    Some(display_path)
 }
 
 fn alias_path(drive: char, suffix: &str) -> String {
@@ -409,6 +435,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shortcut_paths_share_browse_alias_rules_and_preserve_canonical_fallback() {
+        let provider = StubProvider {
+            result: Ok(vec![
+                mapping('Z', r"\\server\share"),
+                mapping('V', r"\\server\share\team"),
+            ]),
+        };
+        for (canonical, expected) in [
+            (r"\\SERVER\SHARE\team\자료.pdf", r"V:\자료.pdf"),
+            (r"\\server\share\other\file.pdf", r"Z:\other\file.pdf"),
+            (
+                r"\\server\share-other\file.pdf",
+                r"\\server\share-other\file.pdf",
+            ),
+            (r"C:\docs\file.pdf", r"C:\docs\file.pdf"),
+        ] {
+            assert_eq!(display_path_with_provider(canonical, &provider), expected);
+            let aliases =
+                aliases_for_candidates(&[candidate("recent", canonical)], &provider).unwrap();
+            let browse = aliases
+                .first()
+                .map_or(canonical, |alias| alias.display_path.as_str());
+            assert_eq!(display_path_with_provider(canonical, &provider), browse);
+        }
+        let unavailable = StubProvider {
+            result: Err(LookupFailure::Provider),
+        };
+        let canonical = r"\\server\share\team\file.pdf";
+        assert_eq!(
+            display_path_with_provider(canonical, &unavailable),
+            canonical
+        );
+        let unmapped = StubProvider {
+            result: Ok(Vec::new()),
+        };
+        assert_eq!(display_path_with_provider(canonical, &unmapped), canonical);
+    }
     #[test]
     fn z_and_v_aliases_preserve_recent_order() {
         let candidates = [
