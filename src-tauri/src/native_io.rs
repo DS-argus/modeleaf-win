@@ -9,24 +9,23 @@ pub struct IoGate {
 }
 
 impl IoGate {
-    fn new(limit: usize) -> Self {
+    pub(crate) fn new(limit: usize) -> Self {
         Self {
             active: Arc::new(AtomicUsize::new(0)),
             limit,
         }
     }
 
-    pub fn try_acquire(&self) -> Option<IoPermit> {
+    /// Err is the occupancy observed by the rejecting atomic update, not a later sample.
+    pub fn try_acquire(&self) -> Result<IoPermit, usize> {
         self.active
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < self.limit).then_some(active + 1)
-            })
-            .ok()?;
-        Some(IoPermit {
+            })?;
+        Ok(IoPermit {
             active: Arc::clone(&self.active),
         })
     }
-
     pub fn unsettled(&self) -> usize {
         self.active.load(Ordering::Acquire)
     }
@@ -75,6 +74,19 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn rejected_occupancy_is_the_atomic_snapshot_not_a_later_load() {
+        let gate = IoGate::new(4);
+        let held: Vec<_> = (0..4).map(|_| gate.try_acquire().unwrap()).collect();
+        let rejected_occupancy = gate.try_acquire().err().unwrap();
+        drop(held);
+        assert_eq!(gate.unsettled(), 0);
+        assert_eq!(rejected_occupancy, 4);
+        let next = gate.try_acquire().unwrap();
+        assert_eq!(gate.unsettled(), 1);
+        drop(next);
+        assert_eq!(gate.unsettled(), 0);
+    }
+    #[test]
     fn blocked_work_keeps_capacity_until_os_work_settles() {
         let gate = IoGate::new(1);
         let permit = gate.try_acquire().unwrap();
@@ -88,11 +100,11 @@ mod tests {
         // Simulate a caller abandoning its response receiver, not cancelling OS work.
         drop(completion);
         assert_eq!(gate.unsettled(), 1);
-        assert!(gate.try_acquire().is_none());
+        assert!(gate.try_acquire().is_err());
         release.send(()).unwrap();
         worker.join().unwrap();
         assert_eq!(gate.unsettled(), 0);
-        assert!(gate.try_acquire().is_some());
+        assert!(gate.try_acquire().is_ok());
     }
 
     #[test]
@@ -112,7 +124,7 @@ mod tests {
         handle.abort();
         drop(handle);
         assert_eq!(gate.unsettled(), 1);
-        assert!(gate.try_acquire().is_none());
+        assert!(gate.try_acquire().is_err());
         release.send(()).unwrap();
         settled.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(gate.unsettled(), 0);
@@ -123,8 +135,8 @@ mod tests {
         let control = IoGate::new(1);
         let first = reads.try_acquire().unwrap();
         let second = reads.try_acquire().unwrap();
-        assert!(reads.try_acquire().is_none());
-        assert!(control.try_acquire().is_some());
+        assert!(reads.try_acquire().is_err());
+        assert!(control.try_acquire().is_ok());
         drop(first);
         drop(second);
         assert_eq!(reads.unsettled(), 0);

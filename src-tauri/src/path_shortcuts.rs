@@ -41,7 +41,7 @@ pub async fn path_shortcut(
     document_generation: u64,
     owner_generation: u64,
 ) -> PathShortcutOutcome {
-    let Some(permit) = crate::native_io::NativeIo::global().metadata.try_acquire() else {
+    let Ok(permit) = crate::native_io::NativeIo::global().metadata.try_acquire() else {
         return PathShortcutOutcome::Rejected {
             reason: "SESSION_CAPACITY".into(),
         };

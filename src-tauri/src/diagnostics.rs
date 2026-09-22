@@ -35,6 +35,7 @@ pub enum DiagnosticOutcome {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum DiagnosticTag {
+    CapacityRejected,
     None,
     ValidationRejected,
     LocalityRejected,
@@ -72,6 +73,7 @@ pub struct DiagnosticEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "deserialize_present")]
     pub count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u32>,
@@ -319,6 +321,7 @@ fn tag(value: DiagnosticTag) -> &'static str {
     match value {
         DiagnosticTag::None => "NONE",
         DiagnosticTag::ValidationRejected => "VALIDATION_REJECTED",
+        DiagnosticTag::CapacityRejected => "CAPACITY_REJECTED",
         DiagnosticTag::LocalityRejected => "LOCALITY_REJECTED",
         DiagnosticTag::Conflict => "CONFLICT",
         DiagnosticTag::IoFailure => "IO_FAILURE",
@@ -342,6 +345,11 @@ fn sync_directory(_: &Path) -> Result<(), DiagnosticError> {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum PdfDiagnosticStage {
+    OuterProtocolRangeGate,
+    FileProcessQueue,
+    FileSessionQueue,
+    FileProcessInFlight,
+    FileSessionInFlight,
     Open,
     OpenMetadata,
     OpenModified,
@@ -365,6 +373,11 @@ impl PdfDiagnosticStage {
     fn classification(self) -> (DiagnosticOutcome, DiagnosticTag) {
         use PdfDiagnosticStage::*;
         match self {
+            OuterProtocolRangeGate
+            | FileProcessQueue
+            | FileSessionQueue
+            | FileProcessInFlight
+            | FileSessionInFlight => (DiagnosticOutcome::Rejected, DiagnosticTag::CapacityRejected),
             OpenFileKind | OpenHeaderValidate | RangeBeforeFileKind | RangeAfterFileKind => (
                 DiagnosticOutcome::Rejected,
                 DiagnosticTag::ValidationRejected,
@@ -378,6 +391,9 @@ impl PdfDiagnosticStage {
 }
 
 fn valid_native_observation(event: &DiagnosticEvent) -> bool {
+    if event.tag == DiagnosticTag::CapacityRejected && event.stage.is_none() {
+        return false;
+    }
     if let Some(code) = event.renderer_code {
         let failure = PdfRendererFailure {
             code,
@@ -420,6 +436,7 @@ const MAX_PDF_FAILURE_QUEUE: usize = 32;
 
 #[derive(Clone, Copy)]
 struct PdfFailure {
+    count: Option<u32>,
     stage: PdfDiagnosticStage,
     os_code: Option<i32>,
     epoch_ms: u64,
@@ -440,7 +457,7 @@ impl PdfFailure {
             request_id: None,
             session_id: None,
             page: None,
-            count: None,
+            count: self.count,
             duration_ms: None,
             generation: None,
             stage: Some(self.stage),
@@ -540,6 +557,21 @@ impl<'a> PdfFailureObservation<'a> {
         }
     }
 
+    /// Occupancy must come from the specific rejecting atomic/locked predicate, never a later sample.
+    pub(crate) fn capture_capacity(&self, stage: PdfDiagnosticStage, occupancy: usize) {
+        assert_eq!(stage.classification().1, DiagnosticTag::CapacityRejected);
+        if self.failure.get().is_some() {
+            return;
+        }
+        self.failure.set(Some(PdfFailure {
+            stage,
+            os_code: None,
+            epoch_ms: epoch_ms(),
+            count: u32::try_from(occupancy)
+                .ok()
+                .filter(|count| *count <= 1_000_000),
+        }));
+    }
     pub(crate) fn capture(&self, stage: PdfDiagnosticStage, error: Option<&io::Error>) {
         if self.failure.get().is_some() {
             return;
@@ -557,6 +589,7 @@ impl<'a> PdfFailureObservation<'a> {
             stage,
             os_code,
             epoch_ms,
+            count: None,
         }));
     }
 }
@@ -588,6 +621,7 @@ mod pdf_failure_tests {
             stage: PdfDiagnosticStage::RangeRead,
             os_code: Some(5),
             epoch_ms: 1,
+            count: None,
         }
     }
 
@@ -605,6 +639,7 @@ mod pdf_failure_tests {
             DiagnosticOutcome::Cancelled,
         ];
         let tags = [
+            DiagnosticTag::CapacityRejected,
             DiagnosticTag::None,
             DiagnosticTag::ValidationRejected,
             DiagnosticTag::LocalityRejected,
@@ -681,6 +716,39 @@ mod pdf_failure_tests {
         }
     }
 
+    #[test]
+    fn capacity_count_is_optional_bounded_and_never_an_os_error() {
+        let (sender, receiver) = mpsc::sync_channel(2);
+        let sink = NativePdfDiagnostics {
+            sender,
+            counters: Default::default(),
+        };
+        for (occupancy, expected) in [(4, Some(4)), (usize::MAX, None)] {
+            let observation = PdfFailureObservation::new(Some(&sink));
+            observation.capture_capacity(PdfDiagnosticStage::OuterProtocolRangeGate, occupancy);
+            drop(observation);
+            let event = receiver.try_recv().unwrap();
+            assert_eq!(event.count, expected);
+            let encoded = serde_json::to_value(&event).unwrap();
+            assert_eq!(encoded.get("count").is_some(), expected.is_some());
+            let mut null_count = encoded;
+            null_count["count"] = serde_json::Value::Null;
+            assert!(serde_json::from_value::<DiagnosticEvent>(null_count).is_err());
+            assert_eq!(event.os_code, None);
+            assert!(validate(&event).is_ok());
+            assert!(validate_renderer_event(&event).is_err());
+            let mut invalid = event.clone();
+            invalid.os_code = Some(0);
+            assert!(validate(&invalid).is_err());
+            let mut orphan = event.clone();
+            orphan.stage = None;
+            assert!(validate(&orphan).is_err());
+            assert!(validate_renderer_event(&orphan).is_err());
+            let mut oversized = event;
+            oversized.count = Some(1_000_001);
+            assert!(validate(&oversized).is_err());
+        }
+    }
     #[test]
     fn native_fields_are_strict_and_renderer_cannot_forge_them() {
         let event = failure().event();
@@ -874,6 +942,7 @@ impl PdfRendererFailure {
             stage: PdfDiagnosticStage::Open,
             os_code: None,
             epoch_ms: epoch_ms(),
+            count: None,
         }
         .event();
         let (outcome, tag) = self.code.classification();
@@ -1049,6 +1118,7 @@ mod renderer_failure_tests {
                 assert_eq!(validate(&candidate).is_ok(), wrong_outcome == outcome);
             }
             for wrong_tag in [
+                DiagnosticTag::CapacityRejected,
                 DiagnosticTag::None,
                 DiagnosticTag::Timeout,
                 DiagnosticTag::IoFailure,

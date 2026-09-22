@@ -11,6 +11,7 @@ export const DIAGNOSTIC_EVENTS = [
 export const DIAGNOSTIC_OUTCOMES = ["SUCCESS", "REJECTED", "FAILURE", "CANCELLED"] as const;
 
 export const DIAGNOSTIC_TAGS = [
+  "CAPACITY_REJECTED",
   "NONE",
   "VALIDATION_REJECTED",
   "LOCALITY_REJECTED",
@@ -34,6 +35,7 @@ export const MAX_DIAGNOSTIC_PAGE = 1_000_000;
 export const MAX_DIAGNOSTIC_COUNT = 1_000_000;
 export const MAX_DIAGNOSTIC_DURATION_MS = 86_400_000;
 export const PDF_DIAGNOSTIC_STAGES = [
+  "OUTER_PROTOCOL_RANGE_GATE", "FILE_PROCESS_QUEUE", "FILE_SESSION_QUEUE", "FILE_PROCESS_IN_FLIGHT", "FILE_SESSION_IN_FLIGHT",
   "OPEN", "OPEN_METADATA", "OPEN_MODIFIED", "OPEN_FILE_KIND", "OPEN_HEADER_READ", "OPEN_HEADER_VALIDATE", "OPEN_REWIND",
   "RANGE_BEFORE_METADATA", "RANGE_BEFORE_MODIFIED", "RANGE_BEFORE_FILE_KIND", "RANGE_BEFORE_VALIDATE",
   "RANGE_SEEK", "RANGE_READ", "RANGE_AFTER_METADATA", "RANGE_AFTER_MODIFIED", "RANGE_AFTER_FILE_KIND", "RANGE_AFTER_VALIDATE",
@@ -41,7 +43,8 @@ export const PDF_DIAGNOSTIC_STAGES = [
 export type PdfDiagnosticStage = (typeof PDF_DIAGNOSTIC_STAGES)[number];
 const PDF_REJECTION_STAGES = new Set<string>(["OPEN_FILE_KIND", "OPEN_HEADER_VALIDATE", "RANGE_BEFORE_FILE_KIND", "RANGE_AFTER_FILE_KIND"]);
 const PDF_CONFLICT_STAGES = new Set<string>(["RANGE_BEFORE_VALIDATE", "RANGE_AFTER_VALIDATE"]);
-const PDF_IO_STAGES = new Set<string>(PDF_DIAGNOSTIC_STAGES.filter((stage) => !PDF_REJECTION_STAGES.has(stage) && !PDF_CONFLICT_STAGES.has(stage)));
+const PDF_CAPACITY_STAGES = new Set<string>(["OUTER_PROTOCOL_RANGE_GATE", "FILE_PROCESS_QUEUE", "FILE_SESSION_QUEUE", "FILE_PROCESS_IN_FLIGHT", "FILE_SESSION_IN_FLIGHT"]);
+const PDF_IO_STAGES = new Set<string>(PDF_DIAGNOSTIC_STAGES.filter((stage) => !PDF_REJECTION_STAGES.has(stage) && !PDF_CONFLICT_STAGES.has(stage) && !PDF_CAPACITY_STAGES.has(stage)));
 export const MAX_DIAGNOSTIC_GENERATION = 9_007_199_254_740_991;
 export const MAX_DIAGNOSTIC_EPOCH_MS = 9_999_999_999_999;
 
@@ -131,6 +134,7 @@ export function isRendererDiagnosticEvent(value: unknown): value is DiagnosticEv
 }
 
 function isNativeObservation(candidate: Record<string, unknown>): boolean {
+  if (candidate.tag === "CAPACITY_REJECTED" && candidate.stage === undefined) return false;
   if (candidate.rendererCode !== undefined) {
     const failure = { code: candidate.rendererCode, ...(candidate.httpStatus === undefined ? {} : { httpStatus: candidate.httpStatus }) };
     return isPdfFailureDiagnostic(failure) && candidate.event === "PDF_RENDER" && candidate.stage === undefined && candidate.osCode === undefined &&
@@ -146,6 +150,7 @@ function isNativeObservation(candidate: Record<string, unknown>): boolean {
         Number.isInteger(candidate.osCode) && candidate.osCode >= -2_147_483_648 && candidate.osCode <= 2_147_483_647));
   }
   if (candidate.osCode !== undefined) return false;
+  if (PDF_CAPACITY_STAGES.has(candidate.stage)) return candidate.outcome === "REJECTED" && candidate.tag === "CAPACITY_REJECTED";
   if (PDF_REJECTION_STAGES.has(candidate.stage)) return candidate.outcome === "REJECTED" && candidate.tag === "VALIDATION_REJECTED";
   return PDF_CONFLICT_STAGES.has(candidate.stage) && candidate.outcome === "FAILURE" && candidate.tag === "CONFLICT";
 }

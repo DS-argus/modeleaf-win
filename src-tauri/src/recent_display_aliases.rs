@@ -111,7 +111,7 @@ pub async fn list_recent_display_aliases(window: tauri::Window) -> RecentDisplay
     let Some(lookup) = AliasLookupLease::acquire() else {
         return RecentDisplayAliasesOutcome::Unavailable;
     };
-    let Some(permit) = NativeIo::global().control.try_acquire() else {
+    let Ok(permit) = NativeIo::global().control.try_acquire() else {
         return RecentDisplayAliasesOutcome::Unavailable;
     };
     tauri::async_runtime::spawn_blocking(move || {

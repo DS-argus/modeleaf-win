@@ -411,12 +411,12 @@ struct ProcessAdmission {
 }
 
 impl ProcessAdmission {
-    fn promote(&mut self) -> Result<(), PdfSessionError> {
+    fn promote(&mut self, observation: &PdfFailureObservation<'_>) -> Result<(), PdfSessionError> {
         if !self.queued || self.in_flight || self.released {
             return Err(PdfSessionError::SessionClosing);
         }
         let mut sessions = self.sessions.lock().expect("session state poisoned");
-        let process_full = sessions.process_in_flight >= MAX_PROCESS_IN_FLIGHT;
+        let process_in_flight = sessions.process_in_flight;
         let session = sessions
             .entries
             .get_mut(&self.id)
@@ -424,7 +424,14 @@ impl ProcessAdmission {
         if session.teardown != TeardownOwner::Active {
             return Err(PdfSessionError::SessionClosing);
         }
-        if process_full || session.in_flight >= MAX_SESSION_IN_FLIGHT {
+        if process_in_flight >= MAX_PROCESS_IN_FLIGHT {
+            observation
+                .capture_capacity(PdfDiagnosticStage::FileProcessInFlight, process_in_flight);
+            return Err(PdfSessionError::RangeCapacity);
+        }
+        if session.in_flight >= MAX_SESSION_IN_FLIGHT {
+            observation
+                .capture_capacity(PdfDiagnosticStage::FileSessionInFlight, session.in_flight);
             return Err(PdfSessionError::RangeCapacity);
         }
         session.queued -= 1;
@@ -545,6 +552,10 @@ impl PdfSessionManager {
                 Some(task)
             }
         }
+    }
+    pub(crate) fn observe_outer_range_rejection(&self, occupancy: usize) {
+        let observation = PdfFailureObservation::new(self.diagnostics.get());
+        observation.capture_capacity(PdfDiagnosticStage::OuterProtocolRangeGate, occupancy);
     }
     pub(crate) fn report_renderer_failure(
         &self,
@@ -888,10 +899,11 @@ impl PdfSessionManager {
         id: &SessionId,
         generation: u64,
     ) -> Result<TrustedRecentIdentity, PdfSessionError> {
-        let (mut admission, _) = self.admit_file_operation(owner, id, generation)?;
+        let observation = PdfFailureObservation::new(self.diagnostics.get());
+        let (mut admission, _) = self.admit_file_operation(owner, id, generation, &observation)?;
         let file_arc = admission.file.take().expect("admitted file missing");
         let file = file_arc.lock().expect("session file poisoned");
-        admission.promote()?;
+        admission.promote(&observation)?;
         let result = SystemFinalHandlePolicy
             .classify_final(&file)
             .and_then(|_| SystemFinalHandlePolicy.canonical_path(&file))
@@ -911,9 +923,14 @@ impl PdfSessionManager {
         owner: &PdfOwner,
         id: &SessionId,
         generation: u64,
+        observation: &PdfFailureObservation<'_>,
     ) -> Result<(ProcessAdmission, FileSnapshot), PdfSessionError> {
         let mut sessions = self.sessions.lock().expect("session state poisoned");
         if sessions.process_queued >= MAX_PROCESS_QUEUE {
+            observation.capture_capacity(
+                PdfDiagnosticStage::FileProcessQueue,
+                sessions.process_queued,
+            );
             return Err(PdfSessionError::RangeCapacity);
         }
         let session = Self::checked_session(&mut sessions, owner, id, generation)?;
@@ -921,6 +938,7 @@ impl PdfSessionManager {
             return Err(PdfSessionError::SessionClosing);
         }
         if session.queued >= MAX_SESSION_QUEUE {
+            observation.capture_capacity(PdfDiagnosticStage::FileSessionQueue, session.queued);
             return Err(PdfSessionError::RangeCapacity);
         }
         let file = Arc::clone(&session.file);
@@ -1061,11 +1079,12 @@ impl PdfSessionManager {
         offset
             .checked_add(u64::from(length))
             .ok_or(PdfSessionError::RangeInvalid)?;
-        let (mut admission, expected) = self.admit_file_operation(owner, id, generation)?;
+        let (mut admission, expected) =
+            self.admit_file_operation(owner, id, generation, &observation)?;
         // Declared after admission: unwind drops the borrowed file before releasing admission.
         let file_arc = admission.file.take().expect("admitted file missing");
         let file = file_arc.lock().expect("file state poisoned");
-        admission.promote()?;
+        admission.promote(&observation)?;
         let available = usize::try_from(
             expected
                 .length
@@ -2933,10 +2952,12 @@ mod tests {
         );
         {
             let observation = PdfFailureObservation::new(manager.diagnostics.get());
-            let (mut admission, expected) = manager.admit_file_operation(&owner(), &id, 7).unwrap();
+            let (mut admission, expected) = manager
+                .admit_file_operation(&owner(), &id, 7, &observation)
+                .unwrap();
             let file_arc = admission.file.take().unwrap();
             let file = file_arc.lock().unwrap();
-            admission.promote().unwrap();
+            admission.promote(&observation).unwrap();
             let observed = PdfSessionManager::read_file(file, 0, 10, expected, &observation);
             assert_eq!(observed, Err(PdfSessionError::FileUnreadable));
             drop(file_arc);
@@ -3183,5 +3204,417 @@ mod tests {
         assert_eq!(reader.join().unwrap(), Err(PdfSessionError::SessionClosing));
         assert_empty_after_cleanup(manager);
         std::fs::remove_file(path).unwrap();
+    }
+    fn admission_fixture(count: usize) -> (PdfSessionManager, Vec<PdfSessionMetadata>, PathBuf) {
+        let manager = PdfSessionManager::new();
+        let path = network_test_pdf();
+        let policy = TestPolicy(crate::local_path::DriveKind::Fixed);
+        let sessions = (0..count)
+            .map(|_| {
+                manager
+                    .open_local(owner(), &path, &policy, &policy, |path| File::open(path))
+                    .unwrap()
+            })
+            .collect();
+        (manager, sessions, path)
+    }
+
+    fn admission_events(
+        manager: &PdfSessionManager,
+    ) -> mpsc::Receiver<(crate::diagnostics::DiagnosticEvent, bool)> {
+        let state = Arc::downgrade(&manager.sessions);
+        let files: Vec<_> = manager
+            .sessions
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .map(|session| Arc::downgrade(&session.file))
+            .collect();
+        let (sender, receiver) = mpsc::channel();
+        manager.install_diagnostics(
+            NativePdfDiagnostics::new(move |event| {
+                let state = state.upgrade().unwrap();
+                drop(
+                    state
+                        .try_lock()
+                        .expect("rejecting operation retained the session lock"),
+                );
+                let files_free = files
+                    .iter()
+                    .all(|file| file.upgrade().is_some_and(|file| file.try_lock().is_ok()));
+                sender.send((event.clone(), files_free)).unwrap();
+                // Evidence delivery failure must never replace the original capacity result.
+                Err(crate::diagnostics::DiagnosticError::Io)
+            })
+            .unwrap(),
+        );
+        receiver
+    }
+
+    fn assert_admission_event(
+        event: &crate::diagnostics::DiagnosticEvent,
+        stage: PdfDiagnosticStage,
+        count: usize,
+    ) {
+        use crate::diagnostics::{DiagnosticEventName, DiagnosticOutcome, DiagnosticTag};
+        assert_eq!(event.event, DiagnosticEventName::PdfSession);
+        assert_eq!(event.outcome, DiagnosticOutcome::Rejected);
+        assert_eq!(event.tag, DiagnosticTag::CapacityRejected);
+        assert_eq!(event.stage, Some(stage));
+        assert_eq!(event.count, Some(count as u32));
+        assert_eq!(event.os_code, None);
+        assert_eq!(event.renderer_code, None);
+        assert_eq!(event.session_id, None);
+        assert_eq!(event.request_id, None);
+    }
+
+    fn finish_admission_fixture(manager: PdfSessionManager, path: PathBuf) {
+        manager.drain_owned(&owner());
+        assert_empty_after_cleanup(manager);
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-test");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn admission_session_queue_snapshot_survives_release_before_emission() {
+        let (manager, sessions, path) = admission_fixture(1);
+        let events = admission_events(&manager);
+        let session = &sessions[0];
+        let silent = PdfFailureObservation::new(None);
+        let mut held = Vec::new();
+        for _ in 0..MAX_SESSION_QUEUE {
+            held.push(
+                manager
+                    .admit_file_operation(
+                        &owner(),
+                        &session.session_id,
+                        session.document_generation,
+                        &silent,
+                    )
+                    .unwrap()
+                    .0,
+            );
+        }
+        let observation = PdfFailureObservation::new(manager.diagnostics.get());
+        assert!(matches!(
+            manager.admit_file_operation(
+                &owner(),
+                &session.session_id,
+                session.document_generation,
+                &observation
+            ),
+            Err(PdfSessionError::RangeCapacity)
+        ));
+        assert!(events.try_recv().is_err()); // Capture does not enqueue while the caller still owns the observation.
+        drop(held);
+        assert_eq!(manager.sessions.lock().unwrap().process_queued, 0);
+        drop(observation);
+        let (event, files_free) = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_admission_event(
+            &event,
+            PdfDiagnosticStage::FileSessionQueue,
+            MAX_SESSION_QUEUE,
+        );
+        assert!(files_free);
+        assert!(events.try_recv().is_err());
+        finish_admission_fixture(manager, path);
+    }
+
+    #[test]
+    fn admission_process_queue_rejects_metadata_without_calling_it_a_range() {
+        let (manager, sessions, path) = admission_fixture(MAX_PROCESS_QUEUE / MAX_SESSION_QUEUE);
+        let events = admission_events(&manager);
+        let silent = PdfFailureObservation::new(None);
+        let mut held = Vec::new();
+        for session in &sessions {
+            for _ in 0..MAX_SESSION_QUEUE {
+                held.push(
+                    manager
+                        .admit_file_operation(
+                            &owner(),
+                            &session.session_id,
+                            session.document_generation,
+                            &silent,
+                        )
+                        .unwrap()
+                        .0,
+                );
+            }
+        }
+        let session = &sessions[0];
+        assert_eq!(
+            manager.trusted_recent_identity(
+                &owner(),
+                &session.session_id,
+                session.document_generation
+            ),
+            Err(PdfSessionError::RangeCapacity)
+        );
+        let (event, files_free) = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_admission_event(
+            &event,
+            PdfDiagnosticStage::FileProcessQueue,
+            MAX_PROCESS_QUEUE,
+        );
+        assert!(files_free);
+        drop(held);
+        assert_eq!(manager.sessions.lock().unwrap().process_queued, 0);
+        finish_admission_fixture(manager, path);
+    }
+
+    #[test]
+    fn admission_session_in_flight_rejection_releases_file_lock_and_queued_count() {
+        let (manager, sessions, path) = admission_fixture(1);
+        let events = admission_events(&manager);
+        let session = &sessions[0];
+        let silent = PdfFailureObservation::new(None);
+        let mut held = Vec::new();
+        // Isolate the manager predicate, without pretending these admissions are physical reads.
+        for _ in 0..MAX_SESSION_IN_FLIGHT {
+            let mut admission = manager
+                .admit_file_operation(
+                    &owner(),
+                    &session.session_id,
+                    session.document_generation,
+                    &silent,
+                )
+                .unwrap()
+                .0;
+            admission.promote(&silent).unwrap();
+            held.push(admission);
+        }
+        assert_eq!(
+            manager.read_range_absolute(
+                &owner(),
+                &session.session_id,
+                session.document_generation,
+                0,
+                5
+            ),
+            Err(PdfSessionError::RangeCapacity)
+        );
+        let (event, files_free) = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_admission_event(
+            &event,
+            PdfDiagnosticStage::FileSessionInFlight,
+            MAX_SESSION_IN_FLIGHT,
+        );
+        assert!(files_free);
+        assert_eq!(manager.sessions.lock().unwrap().process_queued, 0);
+        drop(held);
+        assert_eq!(
+            manager
+                .read_range_absolute(
+                    &owner(),
+                    &session.session_id,
+                    session.document_generation,
+                    0,
+                    5
+                )
+                .unwrap(),
+            b"%PDF-"
+        );
+        finish_admission_fixture(manager, path);
+    }
+
+    #[test]
+    fn admission_process_in_flight_rejects_an_otherwise_available_session() {
+        let (manager, sessions, path) = admission_fixture(3);
+        let events = admission_events(&manager);
+        let silent = PdfFailureObservation::new(None);
+        let mut held = Vec::new();
+        for session in sessions.iter().take(2) {
+            for _ in 0..MAX_SESSION_IN_FLIGHT {
+                let mut admission = manager
+                    .admit_file_operation(
+                        &owner(),
+                        &session.session_id,
+                        session.document_generation,
+                        &silent,
+                    )
+                    .unwrap()
+                    .0;
+                admission.promote(&silent).unwrap();
+                held.push(admission);
+            }
+        }
+        assert_eq!(held.len(), MAX_PROCESS_IN_FLIGHT);
+        let available = &sessions[2];
+        assert_eq!(
+            manager.read_range_absolute(
+                &owner(),
+                &available.session_id,
+                available.document_generation,
+                0,
+                5
+            ),
+            Err(PdfSessionError::RangeCapacity)
+        );
+        let (event, files_free) = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_admission_event(
+            &event,
+            PdfDiagnosticStage::FileProcessInFlight,
+            MAX_PROCESS_IN_FLIGHT,
+        );
+        assert!(files_free);
+        assert_eq!(manager.sessions.lock().unwrap().process_queued, 0);
+        drop(held);
+        assert_eq!(manager.sessions.lock().unwrap().process_in_flight, 0);
+        finish_admission_fixture(manager, path);
+    }
+
+    #[test]
+    fn admission_outer_gate_waiters_hold_permits_until_real_worker_settlement_after_close() {
+        use crate::pdf_protocol::admit_range_io;
+        let (manager, sessions, path) = admission_fixture(1);
+        let events = admission_events(&manager);
+        let gate = Arc::new(crate::native_io::IoGate::new(4));
+        let session = &sessions[0];
+        let file = Arc::clone(
+            &manager
+                .sessions
+                .lock()
+                .unwrap()
+                .entries
+                .get(&session.session_id)
+                .unwrap()
+                .file,
+        );
+        let (locked, lock_ready) = mpsc::channel();
+        let (unlock, wait_unlock) = mpsc::channel();
+        let blocker = std::thread::spawn(move || {
+            let _file_guard = file.lock().unwrap();
+            locked.send(()).unwrap();
+            wait_unlock.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        lock_ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (reply, caller) = mpsc::channel();
+        let mut workers = Vec::new();
+        for offset in 0..4 {
+            let permit = admit_range_io(&gate, &manager).unwrap();
+            let manager = manager.clone();
+            let session = session.clone();
+            let reply = reply.clone();
+            workers.push(std::thread::spawn(move || {
+                let _permit = permit;
+                let request = tauri::http::Request::builder()
+                    .method(tauri::http::Method::GET)
+                    .uri(format!(
+                        "http://localhost/{}/{}",
+                        session.session_id.0, session.document_generation
+                    ))
+                    .header(
+                        tauri::http::header::ORIGIN,
+                        crate::pdf_protocol::PDF_PROTOCOL_ALLOWED_ORIGIN,
+                    )
+                    .header(
+                        tauri::http::header::RANGE,
+                        format!("bytes={offset}-{offset}"),
+                    )
+                    .body(Vec::new())
+                    .unwrap();
+                let response =
+                    crate::pdf_protocol::handle_pdf_protocol_request(&request, &owner(), &manager);
+                let result = response.status();
+                let _ = reply.send(result);
+                result
+            }));
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while manager.sessions.lock().unwrap().process_queued != 4 {
+            assert!(
+                Instant::now() < deadline,
+                "workers did not reach file-lock wait"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(manager.sessions.lock().unwrap().process_in_flight, 0);
+        assert_eq!(gate.unsettled(), 4);
+        let response = admit_range_io(&gate, &manager).err().unwrap();
+        assert_eq!(
+            response.status(),
+            tauri::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert!(response.body().is_empty());
+        assert_eq!(
+            response.headers()["Access-Control-Allow-Origin"],
+            crate::pdf_protocol::PDF_PROTOCOL_ALLOWED_ORIGIN
+        );
+        assert_eq!(response.headers()["Cache-Control"], "no-store");
+        assert_eq!(response.headers()["Vary"], "Origin");
+        let (event, files_free) = events.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_admission_event(&event, PdfDiagnosticStage::OuterProtocolRangeGate, 4);
+        assert!(!files_free); // Another worker owns the file lock; rejection never waits for it.
+        drop(caller); // Caller abandonment is not physical cancellation.
+        manager.defer_owned(&owner());
+        assert!(!manager.owner_is_empty(&owner()));
+        assert_eq!(gate.unsettled(), 4);
+        unlock.send(()).unwrap();
+        blocker.join().unwrap();
+        for worker in workers {
+            assert_eq!(worker.join().unwrap(), tauri::http::StatusCode::NOT_FOUND);
+        }
+        assert_eq!(gate.unsettled(), 0);
+        assert_empty_after_cleanup(manager.clone());
+        let new_owner = PdfOwner {
+            generation: owner().generation + 1,
+            ..owner()
+        };
+        let policy = TestPolicy(crate::local_path::DriveKind::Fixed);
+        let reopened = manager
+            .open_local(new_owner.clone(), &path, &policy, &policy, |path| {
+                File::open(path)
+            })
+            .unwrap();
+        let permit = admit_range_io(&gate, &manager).unwrap();
+        assert_eq!(
+            manager
+                .read_range_absolute(
+                    &new_owner,
+                    &reopened.session_id,
+                    reopened.document_generation,
+                    0,
+                    5
+                )
+                .unwrap(),
+            b"%PDF-"
+        );
+        drop(permit);
+        assert_eq!(gate.unsettled(), 0);
+        assert!(events.try_recv().is_err());
+        manager.drain_owned(&new_owner);
+        assert_empty_after_cleanup(manager);
+        assert_eq!(std::fs::read(&path).unwrap(), b"%PDF-test");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn admission_prompt_settlement_reuses_unchanged_budget_without_success_logging() {
+        let (manager, sessions, path) = admission_fixture(1);
+        let events = admission_events(&manager);
+        let gate = crate::native_io::IoGate::new(4);
+        let session = &sessions[0];
+        for _ in 0..12 {
+            let permit = crate::pdf_protocol::admit_range_io(&gate, &manager).unwrap();
+            assert_eq!(
+                manager
+                    .read_range_absolute(
+                        &owner(),
+                        &session.session_id,
+                        session.document_generation,
+                        0,
+                        5
+                    )
+                    .unwrap(),
+                b"%PDF-"
+            );
+            drop(permit);
+            assert_eq!(gate.unsettled(), 0);
+            let state = manager.sessions.lock().unwrap();
+            assert_eq!((state.process_queued, state.process_in_flight), (0, 0));
+        }
+        assert!(events.try_recv().is_err());
+        finish_admission_fixture(manager, path);
     }
 }

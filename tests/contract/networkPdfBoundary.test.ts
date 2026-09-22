@@ -18,10 +18,15 @@ describe("network PDF native dispatch boundaries (static, not SMB QA)", () => {
     const recent = section(native, "async fn open_recent", "fn prepare_external_links");
     const protocol = section(native, '.register_asynchronous_uri_scheme_protocol("modeleaf-pdf"', ".manage(second_instance_ingress)");
     for (const implementation of [ingress, recent, protocol]) {
-      expect(implementation.indexOf(".try_acquire()")).toBeGreaterThanOrEqual(0);
-      expect(implementation.indexOf(".try_acquire()")).toBeLessThan(implementation.indexOf("spawn_blocking"));
+      const admission = implementation === protocol ? "admit_range_io(" : ".try_acquire()";
+      expect(implementation.indexOf(admission)).toBeGreaterThanOrEqual(0);
+      expect(implementation.indexOf(admission)).toBeLessThan(implementation.indexOf("spawn_blocking"));
       expect(implementation).toContain("let _permit = permit;");
     }
+    const gate = section(source("src-tauri/src/pdf_protocol.rs"), "fn admit_range_io", "pub const PDF_PROTOCOL_HOST");
+    expect(gate).toContain("gate.try_acquire()");
+    expect(gate).toContain("observe_outer_range_rejection(occupancy)");
+    expect(gate).toContain("StatusCode::SERVICE_UNAVAILABLE");
     expect(ingress.indexOf("reserve_open")).toBeLessThan(ingress.indexOf("spawn_blocking"));
     expect(ingress).toContain("ingest_failure_owned(&owner");
   });

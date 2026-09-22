@@ -3,6 +3,19 @@ use crate::pdf_session::{
 };
 use tauri::http::{header, Method, Request, Response, StatusCode};
 
+/// Admit before scheduling. Rejection evidence contains the exact atomic occupancy, not an I/O claim.
+pub(crate) fn admit_range_io(
+    gate: &crate::native_io::IoGate,
+    sessions: &PdfSessionManager,
+) -> Result<crate::native_io::IoPermit, Box<Response<Vec<u8>>>> {
+    match gate.try_acquire() {
+        Ok(permit) => Ok(permit),
+        Err(occupancy) => {
+            sessions.observe_outer_range_rejection(occupancy);
+            Err(Box::new(cors_empty(StatusCode::SERVICE_UNAVAILABLE)))
+        }
+    }
+}
 pub const PDF_PROTOCOL_HOST: &str = "localhost";
 pub const PDF_PROTOCOL_ALLOWED_ORIGIN: &str = "http://tauri.localhost";
 const PDF_PROTOCOL_ALLOWED_REFERER_PREFIX: &str = "http://tauri.localhost/";

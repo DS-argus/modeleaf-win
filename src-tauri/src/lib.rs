@@ -735,7 +735,7 @@ where
     R: tauri::Runtime,
     E: Emitter<R> + Clone + Send + Sync + 'static,
 {
-    let Some(permit) = NativeIo::global().open.try_acquire() else {
+    let Ok(permit) = NativeIo::global().open.try_acquire() else {
         return publish_open_failure(
             emitter,
             window_label,
@@ -891,7 +891,7 @@ async fn open_pdf_dialog(
             let permit = NativeIo::global()
                 .open
                 .try_acquire()
-                .ok_or(OpenRequestError::Capacity)?;
+                .map_err(|_| OpenRequestError::Capacity)?;
             let coordinator = coordinator.inner().clone();
             Ok(tauri::async_runtime::spawn_blocking(move || {
                 let _permit = permit;
@@ -962,7 +962,7 @@ async fn reject_open_request(
     let permit = NativeIo::global()
         .control
         .try_acquire()
-        .ok_or(OpenRequestError::Capacity)?;
+        .map_err(|_| OpenRequestError::Capacity)?;
     let coordinator = coordinator.inner().clone();
     let request_id = OpenRequestId::from_opaque(request_id)?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -986,7 +986,7 @@ async fn record_recent(
     document_generation: u64,
     owner_generation: u64,
 ) -> RecentRecordOutcome {
-    let Some(permit) = NativeIo::global().metadata.try_acquire() else {
+    let Ok(permit) = NativeIo::global().metadata.try_acquire() else {
         return RecentRecordOutcome::StorageFailed {
             reason: RecentStorageReason::IdentityUnavailable,
         };
@@ -1111,7 +1111,7 @@ fn prune_confirmed_missing(
 #[tauri::command]
 async fn open_recent(window: Window, recent_id: String) -> RecentOpenOutcome {
     let coordinator = window.state::<OpenRequestCoordinator>().inner().clone();
-    let Some(permit) = NativeIo::global().open.try_acquire() else {
+    let Ok(permit) = NativeIo::global().open.try_acquire() else {
         return RecentOpenOutcome::DocumentRejected {
             reason: "SESSION_CAPACITY".into(),
         };
@@ -1296,7 +1296,7 @@ async fn cancel_pdf_session(
     let permit = NativeIo::global()
         .control
         .try_acquire()
-        .ok_or(PdfSessionError::SessionCapacity)?;
+        .map_err(|_| PdfSessionError::SessionCapacity)?;
     let sessions = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
@@ -1320,7 +1320,7 @@ async fn close_pdf_session(
     let permit = NativeIo::global()
         .control
         .try_acquire()
-        .ok_or(PdfSessionError::SessionCapacity)?;
+        .map_err(|_| PdfSessionError::SessionCapacity)?;
     let sessions = state.inner().clone();
     let workspace = workspace.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1384,20 +1384,15 @@ pub fn run() {
             let owner = app
                 .state::<WorkspaceManager>()
                 .active_owner(context.webview_label());
-            let Some(permit) = NativeIo::global().range.try_acquire() else {
-                responder.respond(
-                    tauri::http::Response::builder()
-                        .status(tauri::http::StatusCode::SERVICE_UNAVAILABLE)
-                        .header("Cache-Control", "no-store")
-                        .header("Vary", "Origin")
-                        .header(
-                            "Access-Control-Allow-Origin",
-                            pdf_protocol::PDF_PROTOCOL_ALLOWED_ORIGIN,
-                        )
-                        .body(Vec::new())
-                        .expect("static protocol response"),
-                );
-                return;
+            let permit = match pdf_protocol::admit_range_io(
+                &NativeIo::global().range,
+                &app.state::<PdfSessionManager>(),
+            ) {
+                Ok(permit) => permit,
+                Err(response) => {
+                    responder.respond(*response);
+                    return;
+                }
             };
             tauri::async_runtime::spawn_blocking(move || {
                 let _permit = permit;
