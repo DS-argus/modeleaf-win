@@ -346,16 +346,22 @@ function buildReleaseNotes({ repository, tag, version }) {
   return [
     `# Modeleaf ${version} for Windows`,
     "",
-    "This is an experimental Modeleaf release for Windows 11 x64. Release-candidate native behavior, DPI scaling, Narrator accessibility, clean-machine installation, and Authenticode signature checks are unverified. Automated tests and package validation do not certify installed behavior.",
+    `This is a ${version.split("+")[0].includes("-") ? "prerelease" : "stable"} Modeleaf release for Windows 11 x64. Release classification does not certify unperformed verification. Release-candidate native behavior, DPI scaling, Narrator accessibility, clean-machine installation, and Authenticode signature checks are unverified. Automated tests and package validation do not certify installed behavior.`,
     "",
-    "Changes since 0.1.5:",
-    "- PDF-provided links support keyboard hints with f, anchored external-URL confirmation with Enter/Escape, and transient internal destination-coordinate feedback.",
-    "- Document actions are consolidated into File, and the empty-screen Open PDF banner is clickable.",
-    "- Improved wheel/keyboard zoom, viewport settlement, and tab-presentation recovery within unchanged resource budgets. Zoom is bounded to 25–400%.",
+    "Changes since 0.2.0:",
+    "- Open UNC and existing mapped-drive PDFs read-only with bounded remote I/O; source PDFs and native file authority remain unchanged.",
+    "- Corrected capacity 503 rejections under normal large-PDF demand through bounded fair scheduling; genuine queue saturation still reports failure.",
+    "- Exact logical PDF.js responses are assembled from bounded physical reads, with an additional 512 MiB app-global assembly budget across windows (also capped at 512 MiB per response). This is reservation accounting, not a total RSS limit.",
+    "- Improved Fit Page/Fit Width, zoom intent and committed display, mixed-page geometry, viewport settlement, and tab stability. Zoom is bounded to 25–400%.",
+    "- Browse retains stable rows and uses fixed-font middle path truncation. Existing mapped-drive aliases are shared by Browse and y/yy display/copy without changing native file authority.",
+    "- Finite native/renderer diagnostic error codes and diagnostic-delivery health make PDF failures easier to report.",
+    "- Release automation verifies public downloads before creating a Scoop bucket Draft PR; bucket review and merge remain manual.",
     "",
+    "Link hints, external-URL confirmation, and internal destination indicators were already available in 0.2.0; they are not new here.",
     "Password-protected PDF support was already available in 0.1.5; it is not new in this release. Passwords are not persisted.",
     "",
     "Known limitations:",
+    "- Private-share coverage is limited; remote latency, disconnect, permission-denied, and reconnect scenarios are not comprehensively certified. Prior internal candidate QA is not versioned release-candidate certification.",
     "- CLI enhancements and update notifications are not included in this release. The app does not download or install updates.",
     "- Embedded table of contents (TOC) remains retired.",
     "",
@@ -395,6 +401,7 @@ function buildReleaseNotes({ repository, tag, version }) {
  *   sourceCommit: string,
  *   zipSha256: string,
  *   assetBasenames: string[],
+ *   prerelease: boolean,
  *   releaseNotes: string,
  * }>}
  */
@@ -466,6 +473,7 @@ export async function validateScoopRelease(options) {
     sourceCommit,
     zipSha256: streamedZip.sha256,
     assetBasenames,
+    prerelease: version.split("+")[0].includes("-"),
     releaseNotes: buildReleaseNotes({ repository, tag, version }),
   };
 }
