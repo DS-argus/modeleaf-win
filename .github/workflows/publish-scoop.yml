@@ -5,10 +5,16 @@
   "concurrency": { "group": "publish-scoop-${{ github.ref }}", "cancel-in-progress": false },
   "jobs": {
     "publish": {
-      "if": "github.event.repository.private == false && vars.MODELEAF_APPROVED_RELEASE_SHA != '' && vars.MODELEAF_APPROVED_ZIP_SHA256 != ''",
+      "if": "github.repository == 'DS-argus/modeleaf-win' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.event.repository.private == false && vars.MODELEAF_APPROVED_RELEASE_SHA != '' && vars.MODELEAF_APPROVED_ZIP_SHA256 != ''",
       "runs-on": "windows-latest",
       "timeout-minutes": 15,
       "permissions": { "contents": "write", "actions": "read" },
+      "outputs": {
+        "source": "${{ steps.published.outputs.source }}",
+        "zip": "${{ steps.published.outputs.zip }}",
+        "run-id": "${{ steps.candidate.outputs.run-id }}",
+        "artifact-name": "${{ steps.candidate.outputs.artifact-name }}"
+      },
       "env": {
         "APPROVED_SOURCE_SHA": "${{ vars.MODELEAF_APPROVED_RELEASE_SHA }}",
         "APPROVED_ZIP_SHA256": "${{ vars.MODELEAF_APPROVED_ZIP_SHA256 }}"
@@ -45,11 +51,93 @@
         },
         {
           "name": "Validate and publish through a draft",
+          "id": "published",
           "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
           "env": { "ARTIFACT_DIRECTORY": "${{ runner.temp }}/modeleaf-reviewed-release" },
           "with": {
-            "script": "const { join } = require('node:path');\nconst { pathToFileURL } = require('node:url');\nconst { readFile } = require('node:fs/promises');\nconst { createHash } = require('node:crypto');\nconst { validateScoopRelease } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/prepare-scoop-release.mjs')).href);\nif (context.payload.repository.private !== false || !context.ref.startsWith('refs/tags/v')) throw new Error('Public tag approval is required.');\nconst tag = context.ref.slice('refs/tags/'.length);\nconst validated = await validateScoopRelease({ artifacts: process.env.ARTIFACT_DIRECTORY, repository: context.repo.owner + '/' + context.repo.repo, tag, sourceCommit: process.env.APPROVED_SOURCE_SHA, zipSha256: process.env.APPROVED_ZIP_SHA256 });\nconst commit = await github.rest.repos.getCommit({ ...context.repo, ref: context.ref });\nif (commit.data.sha !== validated.sourceCommit) throw new Error('Tag changed after candidate selection.');\nconst assets = [];\nfor (const name of validated.assetBasenames) {\n  const data = await readFile(join(process.env.ARTIFACT_DIRECTORY, name));\n  const digest = 'sha256:' + createHash('sha256').update(data).digest('hex');\n  if (name.endsWith('.zip') && digest !== 'sha256:' + validated.zipSha256) throw new Error('ZIP changed after validation.');\n  assets.push({ name, data, digest });\n}\nconst releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });\nif (releases.some(existing => existing.tag_name === tag)) throw new Error('A release already exists for this tag; no assets were changed.');\nconst release = await github.rest.repos.createRelease({ ...context.repo, tag_name: tag, target_commitish: validated.sourceCommit, name: 'Modeleaf ' + validated.version + ' — experimental Windows release', body: validated.releaseNotes, draft: true, prerelease: true, make_latest: 'false' });\nfor (const asset of assets) {\n  const uploaded = await github.rest.repos.uploadReleaseAsset({ ...context.repo, release_id: release.data.id, name: asset.name, data: asset.data, headers: { 'content-type': 'application/octet-stream', 'content-length': asset.data.length } });\n  if (uploaded.data.state !== 'uploaded' || uploaded.data.size !== asset.data.length || uploaded.data.digest !== asset.digest) throw new Error('Uploaded asset verification failed; release remains a draft.');\n}\nawait github.rest.repos.updateRelease({ ...context.repo, release_id: release.data.id, draft: false, prerelease: true, make_latest: 'false' });\ncore.info('Published reviewed experimental release: ' + release.data.html_url);"
+            "script": "const { join } = require('node:path');\nconst { pathToFileURL } = require('node:url');\nconst { readFile, mkdtemp } = require('node:fs/promises');\nconst { createHash } = require('node:crypto');\nconst { validateScoopRelease } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/prepare-scoop-release.mjs')).href);\nif (context.payload.repository.private !== false || context.eventName !== 'push' || context.repo.owner + '/' + context.repo.repo !== 'DS-argus/modeleaf-win' || !context.ref.startsWith('refs/tags/v')) throw new Error('Public approved repository tag push is required.');\nconst tag = context.ref.slice('refs/tags/'.length);\nconst options = { artifacts: process.env.ARTIFACT_DIRECTORY, repository: context.repo.owner + '/' + context.repo.repo, tag, sourceCommit: process.env.APPROVED_SOURCE_SHA, zipSha256: process.env.APPROVED_ZIP_SHA256 };\nconst validated = await validateScoopRelease(options);\nconst commit = await github.rest.repos.getCommit({ ...context.repo, ref: context.ref });\nif (commit.data.sha !== validated.sourceCommit) throw new Error('Tag changed after candidate selection.');\nconst releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });\nconst existing = releases.filter(release => release.tag_name === tag);\nif (existing.length) {\n  if (existing.length !== 1 || existing[0].draft !== false) throw new Error('A draft or ambiguous release already exists; no assets were changed.');\n  const { prepareScoopBucket } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/prepare-scoop-bucket.mjs')).href);\n  const temporary = await mkdtemp(join(process.env.RUNNER_TEMP, 'existing-release-'));\n  await prepareScoopBucket({ ...options, outputDirectory: join(temporary, 'verified') });\n  core.info('Existing public release verified; no release bytes changed.');\n} else {\n  const assets = [];\n  for (const name of validated.assetBasenames) {\n    const data = await readFile(join(process.env.ARTIFACT_DIRECTORY, name));\n    const digest = 'sha256:' + createHash('sha256').update(data).digest('hex');\n    if (name.endsWith('.zip') && digest !== 'sha256:' + validated.zipSha256) throw new Error('ZIP changed after validation.');\n    assets.push({ name, data, digest });\n  }\n  const release = await github.rest.repos.createRelease({ ...context.repo, tag_name: tag, target_commitish: validated.sourceCommit, name: 'Modeleaf ' + validated.version + ' — experimental Windows release', body: validated.releaseNotes, draft: true, prerelease: true, make_latest: 'false' });\n  for (const asset of assets) {\n    const uploaded = await github.rest.repos.uploadReleaseAsset({ ...context.repo, release_id: release.data.id, name: asset.name, data: asset.data, headers: { 'content-type': 'application/octet-stream', 'content-length': asset.data.length } });\n    if (uploaded.data.state !== 'uploaded' || uploaded.data.size !== asset.data.length || uploaded.data.digest !== asset.digest) throw new Error('Uploaded asset verification failed; release remains a draft.');\n  }\n  await github.rest.repos.updateRelease({ ...context.repo, release_id: release.data.id, draft: false, prerelease: true, make_latest: 'false' });\n  core.info('Published reviewed experimental release: ' + release.data.html_url);\n}\ncore.setOutput('source', validated.sourceCommit);\ncore.setOutput('zip', validated.zipSha256);"
           }
+        }
+      ]
+    },
+    "promote": {
+      "needs": "publish",
+      "if": "github.repository == 'DS-argus/modeleaf-win' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.event.repository.private == false",
+      "runs-on": "ubuntu-latest",
+      "timeout-minutes": 15,
+      "permissions": { "contents": "read", "actions": "read" },
+      "concurrency": { "group": "scoop-bucket-modeleaf", "cancel-in-progress": false },
+      "env": {
+        "APPROVED_SOURCE_SHA": "${{ needs.publish.outputs.source }}",
+        "APPROVED_ZIP_SHA256": "${{ needs.publish.outputs.zip }}",
+        "ARTIFACT_DIRECTORY": "${{ runner.temp }}/modeleaf-reviewed-release",
+        "VERIFIED_DIRECTORY": "${{ runner.temp }}/modeleaf-public-verified"
+      },
+      "steps": [
+        {
+          "name": "Check out approved source only",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": { "ref": "${{ needs.publish.outputs.source }}", "persist-credentials": false }
+        },
+        {
+          "name": "Set up pinned Node.js",
+          "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020",
+          "with": { "node-version-file": "package.json" }
+        },
+        {
+          "name": "Download exact reviewed bytes",
+          "uses": "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+          "with": {
+            "github-token": "${{ github.token }}",
+            "run-id": "${{ needs.publish.outputs.run-id }}",
+            "name": "${{ needs.publish.outputs.artifact-name }}",
+            "path": "${{ env.ARTIFACT_DIRECTORY }}",
+            "digest-mismatch": "error"
+          }
+        },
+        {
+          "name": "Verify public assets without bucket credentials",
+          "id": "verified",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "with": {
+            "script": "const { join } = require('node:path');\nconst { pathToFileURL } = require('node:url');\nconst { writeFile } = require('node:fs/promises');\nconst { requirePromotionContext } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/promote-scoop-bucket.mjs')).href);\nconst { prepareScoopBucket } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/prepare-scoop-bucket.mjs')).href);\nconst { tag } = requirePromotionContext(context, process.env.APPROVED_SOURCE_SHA);\nconst commit = await github.rest.repos.getCommit({ ...context.repo, ref: context.ref });\nif (commit.data.sha !== process.env.APPROVED_SOURCE_SHA) throw new Error('Published tag changed; promotion refused.');\nconst receipt = await prepareScoopBucket({ artifacts: process.env.ARTIFACT_DIRECTORY, repository: 'DS-argus/modeleaf-win', tag, sourceCommit: process.env.APPROVED_SOURCE_SHA, zipSha256: process.env.APPROVED_ZIP_SHA256, outputDirectory: process.env.VERIFIED_DIRECTORY });\nawait writeFile(join(process.env.VERIFIED_DIRECTORY, 'verification.json'), JSON.stringify(receipt), { flag: 'wx' });\ncore.setOutput('public-verified', 'true');"
+          }
+        },
+        {
+          "name": "Retain public verification receipt",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "name": "scoop-public-verification-${{ github.run_id }}-${{ github.run_attempt }}",
+            "path": "${{ env.VERIFIED_DIRECTORY }}",
+            "if-no-files-found": "error",
+            "retention-days": 30
+          }
+        },
+        {
+          "name": "Require bucket credential configuration",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "env": { "BUCKET_TOKEN_CONFIGURED": "${{ secrets.MODELEAF_SCOOP_BUCKET_TOKEN != '' }}" },
+          "with": { "script": "if (process.env.BUCKET_TOKEN_CONFIGURED !== 'true') core.setFailed('Setup blocked: MODELEAF_SCOOP_BUCKET_TOKEN is missing. Release is published; bucket PR was not created.');" }
+        },
+        {
+          "name": "Create or update bucket promotion Draft PR",
+          "id": "promotion",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "with": {
+            "github-token": "${{ secrets.MODELEAF_SCOOP_BUCKET_TOKEN }}",
+            "script": "const { join } = require('node:path');\nconst { pathToFileURL } = require('node:url');\nconst { readFile } = require('node:fs/promises');\nconst { promoteScoopBucket } = await import(pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'tools/releases/promote-scoop-bucket.mjs')).href);\ntry {\n  const receipt = JSON.parse(await readFile(join(process.env.VERIFIED_DIRECTORY, 'verification.json'), 'utf8'));\n  const manifestBytes = await readFile(join(process.env.VERIFIED_DIRECTORY, 'bucket/modeleaf.json'));\n  const result = await promoteScoopBucket({ github, context, receipt, manifestBytes, credentialAvailable: true });\n  core.setOutput('status', result.status);\n  core.setOutput('pr-number', result.number || '');\n} catch (error) {\n  core.setFailed('Bucket promotion failed; release remains published. Inspect branch/PR state before retry. ' + (error.status ? 'GitHub HTTP ' + error.status : error.message));\n}"
+          }
+        },
+        {
+          "name": "Report publication and promotion independently",
+          "if": "always()",
+          "uses": "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+          "env": {
+            "PUBLIC_VERIFIED": "${{ steps.verified.outputs.public-verified }}",
+            "PROMOTION_STATUS": "${{ steps.promotion.outputs.status }}",
+            "PROMOTION_PR": "${{ steps.promotion.outputs.pr-number }}"
+          },
+          "with": { "script": "await core.summary.addHeading('Scoop promotion').addRaw('Release publication job: succeeded (release published or existing release verified).\\n').addRaw('Public verification in this job: ' + (process.env.PUBLIC_VERIFIED === 'true' ? 'passed' : 'not completed') + '\\n').addRaw('Bucket result: ' + (process.env.PROMOTION_STATUS || 'not completed; inspect failing step, no success claimed') + '\\n').addRaw('Bucket PR: ' + (process.env.PROMOTION_PR || 'none confirmed') + '\\n').addRaw('Bucket merge: not performed; manual review required.\\n').write();" }
         }
       ]
     }

@@ -437,6 +437,14 @@ async function verifyPublicDownload(fetchImplementation, tag, localAsset, allowe
         ) {
           reject(`${label} redirect must remain credential-free HTTPS.`);
         }
+        const isAllowedInitialUrl = allowedInitialUrls.has(redirectUrl.href);
+        const isAllowedGitHubCdnUrl =
+          redirectUrl.hostname === "release-assets.githubusercontent.com"
+          && redirectUrl.port === ""
+          && !redirectUrl.href.includes("#");
+        if (!isAllowedInitialUrl && !isAllowedGitHubCdnUrl) {
+          reject(`${label} redirect destination is not allowlisted.`);
+        }
         currentUrl = redirectUrl.href;
         continue;
       }

@@ -56,7 +56,7 @@ function validateRepository(value) {
   return value;
 }
 
-function validateTag(value) {
+export function validateTag(value) {
   if (
     typeof value !== "string"
     || value.length < 2

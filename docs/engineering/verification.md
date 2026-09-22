@@ -27,6 +27,29 @@ Test edge values, failure paths, read-only invariants, ownership, cancellation, 
 
 The [publication workflow](../../.github/workflows/publish-scoop.yml) consumes exact reviewed preparation artifacts under explicit source/ZIP approval; it does not rebuild them. Release/source/ZIP/manifest and public-byte validation remain distinct from unit tests. See the maintained validators in [tools/releases](../../tools/releases) and [packaging script](../../tools/windows/package-scoop.ps1); do not invoke publication, signing, tags, or bucket promotion without owner authorization.
 
+### Protected Scoop promotion setup and recovery
+
+Publication links directly to a dependent `promote` job, not a `release` event (a release created with `GITHUB_TOKEN` does not start another ordinary event workflow). Only approved public `DS-argus/modeleaf-win` tag pushes qualify. Promotion checks out the publication-validated source SHA, downloads the exact reviewed preparation artifact, and calls `prepareScoopBucket` to verify all four actual public downloads without bucket credentials. The retained `scoop-public-verification-<run>-<attempt>` artifact binds source, ZIP and release-manifest hashes; its manifest is evidence, not a replacement for the maintained bucket's hooks. The write step changes only version, 64bit URL and verified ZIP hash in `bucket/modeleaf.json`.
+
+Owner setup (not performed by automation or tests):
+
+- Create a fine-grained PAT owned by an identity with access to **only `DS-argus/scoop-bucket`**, with repository **Contents: read/write**, **Pull requests: read/write**, and required Metadata read. No Actions, Workflows, Administration, organization permissions, classic broad `repo` token, or source-repository write access is needed. Use an expiry and rotate through the owner's secret-management process.
+- Store it in the source repository Actions secret **`MODELEAF_SCOOP_BUCKET_TOKEN`**. The default source `GITHUB_TOKEN` cannot perform cross-repository writes. Missing/expired/denied credentials block the bucket job explicitly; they do not roll back or replace the published release.
+- Keep source release tags/workflow changes owner-controlled, reviewed, and protected; approval of source/ZIP remains the existing publication prerequisite. Keep bucket `main` protected with required human review and no credential bypass. Do not enable auto-merge. No repository settings, secrets or protections are provisioned by this change.
+- Restrict pushes to bucket `modeleaf/*` branches to the promotion identity, disallow force-push/deletion, and reserve owner intervention for explicit recovery. The tool fetches the resulting PR and rechecks both refs after create/update before confirming success; later external changes still require human review of the current head/diff against the receipt.
+
+The fixed job concurrency group `scoop-bucket-modeleaf` serializes this repository's promotions across tags. GitHub concurrency can replace older pending jobs and does not guarantee ordering: rerun a superseded run when necessary. Manual/external bucket writers are outside that lock. The tool pins reads to commit SHAs, rechecks refs, atomically creates a complete `modeleaf/v<version>` branch, never force-pushes/updates an existing branch, and refuses downgrade or same-version conflicting bytes. Main already at the exact target or newer is a successful no-op. Recheck the PR against current main immediately before manual merge; automation cannot lock independent writers through human review.
+
+Retries reuse a matching open PR (refreshing its evidence body) or recover an identical branch left after failed PR creation. Closed/unmerged PRs are not reopened; merged PRs are a no-op only when main already contains the target or newer. Unrelated branch changes, changed hooks, ambiguous PR history, lost branches or stale refs fail closed for owner reconciliation. No automated branch deletion or destructive recovery is provided. Rerun the failed promotion job after resolving setup/transient failures while the reviewed artifact is retained; rerunning all jobs verifies an already-published release without replacing its bytes. An existing draft or missing/expired reviewed artifact needs owner investigation, not republishing or rebuilding under the same approval.
+
+Release publication and bucket-PR outcomes are reported separately in the job summary. A failed API request may have reached GitHub: inspect remote state or retry safely rather than claiming no remote mutation. Public downloads failing validation never reach the write step. Live publication, bucket mutation and credential provisioning are not part of deterministic verification:
+
+```powershell
+npm test -- tests/unit/tools/scoopRelease.test.ts tests/unit/tools/scoopBucket.test.ts tests/unit/tools/scoopPromotion.test.ts tests/contract/scoopPublication.test.ts tests/contract/scoopWorkflow.test.ts
+```
+
+These tests use synthetic bytes and mocked GitHub APIs; they do not certify live credentials, branch protections, GitHub-hosted execution, or installed/native behavior.
+
 ## Headless reader zoom regression
 
 Run `node tools/qa/run-reader-zoom.mjs` from the assigned worktree with dependencies and pinned PDF.js assets available. This uses an isolated headless Edge profile, real PDF.js, and mocked native authority; it does not build Tauri or inject desktop input. Set `READER_QA_SOURCE_HASH` to the tested commit/working-tree identity and retain the evidence under `.internal/evidence/reader-zoom/`.
