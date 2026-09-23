@@ -1,5 +1,19 @@
 # Engineering conventions
 
+## GJC worktree sessions
+
+When starting a new implementation lane with GJC, launch from the primary checkout in a separate terminal or tmux window using GJC's managed worktree mode:
+
+```powershell
+gjc --worktree=feat/125-example '@C:/absolute/path/to/.agent/handoffs/125-example.md'
+```
+
+Replace the example branch and handoff with the assigned Issue's values. Specify the branch with `--worktree=<branch>`: a bare `--worktree` immediately followed by `@<handoff>` can consume the handoff argument as a branch name. Quote the entire `@<handoff>` argument in PowerShell.
+
+Do not substitute manual `git worktree add` followed by plain `gjc` for this launch convention. Let GJC create and initialize the managed worktree; verify the resulting branch, working directory, and session before reporting that the lane started. Keep one lane per window. Resume an existing managed lane rather than creating duplicates, and preserve local work/handoffs before any owner-authorized replacement.
+
+This convention does not waive runtime execution rules or guarantee that implementation has begun. Report any remaining runtime/tool capability mismatch truthfully rather than repeatedly recreating worktrees. Keep the starter's generic workflow unchanged; this section owns the GJC-specific launch convention.
+
 ## Ownership and state
 
 Follow the boundaries in [architecture](architecture/overview.md). Keep `src/domain` free of DOM, Tauri, PDF.js, UI, platform, and application dependencies. Keep filesystem, Windows shell/registry, window lifecycle, and durable I/O on the Rust side of the Tauri boundary. Renderer-native interaction uses narrow DTOs and opaque session identifiers.

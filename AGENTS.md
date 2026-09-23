@@ -41,6 +41,7 @@ Modeleaf is a keyboard-first, read-only local PDF reader for Windows 11 x64, bui
 - Only selected theme and recent files are active `state.json` fields. Reader view, tabs, and sessions remain non-durable; preserve unknown siblings during native atomic merges.
 - Never change the user's chosen default PDF application, write `UserChoice`, or alter another application's registration. Report native, persistence, cleanup, printing, and release failures truthfully.
 - Canonical local gate: `npm run gate:w01`. Manual app QA uses `npm run preview:worktree`, not a directly launched `src-tauri/target/debug/modeleaf.exe`. Build only in the assigned worktree and never overlap native builds.
+- Start new GJC implementation lanes with `gjc --worktree=<branch> '@<absolute-handoff-path>'` in separate windows, not manual worktree creation followed by plain `gjc`. See [GJC worktree sessions](docs/engineering/conventions.md#gjc-worktree-sessions).
 - Product/infrastructure changes require an Issue and dedicated worktree unless the owner explicitly requests direct implementation. Signing, merging, tagging, publication, and release require explicit owner authorization. Releases bind reviewed source, ZIP SHA-256, and Scoop manifest hash; verify public bytes before bucket promotion.
 - Current owner direction and Windows code are product authority, not macOS parity targets, local backlog entries, or retired manuals. [README](README.md) remains user-facing guidance; [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES.md) remains attribution authority.
 

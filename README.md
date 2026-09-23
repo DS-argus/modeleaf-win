@@ -3,95 +3,67 @@
   <h1>Modeleaf for Windows</h1>
 </div>
 
-A keyboard-first, read-only PDF viewer for Windows 11 x64.
+A keyboard-first, read-only PDF reader for **Windows 11 x64**. Built with Tauri, Rust, TypeScript, and PDF.js.
 
-## Philosophy
+## Features
 
-- **Read-only.** No annotation editing, saving, or changes to the source PDF.
-- **Keyboard-first.** Vim-style navigation with a command palette and shortcut help.
-- **Focused on reading.** Local and Windows network PDFs, tabs, and a minimal interface.
+- Local and Windows network PDFs, including password-protected documents
+- Continuous reading, tabs, recent files, and navigation history
+- Text search, selection/copying, and **Vimium-style PDF link hints**
+- Fit width/page, zoom, rotation, and native printing
+- Command palette, shortcut help, and seven themes
 
-## Key features
+Source PDFs are never modified, and passwords are never saved.
 
-- Continuous reading, page navigation, and Back/Forward history
-- Text search, text selection/copying, PDF link hints, and ordinary link clicks
-- Tabs, a recent-file picker, folder-path display, and PDF-path copying
-- Password-protected local PDFs with unlimited retries and no saved passwords
-- Fit width/page, Actual Size, zoom, and rotation
-- Native system printing with progress and cancellation, preserving page coverage
-- Command palette, shortcut help, and seven interface themes
-- Compact tabs with full filenames in tooltips; a single-line statusbar shows reader state and the installed app version when runtime metadata is available
+## Install
 
-## Availability
-
-Requires **Windows 11 x64** and **Microsoft Edge WebView2 Runtime**.
-
-Published builds appear in [Releases](https://github.com/DS-argus/modeleaf-win/releases). Version 0.3.0 uses the normal/stable GitHub Release classification; earlier experimental prereleases keep their classification. Stable labeling does not certify unperformed native, installed, signing, accessibility, or private-network verification; see each release's limitations.
-
-After the release and its [Scoop bucket](https://github.com/DS-argus/scoop-bucket) manifest are published, install with PowerShell:
+Requires [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/).
 
 ```powershell
 scoop bucket add modeleaf https://github.com/DS-argus/scoop-bucket
 scoop install modeleaf/modeleaf
+```
 
-# Update an installed version after a new release reaches the bucket
+Or download a build from [Releases](https://github.com/DS-argus/modeleaf-win/releases).
+
+To update:
+
+```powershell
 scoop update
 scoop update modeleaf
 ```
 
-Scoop updates are user-invoked and become available after the bucket manifest is updated. The app does not update itself. Printing uses the native system dialog with bounded, complete raster-page preparation; `Submitted to printer` confirms submission, not physical output or a completed Save As file. `of` (reveal the current PDF in Explorer) is not included yet.
+The app does not update itself. See release notes for known limitations.
 
-## Keys (defaults)
+## Keyboard shortcuts
 
-| Action | Key |
-| --- | --- |
-| Scroll / large scroll | `h` `j` `k` `l` / `d` `u` |
-| Previous / next page | `p` / `n` |
-| Show folder / copy PDF path | `y` / `yy` |
-| First / last page | `gg` / `G` |
-| Go to page | `g`, number, `Enter` |
-| Actual Size | `0` |
-| Back / forward | `Ctrl+O` / `Ctrl+I` (also `Alt+Left` / `Alt+Right`) |
+| Action                          | Key                           |
+| ------------------------------- | ----------------------------- |
+| Open PDF                        | `Ctrl+Shift+O`                |
+| Scroll / large scroll           | `h` `j` `k` `l` / `d` `u`     |
+| Previous / next page            | `p` / `n`                     |
+| First / last page               | `gg` / `G`                    |
+| Go to page                      | `g`, number, `Enter`          |
+| Back / forward                  | `Ctrl+O` / `Ctrl+I`           |
 | Search / next / previous result | `/` / `Enter` / `Shift+Enter` |
-| Follow a PDF link | `f`, label; `Enter` confirms external URLs, `Escape` cancels |
-| Fit width / page | `w` / `F` |
-| Zoom / rotate | `=` `-` / `[` `]` |
-| Previous / next tab | `P` / `N` |
-| Theme / palette / help | `T` / `:` / `?` |
+| Follow a PDF link               | `f`, then its label           |
+| Fit width / page                | `w` / `F`                     |
+| Zoom / Actual Size              | `=` `-` / `0`                 |
+| Rotate                          | `[` / `]`                     |
+| Previous / next tab             | `P` / `N`                     |
+| Show folder / copy PDF path     | `y` / `yy`                    |
+| Theme / palette / help          | `T` / `:` / `?`               |
 
-The recent-file picker keeps a fixed text size and shortens long paths in the middle; exceptionally long filenames are also middle-shortened while retaining the PDF extension. Hover for the full canonical path. Existing mapped-drive letters are shown when available in your current Windows user context; this changes only the label, not the file's stored identity or opening authority.
+## Development
 
-Jump history is temporary and local to each tab. Page-number/first/last jumps, internal PDF links, and search navigation record positions; ordinary scrolling, adjacent-page steps, zoom and rotation do not add entries. `Ctrl+O` goes back and `Ctrl+I` forward; opening PDFs remains `Ctrl+Shift+O`.
-New PDFs open in **continuous reading** at the first page's Fit Page-derived scale, without selecting Fit Page mode. Scrolling keeps that scale; resizing or rotating refits the same reference page. Press `F` to explicitly fit the current page in a single-page Fit Page view; in that view, `j`/`k` and `d`/`u` move to the next/previous page like `n`/`p`.
-
-Precision-trackpad scrolling and pinch gestures are not currently supported.
-Use **Ctrl+wheel** to zoom around the pointer in 10% multiplicative steps (25–400%). Small wheel movements accumulate; normal wheel input scrolls. Over page margins, zoom preserves the nearest page edge. Use `h`/`l` or the left/right arrows to scroll horizontally when zoomed in. `0` selects PDF.js scale 1, not a calibrated physical paper size.
-
-Press `f` to label visible links supplied by the PDF, then type a label to select it. Internal links navigate directly and briefly mark an explicit destination coordinate; page-only destinations have no marker. External `http(s)` and `mailto:` links show their URL near the source and require `Enter` confirmation before one launch through the registered Windows handler; safely encoded `subject`/`body` query text is supported. `Escape` cancels, `Backspace` corrects the label, and moving the viewport or changing focus cancels pending hints and URL confirmation. Ordinary mouse clicks are unchanged; text that merely looks like a URL is not a link.
-
-Password-protected PDFs open with a modal prompt. Enter submits; Escape or Cancel returns to the previous document (or start screen). Incorrect attempts clear the input and can be retried without a limit. While prompted, document and tab actions are blocked; closing the window remains available. Passwords are never saved.
-
-## Windows network PDFs
-
-Open PDFs directly from ordinary UNC paths (`\\server\share\document.pdf`) or an existing mapped network drive through the file chooser, Explorer/Open With, drag/drop, or recents. Modeleaf uses your current Windows access context and reads bounded ranges from the retained read-only handle; it does not stage a complete local copy. HTTP/HTTPS PDF opening, device paths, and custom credential prompts are not supported.
-
-An unavailable share or changed document can fail opening or paging. Restore access and reopen the PDF; network failures do not automatically remove its recent entry. Cancelling loading stops adoption, not necessarily an already-blocked Windows network call. Native work stays bounded and remains accounted for until it settles; a teardown timeout is not successful cleanup.
-
-## Build from source
-
-Use the Node.js/npm versions specified in [package.json](package.json), the Rust MSVC toolchain, Visual Studio Build Tools with the C++ workload, and WebView2 Runtime.
+Use the pinned [Node/npm](package.json) and [Rust](rust-toolchain.toml) versions, Visual Studio C++ Build Tools, and WebView2.
 
 ```powershell
 npm ci
-npm test
-npm run build
-npm run tauri -- build --no-bundle
+npm run tauri -- dev
 ```
-
-For development, run `npm run tauri -- dev`. Follow `AGENTS.md` for engineering and verification requirements.
 
 ## Credits
 
-Original app: [DS-argus/modeleaf](https://github.com/DS-argus/modeleaf). Built with Tauri, Rust, TypeScript, and PDF.js.
-
-Dependency licenses and theme attributions: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Based on [Modeleaf for macOS](https://github.com/DS-argus/modeleaf).
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licenses and theme attributions.
